@@ -229,6 +229,53 @@ Nuclide::Nuclide(hid_t group, const vector<double>& temperature)
       hid_t rx_group = open_group(rxs_group, name.c_str());
       reactions_.push_back(make_unique<Reaction>(rx_group, temps_to_read));
 
+      // check if there is a photon production filter
+      if (!settings::photon_production_filter.empty()) {
+        auto& rx = reactions_.back();
+        bool fully_remove = false;
+        if (settings::photon_production_filter.find(name_) ==
+            settings::photon_production_filter.end()) {
+          fully_remove = true;
+        } else {
+          auto& nuclide_photon_production =
+            settings::photon_production_filter[name_];
+          if (nuclide_photon_production.find(rx->mt_) !=
+              nuclide_photon_production.end()) {
+            auto& reaction_products = nuclide_photon_production[rx->mt_];
+            if (!reaction_products.empty()) {
+              int i_phot = 0;
+              vector<int> delete_indices;
+              for (int i_product = 0; i_product < rx->products_.size();
+                   i_product++) {
+                const auto& p = rx->products_[i_product];
+                if (p.particle_ == ParticleType::photon) {
+                  i_phot++;
+                  if (reaction_products.find(i_phot) ==
+                      reaction_products.end()) {
+                    delete_indices.push_back(i_product);
+                  }
+                }
+              }
+              for (int i_del = delete_indices.size() - 1; i_del >= 0; i_del--) {
+                rx->products_.erase(
+                  rx->products_.begin() + delete_indices[i_del]);
+              }
+            }
+          } else if (!nuclide_photon_production.empty()) {
+            fully_remove = true;
+          }
+        }
+
+        if (fully_remove) {
+          rx->products_.erase(
+            std::remove_if(rx->products_.begin(), rx->products_.end(),
+              [](ReactionProduct& p) {
+                return (p.particle_ == ParticleType::photon);
+              }),
+            rx->products_.end());
+        }
+      }
+
       // Check for 0K elastic scattering
       const auto& rx = reactions_.back();
       if (rx->mt_ == ELASTIC) {

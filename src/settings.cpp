@@ -109,6 +109,8 @@ std::unordered_set<int> sourcepoint_batch;
 std::unordered_set<int> statepoint_batch;
 std::unordered_set<int> source_write_surf_id;
 int64_t max_surface_particles;
+std::map<std::string, std::map<int, std::unordered_set<int>>>
+  photon_production_filter;
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
 double temperature_tolerance {10.0};
 double temperature_default {293.6};
@@ -418,6 +420,28 @@ void read_settings_xml(pugi::xml_node root)
     if (!run_CE && photon_transport) {
       fatal_error("Photon transport is not currently supported in "
                   "multigroup mode");
+    }
+  }
+
+  // check for photon production filter
+  if (check_for_node(root, "photon_production_filter")) {
+    xml_node photon_production_filter = root.child("photon_production_filter");
+    for (xml_node nuclide_node : photon_production_filter.children("nuclide")) {
+      std::string name_ = get_node_value(nuclide_node, "name");
+      std::map<int, std::unordered_set<int>> nuclide_;
+      settings::photon_production_filter[name_] = nuclide_;
+      for (xml_node reaction_node : nuclide_node.children("reaction")) {
+        int mt_ = std::stoi(get_node_value(reaction_node, "mt"));
+        std::unordered_set<int> reaction_;
+        settings::photon_production_filter[name_][mt_] = reaction_;
+        if (check_for_node(reaction_node, "products")) {
+          std::string products_ = get_node_value(reaction_node, "products");
+          for (std::string product_str : split(products_)) {
+            settings::photon_production_filter[name_][mt_].insert(
+              std::stoi(product_str));
+          }
+        }
+      }
     }
   }
 

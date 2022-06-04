@@ -5,6 +5,7 @@
 //! \brief Settings for OpenMC
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <unordered_set>
 
@@ -107,6 +108,9 @@ extern std::unordered_set<int>
 extern int max_splits; //!< maximum number of particle splits for weight windows
 extern int64_t max_surface_particles; //!< maximum number of particles to be
                                       //!< banked on surfaces per process
+extern std::map<std::string, std::map<int, std::unordered_set<int>>>
+  photon_production_filter; //!< specify which neutron interactions produce
+                            //!< photons
 extern TemperatureMethod
   temperature_method; //!< method for choosing temperatures
 extern double

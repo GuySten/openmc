@@ -15,6 +15,7 @@
 #include "openmc/ncrystal_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/physics_common.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -288,6 +289,17 @@ void sample_photon_reaction(Particle& p)
     return;
   }
 
+  if (settings::photonuclear_physics) {
+    if (p.macro_xs().neutron_prod > 0.0) {
+      // Sample nuclide for photonuclear interaction
+      int i_nuclide = sample_photonuclear_nuclide(p);
+      sample_secondary_photoneutrons(p, i_nuclide);
+    }
+    // Adjust weight of photon according to probability that photonuclear
+    // interaction did not happen
+    p.wgt() *= 1.0 - p.macro_xs().photonuclear / p.macro_xs().total;
+  }
+
   // Sample element within material
   int i_element = sample_element(p);
   const auto& micro {p.photon_xs(i_element)};
@@ -512,7 +524,8 @@ int sample_nuclide(Particle& p)
 int sample_element(Particle& p)
 {
   // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+  double cutoff =
+    prn(p.current_seed()) * (p.macro_xs().total - p.macro_xs().photonuclear);
 
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
@@ -539,6 +552,40 @@ int sample_element(Particle& p)
   // If we made it here, no element was sampled
   p.write_restart();
   fatal_error("Did not sample any element during collision.");
+}
+
+int sample_photonuclear_nuclide(Particle& p)
+{
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * p.macro_xs().neutron_prod;
+
+  // Get pointers to elements, densities
+  const auto& mat {model::materials[p.material()]};
+
+  int n = mat->nuclide_.size();
+
+  double prob = 0.0;
+  for (int i = 0; i < n; ++i) {
+    // Get atom density
+    auto& name = data::nuclides[mat->nuclide_[i]]->name_;
+
+    // Skip nuclides without photonuclear data
+    if (data::photonuclear_map.find(name) == data::photonuclear_map.end())
+      continue;
+
+    int i_nuclide = data::photonuclear_map[name];
+    double atom_density = mat->atom_density_[i];
+
+    // Increment probability to compare to cutoff
+    prob += atom_density * p.photonuclear_xs(i_nuclide).neutron_prod;
+    if (prob >= cutoff)
+      return i_nuclide;
+  }
+
+  // If we reach here, no nuclide was sampled
+  p.write_restart();
+  throw std::runtime_error {
+    "Did not sample any nuclide for photoneutron production."};
 }
 
 Reaction& sample_fission(int i_nuclide, Particle& p)
@@ -625,6 +672,45 @@ void sample_photon_product(
       }
     }
   }
+}
+
+void sample_photoneutron_product(
+  int i_nuclide, Particle& p, int* i_rx, int* i_product)
+{
+  // Get grid index and interpolation factor and sample neutron production cdf
+  const auto& micro = p.photonuclear_xs(i_nuclide);
+  double cutoff = prn(p.current_seed()) * micro.neutron_prod;
+  double prob = 0.0;
+
+  // Loop through each reaction type
+  const auto& nuc {data::photonuclears[i_nuclide]};
+  for (int i = 0; i < nuc->reactions_.size(); ++i) {
+    // Evaluate photonuclear cross section
+    const auto& rx = nuc->reactions_[i];
+    double xs = rx->xs(micro);
+
+    // if cross section is zero for this reaction, skip it
+    if (xs == 0.0)
+      continue;
+
+    for (int j = 0; j < rx->products_.size(); ++j) {
+      if (rx->products_[j].particle_ == ParticleType::neutron) {
+
+        // add to cumulative probability
+        if ((*rx->products_[j].yield_)(p.E()) <= 0.0)
+          continue;
+
+        prob += xs;
+        *i_rx = i;
+        *i_product = j;
+        if (prob >= cutoff)
+          return;
+      }
+    }
+  }
+  // If we made it here, no product was sampled
+  p.write_restart();
+  fatal_error("Did not sample any photoneutron product.");
 }
 
 void absorption(Particle& p, int i_nuclide)
@@ -1208,6 +1294,70 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
         rx->products_[i_product].parent_nuclide_;
     }
   }
+}
+
+void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
+{
+  double wgt = p.wgt();
+  wgt *= p.photonuclear_xs(i_nuclide).neutron_prod /
+         p.photonuclear_xs(i_nuclide).total;
+  wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
+
+  // Sample the reaction and product
+  int i_rx;
+  int i_product;
+  sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
+
+  const auto& rx = data::photonuclears[i_nuclide]->reactions_[i_rx];
+  const auto& product = rx->products_[i_product];
+
+  wgt *= (*product.yield_)(p.E());
+
+  // Play russian roulette if survival biasing is turned on
+  // and survival normalization is turned off
+  if (settings::survival_biasing && !settings::survival_normalization &&
+      wgt < settings::weight_cutoff) {
+    if (settings::weight_survive * prn(p.current_seed()) < wgt) {
+      wgt = settings::weight_survive;
+    } else {
+      return;
+    }
+  }
+
+  // Sample the outgoing energy and angle
+  double E_in = p.E();
+  double E;
+  double mu;
+  product.sample(E_in, E, mu, p.current_seed());
+
+  // if scattering system is in center-of-mass, transfer cosine of scattering
+  // angle and outgoing energy from CM to LAB
+  if (rx->scatter_in_cm_) {
+    auto& nuc = data::photonuclears[i_nuclide];
+    double E_cm = E;
+    double mu_cm = mu;
+
+    // determine outgoing energy in lab
+    double A = nuc->awr_;
+    E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
+        (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
+
+    // determine outgoing angle in lab
+    mu = mu_cm * std::sqrt(E_cm / E) +
+         E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
+
+    // Because of floating-point roundoff, it may be possible for mu to be
+    // outside of the range [-1,1). In these cases, we just set mu to exactly -1
+    // or 1
+    if (std::abs(mu) > 1.0)
+      mu = std::copysign(1.0, mu);
+  }
+
+  // Sample the new direction
+  Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+
+  // Create the secondary neutron
+  p.create_secondary(wgt, u, E, ParticleType::neutron);
 }
 
 } // namespace openmc

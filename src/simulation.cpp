@@ -15,6 +15,7 @@
 #include "openmc/output.h"
 #include "openmc/particle.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
 #include "openmc/source.h"
@@ -676,6 +677,8 @@ void initialize_data()
   // Determine minimum/maximum energy for incident neutron/photon data
   data::energy_max = {INFTY, INFTY};
   data::energy_min = {0.0, 0.0};
+  data::photonuclear_energy_min = INFTY;
+
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
       int neutron = static_cast<int>(ParticleType::neutron);
@@ -695,6 +698,29 @@ void initialize_data()
           std::max(data::energy_min[photon], std::exp(elem->energy_(1)));
         data::energy_max[photon] =
           std::min(data::energy_max[photon], std::exp(elem->energy_(n - 1)));
+      }
+    }
+    if (settings::photonuclear_physics) {
+      for (const auto& nuc : data::photonuclears) {
+        if (nuc->energy_.size() > 0) {
+          double min_E = nuc->energy_[0];
+          data::photonuclear_energy_min =
+            std::min(data::photonuclear_energy_min, min_E);
+        }
+      }
+      // Show which nuclide results in lowest energy for photonuclear physics
+      for (const auto& nuc : data::photonuclears) {
+        // If a nuclide is present in a material that's not used in the model,
+        // its grid has not been allocated
+        if (nuc->energy_.size() > 0) {
+          double min_E = nuc->energy_[0];
+          if (min_E == data::photonuclear_energy_min) {
+            write_message(7,
+              "Minimum photonuclear physics energy: {} eV for {}", min_E,
+              nuc->name_);
+            break;
+          }
+        }
       }
     }
 

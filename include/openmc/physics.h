@@ -53,6 +53,13 @@ void sample_positron_reaction(Particle& p);
 //! \return Index in the data::nuclides vector
 int sample_nuclide(Particle& p);
 
+//! Sample a nuclide for photonuclear interaction based on their
+//! cross sections and densities within the current material
+//!
+//! \param[in] p Particle
+//! \return Index in the data::nuclides vector
+int sample_photonuclear_nuclide(Particle& p);
+
 //! Determine the average total, prompt, and delayed neutrons produced from
 //! fission and creates appropriate bank sites.
 void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx);
@@ -62,6 +69,9 @@ int sample_element(Particle& p);
 Reaction& sample_fission(int i_nuclide, Particle& p);
 
 void sample_photon_product(
+  int i_nuclide, Particle& p, int* i_rx, int* i_product);
+
+void sample_photonuclear_product(
   int i_nuclide, Particle& p, int* i_rx, int* i_product);
 
 void absorption(Particle& p, int i_nuclide);
@@ -95,6 +105,8 @@ void sample_fission_neutron(
 void inelastic_scatter(const Nuclide& nuc, const Reaction& rx, Particle& p);
 
 void sample_secondary_photons(Particle& p, int i_nuclide);
+
+void sample_secondary_photoneutrons(Particle& p, int i_nuclide);
 
 //! Split or Roulette particles based their weight and the lower weight window
 //! bound.

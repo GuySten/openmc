@@ -221,6 +221,13 @@ acer / %%%%%%%%%%%%%%%%%%%%%%%% Write out in ACE format %%%%%%%%%%%%%%%%%%%%%%%%
 222 64 {mt_elastic} {elastic_type} {data.nmix} {energy_max} {iwt}/
 """
 
+_PHOTONUCLEAR_TEMPLATE_ACER = """
+acer / %%%%%%%%%%%%%%%%%%%%%%%% Write out in ACE format %%%%%%%%%%%%%%%%%%%%%%%%
+{nendf} {nacer_in} 0 {nace} {ndir}
+5 0 1 .{ext} /
+'{library}: {zsymam}'/
+{mat}
+"""
 
 def run(commands, tapein, tapeout, input_filename=None, stdout=False,
         njoy_exec='njoy'):
@@ -671,3 +678,134 @@ def make_ace_thermal(filename, filename_thermal, temperatures=None,
     for temperature in temperatures:
         (output_dir / f"ace_{temperature:.1f}").unlink()
         (output_dir / f"xsdir_{temperature:.1f}").unlink()
+        
+
+def make_photonuclear_ace(filename, temperatures=None, acer=True, xsdir=None,
+             output_dir=None, pendf=False, error=0.001,
+             evaluation=None, **kwargs):
+    """Generate incident photonuclear ACE file from an ENDF file
+
+    File names can be passed to
+    ``[acer, xsdir, pendf]``
+    to specify the exact output for the given module.
+    Otherwise, the files will be writen to the current directory
+    or directory specified by ``output_dir``. Default file
+    names mirror the variable names, e.g. ``xsdir`` output
+    will be written to a file named ``xsdir`` unless otherwise
+    specified.
+
+    Parameters
+    ----------
+    filename : str
+        Path to ENDF file
+    temperatures : iterable of float, optional
+        Temperatures in Kelvin to produce ACE files at. If omitted, data is
+        produced at zero temperature (0.0 K).
+    acer : bool or str, optional
+        Flag indicating if acer should be run. If a string is give, write the
+        resulting ``ace`` file to this location. Path of ACE file to write.
+        Defaults to ``"ace"``
+    xsdir : str, optional
+        Path of xsdir file to write. Defaults to ``"xsdir"`` in the same
+        directory as ``acer``
+    output_dir : str, optional
+        Directory to write output for requested modules. If not provided
+        and at least one of ``[pendf, broadr, heatr, gaspr, purr, acer]``
+        is ``True``, then write output files to current directory. If given,
+        must be a path to a directory.
+    pendf : str, optional
+        Path of pendf file to write. If omitted, the pendf file is not saved.
+    error : float, optional
+        Fractional error tolerance for NJOY processing
+    evaluation : openmc.data.endf.Evaluation, optional
+        If the ENDF file contains multiple material evaluations, this argument
+        indicates which evaluation should be used.
+    **kwargs
+        Keyword arguments passed to :func:`openmc.data.njoy.run`
+
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the NJOY process returns with a non-zero status
+    IOError
+        If ``output_dir`` does not point to a directory
+
+    """
+    if output_dir is None:
+        output_dir = Path()
+    else:
+        output_dir = Path(output_dir)
+        if not output_dir.is_dir():
+            raise IOError(f"{output_dir} is not a directory")
+
+    ev = evaluation if evaluation is not None else endf.Evaluation(filename)
+    mat = ev.material
+    zsymam = ev.target['zsymam']
+
+    # Determine name of library
+    library = '{}-{}.{}'.format(*ev.info['library'])
+
+    if temperatures is None:
+        temperatures = [0.0]
+    num_temp = len(temperatures)
+    temps = ' '.join(str(i) for i in temperatures)
+
+    # Create njoy commands by modules
+    commands = ""
+
+    nendf, npendf = 20, 21
+    tapein = {nendf: filename}
+    tapeout = {}
+    if pendf:
+        tapeout[npendf] = (output_dir / "pendf") if pendf is True else pendf
+
+    # reconr
+    commands += _TEMPLATE_RECONR
+    nlast = npendf
+
+    commands = commands.format(**locals())
+
+    # acer
+    if acer:
+        nacer_in = nlast
+        for i, temperature in enumerate(temperatures):
+            # Extend input with an ACER run for each temperature
+            nace = nacer_in + 1 + 2*i
+            ndir = nace + 1
+            ext = f'{i + 1:02}'
+
+            commands += _PHOTONUCLEAR_TEMPLATE_ACER.format(**locals())
+
+            # Indicate tapes to save for each ACER run
+            tapeout[nace] = output_dir / f"ace_{temperature:.1f}"
+            tapeout[ndir] = output_dir / f"xsdir_{temperature:.1f}"
+    commands += 'stop\n'
+    run(commands, tapein, tapeout, **kwargs)
+
+    if acer:
+        ace = (output_dir / "ace") if acer is True else Path(acer)
+        xsdir = (ace.parent / "xsdir") if xsdir is None else xsdir
+        with ace.open('w') as ace_file, xsdir.open('w') as xsdir_file:
+            for temperature in temperatures:
+                # Get contents of ACE file
+                text = (output_dir / f"ace_{temperature:.1f}").read_text()
+
+                # If the target is metastable, make sure that ZAID in the ACE
+                # file reflects this by adding 400
+                if ev.target['isomeric_state'] > 0:
+                    mass_first_digit = int(text[3])
+                    if mass_first_digit <= 2:
+                        text = text[:3] + str(mass_first_digit + 4) + text[4:]
+
+                # Concatenate into destination ACE file
+                ace_file.write(text)
+
+                # Concatenate into destination xsdir file
+                xsdir_in = output_dir / f"xsdir_{temperature:.1f}"
+                xsdir_file.write(xsdir_in.read_text())
+
+        # Remove ACE/xsdir files for each temperature
+        for temperature in temperatures:
+            (output_dir / f"ace_{temperature:.1f}").unlink()
+            (output_dir / f"xsdir_{temperature:.1f}").unlink()
+

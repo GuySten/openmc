@@ -16,7 +16,7 @@ from .ace import Table, get_metadata, get_table, Library
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
 from .endf import Evaluation, get_head_record, get_tab1_record
 from .function import Tabulated1D
-from .njoy import make_ace
+from .njoy import make_photonuclear_ace
 
 _REACTION_NAME = {
     1: "(g,total)",
@@ -171,24 +171,24 @@ class PhotonuclearReaction(EqualityMixin):
         grid = ace.xss[ace.jxs[1] : ace.jxs[1] + n_grid] * EV_PER_MEV
 
         if i_reaction > 0:
-            mt = int(ace.xss[ace.jxs[3] + i_reaction - 1])
+            mt = int(ace.xss[ace.jxs[6] + i_reaction - 1])
             rx = cls(mt)
 
             # ==================================================================
             # CROSS SECTION
 
             # Get locator for cross-section data
-            loc = int(ace.xss[ace.jxs[6] + i_reaction - 1])
+            loc = int(ace.xss[ace.jxs[8] + i_reaction - 1])
 
             # Determine starting index on energy grid
-            threshold_idx = int(ace.xss[ace.jxs[7] + loc - 1]) - 1
+            threshold_idx = int(ace.xss[ace.jxs[9] + loc - 1]) - 1
 
             # Determine number of energies in reaction
-            n_energy = int(ace.xss[ace.jxs[7] + loc])
+            n_energy = int(ace.xss[ace.jxs[9] + loc])
             energy = grid[threshold_idx : threshold_idx + n_energy]
 
             # Read reaction cross section
-            xs = ace.xss[ace.jxs[7] + loc + 1 : ace.jxs[7] + loc + 1 + n_energy]
+            xs = ace.xss[ace.jxs[9] + loc + 1 : ace.jxs[9] + loc + 1 + n_energy]
 
             # Fix negatives -- known issue for Y89 in JEFF 3.2
             if np.any(xs < 0.0):
@@ -203,22 +203,22 @@ class PhotonuclearReaction(EqualityMixin):
             rx.xs = tabulated_xs
 
         else:
-            # Elastic scattering
-            mt = 2
+            # Non-elastic cross section
+            mt = 3
             rx = cls(mt)
 
             # Get elastic cross section values
-            elastic_xs = ace.xss[ace.jxs[1] + 3 * n_grid : ace.jxs[1] + 4 * n_grid]
+            nonelastic_xs = ace.xss[ace.jxs[3] : ace.jxs[3] + ace.nxs[3]]
 
             # Fix negatives -- known issue for Ti46,49,50 in JEFF 3.2
-            if np.any(elastic_xs < 0.0):
+            if np.any(nonelastic_xs < 0.0):
                 warn(
-                    "Negative elastic scattering cross section found for {}. "
+                    "Negative nonelastic scattering cross section found for {}. "
                     "Setting to zero.".format(ace.name)
                 )
-                elastic_xs[elastic_xs < 0.0] = 0.0
+                nonelastic_xs[nonelastic_xs < 0.0] = 0.0
 
-            tabulated_xs = Tabulated1D(grid, elastic_xs)
+            tabulated_xs = Tabulated1D(grid, nonelastic_xs)
             tabulated_xs._threshold_idx = 0
             rx.xs = tabulated_xs
 
@@ -453,7 +453,7 @@ class Photonuclear(EqualityMixin):
 
         # If mass number hasn't been specified, make an educated guess
         zaid, xs = ace.name.split(".")
-        if not xs.endswith("h"):
+        if not xs.endswith("u"):
             raise TypeError(
                 "{} is not a continuous-energy photo-nuclear ACE table.".format(ace)
             )
@@ -469,10 +469,9 @@ class Photonuclear(EqualityMixin):
         energy = ace.xss[i : i + n_energy] * EV_PER_MEV
         data.energy = energy
 
-        total_xs = ace.xss[i + n_energy : i + 2 * n_energy]
-        absorption_xs = ace.xss[i + 2 * n_energy : i + 3 * n_energy]
-        heating_number = ace.xss[i + 4 * n_energy : i + 5 * n_energy] * EV_PER_MEV
-
+        total_xs = ace.xss[ace.jxs[2] : ace.jxs[2] + n_energy]
+        absorption_xs = ace.xss[ace.jxs[3] : ace.jxs[3] + n_energy]
+        heating_number = ace.xss[ace.jxs[5] : ace.jxs[5] +  n_energy] * EV_PER_MEV
         # Create redundant reactions (total, absorption, and heating)
         total = PhotonuclearReaction(1)
         total.xs = Tabulated1D(energy, total_xs)
@@ -616,7 +615,7 @@ class Photonuclear(EqualityMixin):
             If the ENDF file contains multiple material evaluations, this
             argument indicates which evaluation to use.
         **kwargs
-            Keyword arguments passed to :func:`openmc.data.njoy.make_ace`
+            Keyword arguments passed to :func:`openmc.data.njoy.make_photonuclear_ace`
 
         Returns
         -------
@@ -627,15 +626,10 @@ class Photonuclear(EqualityMixin):
         with tempfile.TemporaryDirectory() as tmpdir:
             # Run NJOY to create an ACE library
             kwargs.setdefault("output_dir", tmpdir)
-            for key in ("acer", "pendf", "heatr", "broadr", "gaspr", "purr"):
+            for key in ("acer", "pendf"):
                 kwargs.setdefault(key, os.path.join(kwargs["output_dir"], key))
             kwargs["evaluation"] = evaluation
-            kwargs["pendf"] = False
-            kwargs["broadr"] = False
-            kwargs["heatr"] = False
-            kwargs["gaspr"] = False
-            kwargs["purr"] = False
-            make_ace(filename, [0.0], **kwargs)
+            make_photonuclear_ace(filename, [0.0], **kwargs)
 
             # Create instance from ACE tables within library
             lib = Library(kwargs["acer"])

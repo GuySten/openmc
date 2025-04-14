@@ -516,7 +516,7 @@ class Photonuclear(EqualityMixin):
         # If data come from ENDF, don't allow exporting to HDF5
         if hasattr(self, "_evaluation"):
             raise NotImplementedError(
-                "Cannot export incident neutron data that "
+                "Cannot export incident photonuclear data that "
                 "originated from an ENDF file."
             )
 

@@ -53,6 +53,13 @@ void sample_positron_reaction(Particle& p);
 //! \return Index in the data::nuclides vector
 int sample_nuclide(Particle& p);
 
+//! Sample a nuclide for photonuclear physics based on their total cross sections and densities within
+//! the current material
+//!
+//! \param[in] p Particle
+//! \return Index in the data::nuclides vector
+int sample_photonuclear_nuclide(Particle& p);
+
 //! Determine the average total, prompt, and delayed neutrons produced from
 //! fission and creates appropriate bank sites.
 void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx);

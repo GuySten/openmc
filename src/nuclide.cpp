@@ -8,6 +8,7 @@
 #include "openmc/hdf5_interface.h"
 #include "openmc/message_passing.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
@@ -1173,6 +1174,31 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         close_group(group);
         file_close(file_id);
+      }
+      if (settings::photonuclear_physics) {
+        if (data::photonuclear_map.find(name) == data::photonuclear_map.end() ||
+          data::photonuclear_map.at(name) >= data::photonuclears.size()) {
+          LibraryKey key {Library::Type::photonuclear, name};
+          const auto& it = data::library_map.find(key);
+          if (it == data::library_map.end()) {
+            set_errmsg(
+            "Nuclide '" + std::string {name} + "' is not present in library.");
+            return OPENMC_E_DATA;
+          }
+
+        // Get filename for library containing nuclide
+        int idx = it->second;
+        const auto& filename = data::libraries[idx].path_;
+        write_message(6, "Reading {} from {}", name, filename);
+
+        // Open file and make sure version is sufficient
+        hid_t file_id = file_open(filename, 'r');
+        check_data_version(file_id);
+        
+        // Read element data from HDF5
+        hid_t group = open_group(file_id, name);
+        data::photonuclears.push_back(make_unique<PhotonuclearInteraction>(group));
+        }
       }
     }
   }

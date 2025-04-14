@@ -522,7 +522,7 @@ class Photonuclear(EqualityMixin):
 
         # Open file and write version
         f = h5py.File(str(path), mode, libver=libver)
-        f.attrs["filetype"] = np.bytes_("data_photo-nuclear")
+        f.attrs["filetype"] = np.bytes_("data_photonuclear")
         if "version" not in f.attrs:
             f.attrs["version"] = np.array(HDF5_VERSION)
 

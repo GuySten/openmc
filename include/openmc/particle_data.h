@@ -152,6 +152,20 @@ struct ElementMicroXS {
 };
 
 //==============================================================================
+//! Cached microscopic photonuclear cross sections for a particular nuclide at the
+//! current energy
+//==============================================================================
+
+struct PhotonuclearMicroXS {
+  int index_grid;         //!< index on photonuclear energy grid
+  double last_E {0.0};    //!< last evaluated energy in [eV]
+  double interp_factor;   //!< interpolation factor on energy grid
+  double disappearance;   //!< microscopic total photon xs
+  double heating;         //!< microscopic heating xs
+  double neutron_prod;     //!< microscopic neutron production xs
+};
+
+//==============================================================================
 // MacroXS contains cached macroscopic cross sections for the material a
 // particle is traveling through
 //==============================================================================
@@ -168,6 +182,7 @@ struct MacroXS {
   double incoherent;      //!< macroscopic incoherent xs
   double photoelectric;   //!< macroscopic photoelectric xs
   double pair_production; //!< macroscopic pair production xs
+  double photonuclear;    //!< macroscopic photonuclear xs
 };
 
 //==============================================================================
@@ -423,6 +438,7 @@ private:
 
   vector<NuclideMicroXS> neutron_xs_;
   vector<ElementMicroXS> photon_xs_;
+  vector<PhotonuclearMicroXS> photonuclear_xs_;
   MacroXS macro_xs_;
   CacheDataMG mg_xs_cache_;
 
@@ -511,6 +527,9 @@ public:
 
   // Microscopic photon cross sections
   ElementMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  
+  // Microscopic photon cross sections
+  PhotonuclearMicroXS& photonuclear_xs(int i) { return photonuclear_xs_[i]; }
 
   // Macroscopic cross sections
   MacroXS& macro_xs() { return macro_xs_; }

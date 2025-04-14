@@ -15,6 +15,7 @@
 #include "openmc/ncrystal_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/physics_common.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -287,6 +288,20 @@ void sample_photon_reaction(Particle& p)
     p.wgt() = 0.0;
     return;
   }
+  // if photonuclear physics is enabled sample if photonuclear reaction happened
+  if (settings::photonuclear_physics) {
+      double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+      if (cutoff > p.macro_xs().photonuclear) {
+        int i_nuclide = sample_photonuclear_nuclide(p);
+        const auto& micro {p.photonuclear_xs(i_nuclide)};
+        const auto& photonuclear {*data::photonuclears[i_nuclide]};
+        p.event() = TallyEvent::ABSORB;
+        p.event_mt() = PAIR_PROD;
+        p.wgt() = 0.0;
+        p.E() = 0.0;
+        return;
+      }
+  }
 
   // Sample element within material
   int i_element = sample_element(p);
@@ -539,6 +554,33 @@ int sample_element(Particle& p)
   // If we made it here, no element was sampled
   p.write_restart();
   fatal_error("Did not sample any element during collision.");
+}
+
+int sample_photonuclear_nuclide(Particle& p)
+{
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * p.macro_xs().photonuclear;
+
+  // Get pointers to elements, densities
+  const auto& mat {model::materials[p.material()]};
+
+  int n = mat->nuclide_.size();
+
+  double prob = 0.0;
+  for (int i = 0; i < n; ++i) {
+    // Get atom density
+    int i_nuclide = mat->nuclide_[i];
+    double atom_density = mat->atom_density_[i];
+
+    // Increment probability to compare to cutoff
+    prob += atom_density * p.photonuclear_xs(i_nuclide).disappearance;
+    if (prob >= cutoff)
+      return i_nuclide;
+  }
+
+  // If we reach here, no nuclide was sampled
+  p.write_restart();
+  throw std::runtime_error {"Did not sample any nuclide during collision."};
 }
 
 Reaction& sample_fission(int i_nuclide, Particle& p)

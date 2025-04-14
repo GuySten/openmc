@@ -106,6 +106,7 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
       break;
     }
     write_attribute(file_id, "photon_transport", settings::photon_transport);
+    write_attribute(file_id, "photonuclear_physics", settings::photonuclear_physics);
     write_dataset(file_id, "n_particles", settings::n_particles);
     write_dataset(file_id, "n_batches", settings::n_batches);
 
@@ -426,6 +427,7 @@ extern "C" int openmc_statepoint_load(const char* filename)
     settings::run_mode = RunMode::EIGENVALUE;
   }
   read_attribute(file_id, "photon_transport", settings::photon_transport);
+  read_attribute(file_id, "photonuclear_physics", settings::photonuclear_physics);
   read_dataset(file_id, "n_particles", settings::n_particles);
   int temp;
   read_dataset(file_id, "n_batches", temp);

@@ -417,6 +417,16 @@ either "false" or "true".
 
   *Default*: false
 
+------------------------------
+``<photonuclear_physics>`` Element
+------------------------------
+
+The ``<photonuclear_physics>`` element determines whether photonuclear physics is
+enabled. This element has no attributes or sub-elements and can be set to
+either "false" or "true".
+
+  *Default*: false
+
 -----------------------
 ``<plot_seed>`` Element
 -----------------------

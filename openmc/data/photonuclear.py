@@ -156,9 +156,9 @@ class PhotonuclearReaction(EqualityMixin):
         group.attrs["redundant"] = 1 if self.redundant else 0
 
         if self.mt in _REACTION_NAME:
-            group.attrs["label"] = np.string_(_REACTION_NAME[self.mt])
+            group.attrs["label"] = np.bytes_(_REACTION_NAME[self.mt])
         else:
-            group.attrs["label"] = np.string_(self.mt)
+            group.attrs["label"] = np.bytes_(self.mt)
 
         dset = group.create_dataset("xs", data=self.xs(energy))
         threshold_idx = getattr(self.xs, "_threshold_idx", 0)
@@ -522,7 +522,7 @@ class Photonuclear(EqualityMixin):
 
         # Open file and write version
         f = h5py.File(str(path), mode, libver=libver)
-        f.attrs["filetype"] = np.string_("data_photo-nuclear")
+        f.attrs["filetype"] = np.bytes_("data_photo-nuclear")
         if "version" not in f.attrs:
             f.attrs["version"] = np.array(HDF5_VERSION)
 

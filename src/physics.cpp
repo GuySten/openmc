@@ -532,7 +532,7 @@ int sample_element(Particle& p)
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
 
-  double prob = 0.0;
+  double prob = cutoff * p.macro_xs().photonuclear / p.macro_xs().total;
   for (int i = 0; i < mat->element_.size(); ++i) {
     // Find atom density
     int i_element = mat->element_[i];

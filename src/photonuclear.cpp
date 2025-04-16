@@ -57,23 +57,29 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
   read_attribute(group, "A", A_);
   read_attribute(group, "metastable", metastable_);
   read_attribute(group, "atomic_weight_ratio", awr_);
+  
+  
 
   // Determine number of energies and read energy grid
   read_dataset(group, "energy", energy_);
   
+  hid_t rxs_group = open_group(group, "reactions");
+  
   // Read disappearance
-  hid_t rgroup = open_group(group, "disappearance");
+  hid_t rgroup = open_group(rxs_group, "reaction_003");
   read_dataset(rgroup, "xs", disappearance_);
-  close_group(rgroup);
+  
 
   // Read heating
-  if (object_exists(group, "heating")) {
-    rgroup = open_group(group, "heating");
+  if (object_exists(rxs_group, "reaction_301")) {
+    rgroup = open_group(rxs_group, "reaction_301");
     read_dataset(rgroup, "xs", heating_);
     close_group(rgroup);
   } else {
     heating_ = xt::zeros_like(energy_);
   }
+  close_group(rgroup);
+  close_group(rxs_group);
 }
 
 PhotonuclearInteraction::~PhotonuclearInteraction()
@@ -86,16 +92,21 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
   int n_grid = energy_.size();
-  double log_E = std::log(p.E());
+  double E = p.E();
   int i_grid;
-  if (log_E <= energy_[0]) {
-    i_grid = 0;
-  } else if (log_E > energy_(n_grid - 1)) {
+  if (E < energy_[0]) {
+    auto& xs {p.photonuclear_xs(index_)};
+    xs.index_grid = -1;
+    xs.heating = 0.0;
+    xs.disappearance = 0.0;
+    xs.last_E = p.E();
+    return;
+  } else if (E > energy_(n_grid - 1)) {
     i_grid = n_grid - 2;
   } else {
     // We use upper_bound_index here because sometimes photons are created with
     // energies that exactly match a grid point
-    i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), log_E);
+    i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), E);
   }
 
   // check for case where two energy points are the same
@@ -103,8 +114,7 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
     ++i_grid;
 
   // calculate interpolation factor
-  double f =
-    (std::exp(log_E) - std::exp(energy_(i_grid))) / (std::exp(energy_(i_grid + 1)) - std::exp(energy_(i_grid)));
+  double f = (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
 
   auto& xs {p.photonuclear_xs(index_)};
   xs.index_grid = i_grid;

@@ -486,7 +486,7 @@ class Photonuclear(EqualityMixin):
 
         heating = PhotonuclearReaction(301)
         heating.xs = Tabulated1D(energy, heating_number * total_xs)
-        heating.redundant = True
+        heating.redundant = False
         data.reactions[301] = heating
 
         # Read each reaction

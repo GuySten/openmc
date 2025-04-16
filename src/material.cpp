@@ -23,6 +23,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -902,6 +903,7 @@ void Material::calculate_photon_xs(Particle& p) const
   p.macro_xs().incoherent = 0.0;
   p.macro_xs().photoelectric = 0.0;
   p.macro_xs().pair_production = 0.0;
+  p.macro_xs().photonuclear = 0.0;
 
   // Add contribution from each nuclide in material
   for (int i = 0; i < nuclide_.size(); ++i) {
@@ -928,7 +930,25 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().coherent += atom_density * micro.coherent;
     p.macro_xs().incoherent += atom_density * micro.incoherent;
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
-    p.macro_xs().pair_production += atom_density * micro.pair_production;
+    p.macro_xs().pair_production += atom_density * micro.pair_production;    
+  }
+  if (settings::photonuclear_physics) {
+    for (int i = 0; i < nuclide_.size(); ++i) {
+      // Get nuclide index
+      int i_nuclide = nuclide_[i];
+      
+      // Calculate microscopic cross section for this nuclide
+      const auto& micro {p.photonuclear_xs(i_nuclide)};
+      if (p.E() != micro.last_E) {
+        data::photonuclears[i_nuclide]->calculate_xs(p);
+      }
+      double atom_density = atom_density_(i);
+      
+      // Add contributions to material macroscopic cross sections
+      p.macro_xs().total += atom_density * micro.disappearance;
+      p.macro_xs().photonuclear += atom_density * micro.disappearance;  
+      
+    }
   }
 }
 

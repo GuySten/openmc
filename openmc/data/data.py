@@ -282,7 +282,7 @@ AVOGADRO = 6.02214076e23
 NEUTRON_MASS = 1.00866491595
 
 # Neutron mass in units of eV/c^2
-MASS_NEUTRON_EV = 939.56542052e6                             
+NEUTRON_MASS_EV = 939.56542052e6                             
 
 # Used in atomic_mass function as a cache
 _ATOMIC_MASS: dict[str, float] = {}

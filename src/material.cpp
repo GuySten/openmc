@@ -936,8 +936,14 @@ void Material::calculate_photon_xs(Particle& p) const
   if (settings::photonuclear_physics &&
       (p.E() >= data::photonuclear_energy_min)) {
     for (int i = 0; i < nuclide_.size(); ++i) {
-      // Get nuclide index
-      int i_nuclide = nuclide_[i];
+      // Get nuclide name
+      auto& name = data::nuclides[nuclide_[i]]->name_;
+
+      // Skip nuclides without photonuclear data
+      if (data::photonuclear_map.find(name) == data::photonuclear_map.end())
+        continue;
+
+      int i_nuclide = data::photonuclear_map[name];
 
       // Calculate microscopic cross section for this nuclide
       const auto& micro {p.photonuclear_xs(i_nuclide)};

@@ -567,7 +567,13 @@ int sample_photonuclear_nuclide(Particle& p)
   double prob = 0.0;
   for (int i = 0; i < n; ++i) {
     // Get atom density
-    int i_nuclide = mat->nuclide_[i];
+    auto& name = data::nuclides[mat->nuclide_[i]]->name_;
+
+    // Skip nuclides without photonuclear data
+    if (data::photonuclear_map.find(name) == data::photonuclear_map.end())
+      continue;
+
+    int i_nuclide = data::photonuclear_map[name];
     double atom_density = mat->atom_density_[i];
 
     // Increment probability to compare to cutoff

@@ -1181,9 +1181,10 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
           LibraryKey key {Library::Type::photonuclear, name};
           const auto& it = data::library_map.find(key);
           if (it == data::library_map.end()) {
-            set_errmsg("Nuclide '" + std::string {name} +
-                       "' is not present in library.");
-            return OPENMC_E_DATA;
+            warning(fmt::format(
+              "Photonuclear data is not present for Nuclide '{}', skipping",
+              name));
+            return 0;
           }
 
           // Get filename for library containing nuclide

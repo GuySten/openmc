@@ -43,8 +43,8 @@ private:
     xt::xtensor<double, 1> r;     //!< Pre-compound fraction
     xt::xtensor<double, 1> a;     //!< Parameterized function
   };
-  
-  bool is_photon_;                       //!< Whether the projectile is a photon
+
+  bool is_photon_;                      //!< Whether the projectile is a photon
   int n_region_;                        //!< Number of interpolation regions
   vector<int> breakpoints_;             //!< Breakpoints between regions
   vector<Interpolation> interpolation_; //!< Interpolation laws

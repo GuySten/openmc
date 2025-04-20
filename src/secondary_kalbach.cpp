@@ -28,7 +28,7 @@ KalbachMann::KalbachMann(hid_t group)
   } else {
     is_photon_ = false;
   }
-  
+
   // Open incoming energy dataset
   hid_t dset = open_dataset(group, "energy");
 
@@ -236,10 +236,11 @@ void KalbachMann::sample(
   }
 
   // Sampled correlated angle from Kalbach-Mann parameters
-  if (is_photon_){
+  if (is_photon_) {
     double T = uniform_distribution(0., 1., seed);
     double sinha = std::sinh(km_a);
-    mu = sinha*((1+T)-2*km_r)/(sinha*T+std::cosh(km_a)-std::exp(km_a*T));
+    mu = sinha * ((1 + T) - 2 * km_r) /
+         (sinha * T + std::cosh(km_a) - std::exp(km_a * T));
   } else {
     if (prn(seed) > km_r) {
       double T = uniform_distribution(-1., 1., seed) * std::sinh(km_a);

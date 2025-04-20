@@ -288,15 +288,16 @@ void sample_photon_reaction(Particle& p)
     p.wgt() = 0.0;
     return;
   }
- 
+
   if (settings::photonuclear_physics) {
     if (p.macro_xs().neutron_prod > 0.0) {
       // Sample nuclide for photonuclear interaction
       int i_nuclide = sample_photonuclear_nuclide(p);
-      sample_secondary_photoneutrons(p,i_nuclide);
+      sample_secondary_photoneutrons(p, i_nuclide);
     }
-    // Adjust weight of photon according to probability that photonuclear interaction did not happen
-    p.wgt() *= 1.0-p.macro_xs().photonuclear/p.macro_xs().total;    
+    // Adjust weight of photon according to probability that photonuclear
+    // interaction did not happen
+    p.wgt() *= 1.0 - p.macro_xs().photonuclear / p.macro_xs().total;
   }
 
   // Sample element within material
@@ -523,7 +524,8 @@ int sample_nuclide(Particle& p)
 int sample_element(Particle& p)
 {
   // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * (p.macro_xs().total-p.macro_xs().photonuclear);
+  double cutoff =
+    prn(p.current_seed()) * (p.macro_xs().total - p.macro_xs().photonuclear);
 
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
@@ -576,7 +578,8 @@ int sample_photonuclear_nuclide(Particle& p)
 
   // If we reach here, no nuclide was sampled
   p.write_restart();
-  throw std::runtime_error {"Did not sample any nuclide for photoneutron production."};
+  throw std::runtime_error {
+    "Did not sample any nuclide for photoneutron production."};
 }
 
 Reaction& sample_fission(int i_nuclide, Particle& p)
@@ -1288,12 +1291,14 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
 void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
 {
   double wgt = p.wgt();
-  wgt *= p.photonuclear_xs(i_nuclide).neutron_prod / p.photonuclear_xs(i_nuclide).total;
+  wgt *= p.photonuclear_xs(i_nuclide).neutron_prod /
+         p.photonuclear_xs(i_nuclide).total;
   wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
-  
+
   // Play russian roulette if survival biasing is turned on
   // and survival normalization is turned off
-  if (settings::survival_biasing && !settings::survival_normalization && wgt < settings::weight_cutoff) {
+  if (settings::survival_biasing && !settings::survival_normalization &&
+      wgt < settings::weight_cutoff) {
     if (settings::weight_survive * prn(p.current_seed()) < wgt) {
       wgt = settings::weight_survive;
     } else {
@@ -1311,21 +1316,23 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
   double E;
   double mu;
   rx->products_[i_product].sample(E_in, E, mu, p.current_seed());
-  
+
   // if scattering system is in center-of-mass, transfer cosine of scattering
   // angle and outgoing energy from CM to LAB
   if (rx->scatter_in_cm_) {
-    auto &nuc = data::photonuclears[i_nuclide];
+    auto& nuc = data::photonuclears[i_nuclide];
     double E_cm = E;
     double mu_cm = mu;
 
     // determine outgoing energy in lab
     double A = nuc->awr_;
-    E = E_cm + 1/A*std::sqrt(2*E_cm/MASS_NEUTRON_EV)*E_in*mu_cm+(E_in*E_in)/(2*MASS_NEUTRON_EV*A*A);
+    E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
+        (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
 
     // determine outgoing angle in lab
-    mu = mu_cm * std::sqrt(E_cm / E) + E_in / ( A * std::sqrt(2*MASS_NEUTRON_EV*E) );
-    
+    mu = mu_cm * std::sqrt(E_cm / E) +
+         E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
+
     // Because of floating-point roundoff, it may be possible for mu to be
     // outside of the range [-1,1). In these cases, we just set mu to exactly -1
     // or 1
@@ -1333,7 +1340,6 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
       mu = std::copysign(1.0, mu);
   }
 
-  
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   // Create the secondary neutron

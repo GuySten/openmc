@@ -582,9 +582,9 @@ void read_settings_xml(pugi::xml_node root)
     }
     // Check for photonuclear physics
     if (check_for_node(root, "photonuclear_physics")) {
-        photonuclear_physics = get_node_value_bool(root, "photonuclear_physics");
+      photonuclear_physics = get_node_value_bool(root, "photonuclear_physics");
     }
-  } 
+  }
 
   // Number of bins for logarithmic grid
   if (check_for_node(root, "log_grid_bins")) {

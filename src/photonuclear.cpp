@@ -43,8 +43,7 @@ double photonuclear_energy_min;
 // PhotonuclearReaction implementation
 //==============================================================================
 
-PhotonuclearReaction::PhotonuclearReaction(
-  hid_t group, std::string name)
+PhotonuclearReaction::PhotonuclearReaction(hid_t group, std::string name)
 {
   read_attribute(group, "Q_value", q_value_);
   read_attribute(group, "mt", mt_);
@@ -70,7 +69,7 @@ PhotonuclearReaction::PhotonuclearReaction(
   // Read cross section values
   read_dataset(dset, xs_.value);
   close_dataset(dset);
-  
+
   // Read products
   for (const auto& name : group_names(group)) {
     if (name.rfind("product_", 0) == 0) {
@@ -163,7 +162,6 @@ double PhotonuclearReaction::collapse_rate(span<const double> energy,
   return xs_flux_sum;
 }
 
-
 //==============================================================================
 // PhotonuclearInteraction implementation
 //==============================================================================
@@ -177,7 +175,7 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
 
   // Set index of element in global vector
   index_ = data::photonuclears.size();
-  
+
   // Get name of nuclide from group, removing leading '/'
   name_ = object_name(group).substr(1);
   data::photonuclear_map[name_] = index_;
@@ -186,20 +184,17 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
   read_attribute(group, "A", A_);
   read_attribute(group, "metastable", metastable_);
   read_attribute(group, "atomic_weight_ratio", awr_);
-  
-  
 
   // Determine number of energies and read energy grid
   read_dataset(group, "energy", energy_);
-  
+
   hid_t rxs_group = open_group(group, "reactions");
-  
+
   // Read reactions
   for (auto name : group_names(rxs_group)) {
     if (starts_with(name, "reaction_")) {
       hid_t rx_group = open_group(rxs_group, name.c_str());
-      reactions_.push_back(
-        make_unique<PhotonuclearReaction>(rx_group, name_));
+      reactions_.push_back(make_unique<PhotonuclearReaction>(rx_group, name_));
       close_group(rx_group);
     }
   }
@@ -208,17 +203,17 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
 }
 
 void PhotonuclearInteraction::create_derived()
-{ 
+{
   // Allocate and initialize cross section
-  this->xs_ = xt::xtensor<double, 2>({energy_.size(),3}, 0.0);
-  
+  this->xs_ = xt::xtensor<double, 2>({energy_.size(), 3}, 0.0);
+
   for (int i = 0; i < reactions_.size(); ++i) {
-    
+
     const auto& rx {reactions_[i]};
     int n = rx->xs_.value.size();
     int j = rx->xs_.threshold;
     auto xs = xt::adapt(rx->xs_.value);
-    auto nprod = xt::view(xs_, xt::range(j,j+n), XS_NEUTRON_PROD);
+    auto nprod = xt::view(xs_, xt::range(j, j + n), XS_NEUTRON_PROD);
     for (const auto& p : rx->products_) {
       if (p.particle_ == ParticleType::neutron) {
         for (int k = 0; k < n; ++k) {
@@ -227,17 +222,17 @@ void PhotonuclearInteraction::create_derived()
         }
       }
     }
-    if (rx->mt_==301) {
-      auto heating = xt::view(xs_, xt::range(j,j+n), XS_HEATING);
+    if (rx->mt_ == 301) {
+      auto heating = xt::view(xs_, xt::range(j, j + n), XS_HEATING);
       heating += xs;
     }
     // Skip redundant reactions
     if (rx->redundant_)
       continue;
-    
+
     // Add contribution to total cross section
-    auto total = xt::view(xs_, xt::range(j,j+n), XS_TOTAL);
-    total += xs;  
+    auto total = xt::view(xs_, xt::range(j, j + n), XS_TOTAL);
+    total += xs;
   }
 }
 
@@ -284,10 +279,12 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
   xs.total = (1 - f) * xs_(i_grid, XS_TOTAL) + f * xs_(i_grid + 1, XS_TOTAL);
 
   // Calculate microscopic heating cross section
-  xs.heating = (1 - f) * xs_(i_grid, XS_HEATING) + f * xs_(i_grid + 1, XS_HEATING);
-  
+  xs.heating =
+    (1 - f) * xs_(i_grid, XS_HEATING) + f * xs_(i_grid + 1, XS_HEATING);
+
   // Calculate microscopic nuclide neutron production cross section
-  xs.neutron_prod = (1 - f) * xs_(i_grid, XS_NEUTRON_PROD) + f * xs_(i_grid + 1, XS_NEUTRON_PROD);
+  xs.neutron_prod = (1 - f) * xs_(i_grid, XS_NEUTRON_PROD) +
+                    f * xs_(i_grid + 1, XS_NEUTRON_PROD);
 
   xs.last_E = p.E();
 }
@@ -295,7 +292,6 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
 //==============================================================================
 // Non-member functions
 //==============================================================================
-
 
 void free_memory_photonuclear()
 {

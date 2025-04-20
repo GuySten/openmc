@@ -152,17 +152,17 @@ struct ElementMicroXS {
 };
 
 //==============================================================================
-//! Cached microscopic photonuclear cross sections for a particular nuclide at the
-//! current energy
+//! Cached microscopic photonuclear cross sections for a particular nuclide at
+//! the current energy
 //==============================================================================
 
 struct PhotonuclearMicroXS {
-  int index_grid;         //!< index on photonuclear energy grid
-  double last_E {0.0};    //!< last evaluated energy in [eV]
-  double interp_factor;   //!< interpolation factor on energy grid
-  double total;           //!< microscopic total photonuclear xs
-  double heating;         //!< microscopic heating xs
-  double neutron_prod;    //!< microscopic neutron production xs
+  int index_grid;       //!< index on photonuclear energy grid
+  double last_E {0.0};  //!< last evaluated energy in [eV]
+  double interp_factor; //!< interpolation factor on energy grid
+  double total;         //!< microscopic total photonuclear xs
+  double heating;       //!< microscopic heating xs
+  double neutron_prod;  //!< microscopic neutron production xs
 };
 
 //==============================================================================
@@ -348,20 +348,47 @@ public:
 
 #ifdef DAGMC
   // DagMC state variables
-  moab::DagMC::RayHistory& history() { return history_; }
-  Direction& last_dir() { return last_dir_; }
+  moab::DagMC::RayHistory& history()
+  {
+    return history_;
+  }
+  Direction& last_dir()
+  {
+    return last_dir_;
+  }
 #endif
 
   // material of current and last cell
-  int& material() { return material_; }
-  const int& material() const { return material_; }
-  int& material_last() { return material_last_; }
-  const int& material_last() const { return material_last_; }
+  int& material()
+  {
+    return material_;
+  }
+  const int& material() const
+  {
+    return material_;
+  }
+  int& material_last()
+  {
+    return material_last_;
+  }
+  const int& material_last() const
+  {
+    return material_last_;
+  }
 
   // temperature of current and last cell
-  double& sqrtkT() { return sqrtkT_; }
-  const double& sqrtkT() const { return sqrtkT_; }
-  double& sqrtkT_last() { return sqrtkT_last_; }
+  double& sqrtkT()
+  {
+    return sqrtkT_;
+  }
+  const double& sqrtkT() const
+  {
+    return sqrtkT_;
+  }
+  double& sqrtkT_last()
+  {
+    return sqrtkT_last_;
+  }
 
 private:
   int64_t id_ {-1}; //!< Unique ID
@@ -528,7 +555,7 @@ public:
 
   // Microscopic photon cross sections
   ElementMicroXS& photon_xs(int i) { return photon_xs_[i]; }
-  
+
   // Microscopic photon cross sections
   PhotonuclearMicroXS& photonuclear_xs(int i) { return photonuclear_xs_[i]; }
 

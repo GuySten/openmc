@@ -288,19 +288,15 @@ void sample_photon_reaction(Particle& p)
     p.wgt() = 0.0;
     return;
   }
-  // if photonuclear physics is enabled sample if photonuclear reaction happened
+ 
   if (settings::photonuclear_physics) {
-      double cutoff = prn(p.current_seed()) * p.macro_xs().total;
-      if (cutoff > p.macro_xs().photonuclear) {
-        int i_nuclide = sample_photonuclear_nuclide(p);
-        const auto& micro {p.photonuclear_xs(i_nuclide)};
-        const auto& photonuclear {*data::photonuclears[i_nuclide]};
-        p.event() = TallyEvent::ABSORB;
-        p.event_mt() = PAIR_PROD;
-        p.wgt() = 0.0;
-        p.E() = 0.0;
-        return;
-      }
+    if (p.macro_xs().neutron_prod > 0.0) {
+      // Sample nuclide for photonuclear interaction
+      int i_nuclide = sample_photonuclear_nuclide(p);
+      sample_secondary_photoneutrons(p,i_nuclide);
+    }
+    // Adjust weight of photon according to probability that photonuclear interaction did not happen
+    p.wgt() *= 1.0-p.macro_xs().photonuclear/p.macro_xs().total;    
   }
 
   // Sample element within material
@@ -527,12 +523,12 @@ int sample_nuclide(Particle& p)
 int sample_element(Particle& p)
 {
   // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+  double cutoff = prn(p.current_seed()) * (p.macro_xs().total-p.macro_xs().photonuclear);
 
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
 
-  double prob = cutoff * p.macro_xs().photonuclear / p.macro_xs().total;
+  double prob = 0.0;
   for (int i = 0; i < mat->element_.size(); ++i) {
     // Find atom density
     int i_element = mat->element_[i];
@@ -559,7 +555,7 @@ int sample_element(Particle& p)
 int sample_photonuclear_nuclide(Particle& p)
 {
   // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().photonuclear;
+  double cutoff = prn(p.current_seed()) * p.macro_xs().neutron_prod;
 
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
@@ -573,14 +569,14 @@ int sample_photonuclear_nuclide(Particle& p)
     double atom_density = mat->atom_density_[i];
 
     // Increment probability to compare to cutoff
-    prob += atom_density * p.photonuclear_xs(i_nuclide).disappearance;
+    prob += atom_density * p.photonuclear_xs(i_nuclide).neutron_prod;
     if (prob >= cutoff)
       return i_nuclide;
   }
 
   // If we reach here, no nuclide was sampled
   p.write_restart();
-  throw std::runtime_error {"Did not sample any nuclide during collision."};
+  throw std::runtime_error {"Did not sample any nuclide for photoneutron production."};
 }
 
 Reaction& sample_fission(int i_nuclide, Particle& p)
@@ -667,6 +663,43 @@ void sample_photon_product(
       }
     }
   }
+}
+
+void sample_photoneutron_product(
+  int i_nuclide, Particle& p, int* i_rx, int* i_product)
+{
+  // Get grid index and interpolation factor and sample neutron production cdf
+  const auto& micro = p.photonuclear_xs(i_nuclide);
+  double cutoff = prn(p.current_seed()) * micro.neutron_prod;
+  double prob = 0.0;
+
+  // Loop through each reaction type
+  const auto& nuc {data::photonuclears[i_nuclide]};
+  for (int i = 0; i < nuc->reactions_.size(); ++i) {
+    // Evaluate photonuclear cross section
+    const auto& rx = nuc->reactions_[i];
+    double xs = rx->xs(micro);
+
+    // if cross section is zero for this reaction, skip it
+    if (xs == 0.0)
+      continue;
+
+    for (int j = 0; j < rx->products_.size(); ++j) {
+      if (rx->products_[j].particle_ == ParticleType::neutron) {
+
+        // add to cumulative probability
+        prob += (*rx->products_[j].yield_)(p.E()) * xs;
+
+        *i_rx = i;
+        *i_product = j;
+        if (prob > cutoff)
+          return;
+      }
+    }
+  }
+  // If we made it here, no product was sampled
+  p.write_restart();
+  fatal_error("Did not sample any photoneutron product.");
 }
 
 void absorption(Particle& p, int i_nuclide)
@@ -1250,6 +1283,61 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
         rx->products_[i_product].parent_nuclide_;
     }
   }
+}
+
+void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
+{
+  double wgt = p.wgt();
+  wgt *= p.photonuclear_xs(i_nuclide).neutron_prod / p.photonuclear_xs(i_nuclide).total;
+  wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
+  
+  // Play russian roulette if survival biasing is turned on
+  // and survival normalization is turned off
+  if (settings::survival_biasing && !settings::survival_normalization && wgt < settings::weight_cutoff) {
+    if (settings::weight_survive * prn(p.current_seed()) < wgt) {
+      wgt = settings::weight_survive;
+    } else {
+      return;
+    }
+  }
+
+  // Sample the reaction and product
+  double E_in = p.E();
+  int i_rx;
+  int i_product;
+  sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
+  // Sample the outgoing energy and angle
+  const auto& rx = data::photonuclears[i_nuclide]->reactions_[i_rx];
+  double E;
+  double mu;
+  rx->products_[i_product].sample(E_in, E, mu, p.current_seed());
+  
+  // if scattering system is in center-of-mass, transfer cosine of scattering
+  // angle and outgoing energy from CM to LAB
+  if (rx->scatter_in_cm_) {
+    auto &nuc = data::photonuclears[i_nuclide];
+    double E_cm = E;
+    double mu_cm = mu;
+
+    // determine outgoing energy in lab
+    double A = nuc->awr_;
+    E = E_cm + 1/A*std::sqrt(2*E_cm/MASS_NEUTRON_EV)*E_in*mu_cm+(E_in*E_in)/(2*MASS_NEUTRON_EV*A*A);
+
+    // determine outgoing angle in lab
+    mu = mu_cm * std::sqrt(E_cm / E) + E_in / ( A * std::sqrt(2*MASS_NEUTRON_EV*E) );
+    
+    // Because of floating-point roundoff, it may be possible for mu to be
+    // outside of the range [-1,1). In these cases, we just set mu to exactly -1
+    // or 1
+    if (std::abs(mu) > 1.0)
+      mu = std::copysign(1.0, mu);
+  }
+
+  
+  // Sample the new direction
+  Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+  // Create the secondary neutron
+  bool created_neutron = p.create_secondary(wgt, u, E, ParticleType::neutron);
 }
 
 } // namespace openmc

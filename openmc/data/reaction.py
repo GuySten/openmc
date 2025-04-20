@@ -163,11 +163,11 @@ def _get_products(ev, mt):
                     )
 
                 zat = ev.target["atomic_number"] * 1000 + ev.target["mass_number"]
-                projectile_mass = ev.projectile["mass"]
+                projectile_za = ev.projectile["atomic_number"] * 1000 + ev.projectile["mass_number"]
                 p.distribution = [KalbachMann.from_endf(file_obj,
                                                         za,
                                                         zat,
-                                                        projectile_mass)]
+                                                        projectile_za)]
 
         elif law == 2:
             # Discrete two-body scattering

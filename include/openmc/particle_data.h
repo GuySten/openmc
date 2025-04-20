@@ -160,9 +160,9 @@ struct PhotonuclearMicroXS {
   int index_grid;         //!< index on photonuclear energy grid
   double last_E {0.0};    //!< last evaluated energy in [eV]
   double interp_factor;   //!< interpolation factor on energy grid
-  double disappearance;   //!< microscopic total photon xs
+  double total;           //!< microscopic total photonuclear xs
   double heating;         //!< microscopic heating xs
-  double neutron_prod;     //!< microscopic neutron production xs
+  double neutron_prod;    //!< microscopic neutron production xs
 };
 
 //==============================================================================
@@ -183,6 +183,7 @@ struct MacroXS {
   double photoelectric;   //!< macroscopic photoelectric xs
   double pair_production; //!< macroscopic pair production xs
   double photonuclear;    //!< macroscopic photonuclear xs
+  double neutron_prod;    //!< macroscopic photonuclear neutron production xs
 };
 
 //==============================================================================

@@ -904,6 +904,7 @@ void Material::calculate_photon_xs(Particle& p) const
   p.macro_xs().photoelectric = 0.0;
   p.macro_xs().pair_production = 0.0;
   p.macro_xs().photonuclear = 0.0;
+  p.macro_xs().neutron_prod = 0.0;
 
   // Add contribution from each nuclide in material
   for (int i = 0; i < nuclide_.size(); ++i) {
@@ -932,7 +933,7 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
     p.macro_xs().pair_production += atom_density * micro.pair_production;    
   }
-  if (settings::photonuclear_physics) {
+  if (settings::photonuclear_physics && (p.E() >= data::photonuclear_energy_min)) {
     for (int i = 0; i < nuclide_.size(); ++i) {
       // Get nuclide index
       int i_nuclide = nuclide_[i];
@@ -944,11 +945,12 @@ void Material::calculate_photon_xs(Particle& p) const
       }
       double atom_density = atom_density_(i);
       
-      // Add contributions to material macroscopic cross sections
-      p.macro_xs().total += atom_density * micro.disappearance;
-      p.macro_xs().photonuclear += atom_density * micro.disappearance;  
-      
+      // Add contributions to material photonuclear macroscopic cross section
+      p.macro_xs().photonuclear += atom_density * micro.total;
+      p.macro_xs().neutron_prod += atom_density * micro.neutron_prod;
     }
+    // Update total macroscopic cross section according to macroscopic photonuclear cross section
+    p.macro_xs().total += p.macro_xs().photonuclear;
   }
 }
 

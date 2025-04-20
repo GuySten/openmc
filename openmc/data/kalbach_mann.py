@@ -9,7 +9,7 @@ from openmc.mixin import EqualityMixin
 from openmc.stats import Tabular, Univariate, Discrete, Mixture
 from .function import Tabulated1D, INTERPOLATION_SCHEME
 from .angle_energy import AngleEnergy
-from .data import EV_PER_MEV
+from .data import EV_PER_MEV, NEUTRON_MASS_EV
 from .endf import get_list_record, get_tab2_record
 
 
@@ -210,7 +210,7 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
         # or ENDF-6 Formats Manual section 6.2.3.2
         slope_n = kalbach_slope(energy_projectile, energy_emitted, 1,
                   za_emitted, za_target)
-        return slope_n * np.sqrt(0.5*energy_projectile/939.56542194e6)*np.minimum(4,np.maximum(1,9.3/np.sqrt(energy_emitted*1e-6))) 
+        return slope_n * np.sqrt(0.5*energy_projectile/NEUTRON_MASS_EV)*np.minimum(4,np.maximum(1,9.3/np.sqrt(energy_emitted*1e-6))) 
         
     # Special handling of elemental carbon
     if za_emitted == 6000:

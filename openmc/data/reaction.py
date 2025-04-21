@@ -163,7 +163,12 @@ def _get_products(ev, mt):
                     )
 
                 zat = ev.target["atomic_number"] * 1000 + ev.target["mass_number"]
-                projectile_za = ev.projectile["atomic_number"] * 1000 + ev.projectile["mass_number"]
+                if ev.projectile['mass'] == 0.0:
+                    projectile_za = 0
+                elif np.isclose(ev.projectile['mass'], 1.0, atol=1.0e-12, rtol=0.):
+                    projectile_za = 1
+                else:
+                    raise NotImplementedError('Unknown projectile')
                 p.distribution = [KalbachMann.from_endf(file_obj,
                                                         za,
                                                         zat,

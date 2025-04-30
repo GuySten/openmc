@@ -2,6 +2,8 @@
 
 #include "openmc/constants.h"
 #include "openmc/material.h"
+#include "openmc/math_functions.h"
+#include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
@@ -93,6 +95,7 @@ void thick_target_bremsstrahlung(Particle& p, double* E_lost)
     // Maximum value of the CDF
     c_max = mat->cdf(i_e, i_e);
   }
+  double E = p.E();  
 
   // Sample the energies of the emitted photons
   for (int i = 0; i < n; ++i) {
@@ -110,10 +113,21 @@ void thick_target_bremsstrahlung(Particle& p, double* E_lost)
     double a = std::log(p_r / p_l) / (w_r - w_l) + 1.0;
     double w = std::exp(w_l) *
                std::pow(a * (c - c_l) / (std::exp(w_l) * p_l) + 1.0, 1.0 / a);
-
+    
+    // Sample photon direction
+    double mu_cm = uniform_distribution(-1.0, 1.0, p.current_seed());
+    if (prn(p.current_seed())<0.25) {
+      mu_cm = std::cbrt(mu_cm);
+    }
+    double beta = std::sqrt(E * (E + 2.0 * MASS_ELECTRON_EV) /
+                         ((E + MASS_ELECTRON_EV) * (E + MASS_ELECTRON_EV)));
+    double mu = (mu_cm+beta)/(1.0+beta*mu_cm);
+    E -= w;
+    Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+    
     if (w > settings::energy_cutoff[photon]) {
       // Create secondary photon
-      p.create_secondary(p.wgt(), p.u(), w, ParticleType::photon);
+      p.create_secondary(p.wgt(), u, w, ParticleType::photon);
       *E_lost += w;
     }
   }

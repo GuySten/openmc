@@ -454,7 +454,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy distribution
 
         """
-        is_photon = group.attrs.get("is_photon", False)
+        is_photon = bool(group.attrs.get("is_photon", False))
         interp_data = group['energy'].attrs['interpolation']
         energy_breakpoints = interp_data[0, :]
         energy_interpolation = interp_data[1, :]
@@ -535,7 +535,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        is_photon = (ace.data_type.value == 'u')
+        is_photon = bool(ace.data_type.value == 'u')
         # Read number of interpolation regions and incoming energies
         n_regions = int(ace.xss[idx])
         n_energy_in = int(ace.xss[idx + 1 + 2*n_regions])
@@ -637,7 +637,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        is_photon = (za_projectile==0)
+        is_photon = bool(za_projectile==0)
         params, tab2 = get_tab2_record(file_obj)
         lep = params[3]
         ne = params[5]

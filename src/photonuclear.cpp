@@ -218,7 +218,8 @@ void PhotonuclearInteraction::create_derived()
       if (p.particle_ == ParticleType::neutron) {
         for (int k = 0; k < n; ++k) {
           double E = energy_[k];
-          nprod[k] += xs[k] * (*p.yield_)(E);
+          if ((*p.yield_)(E)>0.0)
+            nprod[k] += xs[k];
         }
       }
     }

@@ -697,11 +697,13 @@ void sample_photoneutron_product(
       if (rx->products_[j].particle_ == ParticleType::neutron) {
 
         // add to cumulative probability
-        prob += (*rx->products_[j].yield_)(p.E()) * xs;
-
+        if ((*rx->products_[j].yield_)(p.E())<=0.0)
+          continue;
+          
+        prob += xs;
         *i_rx = i;
         *i_product = j;
-        if (prob > cutoff)
+        if (prob >= cutoff)
           return;
       }
     }
@@ -1301,6 +1303,16 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
          p.photonuclear_xs(i_nuclide).total;
   wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
 
+  // Sample the reaction and product
+  int i_rx;
+  int i_product;
+  sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
+  
+  const auto& rx = data::photonuclears[i_nuclide]->reactions_[i_rx];
+  const auto& product = rx->products_[i_product];
+  
+  wgt *= (*product.yield_)(p.E());
+
   // Play russian roulette if survival biasing is turned on
   // and survival normalization is turned off
   if (settings::survival_biasing && !settings::survival_normalization &&
@@ -1312,16 +1324,11 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
     }
   }
 
-  // Sample the reaction and product
-  double E_in = p.E();
-  int i_rx;
-  int i_product;
-  sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
   // Sample the outgoing energy and angle
-  const auto& rx = data::photonuclears[i_nuclide]->reactions_[i_rx];
+  double E_in = p.E();
   double E;
   double mu;
-  rx->products_[i_product].sample(E_in, E, mu, p.current_seed());
+  product.sample(E_in, E, mu, p.current_seed());
 
   // if scattering system is in center-of-mass, transfer cosine of scattering
   // angle and outgoing energy from CM to LAB
@@ -1344,12 +1351,14 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
     // or 1
     if (std::abs(mu) > 1.0)
       mu = std::copysign(1.0, mu);
+      
   }
 
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+  
   // Create the secondary neutron
-  bool created_neutron = p.create_secondary(wgt, u, E, ParticleType::neutron);
+  p.create_secondary(wgt, u, E, ParticleType::neutron);
 }
 
 } // namespace openmc

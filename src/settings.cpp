@@ -72,6 +72,7 @@ bool surf_mcpl_write {false};
 bool surf_source_read {false};
 bool survival_biasing {false};
 bool survival_normalization {false};
+bool tag_secondary_photons {false};
 bool temperature_multipole {false};
 bool trigger_on {false};
 bool trigger_predict {false};

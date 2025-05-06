@@ -6,6 +6,7 @@
 
 #include "openmc/capi.h"
 #include "openmc/chain.h"
+#include "openmc/nuclide.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/xml_interface.h"
@@ -20,11 +21,15 @@ void ParentNuclideFilter::from_xml(pugi::xml_node node)
 {
   nuclides_ = get_node_array<std::string>(node, "bins");
 
-  // Convert nuclides to indices in data::chain_nuclides
+  settings::tag_secondary_photons = true;
+
+  // Convert nuclides to indices
   std::vector<int> bins;
+  const auto& map =
+    (settings::use_decay_photons) ? data::chain_nuclide_map : data::nuclide_map;
   for (const auto& nuclide : nuclides_) {
-    auto it = data::chain_nuclide_map.find(nuclide);
-    if (it != data::chain_nuclide_map.end()) {
+    auto it = map.find(nuclide);
+    if (it != map.end()) {
       bins.push_back(it->second);
     } else {
       // The default value of parent_nuclide is -1, so to prevent a score to

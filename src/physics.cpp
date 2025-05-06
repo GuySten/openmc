@@ -1203,9 +1203,13 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     bool created_photon = p.create_secondary(wgt, u, E, ParticleType::photon);
 
     // Tag secondary particle with parent nuclide
-    if (created_photon && settings::use_decay_photons) {
-      p.secondary_bank().back().parent_nuclide =
-        rx->products_[i_product].parent_nuclide_;
+    if (created_photon && settings::tag_secondary_photons) {
+      if (settings::use_decay_photons) {
+        p.secondary_bank().back().parent_nuclide =
+          rx->products_[i_product].parent_nuclide_;
+      } else {
+        p.secondary_bank().back().parent_nuclide = i_nuclide;
+      }
     }
   }
 }

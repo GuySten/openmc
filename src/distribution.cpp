@@ -135,6 +135,17 @@ double Discrete::sample(uint64_t* seed) const
   return x_[di_.sample(seed)];
 }
 
+double Discrete::integral(double x0, double x1) const
+{
+  double integral = 0.0;
+  size_t n = x_.size();
+  for (int i = 0; i < n; ++i) {
+    if ((x0 <= x_[i]) && (x_[i] <= x1))
+      integral += this->prob()[i];
+  }
+  return integral;
+}
+
 //==============================================================================
 // Uniform implementation
 //==============================================================================
@@ -154,6 +165,11 @@ Uniform::Uniform(pugi::xml_node node)
 double Uniform::sample(uint64_t* seed) const
 {
   return a_ + prn(seed) * (b_ - a_);
+}
+
+double Uniform::integral(double x0, double x1) const
+{
+  return (std::min(x1, b_) - std::max(a_, x0)) / (b_ - a_);
 }
 
 //==============================================================================
@@ -182,6 +198,14 @@ double PowerLaw::sample(uint64_t* seed) const
   return std::pow(offset_ + prn(seed) * span_, ninv_);
 }
 
+double PowerLaw::integral(double x0, double x1) const
+{
+  double a = std::pow(offset_, ninv_);
+  double b = std::pow(span_ + offset_, ninv_);
+  return (std::pow(std::min(x1, b), ninv_) - std::pow(std::max(a, x0), ninv_)) /
+         span_;
+}
+
 //==============================================================================
 // Maxwell implementation
 //==============================================================================
@@ -194,6 +218,15 @@ Maxwell::Maxwell(pugi::xml_node node)
 double Maxwell::sample(uint64_t* seed) const
 {
   return maxwell_spectrum(theta_, seed);
+}
+
+double Maxwell::integral(double x0, double x1) const
+{
+  double y0 = std::sqrt(std::max(x0, 0.0) / theta_);
+  double y1 = std::sqrt(x1 / theta_);
+  const double ispi = 0.56418958354775628694807945156; // 1 / sqrt(pi)
+  return ((std::erf(y1) - std::erf(y0)) -
+          2.0 * ispi * (y1 * std::exp(-y1 * y1) - y0 * std::exp(-y0 * y0)));
 }
 
 //==============================================================================
@@ -216,6 +249,21 @@ double Watt::sample(uint64_t* seed) const
   return watt_spectrum(a_, b_, seed);
 }
 
+double Watt::integral(double x0, double x1) const
+{
+  double c = std::sqrt(a_ * b_) / 2.0;
+  double y0 = std::sqrt(std::max(x0, 0.0) / a_);
+  double y1 = std::sqrt(x1 / a_);
+  const double ispi = 0.56418958354775628694807945156; // 1 / sqrt(pi)
+  return 0.5 * ((std::erf(y1 + c) - std::erf(y0 + c)) +
+                 (std::erf(y1 - c) - std::erf(y0 - c)) +
+                 ispi / c *
+                   ((std::exp(-(c + y1) * (c + y1)) -
+                      std::exp(-(c + y0) * (c + y0))) -
+                     (std::exp(-(c - y1) * (c - y1)) -
+                       std::exp(-(c - y0) * (c - y0)))));
+}
+
 //==============================================================================
 // Normal implementation
 //==============================================================================
@@ -234,6 +282,13 @@ Normal::Normal(pugi::xml_node node)
 double Normal::sample(uint64_t* seed) const
 {
   return normal_variate(mean_value_, std_dev_, seed);
+}
+
+double Normal::integral(double x0, double x1) const
+{
+  double y0 = (x0 - mean_value_) / (std::sqrt(2.0) * std_dev_);
+  double y1 = (x1 - mean_value_) / (std::sqrt(2.0) * std_dev_);
+  return 0.5 * (std::erf(y1) - std::erf(y0));
 }
 
 //==============================================================================
@@ -356,6 +411,48 @@ double Tabular::sample(uint64_t* seed) const
   }
 }
 
+double Tabular::integral(double x0, double x1) const
+{
+
+  double integral = 0.0;
+
+  std::size_t n = c_.size();
+
+  double c_i = c_[0];
+  int i;
+  for (i = 0; i < n - 1; ++i) {
+    if (x0 < x_[i + 1])
+      break;
+    c_i = c_[i + 1];
+  }
+
+  double c_j = c_[0];
+  int j;
+  for (j = 0; j < n - 1; ++j) {
+    if (x1 < x_[j + 1])
+      break;
+    c_j = c_[j + 1];
+  }
+
+  integral += c_j - c_i;
+
+  if (interp_ == Interpolation::histogram) {
+    // Histogram interpolation
+    integral -= (c_[i + 1] - c_[i]) * (x0 - x_[i]) / (x_[i + 1] - x_[i]);
+    integral += (c_[j + 1] - c_[j]) * (x1 - x_[j]) / (x_[j + 1] - x_[j]);
+  } else {
+    // Linear-linear interpolation
+    double m0 = (p_[i + 1] - p_[i]) / (x_[i + 1] - x_[i]);
+    double m1 = (p_[j + 1] - p_[j]) / (x_[j + 1] - x_[j]);
+
+    integral -= (p_[i] - m0 * x_[i]) * (x0 - x_[i]) +
+                m0 / 2 * (x0 - x_[i]) * (x0 + x_[i]);
+    integral += (p_[j] - m1 * x_[j]) * (x1 - x_[j]) +
+                m1 / 2 * (x1 - x_[j]) * (x1 + x_[j]);
+  }
+  return integral;
+}
+
 //==============================================================================
 // Equiprobable implementation
 //==============================================================================
@@ -419,6 +516,15 @@ double Mixture::sample(uint64_t* seed) const
 
   // Sample the chosen distribution
   return it->second->sample(seed);
+}
+
+double Mixture::integral(double x0, double x1) const
+{
+  double integral = 0.0;
+  for (auto& pair : distribution_) {
+    integral += pair.first * pair.second->integral(x0, x1);
+  }
+  return integral;
 }
 
 //==============================================================================

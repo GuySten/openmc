@@ -24,9 +24,13 @@ public:
   virtual ~Distribution() = default;
   virtual double sample(uint64_t* seed) const = 0;
 
-  //! Return integral of distribution
-  //! \return Integral of distribution
+  //! Return integral of distribution over whole range
+  //! \return Integral of distribution over whole range
   virtual double integral() const { return 1.0; };
+
+  //! Return integral of distribution over finite interval
+  //! \return Integral of distribution over finite interval
+  virtual double integral(double x0, double x1) const = 0;
 };
 
 using UPtrDist = unique_ptr<Distribution>;
@@ -87,6 +91,8 @@ public:
 
   double integral() const override { return di_.integral(); };
 
+  double integral(double x0, double x1) const override;
+
   // Properties
   const vector<double>& x() const { return x_; }
   const vector<double>& prob() const { return di_.prob(); }
@@ -112,6 +118,8 @@ public:
   //! \return Sampled value
   double sample(uint64_t* seed) const override;
 
+  double integral(double x0, double x1) const override;
+
   double a() const { return a_; }
   double b() const { return b_; }
 
@@ -135,6 +143,8 @@ public:
   //! \param seed Pseudorandom number seed pointer
   //! \return Sampled value
   double sample(uint64_t* seed) const override;
+
+  double integral(double x0, double x1) const override;
 
   double a() const { return std::pow(offset_, ninv_); }
   double b() const { return std::pow(offset_ + span_, ninv_); }
@@ -161,6 +171,8 @@ public:
   //! \return Sampled value
   double sample(uint64_t* seed) const override;
 
+  double integral(double x0, double x1) const override;
+
   double theta() const { return theta_; }
 
 private:
@@ -180,6 +192,8 @@ public:
   //! \param seed Pseudorandom number seed pointer
   //! \return Sampled value
   double sample(uint64_t* seed) const override;
+
+  double integral(double x0, double x1) const override;
 
   double a() const { return a_; }
   double b() const { return b_; }
@@ -204,6 +218,8 @@ public:
   //! \param seed Pseudorandom number seed pointer
   //! \return Sampled value
   double sample(uint64_t* seed) const override;
+
+  double integral(double x0, double x1) const override;
 
   double mean_value() const { return mean_value_; }
   double std_dev() const { return std_dev_; }
@@ -234,6 +250,7 @@ public:
   const vector<double>& p() const { return p_; }
   Interpolation interp() const { return interp_; }
   double integral() const override { return integral_; };
+  double integral(double x0, double x1) const override;
 
 private:
   vector<double> x_;     //!< tabulated independent variable
@@ -284,6 +301,8 @@ public:
   double sample(uint64_t* seed) const override;
 
   double integral() const override { return integral_; }
+
+  double integral(double x0, double x1) const override;
 
 private:
   // Storrage for probability + distribution

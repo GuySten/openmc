@@ -317,6 +317,19 @@ IndependentSource::IndependentSource(pugi::xml_node node) : Source(node)
       energy_ = UPtrDist {new Watt(0.988e6, 2.249e-6)};
     }
 
+    // In random ray run, convert energy distribution to Discrete
+    if (settings::solver_type == SolverType::RANDOM_RAY) {
+      size_t n = data::mg.num_energy_groups_;
+      double* p = new double[n];
+      double* x = new double[n];
+      for (int g = 0; g < n; g++) {
+        x[g] = data::mg.energy_bin_avg_[g];
+        p[g] = energy_->integral(
+          data::mg.energy_bins_[g], data::mg.energy_bins_[g + 1]);
+      }
+      energy_ = UPtrDist {new Discrete(x, p, n)};
+    }
+
     // Determine external source time distribution
     if (check_for_node(node, "time")) {
       pugi::xml_node node_dist = node.child("time");

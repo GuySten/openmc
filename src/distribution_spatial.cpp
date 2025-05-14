@@ -389,10 +389,10 @@ Position SpatialBall::sample(uint64_t* seed) const
 {
   double u = 2.0 * prn(seed) - 1.0;
   double phi = 2 * PI * prn(seed);
-  double r = std::cbrt(prn(seed));
+  double r = radius_ * std::cbrt(prn(seed));
   Position xi {std::cos(phi) * std::sqrt(1 - u * u),
     std::sin(phi) * std::sqrt(1 - u * u), u};
-  return origin_ + xi * (radius_ * r);
+  return origin_ + xi * r;
 }
 
 //==============================================================================

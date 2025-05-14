@@ -94,7 +94,7 @@ FlatSourceDomain::FlatSourceDomain() : negroups_(data::mg.num_energy_groups_)
     simulation_volume_ = dims.x * dims.y * dims.z;
   } else if (auto* sb = dynamic_cast<SpatialBall*>(space_dist)) {
     double r = sb->radius();
-    simulation_volume_ = 4.0/3.0*PI*std::pow(r,3.0);
+    simulation_volume_ = 4.0 / 3.0 * PI * std::pow(r, 3.0);
   } else {
     fatal_error("Invalid spatial distribution type for random ray");
   }

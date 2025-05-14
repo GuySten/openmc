@@ -859,7 +859,8 @@ SourceSite RandomRay::sample_halton()
   // Calculate next samples in LDS across 5 dimensions
   vector<double> samples = rhalton(5, current_seed(), skip = skip);
 
-  SpatialDistribution* space_dist = dynamic_cast<IndependentSource*>(RandomRay::ray_source_.get())->space();
+  SpatialDistribution* space_dist =
+    dynamic_cast<IndependentSource*>(RandomRay::ray_source_.get())->space();
   if (auto* sb = dynamic_cast<SpatialBox*>(space_dist)) {
     // Sample spatial distribution
     Position xi {samples[0], samples[1], samples[2]};
@@ -872,12 +873,13 @@ SourceSite RandomRay::sample_halton()
     // Sample spatial distribution
     double u = 2.0 * samples[0] - 1.0;
     double phi = 2 * PI * samples[1];
-    
+
     // make a small shift in radius to avoid geometry floating point issues
-    double r = (sb->radius()-FP_COINCIDENT) * std::cbrt(samples[2]);
-    Position xi {std::cos(phi) * std::sqrt(1 - u * u), std::sin(phi) * std::sqrt(1 - u * u), u};
+    double r = (sb->radius() - FP_COINCIDENT) * std::cbrt(samples[2]);
+    Position xi {std::cos(phi) * std::sqrt(1 - u * u),
+      std::sin(phi) * std::sqrt(1 - u * u), u};
     site.r = sb->origin() + xi * r;
-        
+
   } else {
     fatal_error("Invalid spatial distribution type for random ray");
   }

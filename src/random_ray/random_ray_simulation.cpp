@@ -231,7 +231,8 @@ void validate_random_ray_inputs()
 
   // Check for box/ball source
   SpatialDistribution* space_dist = is->space();
-  if (!dynamic_cast<SpatialBox*>(space_dist) && !dynamic_cast<SpatialBall*>(space_dist)) {
+  if (!dynamic_cast<SpatialBox*>(space_dist) &&
+      !dynamic_cast<SpatialBall*>(space_dist)) {
     fatal_error(
       "Invalid ray source definition -- only box/ball sources are allowed.");
   }

@@ -299,15 +299,6 @@ void validate_random_ray_inputs()
                   "will be ignored.");
         }
       }
-
-      // Check that a discrete energy distribution was used
-      Distribution* d = is->energy();
-      Discrete* dd = dynamic_cast<Discrete*>(d);
-      if (!dd) {
-        fatal_error(
-          "Only discrete (multigroup) energy distributions are allowed for "
-          "external sources in random ray mode.");
-      }
     }
   }
 

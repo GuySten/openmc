@@ -1,5 +1,6 @@
 #include "openmc/distribution_spatial.h"
 
+#include "openmc/constants.h"
 #include "openmc/error.h"
 #include "openmc/mesh.h"
 #include "openmc/random_lcg.h"
@@ -386,9 +387,8 @@ SpatialBall::SpatialBall(pugi::xml_node node)
 
 Position SpatialBall::sample(uint64_t* seed) const
 {
-  const double pi = 3.14159265358979323846264338327950288419716939937510582;
   double u = 2.0 * prn(seed) - 1.0;
-  double phi = 2 * pi * prn(seed);
+  double phi = 2 * PI * prn(seed);
   double r = std::cbrt(prn(seed));
   Position xi {std::cos(phi) * std::sqrt(1 - u * u),
     std::sin(phi) * std::sqrt(1 - u * u), u};

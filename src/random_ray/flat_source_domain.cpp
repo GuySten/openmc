@@ -89,9 +89,15 @@ FlatSourceDomain::FlatSourceDomain() : negroups_(data::mg.num_energy_groups_)
   // Compute simulation domain volume based on ray source
   auto* is = dynamic_cast<IndependentSource*>(RandomRay::ray_source_.get());
   SpatialDistribution* space_dist = is->space();
-  SpatialBox* sb = dynamic_cast<SpatialBox*>(space_dist);
-  Position dims = sb->upper_right() - sb->lower_left();
-  simulation_volume_ = dims.x * dims.y * dims.z;
+  if (auto* sb = dynamic_cast<SpatialBox*>(space_dist)) {
+    Position dims = sb->upper_right() - sb->lower_left();
+    simulation_volume_ = dims.x * dims.y * dims.z;
+  } else if (auto* sb = dynamic_cast<SpatialBall*>(space_dist)) {
+    double r = sb->radius();
+    simulation_volume_ = 4.0/3.0*PI*std::pow(r,3.0);
+  } else {
+    fatal_error("Invalid spatial distribution type for random ray");
+  }
 }
 
 void FlatSourceDomain::batch_reset()

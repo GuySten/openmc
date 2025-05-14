@@ -231,19 +231,18 @@ void validate_random_ray_inputs()
 
   // Check for box/ball source
   SpatialDistribution* space_dist = is->space();
-  SpatialBox* sb = dynamic_cast<SpatialBox*>(space_dist);
-  if (!sb)
-    SpatialBall* sb = dynamic_cast<SpatialBall*>(space_dist);
-  if (!sb) {
+  if (!dynamic_cast<SpatialBox*>(space_dist) && !dynamic_cast<SpatialBall*>(space_dist)) {
     fatal_error(
       "Invalid ray source definition -- only box/ball sources are allowed.");
   }
 
   // Check that box source is not restricted to fissionable areas
-  if (sb->only_fissionable()) {
-    fatal_error(
-      "Invalid ray source definition -- fissionable spatial distribution "
-      "not allowed.");
+  if (auto* sb = dynamic_cast<SpatialBox*>(space_dist)) {
+    if (sb->only_fissionable()) {
+      fatal_error(
+        "Invalid ray source definition -- fissionable spatial distribution "
+        "not allowed.");
+    }
   }
 
   // Check for isotropic source

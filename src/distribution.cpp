@@ -8,6 +8,7 @@
 #include <stdexcept> // for runtime_error
 #include <string>    // for string, stod
 
+#include "openmc/constants.h"
 #include "openmc/error.h"
 #include "openmc/math_functions.h"
 #include "openmc/random_dist.h"
@@ -224,7 +225,7 @@ double Maxwell::integral(double x0, double x1) const
 {
   double y0 = std::sqrt(std::max(x0, 0.0) / theta_);
   double y1 = std::sqrt(x1 / theta_);
-  const double ispi = 0.56418958354775628694807945156; // 1 / sqrt(pi)
+  const double ispi = 1.0/SQRT_PI;
   return ((std::erf(y1) - std::erf(y0)) -
           2.0 * ispi * (y1 * std::exp(-y1 * y1) - y0 * std::exp(-y0 * y0)));
 }
@@ -254,7 +255,7 @@ double Watt::integral(double x0, double x1) const
   double c = std::sqrt(a_ * b_) / 2.0;
   double y0 = std::sqrt(std::max(x0, 0.0) / a_);
   double y1 = std::sqrt(x1 / a_);
-  const double ispi = 0.56418958354775628694807945156; // 1 / sqrt(pi)
+  const double ispi = 1.0/SQRT_PI;
   return 0.5 * ((std::erf(y1 + c) - std::erf(y0 + c)) +
                  (std::erf(y1 - c) - std::erf(y0 - c)) +
                  ispi / c *

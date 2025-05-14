@@ -229,12 +229,14 @@ void validate_random_ray_inputs()
                 "be of type IndependentSource.");
   }
 
-  // Check for box source
+  // Check for box/ball source
   SpatialDistribution* space_dist = is->space();
   SpatialBox* sb = dynamic_cast<SpatialBox*>(space_dist);
+  if (!sb)
+    SpatialBall* sb = dynamic_cast<SpatialBall*>(space_dist);
   if (!sb) {
     fatal_error(
-      "Invalid ray source definition -- only box sources are allowed.");
+      "Invalid ray source definition -- only box/ball sources are allowed.");
   }
 
   // Check that box source is not restricted to fissionable areas

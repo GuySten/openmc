@@ -43,7 +43,7 @@ def test_exceptions(options, error, run_in_tmpdir, geometry):
         settings.particles = 100
         settings.batches = 15
         tally = openmc.Tally(name="ifp-scores")
-        tally.scores = ["ifp-time-numerator", "ifp-beta-numerator", "ifp-denominator"]
+        tally.scores = ["ifp-ext-src-numerator", "ifp-time-numerator", "ifp-beta-numerator", "ifp-denominator"]
         tallies = openmc.Tallies([tally])
         model = openmc.Model(geometry=geometry, settings=settings, tallies=tallies)
         model.run()

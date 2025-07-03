@@ -4,6 +4,7 @@
 //! \file settings.h
 //! \brief Settings for OpenMC
 
+#include <bitset>
 #include <cstdint>
 #include <string>
 #include <unordered_set>
@@ -25,12 +26,15 @@ enum class SSWCellType {
 };
 
 // Type of IFP parameters
-enum class IFPParameter {
-  None,
-  Both,
+enum IFPParameter {
   BetaEffective,
   GenerationTime,
+  ExternalSource,
+  Size, // need to be last
 };
+
+// IFP parameter settings
+using IFPSettings = std::bitset<IFPParameter::Size>;
 
 //==============================================================================
 // Global variable declarations
@@ -123,8 +127,8 @@ extern array<double, 4>
   time_cutoff; //!< Time cutoff in [s] for each particle type
 extern int
   ifp_n_generation; //!< Number of generation for Iterated Fission Probability
-extern IFPParameter
-  ifp_parameter; //!< Parameter to calculate for Iterated Fission Probability
+extern IFPSettings
+  ifp_settings; //!< Parameters to calculate for Iterated Fission Probability
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

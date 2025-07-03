@@ -318,9 +318,10 @@ enum TallyScore {
   SCORE_FISS_Q_RECOV = -15,       // recoverable fission Q-value
   SCORE_DECAY_RATE = -16,         // delayed neutron precursor decay rate
   SCORE_PULSE_HEIGHT = -17,       // pulse-height
-  SCORE_IFP_TIME_NUM = -18,       // IFP lifetime numerator
-  SCORE_IFP_BETA_NUM = -19,       // IFP delayed fraction numerator
-  SCORE_IFP_DENOM = -20           // IFP common denominator
+  SCORE_IFP_EXT_SRC_NUM = -18,    // IFP external source numerator
+  SCORE_IFP_TIME_NUM = -19,       // IFP lifetime numerator
+  SCORE_IFP_BETA_NUM = -20,       // IFP delayed fraction numerator
+  SCORE_IFP_DENOM = -21           // IFP common denominator
 };
 
 // Global tally parameters

@@ -186,7 +186,7 @@ Tally::Tally(pugi::xml_node node)
     bool has_ifp_score = false;
     for (int score : scores_) {
       if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
-          score == SCORE_IFP_DENOM) {
+          score == SCORE_IFP_DENOM || score == SCORE_IFP_EXT_SRC_NUM) {
         has_ifp_score = true;
         break;
       }
@@ -219,20 +219,15 @@ Tally::Tally(pugi::xml_node node)
   if (settings::ifp_on) {
     for (int score : scores_) {
       switch (score) {
+      case SCORE_IFP_EXT_SRC_NUM:
+        settings::ifp_settings.set(IFPParameter::ExternalSource);
+        break;
       case SCORE_IFP_TIME_NUM:
-        if (settings::ifp_parameter == IFPParameter::None) {
-          settings::ifp_parameter = IFPParameter::GenerationTime;
-        } else if (settings::ifp_parameter == IFPParameter::BetaEffective) {
-          settings::ifp_parameter = IFPParameter::Both;
-        }
+        settings::ifp_settings.set(IFPParameter::GenerationTime);
         break;
       case SCORE_IFP_BETA_NUM:
       case SCORE_IFP_DENOM:
-        if (settings::ifp_parameter == IFPParameter::None) {
-          settings::ifp_parameter = IFPParameter::BetaEffective;
-        } else if (settings::ifp_parameter == IFPParameter::GenerationTime) {
-          settings::ifp_parameter = IFPParameter::Both;
-        }
+        settings::ifp_settings.set(IFPParameter::BetaEffective);
         break;
       }
     }
@@ -645,6 +640,7 @@ void Tally::set_scores(const vector<std::string>& scores)
       }
       break;
 
+    case SCORE_IFP_EXT_SRC_NUM:
     case SCORE_IFP_TIME_NUM:
     case SCORE_IFP_BETA_NUM:
     case SCORE_IFP_DENOM:

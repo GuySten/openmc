@@ -8,15 +8,20 @@
 
 namespace openmc {
 
-//! Check the value of the IFP parameter for beta effective or both.
+//! Check the value of the IFP parameter for external source.
 //!
-//! \return true if "BetaEffective" or "Both", false otherwise.
-bool is_beta_effective_or_both();
+//! \return true if "ExternalSource" is set.
+bool is_external_source();
 
-//! Check the value of the IFP parameter for generation time or both.
+//! Check the value of the IFP parameter for beta effective.
 //!
-//! \return true if "GenerationTime" or "Both", false otherwise.
-bool is_generation_time_or_both();
+//! \return true if "BetaEffective" is set.
+bool is_beta_effective();
+
+//! Check the value of the IFP parameter for generation time.
+//!
+//! \return true if "GenerationTime" is set.
+bool is_generation_time();
 
 //! Resize IFP vectors
 //!
@@ -24,13 +29,17 @@ bool is_generation_time_or_both();
 //! \param[in,out] lifetimes List of lifetimes
 //! \param[in] n  Dimension to resize vectors
 template<typename T, typename U>
-void resize_ifp_data(vector<T>& delayed_groups, vector<U>& lifetimes, int64_t n)
+void resize_ifp_data(vector<T>& delayed_groups, vector<U>& lifetimes,
+  vector<U>& ext_srcs, int64_t n)
 {
-  if (is_beta_effective_or_both()) {
+  if (is_beta_effective()) {
     delayed_groups.resize(n);
   }
-  if (is_generation_time_or_both()) {
+  if (is_generation_time()) {
     lifetimes.resize(n);
+  }
+  if (is_external_source()) {
+    ext_srcs.resize(n);
   }
 }
 
@@ -85,9 +94,10 @@ void resize_simulation_ifp_banks();
 //!
 //! \param[in] i_bank Index in the fission banks
 //! \param[in,out] delayed_groups Delayed group numbers
-//! \param[in,out] lifetimes Lifetimes lists
-void copy_ifp_data_from_fission_banks(
-  int i_bank, vector<int>& delayed_groups, vector<double>& lifetimes);
+//! \param[in,out] lifetimes Lifetimes list
+//! \param[in,out] ext_srcs external source list
+void copy_ifp_data_from_fission_banks(int i_bank, vector<int>& delayed_groups,
+  vector<double>& lifetimes, vector<double>& ext_srcs);
 
 #ifdef OPENMC_MPI
 
@@ -103,9 +113,11 @@ struct DeserializationInfo {
 //! \param[in] n_generation Number of generations
 //! \param[in] delayed_groups List of delayed group numbers lists
 //! \param[in] lifetimes List of lifetimes lists
+//! \param[in] ext_srcs List of external source lists
 void broadcast_ifp_n_generation(int& n_generation,
   const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes);
+  const vector<vector<double>>& lifetimes,
+  const vector<vector<double>>& ext_srcs);
 
 //! Send IFP data using MPI.
 //!
@@ -118,10 +130,13 @@ void broadcast_ifp_n_generation(int& n_generation,
 //! \param[out] send_delayed_groups Delayed group numbers buffer
 //! \param[in] lifetimes List of lifetimes lists
 //! \param[out] send_lifetimes Lifetimes buffer
+//! \param[in] ext_srcs List of external sources lists
+//! \param[out] send_ext_srcs External Source buffer
 void send_ifp_info(int64_t idx, int64_t n, int n_generation, int neighbor,
   vector<MPI_Request>& requests, const vector<vector<int>>& delayed_groups,
   vector<int>& send_delayed_groups, const vector<vector<double>>& lifetimes,
-  vector<double>& send_lifetimes);
+  vector<double>& send_lifetimes, const vector<vector<double>>& ext_srcs,
+  vector<double>& send_ext_srcs);
 
 //! Receive IFP data using MPI.
 //!
@@ -132,10 +147,12 @@ void send_ifp_info(int64_t idx, int64_t n, int n_generation, int neighbor,
 //! \param[in] requests MPI requests
 //! \param[in] delayed_groups List of delayed group numbers
 //! \param[in] lifetimes List of lifetimes
+//! \param[in] ext_srcs List of external source
 //! \param[out] deserialization Information to deserialize the received data
 void receive_ifp_data(int64_t idx, int64_t n, int n_generation, int neighbor,
   vector<MPI_Request>& requests, vector<int>& delayed_groups,
-  vector<double>& lifetimes, vector<DeserializationInfo>& deserialization);
+  vector<double>& lifetimes, vector<double>& ext_srcs,
+  vector<DeserializationInfo>& deserialization);
 
 //! Copy partial IFP data from local lists to source banks.
 //!
@@ -144,9 +161,11 @@ void receive_ifp_data(int64_t idx, int64_t n, int n_generation, int neighbor,
 //! \param[in] i_bank Index in the IFP source banks
 //! \param[in] delayed_groups List of delayed group numbers lists
 //! \param[in] lifetimes List of lifetimes lists
+//! \param[in] ext_srcs List of external source lists
 void copy_partial_ifp_data_to_source_banks(int64_t idx, int n, int64_t i_bank,
   const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes);
+  const vector<vector<double>>& lifetimes,
+  const vector<vector<double>>& ext_srcs);
 
 //! Deserialize IFP information received using MPI and store it in
 //! the IFP source banks.
@@ -155,9 +174,11 @@ void copy_partial_ifp_data_to_source_banks(int64_t idx, int n, int64_t i_bank,
 //! \param[out] deserialization Information to deserialize the received data
 //! \param[in] delayed_groups List of delayed group numbers
 //! \param[in] lifetimes List of lifetimes
+//! \param[in] ext_srcs List of external source
 void deserialize_ifp_info(int n_generation,
   const vector<DeserializationInfo>& deserialization,
-  const vector<int>& delayed_groups, const vector<double>& lifetimes);
+  const vector<int>& delayed_groups, const vector<double>& lifetimes,
+  const vector<double>& ext_srcs);
 
 #endif
 
@@ -165,23 +186,27 @@ void deserialize_ifp_info(int n_generation,
 //!
 //! \param[in] delayed_groups List of delayed group numbers lists
 //! \param[in] lifetimes List of lifetimes lists
+//! \param[in] ext_srcs List of external source lists
 void copy_complete_ifp_data_to_source_banks(
   const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes);
+  const vector<vector<double>>& lifetimes,
+  const vector<vector<double>>& ext_srcs);
 
 //! Allocate temporary vectors for IFP data.
 //!
 //! \param[in,out] delayed_groups List of delayed group numbers lists
-//! \param[in,out] lifetimes List of delayed group numbers lists
-void allocate_temporary_vector_ifp(
-  vector<vector<int>>& delayed_groups, vector<vector<double>>& lifetimes);
+//! \param[in,out] lifetimes List of lifetimes lists
+//! \param[in,out] ext_srcs List of external source lists
+void allocate_temporary_vector_ifp(vector<vector<int>>& delayed_groups,
+  vector<vector<double>>& lifetimes, vector<vector<double>>& ext_srcs);
 
 //! Copy local IFP data to IFP fission banks.
 //!
 //! \param[in] delayed_groups_ptr Pointer to delayed group numbers
 //! \param[in] lifetimes_ptr Pointer to lifetimes
-void copy_ifp_data_to_fission_banks(
-  const vector<int>* delayed_groups_ptr, const vector<double>* lifetimes_ptr);
+//! \param[in] ext_srcs_ptr Pointer to external sources
+void copy_ifp_data_to_fission_banks(const vector<int>* delayed_groups_ptr,
+  const vector<double>* lifetimes_ptr, const vector<double>* ext_srcs_ptr);
 
 } // namespace openmc
 

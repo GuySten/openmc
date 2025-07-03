@@ -4,6 +4,7 @@ kinetics parameters using dedicated tallies."""
 import openmc
 import pytest
 
+from openmc.utility_funcs import change_directory
 from tests.testing_harness import PyAPITestHarness
 
 
@@ -39,7 +40,47 @@ def ifp_model():
 
     return model
 
+@pytest.fixture()
+def nfp_model():
+    model = openmc.Model()
+
+    # Material
+    material = openmc.Material(name="core")
+    material.add_nuclide("U235", 1.0)
+    material.set_density('g/cm3', 16.0)
+
+    # Geometry
+    radius = 10.0
+    sphere = openmc.Sphere(r=radius, boundary_type="vacuum")
+    cell = openmc.Cell(region=-sphere, fill=material)
+    model.geometry = openmc.Geometry([cell])
+
+    # Settings
+    model.settings.particles = 1000
+    model.settings.batches = 11
+    model.settings.generations_per_batch = 1
+    model.settings.inactive = 10
+    model.settings.ifp_n_generation = 10
+
+    space = openmc.stats.Point((0.0,0.0,9.99))
+    model.settings.source = openmc.IndependentSource(space=space)
+
+    # Tally IFP scores
+    tally = openmc.Tally(name="ifp-scores")
+    tally.scores = ["ifp-ext-src-numerator", "ifp-time-numerator", "ifp-beta-numerator", "ifp-denominator"]
+    model.tallies = [tally]
+
+    return model
+
+
 
 def test_iterated_fission_probability(ifp_model):
-    harness = PyAPITestHarness("statepoint.20.h5", model=ifp_model)
-    harness.main()
+    with change_directory("ifp"):
+        harness = PyAPITestHarness("statepoint.20.h5", model=ifp_model)
+        harness.main()
+    
+def test_next_fission_probability(nfp_model):
+    with change_directory("nfp"):
+        harness = PyAPITestHarness("statepoint.20.h5", model=nfp_model)
+        harness.main()
+    

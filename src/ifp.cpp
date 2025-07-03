@@ -41,7 +41,8 @@ void ifp(const Particle& p, const SourceSite& site, int64_t idx)
   if (is_external_source()) {
     const auto& ext_srcs =
       simulation::ifp_source_ext_src_bank[p.current_work() - 1];
-    simulation::ifp_fission_ext_src_bank[idx] = _ifp(p.wgt(), ext_srcs);
+    write_message(2,"{} {}",p.wgt(),simulation::keff);
+    simulation::ifp_fission_ext_src_bank[idx] = _ifp(1.0, ext_srcs);
   }
 }
 

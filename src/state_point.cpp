@@ -21,6 +21,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/output.h"
+#include "openmc/sample.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
 #include "openmc/tallies/derivative.h"
@@ -288,8 +289,12 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
     write_tally_results_nr(file_id);
 
   } else if (mpi::master) {
+
+    // Get global tallies
+    auto& gt = simulation::global_tallies;
+
     // Write number of global realizations
-    write_dataset(file_id, "n_realizations", simulation::n_realizations);
+    write_dataset(file_id, "n_realizations", gt(0, 0).n());
   }
 
   if (mpi::master) {
@@ -878,18 +883,11 @@ void write_unstructured_mesh_results()
             // get the volume for this bin
             double volume = umesh->volume(j);
             // compute the mean
-            double mean = tally->results_(j, nuc_score_idx, TallyResult::SUM) /
-                          n_realizations;
+            double mean = tally->results_(j, nuc_score_idx).mean();
             mean_vec.at(j) = mean / volume;
 
             // compute the standard deviation
-            double sum_sq =
-              tally->results_(j, nuc_score_idx, TallyResult::SUM_SQ);
-            double std_dev {0.0};
-            if (n_realizations > 1) {
-              std_dev = sum_sq / n_realizations - mean * mean;
-              std_dev = std::sqrt(std_dev / (n_realizations - 1));
-            }
+            double std_dev = tally->results_(j, nuc_score_idx).std_dev();
             std_dev_vec[j] = std_dev / volume;
           }
 #ifdef OPENMC_MPI
@@ -923,16 +921,16 @@ void write_tally_results_nr(hid_t file_id)
   // ==========================================================================
   // COLLECT AND WRITE GLOBAL TALLIES
 
+  // Get global tallies
+  auto& gt = simulation::global_tallies;
+
   hid_t tallies_group;
   if (mpi::master) {
     // Write number of realizations
-    write_dataset(file_id, "n_realizations", simulation::n_realizations);
+    write_dataset(file_id, "n_realizations", gt(0, 0).n());
 
     tallies_group = open_group(file_id, "tallies");
   }
-
-  // Get global tallies
-  auto& gt = simulation::global_tallies;
 
 #ifdef OPENMC_MPI
   // Reduce global tallies
@@ -966,12 +964,10 @@ void write_tally_results_nr(hid_t file_id)
     }
 
     // Get view of accumulated tally values
-    auto values_view = xt::view(t->results_, xt::all(), xt::all(),
-      xt::range(static_cast<int>(TallyResult::SUM),
-        static_cast<int>(TallyResult::SUM_SQ) + 1));
+    auto values_view = xt::view(t->results_, xt::all(), xt::all());
 
     // Make copy of tally values in contiguous array
-    xt::xtensor<double, 3> values = values_view;
+    xt::xtensor<Sample, 2> values = values_view;
 
     if (mpi::master) {
       // Open group for tally
@@ -981,7 +977,7 @@ void write_tally_results_nr(hid_t file_id)
       // The MPI_IN_PLACE specifier allows the master to copy values into
       // a receive buffer without having a temporary variable
 #ifdef OPENMC_MPI
-      MPI_Reduce(MPI_IN_PLACE, values.data(), values.size(), MPI_DOUBLE,
+      MPI_Reduce(MPI_IN_PLACE, values.data(), values.size(), mpi::sample,
         MPI_SUM, 0, mpi::intracomm);
 #endif
 

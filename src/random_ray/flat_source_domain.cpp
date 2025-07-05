@@ -655,9 +655,7 @@ void FlatSourceDomain::random_ray_tally()
 
         // Apply score to the appropriate tally bin
         Tally& tally {*model::tallies[task.tally_idx]};
-#pragma omp atomic
-        tally.results_(task.filter_idx, task.score_idx, TallyResult::VALUE) +=
-          score;
+        tally.results_(task.filter_idx, task.score_idx).push_back(score);
       }
     }
 
@@ -690,7 +688,7 @@ void FlatSourceDomain::random_ray_tally()
           if (score_type == SCORE_FLUX) {
             double vol = tally_volumes_[i](bin, score_idx);
             if (vol > 0.0) {
-              tally.results_(bin, score_idx, TallyResult::VALUE) /= vol;
+              tally.results_(bin, score_idx) /= vol;
             }
           }
         }

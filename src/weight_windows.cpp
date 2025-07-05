@@ -545,9 +545,8 @@ void WeightWindows::update_weights(const Tally* tally, const std::string& value,
   ///////////////////////////
 
   // build a shape for a view of the tally results, this will always be
-  // dimension 5 (3 filter dimensions, 1 score dimension, 1 results dimension)
-  std::array<int, 5> shape = {
-    1, 1, 1, tally->n_scores(), static_cast<int>(TallyResult::SIZE)};
+  // dimension 4 (3 filter dimensions, 1 score dimension)
+  std::array<int, 4> shape = {1, 1, 1, tally->n_scores()};
 
   // set the shape for the filters applied on the tally
   for (int i = 0; i < tally->filters().size(); i++) {
@@ -556,7 +555,7 @@ void WeightWindows::update_weights(const Tally* tally, const std::string& value,
   }
 
   // build the transpose information to re-order data according to filter type
-  std::array<int, 5> transpose = {0, 1, 2, 3, 4};
+  std::array<int, 4> transpose = {0, 1, 2, 3};
 
   // track our filter types and where we've added new ones
   std::vector<FilterType> filter_types = tally->filter_types();
@@ -615,13 +614,8 @@ void WeightWindows::update_weights(const Tally* tally, const std::string& value,
   }
 
   // down-select data based on particle and score
-  auto sum = xt::dynamic_view(
-    transposed_view, {particle_idx, xt::all(), xt::all(), score_index,
-                       static_cast<int>(TallyResult::SUM)});
-  auto sum_sq = xt::dynamic_view(
-    transposed_view, {particle_idx, xt::all(), xt::all(), score_index,
-                       static_cast<int>(TallyResult::SUM_SQ)});
-  int n = tally->n_realizations_;
+  auto results = xt::dynamic_view(
+    transposed_view, {particle_idx, xt::all(), xt::all(), score_index});
 
   //////////////////////////////////////////////
   //
@@ -646,17 +640,9 @@ void WeightWindows::update_weights(const Tally* tally, const std::string& value,
   for (int e = 0; e < e_bins; e++) {
     for (int64_t m = 0; m < mesh_bins; m++) {
       // Calculate mean
-      new_bounds(e, m) = sum(e, m) / n;
-      // Calculate relative error
-      if (sum(e, m) > 0.0) {
-        double mean_val = new_bounds(e, m);
-        double variance = (sum_sq(e, m) / n - mean_val * mean_val) / (n - 1);
-        rel_err(e, m) = std::sqrt(variance) / mean_val;
-      } else {
-        rel_err(e, m) = INFTY;
-      }
+      new_bounds(e, m) = results(e, m).mean();
       if (value == "rel_err") {
-        new_bounds(e, m) = 1.0 / rel_err(e, m);
+        new_bounds(e, m) = 1.0 / results(e, m).rel_err();
       }
     }
   }
@@ -737,7 +723,7 @@ void WeightWindows::update_weights(const Tally* tally, const std::string& value,
   for (int e = 0; e < e_bins; e++) {
     for (int64_t m = 0; m < mesh_bins; m++) {
       // Values where the mean is zero should be ignored
-      if (sum(e, m) <= 0.0) {
+      if (results(e, m).mean() <= 0.0) {
         new_bounds(e, m) = -1.0;
       }
       // Values where the relative error is higher than the threshold should be

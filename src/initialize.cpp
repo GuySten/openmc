@@ -178,6 +178,21 @@ void initialize_mpi(MPI_Comm intracomm)
     MPI_DOUBLE, MPI_INT, MPI_INT, MPI_INT, MPI_INT, MPI_LONG, MPI_LONG};
   MPI_Type_create_struct(11, blocks, disp, types, &mpi::source_site);
   MPI_Type_commit(&mpi::source_site);
+
+  // Create sample datatype
+  Sample s;
+  MPI_Aint disp[3];
+  MPI_Get_address(&s.n, &disp[0]);
+  MPI_Get_address(&s.s1, &disp[1]);
+  MPI_Get_address(&s.s2, &disp[2]);
+  for (int i = 2; i >= 0; --i) {
+    disp[i] -= disp[0];
+  }
+
+  int blocks[] {1, 1, 1};
+  MPI_Datatype types[] {MPI_UINT64_T, MPI_DOUBLE, MPI_DOUBLE};
+  MPI_Type_create_struct(3, blocks, disp, types, &mpi::sample);
+  MPI_Type_commit(&mpi::sample);
 }
 #endif // OPENMC_MPI
 

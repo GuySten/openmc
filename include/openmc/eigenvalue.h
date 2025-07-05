@@ -11,6 +11,7 @@
 
 #include "openmc/array.h"
 #include "openmc/particle.h"
+#include "openmc/sample.h"
 #include "openmc/vector.h"
 
 namespace openmc {
@@ -21,8 +22,8 @@ namespace openmc {
 
 namespace simulation {
 
-extern double keff_generation; //!<  Single-generation k on each processor
-extern array<double, 2> k_sum; //!< Used to reduce sum and sum_sq
+extern Sample keff_generation; //!<  Single-generation k on each processor
+extern Sample k_agg;           //!< Aggregate keff
 extern vector<double> entropy; //!< Shannon entropy at each generation
 extern xt::xtensor<double, 1> source_frac; //!< Source fraction for UFS
 

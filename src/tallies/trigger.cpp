@@ -32,18 +32,15 @@ std::pair<double, double> get_tally_uncertainty(
 {
   const auto& tally {model::tallies[i_tally]};
 
-  auto sum = tally->results_(filter_index, score_index, TallyResult::SUM);
-  auto sum_sq = tally->results_(filter_index, score_index, TallyResult::SUM_SQ);
+  const auto& t = tally->results_(filter_index, score_index);
 
-  int n = tally->n_realizations_;
-  auto mean = sum / n;
+  double mean = t->mean();
+  double std_dev = t->std_dev();
+  double rel_err = t->rel_err();
 
   // if the result has no contributions, return an invalid pair
   if (mean == 0)
     return {-1, -1};
-
-  double std_dev = std::sqrt((sum_sq / n - mean * mean) / (n - 1));
-  double rel_err = (mean != 0.) ? std_dev / std::abs(mean) : 0.;
 
   return {std_dev, rel_err};
 }

@@ -16,6 +16,7 @@
 #include "openmc/mesh.h"
 #include "openmc/message_passing.h"
 #include "openmc/random_lcg.h"
+#include "openmc/sample.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -36,8 +37,7 @@ namespace openmc {
 
 namespace simulation {
 
-double keff_generation;
-array<double, 2> k_sum;
+Sample keff_generation;
 vector<double> entropy;
 xt::xtensor<double, 1> source_frac;
 
@@ -53,14 +53,13 @@ void calculate_generation_keff()
 
   // Get keff for this generation by subtracting off the starting value
   simulation::keff_generation =
-    gt(GlobalTally::K_TRACKLENGTH, TallyResult::VALUE) -
-    simulation::keff_generation;
+    gt(GlobalTally::K_TRACKLENGTH) - simulation::keff_generation.mean();
 
-  double keff_reduced;
+  Sample keff_reduced;
 #ifdef OPENMC_MPI
   if (settings::solver_type != SolverType::RANDOM_RAY) {
     // Combine values across all processors
-    MPI_Allreduce(&simulation::keff_generation, &keff_reduced, 1, MPI_DOUBLE,
+    MPI_Allreduce(&simulation::keff_generation, &keff_reduced, 1, mpi::sample,
       MPI_SUM, mpi::intracomm);
   } else {
     // If using random ray, MPI parallelism is provided by domain replication.
@@ -418,8 +417,9 @@ void calculate_average_keff()
   int i = overall_generation() - 1;
   int n;
   if (simulation::current_batch > settings::n_inactive) {
-    n = settings::gen_per_batch * simulation::n_realizations +
-        simulation::current_gen;
+    // Get global tallies
+    const auto& gt = simulation::global_tallies;
+    n = settings::gen_per_batch * gt(0, 0).n + simulation::current_gen;
   } else {
     n = 0;
   }
@@ -427,30 +427,14 @@ void calculate_average_keff()
   if (n <= 0) {
     // For inactive generations, use current generation k as estimate for next
     // generation
-    simulation::keff = simulation::k_generation[i];
+    simulation::keff = simulation::k_generation[i].mean();
   } else {
-    // Sample mean of keff
-    simulation::k_sum[0] += simulation::k_generation[i];
-    simulation::k_sum[1] += std::pow(simulation::k_generation[i], 2);
-
-    // Determine mean
-    simulation::keff = simulation::k_sum[0] / n;
-
+    simulation::k_agg += simulation::k_generation[i];
+    simulation::keff = simulation::k_agg.mean();
     if (n > 1) {
-      double t_value;
-      if (settings::confidence_intervals) {
-        // Calculate t-value for confidence intervals
-        double alpha = 1.0 - CONFIDENCE_LEVEL;
-        t_value = t_percentile(1.0 - alpha / 2.0, n - 1);
-      } else {
-        t_value = 1.0;
-      }
-
-      // Standard deviation of the sample mean of k
-      simulation::keff_std =
-        t_value *
-        std::sqrt(
-          (simulation::k_sum[1] / n - std::pow(simulation::keff, 2)) / (n - 1));
+      simulation::keff_std = settings::confidence_intervals
+                               ? simulation::k_agg.confidence(CONFIDENCE_LEVEL)
+                               : simulation::k_agg.std_dev();
     }
   }
 }
@@ -460,38 +444,33 @@ int openmc_get_keff(double* k_combined)
   k_combined[0] = 0.0;
   k_combined[1] = 0.0;
 
+  // Get global tallies
+  const auto& gt = simulation::global_tallies;
+  int64_t n = gt(0, 0).n;
+
   // Special case for n <=3. Notice that at the end,
   // there is a N-3 term in a denominator.
-  if (simulation::n_realizations <= 3 ||
-      settings::solver_type == SolverType::RANDOM_RAY) {
+  if (n <= 3 || settings::solver_type == SolverType::RANDOM_RAY) {
     k_combined[0] = simulation::keff;
     k_combined[1] = simulation::keff_std;
-    if (simulation::n_realizations <= 1) {
+    if (n <= 1) {
       k_combined[1] = std::numeric_limits<double>::infinity();
     }
     return 0;
   }
 
   // Initialize variables
-  int64_t n = simulation::n_realizations;
 
   // Copy estimates of k-effective and its variance (not variance of the mean)
-  const auto& gt = simulation::global_tallies;
 
   array<double, 3> kv {};
   xt::xtensor<double, 2> cov = xt::zeros<double>({3, 3});
-  kv[0] = gt(GlobalTally::K_COLLISION, TallyResult::SUM) / n;
-  kv[1] = gt(GlobalTally::K_ABSORPTION, TallyResult::SUM) / n;
-  kv[2] = gt(GlobalTally::K_TRACKLENGTH, TallyResult::SUM) / n;
-  cov(0, 0) =
-    (gt(GlobalTally::K_COLLISION, TallyResult::SUM_SQ) - n * kv[0] * kv[0]) /
-    (n - 1);
-  cov(1, 1) =
-    (gt(GlobalTally::K_ABSORPTION, TallyResult::SUM_SQ) - n * kv[1] * kv[1]) /
-    (n - 1);
-  cov(2, 2) =
-    (gt(GlobalTally::K_TRACKLENGTH, TallyResult::SUM_SQ) - n * kv[2] * kv[2]) /
-    (n - 1);
+  kv[0] = gt(GlobalTally::K_COLLISION).mean();
+  kv[1] = gt(GlobalTally::K_ABSORPTION).mean();
+  kv[2] = gt(GlobalTally::K_TRACKLENGTH).mean();
+  cov(0, 0) = (gt(GlobalTally::K_COLLISION).s2 - n * kv[0] * kv[0]) / (n - 1);
+  cov(1, 1) = (gt(GlobalTally::K_ABSORPTION).s2 - n * kv[1] * kv[1]) / (n - 1);
+  cov(2, 2) = (gt(GlobalTally::K_TRACKLENGTH).s2 - n * kv[2] * kv[2]) / (n - 1);
 
   // Calculate covariances based on sums with Bessel's correction
   cov(0, 1) = (simulation::k_col_abs - n * kv[0] * kv[1]) / (n - 1);

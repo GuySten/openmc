@@ -833,10 +833,8 @@ void Tally::accumulate()
 #pragma omp parallel for
     for (int i = 0; i < results_.shape()[0]; ++i) {
       for (int j = 0; j < results_.shape()[1]; ++j) {
-        double val = results_(i, j, TallyResult::VALUE) * norm;
-        results_(i, j, TallyResult::VALUE) = 0.0;
-        results_(i, j, TallyResult::SUM) += val;
-        results_(i, j, TallyResult::SUM_SQ) += val * val;
+        double val = results_(i, j).mean() * norm;
+        results_(i, j).push_back(val);
       }
     }
   }
@@ -1040,12 +1038,12 @@ void accumulate_tallies()
     if (settings::run_mode == RunMode::EIGENVALUE) {
       if (simulation::current_batch > settings::n_inactive) {
         // Accumulate products of different estimators of k
-        double k_col = gt(GlobalTally::K_COLLISION, TallyResult::VALUE) /
-                       simulation::total_weight;
-        double k_abs = gt(GlobalTally::K_ABSORPTION, TallyResult::VALUE) /
-                       simulation::total_weight;
-        double k_tra = gt(GlobalTally::K_TRACKLENGTH, TallyResult::VALUE) /
-                       simulation::total_weight;
+        double k_col =
+          gt(GlobalTally::K_COLLISION).mean() / simulation::total_weight;
+        double k_abs =
+          gt(GlobalTally::K_ABSORPTION).mean() / simulation::total_weight;
+        double k_tra =
+          gt(GlobalTally::K_TRACKLENGTH).mean() / simulation::total_weight;
         simulation::k_col_abs += k_col * k_abs;
         simulation::k_col_tra += k_col * k_tra;
         simulation::k_abs_tra += k_abs * k_tra;
@@ -1054,10 +1052,8 @@ void accumulate_tallies()
 
     // Accumulate results for global tallies
     for (int i = 0; i < N_GLOBAL_TALLIES; ++i) {
-      double val = gt(i, TallyResult::VALUE) / simulation::total_weight;
-      gt(i, TallyResult::VALUE) = 0.0;
-      gt(i, TallyResult::SUM) += val;
-      gt(i, TallyResult::SUM_SQ) += val * val;
+      double val = gt(i).mean() / simulation::total_weight;
+      gt(i) += val;
     }
   }
 

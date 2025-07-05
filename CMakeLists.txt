@@ -406,6 +406,7 @@ list(APPEND libopenmc_SOURCES
   src/random_ray/source_region.cpp
   src/reaction.cpp
   src/reaction_product.cpp
+  src/sample.cpp
   src/scattdata.cpp
   src/secondary_correlated.cpp
   src/secondary_kalbach.cpp

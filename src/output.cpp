@@ -382,16 +382,17 @@ void print_columns()
 void print_generation()
 {
   // Determine overall generation index and number of active generations
+  auto& gt = simulation::global_tallies;
   int idx = overall_generation() - 1;
   int n = simulation::current_batch > settings::n_inactive
-            ? settings::gen_per_batch * simulation::n_realizations +
-                simulation::current_gen
+            ? settings::gen_per_batch * gt(0, 0).n + simulation::current_gen
             : 0;
 
   // write out batch/generation and generation k-effective
   auto batch_and_gen = std::to_string(simulation::current_batch) + "/" +
                        std::to_string(simulation::current_gen);
-  fmt::print("  {:>9}   {:8.5f}", batch_and_gen, simulation::k_generation[idx]);
+  fmt::print(
+    "  {:>9}   {:8.5f}", batch_and_gen, simulation::k_generation[idx].mean());
 
   // write out entropy info
   if (settings::entropy_on) {
@@ -495,21 +496,6 @@ void print_runtime()
   show_rate("Calculation Rate (active)", speed_active);
 }
 
-//==============================================================================
-
-std::pair<double, double> mean_stdev(const double* x, int n)
-{
-  double mean = x[static_cast<int>(TallyResult::SUM)] / n;
-  double stdev =
-    n > 1 ? std::sqrt(std::max(0.0,
-              (x[static_cast<int>(TallyResult::SUM_SQ)] / n - mean * mean) /
-                (n - 1)))
-          : 0.0;
-  return {mean, stdev};
-}
-
-//==============================================================================
-
 void print_results()
 {
   // display header block for results
@@ -518,7 +504,8 @@ void print_results()
     return;
 
   // Calculate t-value for confidence intervals
-  int n = simulation::n_realizations;
+  const auto& gt = simulation::global_tallies;
+  int n = gt(0, 0).n;
   double alpha, t_n1, t_n3;
   if (settings::confidence_intervals) {
     alpha = 1.0 - CONFIDENCE_LEVEL;
@@ -530,17 +517,16 @@ void print_results()
   }
 
   // write global tallies
-  const auto& gt = simulation::global_tallies;
   double mean, stdev;
   if (n > 1) {
     if (settings::run_mode == RunMode::EIGENVALUE) {
-      std::tie(mean, stdev) = mean_stdev(&gt(GlobalTally::K_COLLISION, 0), n);
+      std::tie(mean, stdev) = gt(GlobalTally::K_COLLISION, 0).mean_stdev();
       fmt::print(" k-effective (Collision)     = {:.5f} +/- {:.5f}\n", mean,
         t_n1 * stdev);
-      std::tie(mean, stdev) = mean_stdev(&gt(GlobalTally::K_TRACKLENGTH, 0), n);
+      std::tie(mean, stdev) = gt(GlobalTally::K_TRACKLENGTH, 0).mean_stdev();
       fmt::print(" k-effective (Track-length)  = {:.5f} +/- {:.5f}\n", mean,
         t_n1 * stdev);
-      std::tie(mean, stdev) = mean_stdev(&gt(GlobalTally::K_ABSORPTION, 0), n);
+      std::tie(mean, stdev) = gt(GlobalTally::K_ABSORPTION, 0).mean_stdev();
       fmt::print(" k-effective (Absorption)    = {:.5f} +/- {:.5f}\n", mean,
         t_n1 * stdev);
       if (n > 3) {
@@ -550,7 +536,7 @@ void print_results()
           k_combined[0], k_combined[1]);
       }
     }
-    std::tie(mean, stdev) = mean_stdev(&gt(GlobalTally::LEAKAGE, 0), n);
+    std::tie(mean, stdev) = gt(GlobalTally::LEAKAGE, 0).mean_stdev();
     fmt::print(
       " Leakage Fraction            = {:.5f} +/- {:.5f}\n", mean, t_n1 * stdev);
   } else {
@@ -560,14 +546,14 @@ void print_results()
 
     if (settings::run_mode == RunMode::EIGENVALUE) {
       fmt::print(" k-effective (Collision)    = {:.5f}\n",
-        gt(GlobalTally::K_COLLISION, TallyResult::SUM) / n);
+        gt(GlobalTally::K_COLLISION).mean());
       fmt::print(" k-effective (Track-length) = {:.5f}\n",
-        gt(GlobalTally::K_TRACKLENGTH, TallyResult::SUM) / n);
+        gt(GlobalTally::K_TRACKLENGTH).mean());
       fmt::print(" k-effective (Absorption)   = {:.5f}\n",
-        gt(GlobalTally::K_ABSORPTION, TallyResult::SUM) / n);
+        gt(GlobalTally::K_ABSORPTION).mean());
     }
     fmt::print(" Leakage Fraction           = {:.5f}\n",
-      gt(GlobalTally::LEAKAGE, TallyResult::SUM) / n);
+      gt(GlobalTally::LEAKAGE).mean());
   }
   fmt::print("\n");
   std::fflush(stdout);
@@ -706,8 +692,7 @@ void write_tallies()
             score > 0 ? reaction_name(score) : score_names.at(score);
           double mean, stdev;
           std::tie(mean, stdev) =
-            mean_stdev(&tally.results_(filter_index, score_index, 0),
-              tally.n_realizations_);
+            tally.results_(filter_index, score_index).mean_stdev();
           fmt::print(tallies_out, "{0:{1}}{2:<36} {3:.6} +/- {4:.6}\n", "",
             indent + 1, score_name, mean, t_value * stdev);
           score_index += 1;

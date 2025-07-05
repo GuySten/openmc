@@ -175,6 +175,9 @@ int openmc_finalize()
   if (mpi::source_site != MPI_DATATYPE_NULL) {
     MPI_Type_free(&mpi::source_site);
   }
+  if (mpi::sample != MPI_DATATYPE_NULL) {
+    MPI_Type_free(&mpi::sample);
+  }
 #endif
 
   openmc_reset_random_ray();
@@ -193,13 +196,14 @@ int openmc_reset()
   }
 
   // Reset global tallies
-  simulation::n_realizations = 0;
-  xt::view(simulation::global_tallies, xt::all()) = 0.0;
+  for (auto v : xt::flatten(xt::view(simulation::global_tallies, xt::all()))) {
+    v.clear();
+  }
 
   simulation::k_col_abs = 0.0;
   simulation::k_col_tra = 0.0;
   simulation::k_abs_tra = 0.0;
-  simulation::k_sum = {0.0, 0.0};
+  simulation::k_agg.clear();
   simulation::satisfy_triggers = false;
 
   settings::cmfd_run = false;

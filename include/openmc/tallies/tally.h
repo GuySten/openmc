@@ -3,6 +3,7 @@
 
 #include "openmc/constants.h"
 #include "openmc/memory.h" // for unique_ptr
+#include "openmc/sample.h"
 #include "openmc/span.h"
 #include "openmc/tallies/filter.h"
 #include "openmc/tallies/trigger.h"
@@ -55,7 +56,7 @@ public:
 
   void set_nuclides(const vector<std::string>& nuclides);
 
-  const xt::xtensor<double, 3>& results() const { return results_; }
+  const xt::xtensor<Sample, 2>& results() const { return results_; }
 
   //! returns vector of indices corresponding to the tally this is called on
   const vector<int32_t>& filters() const { return filters_; }
@@ -158,7 +159,7 @@ public:
   //! combination of filters (e.g. specific cell, specific energy group, etc.)
   //! and the second dimension of the array is for scores (e.g. flux, total
   //! reaction rate, fission reaction rate, etc.)
-  xt::xtensor<double, 3> results_;
+  xt::xtensor<Sample, 2> results_;
 
   //! True if this tally should be written to statepoint files
   bool writable_ {true};
@@ -214,17 +215,14 @@ extern vector<int> pulse_height_cells;
 
 namespace simulation {
 //! Global tallies (such as k-effective estimators)
-extern xt::xtensor_fixed<double, xt::xshape<N_GLOBAL_TALLIES, 3>>
-  global_tallies;
+extern xt::xtensor_fixed<Sample, xt::xshape<N_GLOBAL_TALLIES>> global_tallies;
 
-//! Number of realizations for global tallies
-extern "C" int32_t n_realizations;
 } // namespace simulation
 
-extern double global_tally_absorption;
-extern double global_tally_collision;
-extern double global_tally_tracklength;
-extern double global_tally_leakage;
+extern Sample global_tally_absorption;
+extern Sample global_tally_collision;
+extern Sample global_tally_tracklength;
+extern Sample global_tally_leakage;
 
 //==============================================================================
 // Non-member functions

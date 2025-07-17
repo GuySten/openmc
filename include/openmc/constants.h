@@ -74,7 +74,9 @@ constexpr double ZERO_FLUX_CUTOFF {1e-22};
 // TODO: replace with <numbers> when we go for C++20
 constexpr double PI {3.141592653589793238462643383279502884L};
 const double SQRT_PI {std::sqrt(PI)};
+constexpr double SQRT_2 {std::sqrt(2.0)};
 constexpr double INFTY {std::numeric_limits<double>::max()};
+constexpr double SIGMA_PER_FWHM {1.0 / (2.0 * std::sqrt(2.0 * std::log(2.0)))};
 
 // Values here are from the Committee on Data for Science and Technology
 // (CODATA) 2018 recommendation (https://physics.nist.gov/cuu/Constants/).

@@ -19,8 +19,8 @@ from .mesh import _get_mesh
 __all__ = [
     'Filter', 'AzimuthalFilter', 'CellFilter', 'CellbornFilter', 'CellfromFilter',
     'CellInstanceFilter', 'CollisionFilter', 'DistribcellFilter', 'DelayedGroupFilter',
-    'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter', 'LegendreFilter',
-    'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
+    'EnergyFilter', 'EnergyoutFilter', 'GaussianBroadenedEnergyFilter', 'EnergyFunctionFilter',
+    'LegendreFilter', 'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
     'ParentNuclideFilter', 'ParticleFilter', 'PolarFilter', 'SphericalHarmonicsFilter',
     'SpatialLegendreFilter', 'SurfaceFilter', 'TimeFilter', 'UniverseFilter',
@@ -225,6 +225,8 @@ class CollisionFilter(Filter):
 class EnergyoutFilter(EnergyFilter):
     filter_type = 'energyout'
 
+class GaussianBroadenedEnergyFilter(EnergyFilter):
+    filter_type = 'gaussianbroadenedenergy'
 
 class AzimuthalFilter(Filter):
     filter_type = 'azimuthal'

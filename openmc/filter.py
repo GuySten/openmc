@@ -22,7 +22,7 @@ from ._xml import get_text
 
 _FILTER_TYPES = (
     'universe', 'material', 'cell', 'cellborn', 'surface', 'mesh', 'energy',
-    'energyout', 'mu', 'musurface', 'polar', 'azimuthal', 'distribcell', 'delayedgroup',
+    'energyout', 'gaussianbroadenedenergy', 'mu', 'musurface', 'polar', 'azimuthal', 'distribcell', 'delayedgroup',
     'energyfunction', 'cellfrom', 'materialfrom', 'legendre', 'spatiallegendre',
     'sphericalharmonics', 'zernike', 'zernikeradial', 'particle', 'cellinstance',
     'collision', 'time', 'parentnuclide', 'weight', 'meshborn', 'meshsurface',
@@ -1666,6 +1666,91 @@ class EnergyFilter(RealFilter):
         cv.check_value('group_structure', group_structure, openmc.mgxs.GROUP_STRUCTURES.keys())
         return cls(openmc.mgxs.GROUP_STRUCTURES[group_structure.upper()])
 
+class GaussianBroadenedEnergyFilter(EnergyFilter):
+    """Bins tally events based on incident particle energy broadened 
+    with a gaussian with an energy dependent FWHM according to the equation:
+
+    :math:`FWHM(E) = a+b*\sqrt{E+c*E*E}`
+
+    Parameters
+    ----------
+    values : Iterable of Real
+        A list of values for which each successive pair constitutes a range of
+        energies in [eV] for a single bin. Entries must be positive and ascending.
+    a : Real
+        a coefficient in FWHM equation
+    b : Real
+        b coefficient in FWHM equation
+    c : Real
+        c coefficient in FWHM equation
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    values : numpy.ndarray
+        An array of values for which each successive pair constitutes a range of
+        energies in [eV] for a single bin
+    a : Real
+        a coefficient 
+    b : Real
+        b coefficient
+    c : Real
+        c coefficient        
+    id : int
+        Unique identifier for the filter
+    bins : numpy.ndarray
+        An array of shape (N, 2) where each row is a pair of energies in [eV]
+        for a single filter bin
+    num_bins : int
+        The number of filter bins
+
+    """
+    units = 'eV'
+
+    def __init__(self, values, a, b, c, filter_id=None):
+        super().__init__(values, filter_id)
+        self.a = a
+        self.b = b
+        self.c = c
+
+    def to_xml_element(self):
+        """Return XML Element representing the Filter.
+
+        Returns
+        -------
+        element : lxml.etree._Element
+            XML element containing filter data
+
+        """
+        element = super().to_xml_element()
+        element.set('a', str(self.a))
+        element.set('b', str(self.b))
+        element.set('c', str(self.c))
+        return element
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        filter_id = int(elem.get('id'))
+        bins = [float(x) for x in get_text(elem, 'bins').split()]
+        a = float(get_text(elem, 'a'))
+        b = float(get_text(elem, 'b'))
+        c = float(get_text(elem, 'c'))
+        return cls(bins, a, b, c, filter_id=filter_id)
+        
+    @classmethod
+    def from_hdf5(cls, group, **kwargs):
+        if group['type'][()].decode() != cls.short_name.lower():
+            raise ValueError("Expected HDF5 data for filter type '"
+                             + cls.short_name.lower() + "' but got '"
+                             + group['type'][()].decode() + " instead")
+
+        values = group['bins'][()]
+        a = float(group['a'][()])
+        b = float(group['b'][()])
+        c = float(group['c'][()])                
+        filter_id = int(group.name.split('/')[-1].lstrip('filter '))
+        return cls(values, a, b, c, filter_id=filter_id)
 
 class EnergyoutFilter(EnergyFilter):
     """Bins tally events based on outgoing particle energy.

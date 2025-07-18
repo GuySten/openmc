@@ -1324,35 +1324,55 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
     }
   }
 
-  // Sample the outgoing energy and angle
   double E_in = p.E();
+  int n_sample = 0;
   double E;
   double mu;
-  product.sample(E_in, E, mu, p.current_seed());
 
-  // if scattering system is in center-of-mass, transfer cosine of scattering
-  // angle and outgoing energy from CM to LAB
-  if (rx->scatter_in_cm_) {
-    auto& nuc = data::photonuclears[i_nuclide];
-    double E_cm = E;
-    double mu_cm = mu;
+  while (true) {
 
-    // determine outgoing energy in lab
-    double A = nuc->awr_;
-    E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
-        (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
+    // Sample the outgoing energy and angle
+    product.sample(E_in, E, mu, p.current_seed());
 
-    // determine outgoing angle in lab
-    mu = mu_cm * std::sqrt(E_cm / E) +
-         E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
+    // if scattering system is in center-of-mass, transfer cosine of scattering
+    // angle and outgoing energy from CM to LAB
+    if (rx->scatter_in_cm_) {
+      auto& nuc = data::photonuclears[i_nuclide];
+      double E_cm = E;
+      double mu_cm = mu;
 
-    // Because of floating-point roundoff, it may be possible for mu to be
-    // outside of the range [-1,1). In these cases, we just set mu to exactly -1
-    // or 1
-    if (std::abs(mu) > 1.0)
-      mu = std::copysign(1.0, mu);
+      // determine outgoing energy in lab
+      double A = nuc->awr_;
+      E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
+          (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
+
+      // determine outgoing angle in lab
+      mu = mu_cm * std::sqrt(E_cm / E) +
+           E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
+
+      // Because of floating-point roundoff, it may be possible for mu to be
+      // outside of the range [-1,1). In these cases, we just set mu to exactly
+      // -1 or 1
+      if (std::abs(mu) > 1.0)
+        mu = std::copysign(1.0, mu);
+    }
+
+    // resample if energy is greater than maximum neutron energy
+    constexpr int neutron = static_cast<int>(ParticleType::neutron);
+    if (E < data::energy_max[neutron])
+      break;
+
+    // check for large number of resamples
+    ++n_sample;
+    if (n_sample == MAX_SAMPLE) {
+      // particle_write_restart(p)
+      auto& nuc = data::photonuclears[i_nuclide];
+      fatal_error(
+        "Resampled photonuclear energy distribution maximum number of times "
+        "for nuclide " +
+        nuc->name_);
+    }
   }
-
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
 

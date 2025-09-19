@@ -891,7 +891,7 @@ void Material::calculate_neutron_xs(Particle& p) const
     // ADD TO MACROSCOPIC CROSS SECTION
 
     // Copy atom density of nuclide in material
-    double atom_density = atom_density_(i);
+    double atom_density = this->atom_density(i, p.density_mult());
 
     // Add contributions to cross sections
     p.macro_xs().total += atom_density * micro.total;
@@ -928,7 +928,7 @@ void Material::calculate_photon_xs(Particle& p) const
     // ADD TO MACROSCOPIC CROSS SECTION
 
     // Copy atom density of nuclide in material
-    double atom_density = atom_density_(i);
+    double atom_density = this->atom_density(i, p.density_mult());
 
     // Add contributions to material macroscopic cross sections
     p.macro_xs().total += atom_density * micro.total;

@@ -1,9 +1,11 @@
 #include "openmc/tallies/filter_energy.h"
 
+#include <cmath>
 #include <fmt/core.h>
 
+#include "openmc/array.h"
 #include "openmc/capi.h"
-#include "openmc/constants.h" // For C_NONE
+#include "openmc/constants.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
@@ -87,6 +89,104 @@ void EnergyFilter::to_statepoint(hid_t filter_group) const
 }
 
 std::string EnergyFilter::text_label(int bin) const
+{
+  return fmt::format("Incoming Energy [{}, {})", bins_[bin], bins_[bin + 1]);
+}
+
+//==============================================================================
+// GaussianBroadenedEnergyFilter implementation
+//==============================================================================
+
+void GaussianBroadenedEnergyFilter::from_xml(pugi::xml_node node)
+{
+  auto bins = get_node_array<double>(node, "bins");
+  a_ = std::stod(get_node_value(node, "a"));
+  b_ = std::stod(get_node_value(node, "b"));
+  c_ = std::stod(get_node_value(node, "c"));
+  this->set_bins(bins);
+}
+
+void GaussianBroadenedEnergyFilter::set_bins(span<const double> bins)
+{
+  // Clear existing bins
+  bins_.clear();
+  bins_.reserve(bins.size());
+
+  // Copy bins, ensuring they are valid
+  for (int64_t i = 0; i < bins.size(); ++i) {
+    if (i > 0 && bins[i] <= bins[i - 1]) {
+      throw std::runtime_error {
+        "Energy bins must be monotonically increasing."};
+    }
+    bins_.push_back(bins[i]);
+  }
+
+  n_bins_ = bins_.size() - 1;
+
+  for (int64_t i = 0; i < bins_.size() - 1; ++i) {
+    int64_t i0 = 0;
+    int64_t i1 = bins_.size() - 1;
+    double el = bins_[i];
+    double er = bins_[i + 1];
+    double sigma_l = fwhm(el) * SIGMA_PER_FWHM / SQRT_2;
+    double sigma_r = fwhm(er) * SIGMA_PER_FWHM / SQRT_2;
+    for (int64_t j = 0; j < bins_.size() - 1; ++j) {
+      double e0 = (bins_[j] - el) / sigma_l;
+      double e1 = (bins_[j + 1] - el) / sigma_l;
+      double weight =
+        (std::erfc(e0) - std::erfc(e1)) / std::erfc(-el / sigma_l);
+      if (weight < GaussianBroadenedEnergyFilter::cutoff_) {
+        ++i0;
+      } else {
+        break;
+      }
+    }
+
+    for (int64_t j = bins_.size() - 1; j > 0; --j) {
+      double e0 = (bins_[j - 1] - er) / sigma_r;
+      double e1 = (bins_[j] - er) / sigma_r;
+      double weight =
+        (std::erfc(e0) - std::erfc(e1)) / std::erfc(-er / sigma_r);
+      if (weight < GaussianBroadenedEnergyFilter::cutoff_) {
+        --i1;
+      } else {
+        break;
+      }
+    }
+    offsets_.push_back(array<int64_t, 2>({i0, i1}));
+  }
+}
+
+void GaussianBroadenedEnergyFilter::get_all_bins(
+  const Particle& p, TallyEstimator estimator, FilterMatch& match) const
+{
+  // Get the pre-collision energy of the particle.
+  auto E = p.E_last();
+  double sigma = fwhm(E) * SIGMA_PER_FWHM / SQRT_2;
+
+  // Bin the energy.
+  if (E >= bins_.front() && E <= bins_.back()) {
+    auto bin = lower_bound_index(bins_.begin(), bins_.end(), E);
+    for (int i = offsets_[bin][0]; i <= offsets_[bin][1]; ++i) {
+      match.bins_.push_back(i);
+      double e0 = (bins_[i] - E) / sigma;
+      double e1 = (bins_[i + 1] - E) / sigma;
+      double weight = (std::erfc(e0) - std::erfc(e1)) / std::erfc(-E / sigma);
+      match.weights_.push_back(weight);
+    }
+  }
+}
+
+void GaussianBroadenedEnergyFilter::to_statepoint(hid_t filter_group) const
+{
+  Filter::to_statepoint(filter_group);
+  write_dataset(filter_group, "bins", bins_);
+  write_dataset(filter_group, "a", a_);
+  write_dataset(filter_group, "b", b_);
+  write_dataset(filter_group, "c", c_);
+}
+
+std::string GaussianBroadenedEnergyFilter::text_label(int bin) const
 {
   return fmt::format("Incoming Energy [{}, {})", bins_[bin], bins_[bin + 1]);
 }

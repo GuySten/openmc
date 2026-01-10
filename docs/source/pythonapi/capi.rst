@@ -68,6 +68,7 @@ Classes
    EnergyFilter
    EnergyFunctionFilter
    EnergyoutFilter
+   GaussianBroadenedEnergyFilter
    Filter
    LegendreFilter
    Material

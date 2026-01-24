@@ -21,6 +21,7 @@
 #include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/mgxs_interface.h"
+#include "openmc/charged_particle.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
 #include "openmc/search.h"
@@ -377,6 +378,7 @@ Material& Material::clone()
   mat->depletable() = depletable_;
   mat->p0_ = p0_;
   mat->mat_nuclide_index_ = mat_nuclide_index_;
+  mat->charged_particle_ = charged_particle_;
   mat->thermal_tables_ = thermal_tables_;
   mat->temperature_ = temperature_;
 
@@ -408,6 +410,37 @@ void Material::finalize()
 
     // Assign thermal scattering tables
     this->init_thermal();
+
+    // Initialize charged particle data indices
+    bool any_charged_particle = settings::proton_transport ||
+                                settings::deuteron_transport ||
+                                settings::triton_transport ||
+                                settings::helion_transport ||
+                                settings::alpha_transport;
+    if (any_charged_particle) {
+      // 5 particle types per nuclide
+      charged_particle_.resize(nuclide_.size() * 5, -1);
+
+      // Map particle types to names
+      const char* particle_names[5] = {
+        "proton", "deuteron", "triton", "helion", "alpha"};
+
+      for (size_t i = 0; i < nuclide_.size(); ++i) {
+        const auto& nuc = *data::nuclides[nuclide_[i]];
+
+        for (int j = 0; j < 5; ++j) {
+          // Construct the charged particle data name
+          std::string cp_name =
+            std::string(particle_names[j]) + "_" + nuc.name_;
+
+          // Look up in charged particle map
+          auto it = data::charged_particle_map.find(cp_name);
+          if (it != data::charged_particle_map.end()) {
+            charged_particle_[i * 5 + j] = it->second;
+          }
+        }
+      }
+    }
   }
 
   // Normalize density
@@ -823,6 +856,12 @@ void Material::calculate_xs(Particle& p) const
     this->calculate_neutron_xs(p);
   } else if (p.type() == ParticleType::photon) {
     this->calculate_photon_xs(p);
+  } else if (p.type() == ParticleType::proton ||
+             p.type() == ParticleType::deuteron ||
+             p.type() == ParticleType::triton ||
+             p.type() == ParticleType::helion ||
+             p.type() == ParticleType::alpha) {
+    this->calculate_charged_particle_xs(p);
   }
 }
 
@@ -933,6 +972,28 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().incoherent += atom_density * micro.incoherent;
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
     p.macro_xs().pair_production += atom_density * micro.pair_production;
+  }
+}
+
+void Material::calculate_charged_particle_xs(Particle& p) const
+{
+  // Determine which charged particle type (0=proton, 1=deuteron, etc.)
+  int i_particle = static_cast<int>(p.type()) - static_cast<int>(ParticleType::proton);
+
+  // Add contribution from each nuclide in material
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    // Get charged particle data index for this nuclide/particle combination
+    int i_cp = charged_particle_[i * 5 + i_particle];
+    if (i_cp < 0)
+      continue; // No data for this combination
+
+    // Get total cross section
+    const auto& cp = *data::charged_particles[i_cp];
+    double xs_total = cp.total_xs(p.E());
+
+    // Add to macroscopic cross section
+    double atom_density = this->atom_density(i, p.density_mult());
+    p.macro_xs().total += atom_density * xs_total;
   }
 }
 

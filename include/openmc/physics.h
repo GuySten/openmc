@@ -1,6 +1,8 @@
 #ifndef OPENMC_PHYSICS_H
 #define OPENMC_PHYSICS_H
 
+#include <utility>
+
 #include "openmc/bank.h"
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
@@ -38,6 +40,19 @@ void sample_electron_reaction(Particle& p);
 //! energy MASS_ELECTRON_EV (0.511 MeV) are created and travel in opposite
 //! directions.
 void sample_positron_reaction(Particle& p);
+
+//! Samples an incident charged particle (proton, deuteron, triton, helion,
+//! alpha) reaction based on the cross sections for each nuclide within the
+//! material. Uses two-body kinematics to determine the outgoing energy and
+//! angle.
+void sample_charged_particle_reaction(Particle& p);
+
+//! Sample a nuclide and charged particle data index for a charged particle
+//! collision based on macroscopic cross sections.
+//!
+//! \param[in] p Particle
+//! \return Pair of (charged particle data index, nuclide index)
+std::pair<int, int> sample_charged_particle_nuclide(Particle& p);
 
 //! Sample a nuclide based on their total cross sections and densities within
 //! the current material

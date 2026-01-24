@@ -27,10 +27,33 @@ CHARGED_PARTICLES = {
 # Reverse mapping from (Z, A) to particle name
 _ZA_TO_PARTICLE = {(z, a): name for name, (z, a, _) in CHARGED_PARTICLES.items()}
 
+# Mapping from GNDS/ENDF particle names to standard names
+_PARTICLE_NAME_MAP = {
+    'H1': 'proton',
+    'H2': 'deuteron',
+    'H3': 'triton',
+    'He3': 'helion',
+    'He4': 'alpha',
+    'n': 'neutron',
+    'neutron': 'neutron',
+    'photon': 'photon',
+    'gamma': 'photon',
+    'proton': 'proton',
+    'deuteron': 'deuteron',
+    'triton': 'triton',
+    'helion': 'helion',
+    'alpha': 'alpha',
+}
+
 
 def get_particle_type(z, a):
     """Get particle name from Z and A values."""
     return _ZA_TO_PARTICLE.get((z, a), f'Z{z}A{a}')
+
+
+def standardize_particle_name(name):
+    """Convert particle name to standard form (proton, deuteron, etc.)."""
+    return _PARTICLE_NAME_MAP.get(name, name)
 
 
 class IncidentChargedParticle(EqualityMixin):
@@ -211,9 +234,10 @@ class IncidentChargedParticle(EqualityMixin):
         n_reactions = len(mt_list)
 
         # Build cross section matrix (n_energy x n_reactions)
-        # and Q-value array
+        # and Q-value array and ejectile types
         xs_matrix = np.zeros((n_energy, n_reactions))
         q_values = np.zeros(n_reactions)
+        ejectiles = []
 
         for j, mt in enumerate(mt_list):
             rx = self.reactions[mt]
@@ -224,6 +248,17 @@ class IncidentChargedParticle(EqualityMixin):
                 for i, E in enumerate(energy):
                     val = xs_func(E)
                     xs_matrix[i, j] = val if val is not None else 0.0
+
+            # Get ejectile particle type from products
+            # For elastic (MT=2), ejectile is same as projectile
+            if mt == 2:
+                ejectiles.append(self.projectile)
+            elif rx.products:
+                # First product is typically the ejectile
+                ejectiles.append(standardize_particle_name(rx.products[0].particle))
+            else:
+                # Default to projectile if no products defined
+                ejectiles.append(self.projectile)
 
         # Write to HDF5
         with h5py.File(str(path), mode, libver=libver) as f:
@@ -246,6 +281,17 @@ class IncidentChargedParticle(EqualityMixin):
 
             # Write Q-values
             g.create_dataset('Q_value', data=q_values)
+
+            # Write ejectile particle types as integers
+            # Mapping: 0=neutron, 1=photon, 2=electron, 3=positron,
+            #          4=proton, 5=deuteron, 6=triton, 7=helion, 8=alpha
+            particle_type_map = {
+                'neutron': 0, 'photon': 1, 'electron': 2, 'positron': 3,
+                'proton': 4, 'deuteron': 5, 'triton': 6, 'helion': 7, 'alpha': 8
+            }
+            ejectile_indices = np.array(
+                [particle_type_map.get(e, 0) for e in ejectiles], dtype=np.int32)
+            g.create_dataset('ejectile', data=ejectile_indices)
 
             # Write cross section matrix
             g.create_dataset('xs', data=xs_matrix)

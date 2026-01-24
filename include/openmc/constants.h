@@ -90,6 +90,15 @@ constexpr double MASS_NEUTRON {1.00866491595}; // mass of a neutron in amu
 constexpr double MASS_NEUTRON_EV {
   939.56542052e6};                             // mass of a neutron in eV/c^2
 constexpr double MASS_PROTON {1.007276466621}; // mass of a proton in amu
+constexpr double MASS_PROTON_EV {938.27208816e6}; // mass of a proton in eV/c^2
+constexpr double MASS_DEUTERON_EV {
+  1875.61294257e6}; // mass of a deuteron in eV/c^2
+constexpr double MASS_TRITON_EV {
+  2808.92113298e6}; // mass of a triton in eV/c^2
+constexpr double MASS_HELION_EV {
+  2808.39160743e6}; // mass of He-3 nucleus in eV/c^2
+constexpr double MASS_ALPHA_EV {
+  3727.37940823e6}; // mass of an alpha particle in eV/c^2
 constexpr double MASS_ELECTRON_EV {
   0.51099895000e6}; // electron mass energy equivalent in eV/c^2
 constexpr double FINE_STRUCTURE {

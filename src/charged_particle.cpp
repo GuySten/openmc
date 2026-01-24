@@ -46,6 +46,14 @@ IncidentChargedParticle::IncidentChargedParticle(hid_t group)
   // Read Q-values
   read_dataset(group, "Q_value", Q_value_);
 
+  // Read ejectile particle types (stored as integers matching ParticleType enum)
+  vector<int> ejectile_indices;
+  read_dataset(group, "ejectile", ejectile_indices);
+  ejectile_.resize(n_reactions_);
+  for (int j = 0; j < n_reactions_; ++j) {
+    ejectile_[j] = static_cast<ParticleType>(ejectile_indices[j]);
+  }
+
   // Read cross section matrix (stored as n_energy x n_reactions)
   xt::xtensor<double, 2> xs_matrix;
   read_dataset(group, "xs", xs_matrix);

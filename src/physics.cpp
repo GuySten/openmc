@@ -3,6 +3,7 @@
 #include "openmc/bank.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
+#include "openmc/charged_particle.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
@@ -58,6 +59,13 @@ void collision(Particle& p)
     break;
   case ParticleType::positron:
     sample_positron_reaction(p);
+    break;
+  case ParticleType::proton:
+  case ParticleType::deuteron:
+  case ParticleType::triton:
+  case ParticleType::helion:
+  case ParticleType::alpha:
+    sample_charged_particle_reaction(p);
     break;
   }
 
@@ -1221,6 +1229,208 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
       p.secondary_bank().back().parent_nuclide =
         rx->products_[i_product].parent_nuclide_;
     }
+  }
+}
+
+//==============================================================================
+// Charged particle physics
+//==============================================================================
+
+std::pair<int, int> sample_charged_particle_nuclide(Particle& p)
+{
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+
+  // Get pointer to material
+  const auto& mat {model::materials[p.material()]};
+
+  // Determine which charged particle type (0=proton, 1=deuteron, etc.)
+  int i_particle =
+    static_cast<int>(p.type()) - static_cast<int>(ParticleType::proton);
+
+  double prob = 0.0;
+  for (size_t i = 0; i < mat->nuclide_.size(); ++i) {
+    // Get charged particle data index for this nuclide/particle combination
+    int i_cp = mat->charged_particle_[i * 5 + i_particle];
+    if (i_cp < 0)
+      continue; // No data for this combination
+
+    // Get total cross section for this nuclide
+    const auto& cp = *data::charged_particles[i_cp];
+    double xs_total = cp.total_xs(p.E());
+
+    // Get atom density
+    double atom_density = mat->atom_density(i, p.density_mult());
+
+    // Increment probability to compare to cutoff
+    prob += atom_density * xs_total;
+    if (prob >= cutoff) {
+      return {i_cp, mat->nuclide_[i]};
+    }
+  }
+
+  // If we reach here, no nuclide was sampled (shouldn't happen with valid data)
+  p.write_restart();
+  throw std::runtime_error {
+    "Did not sample any nuclide during charged particle collision."};
+}
+
+// Helper function to get particle mass in neutron masses
+double get_particle_mass(ParticleType type)
+{
+  switch (type) {
+  case ParticleType::neutron:
+    return 1.0;
+  case ParticleType::proton:
+    return MASS_PROTON_EV / MASS_NEUTRON_EV;
+  case ParticleType::deuteron:
+    return MASS_DEUTERON_EV / MASS_NEUTRON_EV;
+  case ParticleType::triton:
+    return MASS_TRITON_EV / MASS_NEUTRON_EV;
+  case ParticleType::helion:
+    return MASS_HELION_EV / MASS_NEUTRON_EV;
+  case ParticleType::alpha:
+    return MASS_ALPHA_EV / MASS_NEUTRON_EV;
+  default:
+    return 1.0;
+  }
+}
+
+void sample_charged_particle_reaction(Particle& p)
+{
+  // Sample which nuclide and get charged particle data index
+  auto [i_cp, i_nuclide] = sample_charged_particle_nuclide(p);
+
+  // Save which nuclide particle had collision with
+  p.event_nuclide() = i_nuclide;
+
+  // Get charged particle data
+  const auto& cp = *data::charged_particles[i_cp];
+
+  // Sample which reaction based on relative cross sections
+  double cutoff = prn(p.current_seed()) * cp.total_xs(p.E());
+  double prob = 0.0;
+  int i_rx = 0;
+
+  for (int i = 0; i < cp.n_reactions_; ++i) {
+    prob += cp.xs(i, p.E());
+    if (prob >= cutoff) {
+      i_rx = i;
+      break;
+    }
+  }
+
+  // Get reaction MT, Q-value, and ejectile type
+  int mt = cp.MT_[i_rx];
+  double Q = cp.Q_value_[i_rx];
+  ParticleType ejectile_type = cp.ejectile_[i_rx];
+
+  // Store event MT for tallying
+  p.event_mt() = mt;
+
+  // Get masses in neutron masses
+  double m_proj = get_particle_mass(p.type());
+  double m_target = cp.awr_;
+  double m_ejectile = get_particle_mass(ejectile_type);
+
+  // For two-body kinematics, calculate residual mass from conservation
+  // m_proj + m_target = m_ejectile + m_residual (approximately, ignoring binding)
+  // But we need to use Q-value for proper energy balance
+
+  double E_in = p.E();
+
+  // Calculate center-of-mass energy
+  double E_cm = E_in * m_target / (m_proj + m_target);
+
+  // Total energy available in CM = E_cm + Q
+  double E_available = E_cm + Q;
+
+  if (E_available <= 0.0) {
+    // Below threshold - shouldn't happen with valid cross section data
+    // Handle gracefully by treating as elastic with no energy change
+    E_available = E_cm;
+  }
+
+  // Sample scattering angle in center-of-mass (isotropic for now)
+  // TODO: Add angular distribution support from ENDF data
+  double mu_cm = 2.0 * prn(p.current_seed()) - 1.0;
+
+  // CM velocity in lab frame
+  double v_cm_lab = std::sqrt(2.0 * E_in / m_proj) * m_proj / (m_proj + m_target);
+
+  // Ejectile velocity in CM frame
+  // For two-body: E_ejectile_cm = E_available * m_residual / (m_ejectile + m_residual)
+  // Using Q-value relation: m_residual = m_proj + m_target - m_ejectile (approx)
+  double m_residual = m_proj + m_target - m_ejectile;
+  if (m_residual <= 0.0) {
+    m_residual = m_target; // Fallback for elastic-like
+  }
+
+  double E_ejectile_cm = E_available * m_residual / (m_ejectile + m_residual);
+  double v_ejectile_cm = std::sqrt(2.0 * E_ejectile_cm / m_ejectile);
+
+  // Transform to lab frame
+  double v_para = v_ejectile_cm * mu_cm + v_cm_lab;
+  double v_perp = v_ejectile_cm * std::sqrt(1.0 - mu_cm * mu_cm);
+
+  // Lab frame energy and angle (using ejectile mass)
+  double E_out = 0.5 * m_ejectile * (v_para * v_para + v_perp * v_perp);
+  double v_lab = std::sqrt(v_para * v_para + v_perp * v_perp);
+  double mu_lab = (v_lab > 0.0) ? v_para / v_lab : 1.0;
+
+  // Ensure mu_lab is in valid range
+  if (std::abs(mu_lab) > 1.0) {
+    mu_lab = std::copysign(1.0, mu_lab);
+  }
+
+  // Convert energy from neutron mass units to eV
+  E_out *= MASS_NEUTRON_EV;
+
+  // Update particle direction
+  p.mu() = mu_lab;
+  Direction u_new = rotate_angle(p.u(), mu_lab, nullptr, p.current_seed());
+
+  // Handle particle type change
+  if (ejectile_type == p.type()) {
+    // Same particle type - just update energy and direction
+    p.E() = E_out;
+    p.u() = u_new;
+    p.event() = TallyEvent::SCATTER;
+  } else if (ejectile_type == ParticleType::neutron) {
+    // Reaction produces a neutron - create secondary neutron and kill charged particle
+    p.create_secondary(p.wgt(), u_new, E_out, ParticleType::neutron);
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+  } else {
+    // Reaction produces a different charged particle
+    // For now, create secondary if that transport mode is enabled, otherwise absorb
+    bool transport_enabled = false;
+    switch (ejectile_type) {
+    case ParticleType::proton:
+      transport_enabled = settings::proton_transport;
+      break;
+    case ParticleType::deuteron:
+      transport_enabled = settings::deuteron_transport;
+      break;
+    case ParticleType::triton:
+      transport_enabled = settings::triton_transport;
+      break;
+    case ParticleType::helion:
+      transport_enabled = settings::helion_transport;
+      break;
+    case ParticleType::alpha:
+      transport_enabled = settings::alpha_transport;
+      break;
+    default:
+      break;
+    }
+
+    if (transport_enabled) {
+      p.create_secondary(p.wgt(), u_new, E_out, ejectile_type);
+    }
+    // Original particle is absorbed in either case
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
   }
 }
 

@@ -188,6 +188,12 @@ public:
   std::string name_;                    //!< Name of material
   vector<int> nuclide_;                 //!< Indices in nuclides vector
   vector<int> element_;                 //!< Indices in elements vector
+
+  //! Indices into charged_particles for each nuclide and particle type.
+  //! Indexed as [i_nuclide * 5 + i_particle] where i_particle is:
+  //! 0=proton, 1=deuteron, 2=triton, 3=helion, 4=alpha.
+  //! A value of -1 indicates no data available.
+  vector<int> charged_particle_;
   NCrystalMat ncrystal_mat_;            //!< NCrystal material object
   xt::xtensor<double, 1> atom_density_; //!< Nuclide atom density in [atom/b-cm]
   double density_;                      //!< Total atom density in [atom/b-cm]
@@ -223,6 +229,7 @@ private:
 
   void calculate_neutron_xs(Particle& p) const;
   void calculate_photon_xs(Particle& p) const;
+  void calculate_charged_particle_xs(Particle& p) const;
 
   //----------------------------------------------------------------------------
   // Private data members

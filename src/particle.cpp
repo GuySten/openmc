@@ -59,6 +59,21 @@ double Particle::speed() const
     case ParticleType::positron:
       mass = MASS_ELECTRON_EV;
       break;
+    case ParticleType::proton:
+      mass = MASS_PROTON_EV;
+      break;
+    case ParticleType::deuteron:
+      mass = MASS_DEUTERON_EV;
+      break;
+    case ParticleType::triton:
+      mass = MASS_TRITON_EV;
+      break;
+    case ParticleType::helion:
+      mass = MASS_HELION_EV;
+      break;
+    case ParticleType::alpha:
+      mass = MASS_ALPHA_EV;
+      break;
     }
     // Equivalent to C * sqrt(1-(m/(m+E))^2) without problem at E<<m:
     return C_LIGHT * std::sqrt(this->E() * (this->E() + 2 * mass)) /
@@ -890,6 +905,16 @@ std::string particle_type_to_str(ParticleType type)
     return "electron";
   case ParticleType::positron:
     return "positron";
+  case ParticleType::proton:
+    return "proton";
+  case ParticleType::deuteron:
+    return "deuteron";
+  case ParticleType::triton:
+    return "triton";
+  case ParticleType::helion:
+    return "helion";
+  case ParticleType::alpha:
+    return "alpha";
   }
   UNREACHABLE();
 }

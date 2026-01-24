@@ -45,6 +45,11 @@ TEST_CASE("Test Charged Particle Data Loading")
     CHECK_THAT(cp.Q_value_[0], Catch::Matchers::WithinAbs(0.0, 1e-6));
     CHECK_THAT(cp.Q_value_[1] / 1e6, Catch::Matchers::WithinRel(3.269, 0.01));
     CHECK_THAT(cp.Q_value_[2] / 1e6, Catch::Matchers::WithinRel(4.033, 0.01));
+
+    // Ejectile types
+    CHECK(cp.ejectile_[0] == ParticleType::deuteron); // elastic
+    CHECK(cp.ejectile_[1] == ParticleType::neutron);  // d,d -> n + He3
+    CHECK(cp.ejectile_[2] == ParticleType::proton);   // d,d -> p + t
   }
 
   SECTION("Verify cross section lookup")

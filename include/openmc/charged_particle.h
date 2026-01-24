@@ -55,10 +55,11 @@ public:
   int metastable_;         //!< Target metastable state
   double awr_;             //!< Target atomic weight ratio
 
-  vector<double> energy_;   //!< Energy grid in [eV]
-  vector<int> MT_;          //!< Reaction MT numbers
-  vector<double> Q_value_;  //!< Q-values in [eV]
-  vector<double> xs_;       //!< Cross sections [n_energy x n_reactions], flattened
+  vector<double> energy_;        //!< Energy grid in [eV]
+  vector<int> MT_;               //!< Reaction MT numbers
+  vector<double> Q_value_;       //!< Q-values in [eV]
+  vector<ParticleType> ejectile_; //!< Ejectile particle type for each reaction
+  vector<double> xs_;            //!< Cross sections [n_energy x n_reactions], flattened
 
   int n_energy_;    //!< Number of energy points
   int n_reactions_; //!< Number of reactions

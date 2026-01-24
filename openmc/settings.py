@@ -174,6 +174,16 @@ class Settings:
         Number of particles per generation
     photon_transport : bool
         Whether to use photon transport.
+    proton_transport : bool
+        Whether to use proton transport.
+    deuteron_transport : bool
+        Whether to use deuteron transport.
+    triton_transport : bool
+        Whether to use triton transport.
+    helion_transport : bool
+        Whether to use helion (He-3) transport.
+    alpha_transport : bool
+        Whether to use alpha transport.
     plot_seed : int
        Initial seed for randomly generated plot colors.
     ptables : bool
@@ -389,6 +399,11 @@ class Settings:
         self._confidence_intervals = None
         self._electron_treatment = None
         self._photon_transport = None
+        self._proton_transport = None
+        self._deuteron_transport = None
+        self._triton_transport = None
+        self._helion_transport = None
+        self._alpha_transport = None
         self._plot_seed = None
         self._ptables = None
         self._uniform_source_sampling = None
@@ -655,6 +670,51 @@ class Settings:
     def photon_transport(self, photon_transport: bool):
         cv.check_type('photon transport', photon_transport, bool)
         self._photon_transport = photon_transport
+
+    @property
+    def proton_transport(self) -> bool:
+        return self._proton_transport
+
+    @proton_transport.setter
+    def proton_transport(self, proton_transport: bool):
+        cv.check_type('proton transport', proton_transport, bool)
+        self._proton_transport = proton_transport
+
+    @property
+    def deuteron_transport(self) -> bool:
+        return self._deuteron_transport
+
+    @deuteron_transport.setter
+    def deuteron_transport(self, deuteron_transport: bool):
+        cv.check_type('deuteron transport', deuteron_transport, bool)
+        self._deuteron_transport = deuteron_transport
+
+    @property
+    def triton_transport(self) -> bool:
+        return self._triton_transport
+
+    @triton_transport.setter
+    def triton_transport(self, triton_transport: bool):
+        cv.check_type('triton transport', triton_transport, bool)
+        self._triton_transport = triton_transport
+
+    @property
+    def helion_transport(self) -> bool:
+        return self._helion_transport
+
+    @helion_transport.setter
+    def helion_transport(self, helion_transport: bool):
+        cv.check_type('helion transport', helion_transport, bool)
+        self._helion_transport = helion_transport
+
+    @property
+    def alpha_transport(self) -> bool:
+        return self._alpha_transport
+
+    @alpha_transport.setter
+    def alpha_transport(self, alpha_transport: bool):
+        cv.check_type('alpha transport', alpha_transport, bool)
+        self._alpha_transport = alpha_transport
 
     @property
     def uniform_source_sampling(self) -> bool:
@@ -1590,6 +1650,31 @@ class Settings:
             element = ET.SubElement(root, "photon_transport")
             element.text = str(self._photon_transport).lower()
 
+    def _create_proton_transport_subelement(self, root):
+        if self._proton_transport is not None:
+            element = ET.SubElement(root, "proton_transport")
+            element.text = str(self._proton_transport).lower()
+
+    def _create_deuteron_transport_subelement(self, root):
+        if self._deuteron_transport is not None:
+            element = ET.SubElement(root, "deuteron_transport")
+            element.text = str(self._deuteron_transport).lower()
+
+    def _create_triton_transport_subelement(self, root):
+        if self._triton_transport is not None:
+            element = ET.SubElement(root, "triton_transport")
+            element.text = str(self._triton_transport).lower()
+
+    def _create_helion_transport_subelement(self, root):
+        if self._helion_transport is not None:
+            element = ET.SubElement(root, "helion_transport")
+            element.text = str(self._helion_transport).lower()
+
+    def _create_alpha_transport_subelement(self, root):
+        if self._alpha_transport is not None:
+            element = ET.SubElement(root, "alpha_transport")
+            element.text = str(self._alpha_transport).lower()
+
     def _create_plot_seed_subelement(self, root):
         if self._plot_seed is not None:
             element = ET.SubElement(root, "plot_seed")
@@ -2088,6 +2173,31 @@ class Settings:
         if text is not None:
             self.photon_transport = text in ('true', '1')
 
+    def _proton_transport_from_xml_element(self, root):
+        text = get_text(root, 'proton_transport')
+        if text is not None:
+            self.proton_transport = text in ('true', '1')
+
+    def _deuteron_transport_from_xml_element(self, root):
+        text = get_text(root, 'deuteron_transport')
+        if text is not None:
+            self.deuteron_transport = text in ('true', '1')
+
+    def _triton_transport_from_xml_element(self, root):
+        text = get_text(root, 'triton_transport')
+        if text is not None:
+            self.triton_transport = text in ('true', '1')
+
+    def _helion_transport_from_xml_element(self, root):
+        text = get_text(root, 'helion_transport')
+        if text is not None:
+            self.helion_transport = text in ('true', '1')
+
+    def _alpha_transport_from_xml_element(self, root):
+        text = get_text(root, 'alpha_transport')
+        if text is not None:
+            self.alpha_transport = text in ('true', '1')
+
     def _uniform_source_sampling_from_xml_element(self, root):
         text = get_text(root, 'uniform_source_sampling')
         if text is not None:
@@ -2415,6 +2525,11 @@ class Settings:
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
         self._create_photon_transport_subelement(element)
+        self._create_proton_transport_subelement(element)
+        self._create_deuteron_transport_subelement(element)
+        self._create_triton_transport_subelement(element)
+        self._create_helion_transport_subelement(element)
+        self._create_alpha_transport_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2529,6 +2644,11 @@ class Settings:
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
+        settings._proton_transport_from_xml_element(elem)
+        settings._deuteron_transport_from_xml_element(elem)
+        settings._triton_transport_from_xml_element(elem)
+        settings._helion_transport_from_xml_element(elem)
+        settings._alpha_transport_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)

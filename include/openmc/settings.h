@@ -77,6 +77,11 @@ extern "C" bool output_summary;      //!< write summary.h5?
 extern bool output_tallies;          //!< write tallies.out?
 extern bool particle_restart_run;    //!< particle restart run?
 extern "C" bool photon_transport;    //!< photon transport turned on?
+extern "C" bool proton_transport;    //!< proton transport turned on?
+extern "C" bool deuteron_transport;  //!< deuteron transport turned on?
+extern "C" bool triton_transport;    //!< triton transport turned on?
+extern "C" bool helion_transport;    //!< helion (He-3) transport turned on?
+extern "C" bool alpha_transport;     //!< alpha transport turned on?
 extern "C" bool reduce_tallies;      //!< reduce tallies at end of batch?
 extern bool res_scat_on;             //!< use resonance upscattering method?
 extern "C" bool restart_run;         //!< restart run?

@@ -62,6 +62,11 @@ bool output_summary {true};
 bool output_tallies {true};
 bool particle_restart_run {false};
 bool photon_transport {false};
+bool proton_transport {false};
+bool deuteron_transport {false};
+bool triton_transport {false};
+bool helion_transport {false};
+bool alpha_transport {false};
 bool reduce_tallies {true};
 bool res_scat_on {false};
 bool restart_run {false};
@@ -601,6 +606,23 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Photon transport is not currently supported in "
                   "multigroup mode");
     }
+  }
+
+  // Check for charged particle transport options
+  if (check_for_node(root, "proton_transport")) {
+    proton_transport = get_node_value_bool(root, "proton_transport");
+  }
+  if (check_for_node(root, "deuteron_transport")) {
+    deuteron_transport = get_node_value_bool(root, "deuteron_transport");
+  }
+  if (check_for_node(root, "triton_transport")) {
+    triton_transport = get_node_value_bool(root, "triton_transport");
+  }
+  if (check_for_node(root, "helion_transport")) {
+    helion_transport = get_node_value_bool(root, "helion_transport");
+  }
+  if (check_for_node(root, "alpha_transport")) {
+    alpha_transport = get_node_value_bool(root, "alpha_transport");
   }
 
   // Number of bins for logarithmic grid

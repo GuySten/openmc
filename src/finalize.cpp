@@ -113,6 +113,11 @@ int openmc_finalize()
   settings::path_sourcepoint.clear();
   settings::path_statepoint.clear();
   settings::photon_transport = false;
+  settings::proton_transport = false;
+  settings::deuteron_transport = false;
+  settings::triton_transport = false;
+  settings::helion_transport = false;
+  settings::alpha_transport = false;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;

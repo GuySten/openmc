@@ -682,8 +682,9 @@ void calculate_work()
 void initialize_data()
 {
   // Determine minimum/maximum energy for incident neutron/photon data
-  data::energy_max = {INFTY, INFTY, INFTY, INFTY};
-  data::energy_min = {0.0, 0.0, 0.0, 0.0};
+  // Order: neutron, photon, electron, positron, proton, deuteron, triton, helion, alpha
+  data::energy_max = {INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY};
+  data::energy_min = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
 
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {

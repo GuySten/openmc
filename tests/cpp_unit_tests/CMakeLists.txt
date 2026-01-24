@@ -8,6 +8,7 @@ set(TEST_NAMES
   test_mesh
   test_region
   test_deuteron
+  test_charged_particle
   # Add additional unit test files here
 )
 

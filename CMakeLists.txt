@@ -337,6 +337,7 @@ list(APPEND libopenmc_SOURCES
   src/bremsstrahlung.cpp
   src/cell.cpp
   src/chain.cpp
+  src/charged_particle.cpp
   src/cmfd_solver.cpp
   src/collision_track.cpp
   src/cross_sections.cpp

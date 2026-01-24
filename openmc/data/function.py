@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Callable
 from functools import reduce
 from itertools import zip_longest
-from math import exp, log
+from math import exp, log, sqrt, pow
 from numbers import Real, Integral
 
 import numpy as np
@@ -202,6 +202,18 @@ class Tabulated1D(Function1D):
                 y[contained] = (yi*np.exp(np.log(xk/xi)/np.log(xi1/xi)
                                 *np.log(yi1/yi)))
 
+            elif self.interpolation[k] == 6:
+                # Charged-particle Gamow penetrability (INT=6)
+                # σ(E) = (1/E) * (σ2*E2)^α * (σ1*E1)^(1-α)
+                # where α = (x - x1)/(x2 - x1) and x = 1/sqrt(E - T)
+                # For Q > 0 (exothermic), T = 0
+                T = 0.0  # Assuming exothermic; TODO: get Q-value for endothermic
+                x_k = 1.0 / np.sqrt(xk - T)
+                x_1 = 1.0 / np.sqrt(xi - T)
+                x_2 = 1.0 / np.sqrt(xi1 - T)
+                alpha = (x_k - x_1) / (x_2 - x_1)
+                y[contained] = (1.0/xk) * np.power(yi1*xi1, alpha) * np.power(yi*xi, 1.0 - alpha)
+
         # In some cases, x values might be outside the tabulated region due only
         # to precision, so we check if they're close and set them equal if so.
         y[np.isclose(x, self.x[0], atol=1e-14)] = self.y[0]
@@ -247,6 +259,18 @@ class Tabulated1D(Function1D):
         elif p == 5:
             # Log-log
             return yi*exp(log(x/xi)/log(xi1/xi)*log(yi1/yi))
+
+        elif p == 6:
+            # Charged-particle Gamow penetrability (INT=6)
+            # σ(E) = (1/E) * (σ2*E2)^α * (σ1*E1)^(1-α)
+            # where α = (x - x1)/(x2 - x1) and x = 1/sqrt(E - T)
+            # For Q > 0 (exothermic), T = 0
+            T = 0.0  # Assuming exothermic; TODO: get Q-value for endothermic
+            x_k = 1.0 / sqrt(x - T)
+            x_1 = 1.0 / sqrt(xi - T)
+            x_2 = 1.0 / sqrt(xi1 - T)
+            alpha = (x_k - x_1) / (x_2 - x_1)
+            return (1.0/x) * pow(yi1*xi1, alpha) * pow(yi*xi, 1.0 - alpha)
 
     def __len__(self):
         return len(self.x)

@@ -1572,6 +1572,33 @@ class Legendre(Univariate):
     def from_xml_element(cls, elem):
         raise NotImplementedError
 
+    def to_tabular(self, n_points: int = 33) -> 'Tabular':
+        """Convert Legendre expansion to tabular distribution.
+
+        Parameters
+        ----------
+        n_points : int
+            Number of equally-spaced points in μ ∈ [-1, 1]
+
+        Returns
+        -------
+        Tabular
+            Tabular distribution with μ points and PDF
+
+        """
+        # Create equally-spaced μ grid
+        mu = np.linspace(-1.0, 1.0, n_points)
+
+        # Evaluate PDF at each point
+        pdf = self(mu)
+
+        # Ensure PDF is non-negative (can have small numerical issues)
+        pdf = np.maximum(pdf, 0.0)
+
+        t = Tabular(mu, pdf, 'linear-linear', ignore_negative=True)
+        t.c = t.cdf()  # Add CDF as .c attribute for HDF5 export
+        return t
+
 
 class Mixture(Univariate):
     """Probability distribution characterized by a mixture of random variables.

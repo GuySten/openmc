@@ -83,8 +83,8 @@ int openmc_finalize()
   settings::create_delayed_neutrons = true;
   settings::electron_treatment = ElectronTreatment::LED;
   settings::delayed_photon_scaling = true;
-  settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0};
-  settings::time_cutoff = {INFTY, INFTY, INFTY, INFTY};
+  settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  settings::time_cutoff = {INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY};
   settings::entropy_on = false;
   settings::event_based = false;
   settings::free_gas_threshold = 400.0;
@@ -107,6 +107,7 @@ int openmc_finalize()
   settings::output_tallies = true;
   settings::particle_restart_run = false;
   settings::path_cross_sections.clear();
+  settings::path_charged_particle.clear();
   settings::path_input.clear();
   settings::path_output.clear();
   settings::path_particle_restart.clear();
@@ -118,6 +119,7 @@ int openmc_finalize()
   settings::triton_transport = false;
   settings::helion_transport = false;
   settings::alpha_transport = false;
+  settings::charged_particle_delta = 0.01;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;

@@ -82,6 +82,7 @@ extern "C" bool deuteron_transport;  //!< deuteron transport turned on?
 extern "C" bool triton_transport;    //!< triton transport turned on?
 extern "C" bool helion_transport;    //!< helion (He-3) transport turned on?
 extern "C" bool alpha_transport;     //!< alpha transport turned on?
+extern double charged_particle_delta; //!< Fractional energy loss per step
 extern "C" bool reduce_tallies;      //!< reduce tallies at end of batch?
 extern bool res_scat_on;             //!< use resonance upscattering method?
 extern "C" bool restart_run;         //!< restart run?
@@ -111,7 +112,8 @@ extern bool write_all_tracks;     //!< write track files for every particle?
 extern bool write_initial_source; //!< write out initial source file?
 
 // Paths to various files
-extern std::string path_cross_sections; //!< path to cross_sections.xml
+extern std::string path_cross_sections;      //!< path to cross_sections.xml
+extern std::string path_charged_particle;    //!< path to charged particle data directory
 extern std::string path_input;  //!< directory where main .xml files resides
 extern std::string path_output; //!< directory where output files are written
 extern std::string path_particle_restart; //!< path to a particle restart file
@@ -141,9 +143,9 @@ extern int64_t
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
   electron_treatment; //!< how to treat secondary electrons
-extern array<double, 4>
+extern array<double, 9>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
-extern array<double, 4>
+extern array<double, 9>
   time_cutoff; //!< Time cutoff in [s] for each particle type
 extern int
   ifp_n_generation; //!< Number of generation for Iterated Fission Probability

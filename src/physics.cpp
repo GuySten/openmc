@@ -1238,9 +1238,6 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
 
 std::pair<int, int> sample_charged_particle_nuclide(Particle& p)
 {
-  // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
-
   // Get pointer to material
   const auto& mat {model::materials[p.material()]};
 
@@ -1248,21 +1245,33 @@ std::pair<int, int> sample_charged_particle_nuclide(Particle& p)
   int i_particle =
     static_cast<int>(p.type()) - static_cast<int>(ParticleType::proton);
 
-  double prob = 0.0;
+  // First pass: calculate total macroscopic cross section at current energy
+  double Sigma_total = 0.0;
   for (size_t i = 0; i < mat->nuclide_.size(); ++i) {
-    // Get charged particle data index for this nuclide/particle combination
     int i_cp = mat->charged_particle_[i * 5 + i_particle];
     if (i_cp < 0)
-      continue; // No data for this combination
+      continue;
 
-    // Get total cross section for this nuclide
     const auto& cp = *data::charged_particles[i_cp];
     double xs_total = cp.total_xs(p.E());
+    double atom_density = mat->atom_density(i, p.density_mult());
+    Sigma_total += atom_density * xs_total;
+  }
 
-    // Get atom density
+  // Sample cumulative distribution function using calculated total
+  double cutoff = prn(p.current_seed()) * Sigma_total;
+
+  // Second pass: sample which nuclide
+  double prob = 0.0;
+  for (size_t i = 0; i < mat->nuclide_.size(); ++i) {
+    int i_cp = mat->charged_particle_[i * 5 + i_particle];
+    if (i_cp < 0)
+      continue;
+
+    const auto& cp = *data::charged_particles[i_cp];
+    double xs_total = cp.total_xs(p.E());
     double atom_density = mat->atom_density(i, p.density_mult());
 
-    // Increment probability to compare to cutoff
     prob += atom_density * xs_total;
     if (prob >= cutoff) {
       return {i_cp, mat->nuclide_[i]};
@@ -1411,6 +1420,11 @@ TwoBodyKinematicsResult relativistic_two_body_kinematics(
 
 void sample_charged_particle_reaction(Particle& p)
 {
+  // Debug output for charged particle reactions (set to true to enable)
+  constexpr bool debug_output = false;
+  static int debug_count = 0;
+  bool debug = debug_output && (debug_count < 50);
+
   // Sample which nuclide and get charged particle data index
   auto [i_cp, i_nuclide] = sample_charged_particle_nuclide(p);
 
@@ -1463,6 +1477,16 @@ void sample_charged_particle_reaction(Particle& p)
   // Identify residual particle type from its mass
   ParticleType residual_type = identify_particle_from_mass(result.m_residual);
 
+  // Debug output for reaction kinematics
+  if (debug) {
+    ++debug_count;
+    fmt::print("[CP_RXN] MT={} Q={:.3e} eV  E_in={:.3e} eV\n", mt, Q, E_in);
+    fmt::print("         Ejectile: {} E={:.6e} eV ({:.3f} MeV)\n",
+               particle_type_to_str(ejectile_type), E_ejectile, E_ejectile / 1.0e6);
+    fmt::print("         Residual: {} E={:.6e} eV ({:.3f} MeV)\n",
+               particle_type_to_str(residual_type), E_residual, E_residual / 1.0e6);
+  }
+
   // Ensure direction cosines are in valid range (floating-point protection)
   if (std::abs(mu_ejectile) > 1.0) {
     mu_ejectile = std::copysign(1.0, mu_ejectile);
@@ -1513,17 +1537,29 @@ void sample_charged_particle_reaction(Particle& p)
     // Create residual if it's a different particle and transport is enabled
     if (residual_type != ParticleType::photon && is_transport_enabled(residual_type)) {
       p.create_secondary(p.wgt(), u_residual, E_residual, residual_type);
+      if (debug) {
+        fmt::print("         -> Created residual secondary: {} at {:.3f} MeV\n",
+                   particle_type_to_str(residual_type), E_residual / 1.0e6);
+      }
     }
   } else {
     // Reaction produces different particles - incident particle is absorbed
     // Create ejectile if transport is enabled
     if (is_transport_enabled(ejectile_type)) {
       p.create_secondary(p.wgt(), u_ejectile, E_ejectile, ejectile_type);
+      if (debug) {
+        fmt::print("         -> Created ejectile secondary: {} at {:.3f} MeV\n",
+                   particle_type_to_str(ejectile_type), E_ejectile / 1.0e6);
+      }
     }
 
     // Create residual if transport is enabled
     if (residual_type != ParticleType::photon && is_transport_enabled(residual_type)) {
       p.create_secondary(p.wgt(), u_residual, E_residual, residual_type);
+      if (debug) {
+        fmt::print("         -> Created residual secondary: {} at {:.3f} MeV\n",
+                   particle_type_to_str(residual_type), E_residual / 1.0e6);
+      }
     }
 
     // Original particle is absorbed

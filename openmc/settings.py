@@ -184,6 +184,9 @@ class Settings:
         Whether to use helion (He-3) transport.
     alpha_transport : bool
         Whether to use alpha transport.
+    charged_particle_delta : float
+        Fractional energy loss per step for charged particle transport.
+        Default is 0.01 (1% energy loss per step).
     plot_seed : int
        Initial seed for randomly generated plot colors.
     ptables : bool
@@ -404,6 +407,8 @@ class Settings:
         self._triton_transport = None
         self._helion_transport = None
         self._alpha_transport = None
+        self._charged_particle_delta = None
+        self._charged_particle_path = None
         self._plot_seed = None
         self._ptables = None
         self._uniform_source_sampling = None
@@ -715,6 +720,26 @@ class Settings:
     def alpha_transport(self, alpha_transport: bool):
         cv.check_type('alpha transport', alpha_transport, bool)
         self._alpha_transport = alpha_transport
+
+    @property
+    def charged_particle_delta(self) -> float:
+        return self._charged_particle_delta
+
+    @charged_particle_delta.setter
+    def charged_particle_delta(self, delta: float):
+        cv.check_type('charged particle delta', delta, Real)
+        cv.check_greater_than('charged particle delta', delta, 0.0, True)
+        cv.check_less_than('charged particle delta', delta, 1.0, True)
+        self._charged_particle_delta = delta
+
+    @property
+    def charged_particle_path(self) -> str:
+        return self._charged_particle_path
+
+    @charged_particle_path.setter
+    def charged_particle_path(self, path: str):
+        cv.check_type('charged particle path', path, str)
+        self._charged_particle_path = path
 
     @property
     def uniform_source_sampling(self) -> bool:
@@ -1120,7 +1145,8 @@ class Settings:
             elif key == 'survival_normalization':
                 cv.check_type('survival normalization', cutoff[key], bool)
             elif key in ['energy_neutron', 'energy_photon', 'energy_electron',
-                         'energy_positron']:
+                         'energy_positron', 'energy_proton', 'energy_deuteron',
+                         'energy_triton', 'energy_helion', 'energy_alpha']:
                 cv.check_type('energy cutoff', cutoff[key], Real)
                 cv.check_greater_than('energy cutoff', cutoff[key], 0.0)
             else:
@@ -1675,6 +1701,16 @@ class Settings:
             element = ET.SubElement(root, "alpha_transport")
             element.text = str(self._alpha_transport).lower()
 
+    def _create_charged_particle_delta_subelement(self, root):
+        if self._charged_particle_delta is not None:
+            element = ET.SubElement(root, "charged_particle_delta")
+            element.text = str(self._charged_particle_delta)
+
+    def _create_charged_particle_path_subelement(self, root):
+        if self._charged_particle_path is not None:
+            element = ET.SubElement(root, "charged_particle_path")
+            element.text = str(self._charged_particle_path)
+
     def _create_plot_seed_subelement(self, root):
         if self._plot_seed is not None:
             element = ET.SubElement(root, "plot_seed")
@@ -2198,6 +2234,16 @@ class Settings:
         if text is not None:
             self.alpha_transport = text in ('true', '1')
 
+    def _charged_particle_delta_from_xml_element(self, root):
+        text = get_text(root, 'charged_particle_delta')
+        if text is not None:
+            self.charged_particle_delta = float(text)
+
+    def _charged_particle_path_from_xml_element(self, root):
+        text = get_text(root, 'charged_particle_path')
+        if text is not None:
+            self.charged_particle_path = text
+
     def _uniform_source_sampling_from_xml_element(self, root):
         text = get_text(root, 'uniform_source_sampling')
         if text is not None:
@@ -2530,6 +2576,8 @@ class Settings:
         self._create_triton_transport_subelement(element)
         self._create_helion_transport_subelement(element)
         self._create_alpha_transport_subelement(element)
+        self._create_charged_particle_delta_subelement(element)
+        self._create_charged_particle_path_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2649,6 +2697,8 @@ class Settings:
         settings._triton_transport_from_xml_element(elem)
         settings._helion_transport_from_xml_element(elem)
         settings._alpha_transport_from_xml_element(elem)
+        settings._charged_particle_delta_from_xml_element(elem)
+        settings._charged_particle_path_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)

@@ -157,6 +157,10 @@ class Material(IDManagerMixin):
         self._isotropic = []
         self._ncrystal_cfg = None
 
+        # Stopping power model for charged particle slowing down
+        self._stopping_power_model = None
+        self._stopping_power_constant = 1.0e6  # Default: 1 MeV/cm
+
         # A list of tuples (nuclide, percent, percent type)
         self._nuclides = []
 
@@ -308,6 +312,32 @@ class Material(IDManagerMixin):
     @property
     def ncrystal_cfg(self) -> str | None:
         return self._ncrystal_cfg
+
+    @property
+    def stopping_power_model(self) -> str | None:
+        """Stopping power model for charged particle slowing down.
+
+        Can be 'constant', 'bethe_bloch', 'li_petrasso', or None (no slowing down).
+        """
+        return self._stopping_power_model
+
+    @stopping_power_model.setter
+    def stopping_power_model(self, model: str | None):
+        if model is not None:
+            cv.check_value('stopping power model', model,
+                           ('constant', 'bethe_bloch', 'li_petrasso'))
+        self._stopping_power_model = model
+
+    @property
+    def stopping_power_constant(self) -> float:
+        """Constant stopping power value in eV/cm (for 'constant' model)."""
+        return self._stopping_power_constant
+
+    @stopping_power_constant.setter
+    def stopping_power_constant(self, value: float):
+        cv.check_type('stopping power constant', value, Real)
+        cv.check_greater_than('stopping power constant', value, 0.0, True)
+        self._stopping_power_constant = value
 
     @property
     def fissionable_mass(self) -> float:
@@ -1612,6 +1642,13 @@ class Material(IDManagerMixin):
         if self._isotropic:
             subelement = ET.SubElement(element, "isotropic")
             subelement.text = ' '.join(self._isotropic)
+
+        # Create stopping_power XML subelement if model is specified
+        if self._stopping_power_model is not None:
+            sp_element = ET.SubElement(element, "stopping_power")
+            sp_element.set("model", self._stopping_power_model)
+            if self._stopping_power_model == 'constant':
+                sp_element.set("value", str(self._stopping_power_constant))
 
         return element
 

@@ -1,6 +1,7 @@
 #include "openmc/cross_sections.h"
 
 #include "openmc/capi.h"
+#include "openmc/charged_particle.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
 #include "openmc/error.h"
@@ -11,6 +12,7 @@
 #include "openmc/message_passing.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
+#include "openmc/output.h"
 #include "openmc/photon.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -329,6 +331,78 @@ void read_ce_cross_sections_xml()
   }
 }
 
+void load_charged_particle_data()
+{
+  // Check if any charged particle transport is enabled
+  bool any_charged = settings::proton_transport || settings::deuteron_transport ||
+                     settings::triton_transport || settings::helion_transport ||
+                     settings::alpha_transport;
+  if (!any_charged)
+    return;
+
+  // Get charged particle data path from settings or environment variable
+  std::string cp_path = settings::path_charged_particle;
+  if (cp_path.empty()) {
+    const char* env_path = std::getenv("OPENMC_CHARGED_PARTICLE_PATH");
+    if (env_path) {
+      cp_path = env_path;
+    }
+  }
+
+  if (cp_path.empty()) {
+    fatal_error("Charged particle transport is enabled but no data path is set. "
+                "Please set charged_particle_path in settings.xml or the "
+                "OPENMC_CHARGED_PARTICLE_PATH environment variable.");
+  }
+
+  // Build list of projectile names based on transport settings
+  std::vector<std::string> projectiles;
+  if (settings::proton_transport)
+    projectiles.push_back("proton");
+  if (settings::deuteron_transport)
+    projectiles.push_back("deuteron");
+  if (settings::triton_transport)
+    projectiles.push_back("triton");
+  if (settings::helion_transport)
+    projectiles.push_back("helion");
+  if (settings::alpha_transport)
+    projectiles.push_back("alpha");
+
+  // Collect unique target nuclides from all materials
+  std::unordered_set<std::string> targets;
+  for (const auto& mat : model::materials) {
+    for (int i_nuc : mat->nuclide_) {
+      targets.insert(data::nuclides[i_nuc]->name_);
+    }
+  }
+
+  // Try to load charged particle data for each projectile-target combination
+  namespace fs = std::filesystem;
+  for (const auto& projectile : projectiles) {
+    for (const auto& target : targets) {
+      // Construct filename: projectile_target.h5 (e.g., deuteron_H3.h5)
+      std::string filename = projectile + "_" + target + ".h5";
+      fs::path filepath = fs::path(cp_path) / filename;
+
+      if (fs::exists(filepath)) {
+        write_message(6, "Reading {} from {}", filename, cp_path);
+        read_charged_particle_data(filepath.string());
+      }
+    }
+  }
+
+  // Warn if no charged particle data was loaded
+  if (data::charged_particles.empty()) {
+    warning("Charged particle transport is enabled but no charged particle "
+            "data files were found in " + cp_path);
+  }
+
+  // Re-initialize charged particle indices in all materials now that data is loaded
+  for (auto& mat : model::materials) {
+    mat->init_charged_particle_indices();
+  }
+}
+
 void finalize_cross_sections()
 {
   if (settings::run_mode != RunMode::PLOTTING) {
@@ -341,6 +415,9 @@ void finalize_cross_sections()
 
       // Read continuous-energy cross sections from HDF5
       read_ce_cross_sections(nuc_temps, thermal_temps);
+
+      // Load charged particle cross section data
+      load_charged_particle_data();
     } else {
       // Create material macroscopic data for MGXS
       set_mg_interface_nuclides_and_temps();

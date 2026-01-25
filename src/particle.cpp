@@ -8,6 +8,7 @@
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
+#include "openmc/charged_particle.h"
 #include "openmc/collision_track.h"
 #include "openmc/constants.h"
 #include "openmc/dagmc.h"
@@ -246,6 +247,14 @@ void Particle::event_calculate_xs()
 
 void Particle::event_advance()
 {
+  // Use specialized transport for charged particles
+  if (type() == ParticleType::proton || type() == ParticleType::deuteron ||
+      type() == ParticleType::triton || type() == ParticleType::helion ||
+      type() == ParticleType::alpha) {
+    event_advance_charged_particle();
+    return;
+  }
+
   // Find the distance to the nearest boundary
   boundary() = distance_to_boundary(*this);
 
@@ -297,6 +306,155 @@ void Particle::event_advance()
   // Set particle weight to zero if it hit the time boundary
   if (distance == distance_cutoff) {
     wgt() = 0.0;
+  }
+}
+
+void Particle::event_advance_charged_particle()
+{
+  // Charged particle transport with continuous slowing down
+  // Loop until we hit a boundary or have a nuclear collision
+
+  double delta = settings::charged_particle_delta;
+
+  // Get energy cutoff for this particle type
+  int i_type = static_cast<int>(type());
+  double E_cutoff = settings::energy_cutoff[i_type];
+
+  // Store initial energy for verbose output
+  double E_initial = E();
+
+  // Verbose output for charged particle transport
+  if (settings::verbosity >= 10 || trace()) {
+    write_message(1, "    Charged particle  {} begins slowing down at E = {:.6e} eV",
+                  particle_type_to_str(type()), E_initial);
+  }
+
+  // Find distance to nearest boundary (computed once, decremented as we go)
+  boundary() = distance_to_boundary(*this);
+
+  // Check for void material - just advance to boundary
+  if (material() == MATERIAL_VOID) {
+    collision_distance() = INFINITY;
+    this->move_distance(boundary().distance());
+    if (settings::verbosity >= 10 || trace()) {
+      write_message(1, "    Charged particle advanced through void to boundary");
+    }
+    return;
+  }
+
+  const auto& mat = *model::materials[material()];
+
+  // Determine which charged particle type (0=proton, 1=deuteron, etc.)
+  int i_particle =
+    static_cast<int>(type()) - static_cast<int>(ParticleType::proton);
+
+  int step_count = 0;
+  while (true) {
+    // Check if energy has fallen below cutoff
+    if (E() <= E_cutoff) {
+      if (settings::verbosity >= 10 || trace()) {
+        write_message(1, "    Charged particle stopped (E = {:.6e} eV <= cutoff) "
+                      "after {} steps, lost {:.6e} eV",
+                      E(), step_count, E_initial - E());
+      }
+      wgt() = 0.0; // Particle stopped
+      return;
+    }
+
+    // Get stopping power from material [eV/cm]
+    double S = mat.stopping_power(type(), E());
+
+    // If stopping power is zero or negative, warn and advance to boundary
+    if (S <= 0.0) {
+      warning("Stopping power is <= 0 for charged particle in material " +
+              std::to_string(mat.id_) + ". Advancing to boundary.");
+      collision_distance() = INFINITY;
+      this->move_distance(boundary().distance());
+      return;
+    }
+
+    // Calculate slowing-down substep distance to lose delta fraction of energy
+    // S = dE/dx, so dx = dE/S = delta*E/S
+    double dE = delta * E();
+    double dx = dE / S;
+
+    // Calculate macroscopic cross section at midpoint energy E - dE/2
+    double E_mid = E() - dE / 2.0;
+    if (E_mid < E_cutoff)
+      E_mid = (E() + E_cutoff) / 2.0;
+
+    double Sigma = 0.0;
+    for (size_t i = 0; i < mat.nuclide_.size(); ++i) {
+      int i_cp = mat.charged_particle_[i * 5 + i_particle];
+      if (i_cp < 0)
+        continue;
+
+      const auto& cp = *data::charged_particles[i_cp];
+      double xs_total = cp.total_xs(E_mid);
+      double atom_density = mat.atom_density(i, density_mult());
+      Sigma += atom_density * xs_total;
+    }
+
+    // Sample distance to collision
+    double d_collision =
+      (Sigma > 0.0) ? -std::log(prn(current_seed())) / Sigma : INFINITY;
+
+    // Determine what happens first: collision, end of substep, or boundary
+    double d_boundary = boundary().distance();
+
+    step_count++;
+
+    if (d_collision < dx && d_collision < d_boundary) {
+      // Collision happens first
+      // Lose energy over collision distance, then collide
+      E() -= S * d_collision;
+      if (E() < E_cutoff)
+        E() = E_cutoff;
+
+      this->move_distance(d_collision);
+      boundary().distance() -= d_collision;
+      collision_distance() = 0.0; // Signal collision
+
+      if (settings::verbosity >= 10 || trace()) {
+        write_message(1, "    Charged particle collision after {} steps, "
+                      "E: {:.6e} -> {:.6e} eV (lost {:.6e} eV)",
+                      step_count, E_initial, E(), E_initial - E());
+      }
+      return;
+
+    } else if (d_boundary <= dx) {
+      // Boundary is reached before substep completes
+      E() -= S * d_boundary;
+      if (E() < E_cutoff)
+        E() = E_cutoff;
+
+      this->move_distance(d_boundary);
+      collision_distance() = INFINITY;
+
+      if (settings::verbosity >= 10 || trace()) {
+        write_message(1, "    Charged particle hit boundary after {} steps, "
+                      "E: {:.6e} -> {:.6e} eV (lost {:.6e} eV)",
+                      step_count, E_initial, E(), E_initial - E());
+      }
+      return; // Will trigger surface crossing event
+
+    } else {
+      // Complete the substep with full energy loss, no collision
+      E() -= dE;
+      if (E() <= E_cutoff) {
+        if (settings::verbosity >= 10 || trace()) {
+          write_message(1, "    Charged particle stopped (E = {:.6e} eV <= cutoff) "
+                        "after {} steps, lost {:.6e} eV",
+                        E(), step_count, E_initial - E());
+        }
+        wgt() = 0.0; // Particle stopped
+        return;
+      }
+
+      this->move_distance(dx);
+      boundary().distance() -= dx;
+      // Continue loop for next slowing-down step
+    }
   }
 }
 
@@ -434,8 +592,9 @@ void Particle::event_revive_from_secondary()
   // If particle has too many events, display warning and kill it
   ++n_event();
   if (n_event() == settings::max_particle_events) {
-    warning("Particle " + std::to_string(id()) +
-            " underwent maximum number of events.");
+    warning("Particle " + std::to_string(id()) + " (" +
+            particle_type_to_str(type()) + " at E=" +
+            std::to_string(E() / 1.0e6) + " MeV) underwent maximum number of events.");
     wgt() = 0.0;
   }
 

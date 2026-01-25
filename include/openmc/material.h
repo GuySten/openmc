@@ -20,6 +20,18 @@
 namespace openmc {
 
 //==============================================================================
+// Enums
+//==============================================================================
+
+//! Model for calculating charged particle stopping power
+enum class StoppingPowerModel {
+  NONE,         //!< No continuous slowing down
+  CONSTANT,     //!< Constant stopping power (for debugging)
+  BETHE_BLOCH,  //!< Bethe-Bloch formula
+  LI_PETRASSO   //!< Li-Petrasso model
+};
+
+//==============================================================================
 // Global variables
 //==============================================================================
 
@@ -66,6 +78,9 @@ public:
 
   //! Finalize the material, assigning tables, normalize density, etc.
   void finalize();
+
+  //! Initialize charged particle data indices after data has been loaded
+  void init_charged_particle_indices();
 
   //! Write material data to HDF5
   void to_hdf5(hid_t group) const;
@@ -174,6 +189,34 @@ public:
   //! \return Temperature in [K]
   double temperature() const;
 
+  //! Get the stopping power model
+  StoppingPowerModel stopping_power_model() const
+  {
+    return stopping_power_model_;
+  }
+
+  //! Set the stopping power model
+  void set_stopping_power_model(StoppingPowerModel model)
+  {
+    stopping_power_model_ = model;
+  }
+
+  //! Set constant stopping power value (for CONSTANT model)
+  //! \param[in] value Stopping power in [eV/cm]
+  void set_stopping_power_constant(double value)
+  {
+    stopping_power_constant_ = value;
+  }
+
+  //! Get constant stopping power value
+  double stopping_power_constant() const { return stopping_power_constant_; }
+
+  //! Calculate the stopping power for a charged particle
+  //! \param[in] type Particle type
+  //! \param[in] E Particle energy in [eV]
+  //! \return Stopping power in [eV/cm]
+  double stopping_power(ParticleType type, double E) const;
+
   //! Whether or not the material is depletable
   bool depletable() const { return depletable_; }
   bool& depletable() { return depletable_; }
@@ -242,6 +285,12 @@ private:
   //!
   //! A negative value indicates no default temperature was specified.
   double temperature_ {-1};
+
+  //! Stopping power model for charged particle slowing down
+  StoppingPowerModel stopping_power_model_ {StoppingPowerModel::NONE};
+
+  //! Constant stopping power value in [eV/cm] (for CONSTANT model)
+  double stopping_power_constant_ {1.0e6}; // Default: 1 MeV/cm
 };
 
 //==============================================================================

@@ -309,6 +309,35 @@ Material::Material(pugi::xml_node node)
   }
 
   // =======================================================================
+  // READ AND PARSE <stopping_power> TAG FOR CHARGED PARTICLE SLOWING DOWN
+
+  if (check_for_node(node, "stopping_power")) {
+    pugi::xml_node sp_node = node.child("stopping_power");
+
+    // Get the model type
+    if (check_for_node(sp_node, "model")) {
+      std::string model_str = get_node_value(sp_node, "model");
+      if (model_str == "constant") {
+        stopping_power_model_ = StoppingPowerModel::CONSTANT;
+      } else if (model_str == "bethe_bloch" || model_str == "bethe-bloch") {
+        stopping_power_model_ = StoppingPowerModel::BETHE_BLOCH;
+      } else if (model_str == "li_petrasso" || model_str == "li-petrasso") {
+        stopping_power_model_ = StoppingPowerModel::LI_PETRASSO;
+      } else if (model_str == "none") {
+        stopping_power_model_ = StoppingPowerModel::NONE;
+      } else {
+        fatal_error("Unknown stopping power model '" + model_str +
+                    "' on material " + std::to_string(id_) + ".");
+      }
+    }
+
+    // Get the constant value (used for CONSTANT model, fallback for others)
+    if (check_for_node(sp_node, "value")) {
+      stopping_power_constant_ = std::stod(get_node_value(sp_node, "value"));
+    }
+  }
+
+  // =======================================================================
   // READ AND PARSE <sab> TAG FOR THERMAL SCATTERING DATA
   if (settings::run_CE) {
     // Loop over <sab> elements
@@ -410,41 +439,49 @@ void Material::finalize()
 
     // Assign thermal scattering tables
     this->init_thermal();
-
-    // Initialize charged particle data indices
-    bool any_charged_particle = settings::proton_transport ||
-                                settings::deuteron_transport ||
-                                settings::triton_transport ||
-                                settings::helion_transport ||
-                                settings::alpha_transport;
-    if (any_charged_particle) {
-      // 5 particle types per nuclide
-      charged_particle_.resize(nuclide_.size() * 5, -1);
-
-      // Map particle types to names
-      const char* particle_names[5] = {
-        "proton", "deuteron", "triton", "helion", "alpha"};
-
-      for (size_t i = 0; i < nuclide_.size(); ++i) {
-        const auto& nuc = *data::nuclides[nuclide_[i]];
-
-        for (int j = 0; j < 5; ++j) {
-          // Construct the charged particle data name
-          std::string cp_name =
-            std::string(particle_names[j]) + "_" + nuc.name_;
-
-          // Look up in charged particle map
-          auto it = data::charged_particle_map.find(cp_name);
-          if (it != data::charged_particle_map.end()) {
-            charged_particle_[i * 5 + j] = it->second;
-          }
-        }
-      }
-    }
   }
 
   // Normalize density
   this->normalize_density();
+
+  // Initialize charged particle data indices (will be re-initialized later
+  // after charged particle data is loaded)
+  this->init_charged_particle_indices();
+}
+
+void Material::init_charged_particle_indices()
+{
+  bool any_charged_particle = settings::proton_transport ||
+                              settings::deuteron_transport ||
+                              settings::triton_transport ||
+                              settings::helion_transport ||
+                              settings::alpha_transport;
+  if (!any_charged_particle)
+    return;
+
+  // 5 particle types per nuclide
+  charged_particle_.resize(nuclide_.size() * 5, -1);
+
+  // Map particle types to names
+  const char* particle_names[5] = {
+    "proton", "deuteron", "triton", "helion", "alpha"};
+
+  for (size_t i = 0; i < nuclide_.size(); ++i) {
+    const auto& nuc = *data::nuclides[nuclide_[i]];
+
+    for (int j = 0; j < 5; ++j) {
+      // Construct the charged particle data name
+      std::string cp_name = std::string(particle_names[j]) + "_" + nuc.name_;
+
+      // Look up in charged particle map
+      auto it = data::charged_particle_map.find(cp_name);
+      if (it != data::charged_particle_map.end()) {
+        charged_particle_[i * 5 + j] = it->second;
+      } else {
+        charged_particle_[i * 5 + j] = -1;
+      }
+    }
+  }
 }
 
 void Material::normalize_density()
@@ -1132,6 +1169,29 @@ double Material::temperature() const
 {
   // If material doesn't have an assigned temperature, use global default
   return temperature_ >= 0 ? temperature_ : settings::temperature_default;
+}
+
+double Material::stopping_power(ParticleType type, double E) const
+{
+  switch (stopping_power_model_) {
+  case StoppingPowerModel::NONE:
+    return 0.0;
+
+  case StoppingPowerModel::CONSTANT:
+    // Return constant stopping power (default 1 MeV/cm)
+    return stopping_power_constant_;
+
+  case StoppingPowerModel::BETHE_BLOCH:
+    // TODO: Implement Bethe-Bloch formula
+    return stopping_power_constant_;
+
+  case StoppingPowerModel::LI_PETRASSO:
+    // TODO: Implement Li-Petrasso model
+    return stopping_power_constant_;
+
+  default:
+    return 0.0;
+  }
 }
 
 void Material::to_hdf5(hid_t group) const

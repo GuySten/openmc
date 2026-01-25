@@ -2,6 +2,7 @@
 
 #include "openmc/bank.h"
 #include "openmc/capi.h"
+#include "openmc/charged_particle.h"
 #include "openmc/collision_track.h"
 #include "openmc/container_util.h"
 #include "openmc/eigenvalue.h"
@@ -729,6 +730,17 @@ void initialize_data()
         data::energy_max[photon] =
           std::min(data::energy_max[photon], data::energy_max[electron]);
       }
+    }
+  }
+
+  // Set energy bounds for charged particles based on charged particle data
+  for (const auto& cp : data::charged_particles) {
+    if (cp->energy_.size() >= 1) {
+      int i_type = static_cast<int>(particle_type_from_string(cp->projectile_));
+      data::energy_min[i_type] =
+        std::max(data::energy_min[i_type], cp->energy_.front());
+      data::energy_max[i_type] =
+        std::min(data::energy_max[i_type], cp->energy_.back());
     }
   }
 

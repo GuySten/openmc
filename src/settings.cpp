@@ -67,6 +67,7 @@ bool deuteron_transport {false};
 bool triton_transport {false};
 bool helion_transport {false};
 bool alpha_transport {false};
+double charged_particle_delta {0.01}; // 1% energy loss per step by default
 bool reduce_tallies {true};
 bool res_scat_on {false};
 bool restart_run {false};
@@ -94,6 +95,7 @@ bool write_all_tracks {false};
 bool write_initial_source {false};
 
 std::string path_cross_sections;
+std::string path_charged_particle;
 std::string path_input;
 std::string path_output;
 std::string path_particle_restart;
@@ -113,8 +115,8 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
-array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
-array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
+array<double, 9> energy_cutoff {0.0, 1000.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+array<double, 9> time_cutoff {INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
 IFPParameter ifp_parameter {IFPParameter::None};
 int legendre_to_tabular_points {C_NONE};
@@ -448,6 +450,11 @@ void read_settings_xml(pugi::xml_node root)
     path_cross_sections = get_node_value(root, "cross_sections");
   }
 
+  // Check for charged particle data path
+  if (check_for_node(root, "charged_particle_path")) {
+    path_charged_particle = get_node_value(root, "charged_particle_path");
+  }
+
   if (!run_CE) {
     // Scattering Treatments
     if (check_for_node(root, "max_order")) {
@@ -624,6 +631,12 @@ void read_settings_xml(pugi::xml_node root)
   if (check_for_node(root, "alpha_transport")) {
     alpha_transport = get_node_value_bool(root, "alpha_transport");
   }
+  if (check_for_node(root, "charged_particle_delta")) {
+    charged_particle_delta = std::stod(get_node_value(root, "charged_particle_delta"));
+    if (charged_particle_delta <= 0.0 || charged_particle_delta >= 1.0) {
+      fatal_error("charged_particle_delta must be between 0 and 1.");
+    }
+  }
 
   // Number of bins for logarithmic grid
   if (check_for_node(root, "log_grid_bins")) {
@@ -740,6 +753,26 @@ void read_settings_xml(pugi::xml_node root)
     if (check_for_node(node_cutoff, "energy_positron")) {
       energy_cutoff[3] =
         std::stod(get_node_value(node_cutoff, "energy_positron"));
+    }
+    if (check_for_node(node_cutoff, "energy_proton")) {
+      energy_cutoff[4] =
+        std::stod(get_node_value(node_cutoff, "energy_proton"));
+    }
+    if (check_for_node(node_cutoff, "energy_deuteron")) {
+      energy_cutoff[5] =
+        std::stod(get_node_value(node_cutoff, "energy_deuteron"));
+    }
+    if (check_for_node(node_cutoff, "energy_triton")) {
+      energy_cutoff[6] =
+        std::stod(get_node_value(node_cutoff, "energy_triton"));
+    }
+    if (check_for_node(node_cutoff, "energy_helion")) {
+      energy_cutoff[7] =
+        std::stod(get_node_value(node_cutoff, "energy_helion"));
+    }
+    if (check_for_node(node_cutoff, "energy_alpha")) {
+      energy_cutoff[8] =
+        std::stod(get_node_value(node_cutoff, "energy_alpha"));
     }
     if (check_for_node(node_cutoff, "time_neutron")) {
       time_cutoff[0] = std::stod(get_node_value(node_cutoff, "time_neutron"));
@@ -1289,6 +1322,33 @@ void read_settings_xml(pugi::xml_node root)
   if (check_for_node(root, "use_decay_photons")) {
     settings::use_decay_photons =
       get_node_value_bool(root, "use_decay_photons");
+  }
+
+  // Validate that charged particle transport has non-zero energy cutoffs
+  if (proton_transport && energy_cutoff[4] <= 0.0) {
+    fatal_error("Proton transport is enabled but energy_proton cutoff is not "
+                "set. Please specify a positive energy cutoff (e.g., 20 eV) "
+                "in the <cutoff> element.");
+  }
+  if (deuteron_transport && energy_cutoff[5] <= 0.0) {
+    fatal_error("Deuteron transport is enabled but energy_deuteron cutoff is "
+                "not set. Please specify a positive energy cutoff (e.g., 20 eV) "
+                "in the <cutoff> element.");
+  }
+  if (triton_transport && energy_cutoff[6] <= 0.0) {
+    fatal_error("Triton transport is enabled but energy_triton cutoff is not "
+                "set. Please specify a positive energy cutoff (e.g., 20 eV) "
+                "in the <cutoff> element.");
+  }
+  if (helion_transport && energy_cutoff[7] <= 0.0) {
+    fatal_error("Helion transport is enabled but energy_helion cutoff is not "
+                "set. Please specify a positive energy cutoff (e.g., 20 eV) "
+                "in the <cutoff> element.");
+  }
+  if (alpha_transport && energy_cutoff[8] <= 0.0) {
+    fatal_error("Alpha transport is enabled but energy_alpha cutoff is not "
+                "set. Please specify a positive energy cutoff (e.g., 20 eV) "
+                "in the <cutoff> element.");
   }
 }
 

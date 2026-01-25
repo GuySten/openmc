@@ -38,6 +38,55 @@
 namespace openmc {
 
 //==============================================================================
+// Helper functions for charged particle recoils
+//==============================================================================
+
+// Helper function to get charged particle type from nuclide name
+// Returns photon if the nuclide is not a transportable charged particle
+ParticleType nuclide_to_particle_type(const std::string& name)
+{
+  // Extract base nuclide name (remove metastable suffix if present)
+  std::string base_name = name;
+  auto pos = base_name.find('_');
+  if (pos != std::string::npos) {
+    base_name = base_name.substr(0, pos);
+  }
+
+  if (base_name == "H1")
+    return ParticleType::proton;
+  if (base_name == "H2")
+    return ParticleType::deuteron;
+  if (base_name == "H3")
+    return ParticleType::triton;
+  if (base_name == "He3")
+    return ParticleType::helion;
+  if (base_name == "He4")
+    return ParticleType::alpha;
+
+  // Not a transportable charged particle
+  return ParticleType::photon;
+}
+
+// Helper function to check if transport is enabled for a particle type
+bool is_charged_particle_transport_enabled(ParticleType type)
+{
+  switch (type) {
+  case ParticleType::proton:
+    return settings::proton_transport;
+  case ParticleType::deuteron:
+    return settings::deuteron_transport;
+  case ParticleType::triton:
+    return settings::triton_transport;
+  case ParticleType::helion:
+    return settings::helion_transport;
+  case ParticleType::alpha:
+    return settings::alpha_transport;
+  default:
+    return false;
+  }
+}
+
+//==============================================================================
 // Non-member functions
 //==============================================================================
 
@@ -767,8 +816,12 @@ void elastic_scatter(int i_nuclide, const Reaction& rx, double kT, Particle& p)
   double vel = std::sqrt(p.E());
   double awr = nuc->awr_;
 
+  // Store initial neutron velocity for recoil calculation
+  Direction v_n_initial = vel * p.u();
+  double E_initial = p.E();
+
   // Neutron velocity in LAB
-  Direction v_n = vel * p.u();
+  Direction v_n = v_n_initial;
 
   // Sample velocity of target nucleus
   Direction v_t {};
@@ -816,6 +869,7 @@ void elastic_scatter(int i_nuclide, const Reaction& rx, double kT, Particle& p)
   p.mu() = p.u().dot(v_n) / vel;
 
   // Set energy and direction of particle in LAB frame
+  Direction u_n_initial = p.u();
   p.u() = v_n / vel;
 
   // Because of floating-point roundoff, it may be possible for mu_lab to be
@@ -823,6 +877,45 @@ void elastic_scatter(int i_nuclide, const Reaction& rx, double kT, Particle& p)
   // -1 or 1
   if (std::abs(p.mu()) > 1.0)
     p.mu() = std::copysign(1.0, p.mu());
+
+  // Check if target is a transportable charged particle and create recoil secondary
+  ParticleType recoil_type = nuclide_to_particle_type(nuc->name_);
+
+  if (recoil_type != ParticleType::photon &&
+      is_charged_particle_transport_enabled(recoil_type)) {
+
+    // Calculate recoil velocity using momentum conservation:
+    // m_n * v_n_initial + m_t * v_t = m_n * v_n_final + m_t * v_t_final
+    // v_t_final = v_t + (v_n_initial - v_n_final) / awr
+    Direction v_recoil = v_t + (v_n_initial - v_n) / awr;
+
+    // Calculate recoil kinetic energy in eV
+    // In the code's units, v^2 gives neutron kinetic energy directly
+    // For a particle with mass ratio awr, T = awr * v^2
+    double v_recoil_sq = v_recoil.dot(v_recoil);
+    double E_recoil = awr * v_recoil_sq;
+
+    // Get energy cutoff for this particle type
+    int i_type = static_cast<int>(recoil_type);
+    double E_cutoff = settings::energy_cutoff[i_type];
+
+    // Only create secondary if above cutoff
+    if (E_recoil > E_cutoff) {
+      // Calculate recoil direction
+      double v_recoil_mag = std::sqrt(v_recoil_sq);
+      Direction u_recoil = (v_recoil_mag > 0.0) ? v_recoil / v_recoil_mag
+                                                 : Direction {0.0, 0.0, 1.0};
+
+      // Create recoil secondary particle
+      p.create_secondary(p.wgt(), u_recoil, E_recoil, recoil_type);
+
+      // Verbose output
+      if (settings::verbosity >= 10 || p.trace()) {
+        write_message(1, "    Elastic recoil: {} created at E = {:.6e} eV",
+                      particle_type_to_str(recoil_type), E_recoil);
+      }
+    }
+  }
 }
 
 void sab_scatter(int i_nuclide, int i_sab, Particle& p)

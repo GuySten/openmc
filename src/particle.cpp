@@ -384,15 +384,21 @@ void Particle::event_advance_charged_particle()
       E_mid = (E() + E_cutoff) / 2.0;
 
     double Sigma = 0.0;
-    for (size_t i = 0; i < mat.nuclide_.size(); ++i) {
-      int i_cp = mat.charged_particle_[i * 5 + i_particle];
-      if (i_cp < 0)
-        continue;
+    // Check if charged particle data exists for this material
+    if (!mat.charged_particle_.empty()) {
+      for (size_t i = 0; i < mat.nuclide_.size(); ++i) {
+        size_t idx = i * 5 + i_particle;
+        if (idx >= mat.charged_particle_.size())
+          continue;
+        int i_cp = mat.charged_particle_[idx];
+        if (i_cp < 0)
+          continue;
 
-      const auto& cp = *data::charged_particles[i_cp];
-      double xs_total = cp.total_xs(E_mid);
-      double atom_density = mat.atom_density(i, density_mult());
-      Sigma += atom_density * xs_total;
+        const auto& cp = *data::charged_particles[i_cp];
+        double xs_total = cp.total_xs(E_mid);
+        double atom_density = mat.atom_density(i, density_mult());
+        Sigma += atom_density * xs_total;
+      }
     }
 
     // Sample distance to collision

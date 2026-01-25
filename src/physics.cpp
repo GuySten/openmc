@@ -1275,25 +1275,138 @@ std::pair<int, int> sample_charged_particle_nuclide(Particle& p)
     "Did not sample any nuclide during charged particle collision."};
 }
 
-// Helper function to get particle mass in neutron masses
-double get_particle_mass(ParticleType type)
+// Helper function to get particle rest mass in eV/c^2
+double get_particle_mass_eV(ParticleType type)
 {
   switch (type) {
   case ParticleType::neutron:
-    return 1.0;
+    return MASS_NEUTRON_EV;
   case ParticleType::proton:
-    return MASS_PROTON_EV / MASS_NEUTRON_EV;
+    return MASS_PROTON_EV;
   case ParticleType::deuteron:
-    return MASS_DEUTERON_EV / MASS_NEUTRON_EV;
+    return MASS_DEUTERON_EV;
   case ParticleType::triton:
-    return MASS_TRITON_EV / MASS_NEUTRON_EV;
+    return MASS_TRITON_EV;
   case ParticleType::helion:
-    return MASS_HELION_EV / MASS_NEUTRON_EV;
+    return MASS_HELION_EV;
   case ParticleType::alpha:
-    return MASS_ALPHA_EV / MASS_NEUTRON_EV;
+    return MASS_ALPHA_EV;
   default:
-    return 1.0;
+    return MASS_NEUTRON_EV;
   }
+}
+
+// Helper function to identify particle type from mass (within 1% tolerance)
+ParticleType identify_particle_from_mass(double mass_eV)
+{
+  // Check each particle type with 1% relative tolerance
+  constexpr double tol = 0.01;
+
+  if (std::abs(mass_eV - MASS_NEUTRON_EV) / MASS_NEUTRON_EV < tol)
+    return ParticleType::neutron;
+  if (std::abs(mass_eV - MASS_PROTON_EV) / MASS_PROTON_EV < tol)
+    return ParticleType::proton;
+  if (std::abs(mass_eV - MASS_DEUTERON_EV) / MASS_DEUTERON_EV < tol)
+    return ParticleType::deuteron;
+  if (std::abs(mass_eV - MASS_TRITON_EV) / MASS_TRITON_EV < tol)
+    return ParticleType::triton;
+  if (std::abs(mass_eV - MASS_HELION_EV) / MASS_HELION_EV < tol)
+    return ParticleType::helion;
+  if (std::abs(mass_eV - MASS_ALPHA_EV) / MASS_ALPHA_EV < tol)
+    return ParticleType::alpha;
+
+  // Unknown particle type - return photon as a placeholder (will not be transported)
+  return ParticleType::photon;
+}
+
+// Result structure for relativistic two-body kinematics
+struct TwoBodyKinematicsResult {
+  double T_ejectile_lab;  // Ejectile kinetic energy in lab [eV]
+  double mu_ejectile_lab; // Ejectile direction cosine in lab
+  double T_residual_lab;  // Residual kinetic energy in lab [eV]
+  double mu_residual_lab; // Residual direction cosine in lab
+  double m_residual;      // Residual rest mass [eV/c^2]
+};
+
+// Relativistic two-body kinematics following ENDF-6 Appendix E
+// Returns energies and direction cosines for both ejectile and residual
+TwoBodyKinematicsResult relativistic_two_body_kinematics(
+  double T_i_lab, // Incident kinetic energy in lab [eV]
+  double m_i,     // Incident particle rest mass [eV/c^2]
+  double m_t,     // Target rest mass [eV/c^2]
+  double m_e,     // Ejectile rest mass [eV/c^2]
+  double Q,       // Q-value [eV]
+  double mu_cm    // cos(theta) in CM frame
+)
+{
+  // Eq. (E.21): Residual rest mass from mass-energy conservation
+  double m_R = m_t + (m_i - m_e) - Q;
+
+  // Eq. (E.6): Lorentz invariant S (square of total CM energy)
+  double S = (m_i + m_t) * (m_i + m_t) + 2.0 * m_t * T_i_lab;
+
+  // Eq. (E.5): Incident momentum squared in lab
+  double p2_i_lab = 2.0 * m_i * T_i_lab + T_i_lab * T_i_lab;
+
+  // Eq. (E.10): Incident momentum squared in CM
+  double p2_i_cm = m_t * m_t * p2_i_lab / S;
+
+  // Eq. (E.12): Boost parameter
+  double sinh_chi = std::sqrt(p2_i_cm) / m_t;
+  double cosh_chi = std::sqrt(1.0 + sinh_chi * sinh_chi);
+
+  // Eq. (E.24): Sum of all masses
+  double M = m_t + m_R + m_i + m_e;
+
+  // Eq. (E.25): Ejectile momentum squared in CM
+  double term1 = M * Q + 2.0 * m_t * T_i_lab;
+  double term2 = term1 + 4.0 * m_R * m_e;
+  double p2_e_cm = term1 * term2 / (4.0 * S);
+
+  // Handle threshold (endothermic reactions)
+  if (p2_e_cm < 0.0) {
+    return {0.0, 1.0, 0.0, -1.0, m_R};
+  }
+
+  double p_e_cm = std::sqrt(p2_e_cm);
+
+  // Eq. (E.27): Ejectile kinetic energy in CM
+  double T_e_cm = p2_e_cm / (m_e + std::sqrt(m_e * m_e + p2_e_cm));
+  double E_e_cm = m_e + T_e_cm; // Total energy in CM
+
+  // Eq. (E.15): Transform ejectile to lab frame
+  double sin_cm = std::sqrt(1.0 - mu_cm * mu_cm);
+  double p_e1_cm = p_e_cm * mu_cm;  // parallel to incident direction
+  double p_e2_cm = p_e_cm * sin_cm; // perpendicular
+
+  double p_e1_lab = E_e_cm * sinh_chi + p_e1_cm * cosh_chi;
+  double p_e2_lab = p_e2_cm;
+
+  double p2_e_lab = p_e1_lab * p_e1_lab + p_e2_lab * p_e2_lab;
+
+  // Eq. (E.4): Ejectile kinetic energy in lab
+  double T_e_lab = p2_e_lab / (m_e + std::sqrt(m_e * m_e + p2_e_lab));
+
+  // Eq. (E.16): Direction cosine in lab
+  double mu_e_lab = (p2_e_lab > 0.0) ? p_e1_lab / std::sqrt(p2_e_lab) : 1.0;
+
+  // Now do the same for the residual (opposite direction in CM)
+  // Residual momentum in CM has same magnitude, opposite direction
+  double T_R_cm = p2_e_cm / (m_R + std::sqrt(m_R * m_R + p2_e_cm));
+  double E_R_cm = m_R + T_R_cm;
+
+  // Residual goes opposite direction in CM
+  double p_R1_cm = -p_e_cm * mu_cm;
+  double p_R2_cm = -p_e_cm * sin_cm;
+
+  double p_R1_lab = E_R_cm * sinh_chi + p_R1_cm * cosh_chi;
+  double p_R2_lab = p_R2_cm;
+
+  double p2_R_lab = p_R1_lab * p_R1_lab + p_R2_lab * p_R2_lab;
+  double T_R_lab = p2_R_lab / (m_R + std::sqrt(m_R * m_R + p2_R_lab));
+  double mu_R_lab = (p2_R_lab > 0.0) ? p_R1_lab / std::sqrt(p2_R_lab) : -1.0;
+
+  return {T_e_lab, mu_e_lab, T_R_lab, mu_R_lab, m_R};
 }
 
 void sample_charged_particle_reaction(Particle& p)
@@ -1328,107 +1441,92 @@ void sample_charged_particle_reaction(Particle& p)
   // Store event MT for tallying
   p.event_mt() = mt;
 
-  // Get masses in neutron masses
-  double m_proj = get_particle_mass(p.type());
-  double m_target = cp.awr_;
-  double m_ejectile = get_particle_mass(ejectile_type);
-
-  // For two-body kinematics, calculate residual mass from conservation
-  // m_proj + m_target = m_ejectile + m_residual (approximately, ignoring binding)
-  // But we need to use Q-value for proper energy balance
+  // Get masses in eV/c^2 for relativistic kinematics
+  double m_i = get_particle_mass_eV(p.type());        // incident particle mass
+  double m_t = cp.awr_ * MASS_NEUTRON_EV;             // target mass (convert from AWR)
+  double m_e = get_particle_mass_eV(ejectile_type);   // ejectile mass
 
   double E_in = p.E();
-
-  // Calculate center-of-mass energy
-  double E_cm = E_in * m_target / (m_proj + m_target);
-
-  // Total energy available in CM = E_cm + Q
-  double E_available = E_cm + Q;
-
-  if (E_available <= 0.0) {
-    // Below threshold - shouldn't happen with valid cross section data
-    // Handle gracefully by treating as elastic with no energy change
-    E_available = E_cm;
-  }
 
   // Sample scattering angle in center-of-mass (isotropic for now)
   // TODO: Add angular distribution support from ENDF data
   double mu_cm = 2.0 * prn(p.current_seed()) - 1.0;
 
-  // CM velocity in lab frame
-  double v_cm_lab = std::sqrt(2.0 * E_in / m_proj) * m_proj / (m_proj + m_target);
+  // Use relativistic two-body kinematics from ENDF-6 Appendix E
+  auto result = relativistic_two_body_kinematics(E_in, m_i, m_t, m_e, Q, mu_cm);
 
-  // Ejectile velocity in CM frame
-  // For two-body: E_ejectile_cm = E_available * m_residual / (m_ejectile + m_residual)
-  // Using Q-value relation: m_residual = m_proj + m_target - m_ejectile (approx)
-  double m_residual = m_proj + m_target - m_ejectile;
-  if (m_residual <= 0.0) {
-    m_residual = m_target; // Fallback for elastic-like
+  double E_ejectile = result.T_ejectile_lab;
+  double mu_ejectile = result.mu_ejectile_lab;
+  double E_residual = result.T_residual_lab;
+  double mu_residual = result.mu_residual_lab;
+
+  // Identify residual particle type from its mass
+  ParticleType residual_type = identify_particle_from_mass(result.m_residual);
+
+  // Ensure direction cosines are in valid range (floating-point protection)
+  if (std::abs(mu_ejectile) > 1.0) {
+    mu_ejectile = std::copysign(1.0, mu_ejectile);
+  }
+  if (std::abs(mu_residual) > 1.0) {
+    mu_residual = std::copysign(1.0, mu_residual);
   }
 
-  double E_ejectile_cm = E_available * m_residual / (m_ejectile + m_residual);
-  double v_ejectile_cm = std::sqrt(2.0 * E_ejectile_cm / m_ejectile);
+  // Calculate directions for ejectile and residual
+  // Note: we need separate azimuthal angle samples, but residual is back-to-back in CM
+  // so we use the same phi but opposite direction components
+  double phi = 2.0 * PI * prn(p.current_seed());
+  Direction u_ejectile = rotate_angle(p.u(), mu_ejectile, &phi, p.current_seed());
+  // Residual goes in opposite azimuthal direction
+  double phi_residual = phi + PI;
+  Direction u_residual = rotate_angle(p.u(), mu_residual, &phi_residual, p.current_seed());
 
-  // Transform to lab frame
-  double v_para = v_ejectile_cm * mu_cm + v_cm_lab;
-  double v_perp = v_ejectile_cm * std::sqrt(1.0 - mu_cm * mu_cm);
-
-  // Lab frame energy and angle (using ejectile mass)
-  double E_out = 0.5 * m_ejectile * (v_para * v_para + v_perp * v_perp);
-  double v_lab = std::sqrt(v_para * v_para + v_perp * v_perp);
-  double mu_lab = (v_lab > 0.0) ? v_para / v_lab : 1.0;
-
-  // Ensure mu_lab is in valid range
-  if (std::abs(mu_lab) > 1.0) {
-    mu_lab = std::copysign(1.0, mu_lab);
-  }
-
-  // Convert energy from neutron mass units to eV
-  E_out *= MASS_NEUTRON_EV;
-
-  // Update particle direction
-  p.mu() = mu_lab;
-  Direction u_new = rotate_angle(p.u(), mu_lab, nullptr, p.current_seed());
-
-  // Handle particle type change
-  if (ejectile_type == p.type()) {
-    // Same particle type - just update energy and direction
-    p.E() = E_out;
-    p.u() = u_new;
-    p.event() = TallyEvent::SCATTER;
-  } else if (ejectile_type == ParticleType::neutron) {
-    // Reaction produces a neutron - create secondary neutron and kill charged particle
-    p.create_secondary(p.wgt(), u_new, E_out, ParticleType::neutron);
-    p.wgt() = 0.0;
-    p.event() = TallyEvent::ABSORB;
-  } else {
-    // Reaction produces a different charged particle
-    // For now, create secondary if that transport mode is enabled, otherwise absorb
-    bool transport_enabled = false;
-    switch (ejectile_type) {
+  // Helper lambda to check if transport is enabled for a particle type
+  auto is_transport_enabled = [](ParticleType type) {
+    switch (type) {
+    case ParticleType::neutron:
+      return true; // Neutrons are always transported
     case ParticleType::proton:
-      transport_enabled = settings::proton_transport;
-      break;
+      return settings::proton_transport;
     case ParticleType::deuteron:
-      transport_enabled = settings::deuteron_transport;
-      break;
+      return settings::deuteron_transport;
     case ParticleType::triton:
-      transport_enabled = settings::triton_transport;
-      break;
+      return settings::triton_transport;
     case ParticleType::helion:
-      transport_enabled = settings::helion_transport;
-      break;
+      return settings::helion_transport;
     case ParticleType::alpha:
-      transport_enabled = settings::alpha_transport;
-      break;
+      return settings::alpha_transport;
     default:
-      break;
+      return false;
+    }
+  };
+
+  // Update particle direction cosine for tallying
+  p.mu() = mu_ejectile;
+
+  // Handle particle type change and create secondaries
+  if (ejectile_type == p.type()) {
+    // Same particle type (elastic or identity-preserving) - just update energy and direction
+    p.E() = E_ejectile;
+    p.u() = u_ejectile;
+    p.event() = TallyEvent::SCATTER;
+
+    // Create residual if it's a different particle and transport is enabled
+    if (residual_type != ParticleType::photon && is_transport_enabled(residual_type)) {
+      p.create_secondary(p.wgt(), u_residual, E_residual, residual_type);
+    }
+  } else {
+    // Reaction produces different particles - incident particle is absorbed
+    // Create ejectile if transport is enabled
+    if (is_transport_enabled(ejectile_type)) {
+      p.create_secondary(p.wgt(), u_ejectile, E_ejectile, ejectile_type);
     }
 
-    if (transport_enabled) {
-      p.create_secondary(p.wgt(), u_new, E_out, ejectile_type);
+    // Create residual if transport is enabled
+    if (residual_type != ParticleType::photon && is_transport_enabled(residual_type)) {
+      p.create_secondary(p.wgt(), u_residual, E_residual, residual_type);
     }
-    // Original particle is absorbed in either case
+
+    // Original particle is absorbed
     p.wgt() = 0.0;
     p.event() = TallyEvent::ABSORB;
   }

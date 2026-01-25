@@ -9,6 +9,7 @@ set(TEST_NAMES
   test_region
   test_deuteron
   test_charged_particle
+  test_dt_fusion
   # Add additional unit test files here
 )
 

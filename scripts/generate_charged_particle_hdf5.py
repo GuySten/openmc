@@ -43,18 +43,37 @@ def find_endf_files(endf_root: Path) -> dict:
     return files_by_particle
 
 
-def process_particle_files(endf_files: list, output_dir: Path, particle_type: str):
-    """Process ENDF files for a single particle type."""
+def process_particle_files(endf_files: list, output_dir: Path, particle_type: str,
+                          target_filter: list = None):
+    """Process ENDF files for a single particle type.
+
+    Parameters
+    ----------
+    endf_files : list
+        List of ENDF file paths to process
+    output_dir : Path
+        Directory to write HDF5 files
+    particle_type : str
+        Type of incident particle (proton, deuteron, etc.)
+    target_filter : list, optional
+        If provided, only process these target nuclides (e.g., ['H2', 'H3'])
+    """
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     successful = 0
     failed = 0
+    skipped = 0
 
     for endf_path in sorted(endf_files):
         try:
             # Load from ENDF
             data = openmc.data.IncidentChargedParticle.from_endf(endf_path)
+
+            # Check target filter
+            if target_filter and data.target_name not in target_filter:
+                skipped += 1
+                continue
 
             # Generate output filename: {particle}_{target}.h5
             # e.g., deuteron_H2.h5, proton_Li7.h5
@@ -74,6 +93,9 @@ def process_particle_files(endf_files: list, output_dir: Path, particle_type: st
         except Exception as e:
             print(f"  ✗ {endf_path.name}: {e}")
             failed += 1
+
+    if skipped > 0:
+        print(f"  (skipped {skipped} files not matching target filter)")
 
     return successful, failed
 
@@ -97,6 +119,16 @@ def main():
         choices=['proton', 'deuteron', 'triton', 'helion', 'alpha', 'all'],
         default='all',
         help='Process only specified particle type (default: all)'
+    )
+    parser.add_argument(
+        '--subdirs',
+        action='store_true',
+        help='Create subdirectories per particle type (default: flat output)'
+    )
+    parser.add_argument(
+        '--targets',
+        nargs='+',
+        help='Only process specific target nuclides (e.g., H2 H3 Li6)'
     )
 
     args = parser.parse_args()
@@ -126,11 +158,14 @@ def main():
         print(f"\n{particle.upper()}: {len(endf_files)} files")
         print("-" * 40)
 
-        # Create particle-specific output directory
-        particle_output = args.output_dir / particle
+        # Determine output directory (flat or with subdirs)
+        if args.subdirs:
+            particle_output = args.output_dir / particle
+        else:
+            particle_output = args.output_dir
 
         successful, failed = process_particle_files(
-            endf_files, particle_output, particle
+            endf_files, particle_output, particle, args.targets
         )
 
         total_successful += successful

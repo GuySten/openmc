@@ -62,7 +62,14 @@ void UncorrelatedAngleEnergy::sample(
   }
 
   // Sample outgoing energy
-  E_out = energy_->sample(E_in, seed);
+  if (energy_) {
+    E_out = energy_->sample(E_in, seed);
+  } else {
+    // No energy distribution given - use incident energy as fallback.
+    // This can happen for charged particle data that only has angular
+    // distributions (the caller should handle energy via kinematics).
+    E_out = E_in;
+  }
 }
 
 } // namespace openmc

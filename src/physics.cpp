@@ -1548,12 +1548,108 @@ void sample_charged_particle_reaction(Particle& p)
   // Store event MT for tallying
   p.event_mt() = mt;
 
+  double E_in = p.E();
+
+  // Helper lambda to check if transport is enabled for a particle type
+  auto is_transport_enabled = [](ParticleType type) {
+    switch (type) {
+    case ParticleType::neutron:
+      return true; // Neutrons are always transported
+    case ParticleType::proton:
+      return settings::proton_transport;
+    case ParticleType::deuteron:
+      return settings::deuteron_transport;
+    case ParticleType::triton:
+      return settings::triton_transport;
+    case ParticleType::helion:
+      return settings::helion_transport;
+    case ParticleType::alpha:
+      return settings::alpha_transport;
+    case ParticleType::unknown:
+      return false; // Unknown particles (residual nuclei) are never transported
+    default:
+      return false;
+    }
+  };
+
+  // Check if this reaction has products with energy-dependent yields
+  const auto& products = cp.products_[i_rx];
+  if (!products.empty()) {
+    // Use product-based sampling with energy-dependent yields
+    if (debug) {
+      ++debug_count;
+      fmt::print("[CP_RXN] MT={} E_in={:.3e} eV - using product yields\n", mt, E_in);
+    }
+
+    // Process each product
+    for (const auto& product : products) {
+      // Evaluate yield at current energy
+      double yield = (*product.yield_)(E_in);
+      if (yield <= 0.0)
+        continue;
+
+      // Skip products we can't transport (except neutrons which are always transported)
+      if (!is_transport_enabled(product.particle_))
+        continue;
+
+      // Sample number of particles to emit
+      // For yield < 1, this is probabilistic; for yield >= 1, emit floor(yield) plus
+      // probabilistic extra
+      int n_emit = static_cast<int>(yield);
+      double frac = yield - n_emit;
+      if (prn(p.current_seed()) < frac) {
+        ++n_emit;
+      }
+
+      if (debug && n_emit > 0) {
+        fmt::print("         Product: {} yield={:.4f} n_emit={}\n",
+                   particle_type_to_str(product.particle_), yield, n_emit);
+      }
+
+      // Emit particles
+      for (int i = 0; i < n_emit; ++i) {
+        double E_out, mu_out;
+
+        // Sample energy and angle from distribution if available
+        if (!product.distribution_.empty()) {
+          product.sample(E_in, E_out, mu_out, p.current_seed());
+        } else {
+          // No distribution available - use isotropic angle and fraction of incident energy
+          mu_out = 2.0 * prn(p.current_seed()) - 1.0;
+          // Simple estimate: share energy among products based on mass ratio
+          double m_prod = get_particle_mass_eV(product.particle_);
+          double m_inc = get_particle_mass_eV(p.type());
+          E_out = E_in * m_inc / (m_inc + m_prod) * 0.5; // Rough estimate
+          if (E_out < 0.0)
+            E_out = 1.0; // Minimum energy
+        }
+
+        // Sample azimuthal angle and compute direction
+        double phi = 2.0 * PI * prn(p.current_seed());
+        Direction u_out = rotate_angle(p.u(), mu_out, &phi, p.current_seed());
+
+        // Create secondary particle
+        p.create_secondary(p.wgt(), u_out, E_out, product.particle_);
+
+        if (debug) {
+          fmt::print("         -> Created secondary: {} at {:.3f} MeV\n",
+                     particle_type_to_str(product.particle_), E_out / 1.0e6);
+        }
+      }
+    }
+
+    // For reactions with products, the incident particle is absorbed
+    // (unless this is elastic scattering, but elastic wouldn't have products)
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
+  }
+
+  // Fall back to original two-body kinematics for reactions without product data
   // Get masses in eV/c^2 for relativistic kinematics
   double m_i = get_particle_mass_eV(p.type());        // incident particle mass
   double m_t = cp.awr_ * MASS_NEUTRON_EV;             // target mass (convert from AWR)
   double m_e = get_particle_mass_eV(ejectile_type);   // ejectile mass
-
-  double E_in = p.E();
 
   // Sample scattering angle in center-of-mass (isotropic for now)
   // TODO: Add angular distribution support from ENDF data
@@ -1596,26 +1692,6 @@ void sample_charged_particle_reaction(Particle& p)
   // Residual goes in opposite azimuthal direction
   double phi_residual = phi + PI;
   Direction u_residual = rotate_angle(p.u(), mu_residual, &phi_residual, p.current_seed());
-
-  // Helper lambda to check if transport is enabled for a particle type
-  auto is_transport_enabled = [](ParticleType type) {
-    switch (type) {
-    case ParticleType::neutron:
-      return true; // Neutrons are always transported
-    case ParticleType::proton:
-      return settings::proton_transport;
-    case ParticleType::deuteron:
-      return settings::deuteron_transport;
-    case ParticleType::triton:
-      return settings::triton_transport;
-    case ParticleType::helion:
-      return settings::helion_transport;
-    case ParticleType::alpha:
-      return settings::alpha_transport;
-    default:
-      return false;
-    }
-  };
 
   // Update particle direction cosine for tallying
   p.mu() = mu_ejectile;

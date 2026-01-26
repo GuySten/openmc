@@ -4,6 +4,8 @@
 #include <cmath>
 #include <stdexcept>
 
+#include <fmt/core.h>
+
 #include "openmc/hdf5_interface.h"
 #include "openmc/search.h"
 
@@ -64,6 +66,43 @@ IncidentChargedParticle::IncidentChargedParticle(hid_t group)
     for (int j = 0; j < n_reactions_; ++j) {
       xs_[i * n_reactions_ + j] = xs_matrix(i, j);
     }
+  }
+
+  // Read reaction products if available (for energy-dependent yields)
+  products_.resize(n_reactions_);
+  if (object_exists(group, "reactions")) {
+    hid_t rxs_group = open_group(group, "reactions");
+
+    // Iterate over reactions
+    for (int j = 0; j < n_reactions_; ++j) {
+      int mt = MT_[j];
+      std::string rx_name = fmt::format("reaction_{:03d}", mt);
+
+      if (object_exists(rxs_group, rx_name.c_str())) {
+        hid_t rx_group = open_group(rxs_group, rx_name.c_str());
+
+        // Count number of products
+        int n_products = 0;
+        for (int i = 0; ; ++i) {
+          std::string prod_name = fmt::format("product_{}", i);
+          if (!object_exists(rx_group, prod_name.c_str()))
+            break;
+          ++n_products;
+        }
+
+        // Read each product
+        for (int i = 0; i < n_products; ++i) {
+          std::string prod_name = fmt::format("product_{}", i);
+          hid_t prod_group = open_group(rx_group, prod_name.c_str());
+          products_[j].emplace_back(prod_group);
+          close_group(prod_group);
+        }
+
+        close_group(rx_group);
+      }
+    }
+
+    close_group(rxs_group);
   }
 }
 

@@ -317,6 +317,37 @@ acer / %%%%%%%%%%%%%%%%%%%%%%%% Write out in ACE format %%%%%%%%%%%%%%%%%%%%%%%%
 222 64 {mt_elastic} {elastic_type} {data.nmix} {energy_max} {iwt}/
 """
 
+# Charged particle templates
+_CHARGED_TEMPLATE_RECONR = """
+reconr / %%%%%%%%%%%%%%%%%%% Reconstruct XS for charged particles %%%%%%%%%%%%%
+{nendf} {npendf}
+'{library} PENDF for {zsymam}'/
+{mat} 2/
+{error}/ err
+'{library}: {zsymam}'/
+'Processed by NJOY'/
+0/
+"""
+
+_CHARGED_TEMPLATE_ACER = """
+acer / %%%%%%%%%%%%%%%% Write charged particle ACE file %%%%%%%%%%%%%%%%%%%%%%%%
+{nendf} {npendf} 0 {nace} {ndir}
+1 0 1 .{ext}/
+'{library}: {projectile} + {zsymam}'/
+{mat} 0
+/
+/
+"""
+
+# Mapping from projectile name to ZAID prefix for ACE files
+_CHARGED_PARTICLE_ZAID = {
+    'proton': 1001,
+    'deuteron': 1002,
+    'triton': 1003,
+    'helion': 2003,
+    'alpha': 2004,
+}
+
 
 def run(commands, tapein, tapeout, input_filename=None, stdout=False,
         njoy_exec='njoy'):
@@ -766,6 +797,133 @@ def make_ace_thermal(filename, filename_thermal, temperatures=None,
             xsdir_file.write(xsdir_in.read_text())
 
     # Remove ACE/xsdir files for each temperature
+    for temperature in temperatures:
+        (output_dir / f"ace_{temperature:.1f}").unlink()
+        (output_dir / f"xsdir_{temperature:.1f}").unlink()
+
+
+def make_ace_charged_particle(filename, projectile, temperatures=None,
+                               ace=None, xsdir=None, output_dir=None,
+                               pendf=False, error=0.001, evaluation=None,
+                               **kwargs):
+    """Generate incident charged particle ACE file from an ENDF file
+
+    Parameters
+    ----------
+    filename : str
+        Path to ENDF file
+    projectile : str
+        Type of incident particle. Must be one of 'proton', 'deuteron',
+        'triton', 'helion', or 'alpha'.
+    temperatures : iterable of float, optional
+        Temperatures in Kelvin to produce ACE files at. If omitted, data is
+        produced at room temperature (293.6 K).
+    ace : str, optional
+        Path of ACE file to write. Defaults to ``"ace"`` in output_dir.
+    xsdir : str, optional
+        Path of xsdir file to write. Defaults to ``"xsdir"`` in the same
+        directory as ``ace``.
+    output_dir : str, optional
+        Directory to write output files. Defaults to current directory.
+    pendf : str, optional
+        Path of PENDF file to write. If omitted, the PENDF file is not saved.
+    error : float, optional
+        Fractional error tolerance for NJOY processing. Default is 0.001.
+    evaluation : openmc.data.endf.Evaluation, optional
+        If the ENDF file contains multiple material evaluations, this argument
+        indicates which evaluation should be used.
+    **kwargs
+        Keyword arguments passed to :func:`openmc.data.njoy.run`
+
+    Raises
+    ------
+    subprocess.CalledProcessError
+        If the NJOY process returns with a non-zero status
+    ValueError
+        If projectile is not a valid charged particle type
+    IOError
+        If ``output_dir`` does not point to a directory
+
+    """
+    if projectile not in _CHARGED_PARTICLE_ZAID:
+        raise ValueError(
+            f"Invalid projectile '{projectile}'. Must be one of: "
+            f"{', '.join(_CHARGED_PARTICLE_ZAID.keys())}"
+        )
+
+    if output_dir is None:
+        output_dir = Path()
+    else:
+        output_dir = Path(output_dir)
+        if not output_dir.is_dir():
+            raise IOError(f"{output_dir} is not a directory")
+
+    ev = evaluation if evaluation is not None else endf.Evaluation(filename)
+    mat = ev.material
+    zsymam = ev.target['zsymam']
+
+    # Determine name of library
+    library = '{}-{}.{}'.format(*ev.info['library'])
+
+    if temperatures is None:
+        temperatures = [293.6]
+    num_temp = len(temperatures)
+    temps = ' '.join(str(i) for i in temperatures)
+
+    # Create NJOY commands - for charged particles we only need RECONR + ACER
+    commands = ""
+
+    nendf, npendf = 20, 21
+    tapein = {nendf: filename}
+    tapeout = {}
+    if pendf:
+        tapeout[npendf] = (output_dir / "pendf") if pendf is True else pendf
+
+    # RECONR - reconstruct cross sections
+    commands += _CHARGED_TEMPLATE_RECONR.format(**locals())
+
+    # ACER - write ACE file for each temperature
+    for i, temperature in enumerate(temperatures):
+        nace = npendf + 1 + 2*i
+        ndir = nace + 1
+        ext = f'{i + 1:02}'
+        commands += _CHARGED_TEMPLATE_ACER.format(**locals())
+
+        # Indicate tapes to save for each ACER run
+        tapeout[nace] = output_dir / f"ace_{temperature:.1f}"
+        tapeout[ndir] = output_dir / f"xsdir_{temperature:.1f}"
+
+    commands += 'stop\n'
+    run(commands, tapein, tapeout, **kwargs)
+
+    # Combine ACE and xsdir files from all temperatures
+    ace_out = (output_dir / "ace") if ace is None else Path(ace)
+    xsdir_out = (ace_out.parent / "xsdir") if xsdir is None else Path(xsdir)
+
+    with ace_out.open('w') as ace_file, xsdir_out.open('w') as xsdir_file:
+        for temperature in temperatures:
+            # Get contents of ACE file
+            text = (output_dir / f"ace_{temperature:.1f}").read_text()
+
+            # Modify ZAID to use charged particle prefix
+            # NJOY produces ZAIDs like ZZZAAA.nnc where c is particle type
+            # We need to ensure the ZAID prefix is correct for the projectile
+            zaid_prefix = _CHARGED_PARTICLE_ZAID[projectile]
+
+            # If the target is metastable, add 400 to mass number
+            if ev.target['isomeric_state'] > 0:
+                mass_first_digit = int(text[3])
+                if mass_first_digit <= 2:
+                    text = text[:3] + str(mass_first_digit + 4) + text[4:]
+
+            # Concatenate into destination ACE file
+            ace_file.write(text)
+
+            # Concatenate into destination xsdir file
+            xsdir_in = output_dir / f"xsdir_{temperature:.1f}"
+            xsdir_file.write(xsdir_in.read_text())
+
+    # Remove temporary ACE/xsdir files for each temperature
     for temperature in temperatures:
         (output_dir / f"ace_{temperature:.1f}").unlink()
         (output_dir / f"xsdir_{temperature:.1f}").unlink()

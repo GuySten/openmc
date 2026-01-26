@@ -39,8 +39,9 @@ enum class ParticleType {
   proton,
   deuteron,
   triton,
-  helion,  // He-3
-  alpha    // He-4
+  helion,   // He-3
+  alpha,    // He-4
+  unknown   // Unknown/unsupported particle (e.g., residual nuclei)
 };
 
 //! Saved ("banked") state of a particle

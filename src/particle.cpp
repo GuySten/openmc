@@ -1086,16 +1086,29 @@ std::string particle_type_to_str(ParticleType type)
 
 ParticleType str_to_particle_type(std::string str)
 {
-  if (str == "neutron") {
+  // Standard names
+  if (str == "neutron" || str == "n") {
     return ParticleType::neutron;
-  } else if (str == "photon") {
+  } else if (str == "photon" || str == "gamma" || str == "g") {
     return ParticleType::photon;
   } else if (str == "electron") {
     return ParticleType::electron;
   } else if (str == "positron") {
     return ParticleType::positron;
+  } else if (str == "proton" || str == "H1") {
+    return ParticleType::proton;
+  } else if (str == "deuteron" || str == "H2") {
+    return ParticleType::deuteron;
+  } else if (str == "triton" || str == "H3") {
+    return ParticleType::triton;
+  } else if (str == "helion" || str == "He3") {
+    return ParticleType::helion;
+  } else if (str == "alpha" || str == "He4") {
+    return ParticleType::alpha;
   } else {
-    throw std::invalid_argument {fmt::format("Invalid particle name: {}", str)};
+    // Unknown particle type (e.g., residual nuclei like B9, Li6)
+    // Return unknown - transport code will skip these
+    return ParticleType::unknown;
   }
 }
 

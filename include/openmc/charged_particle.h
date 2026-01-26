@@ -11,6 +11,7 @@
 
 #include "openmc/memory.h"
 #include "openmc/particle_data.h"
+#include "openmc/reaction_product.h"
 #include "openmc/vector.h"
 
 namespace openmc {
@@ -60,6 +61,10 @@ public:
   vector<double> Q_value_;       //!< Q-values in [eV]
   vector<ParticleType> ejectile_; //!< Ejectile particle type for each reaction
   vector<double> xs_;            //!< Cross sections [n_energy x n_reactions], flattened
+
+  //! Products for each reaction (indexed by reaction index, not MT)
+  //! Each reaction can have multiple products with energy-dependent yields
+  vector<vector<ReactionProduct>> products_;
 
   int n_energy_;    //!< Number of energy points
   int n_reactions_; //!< Number of reactions

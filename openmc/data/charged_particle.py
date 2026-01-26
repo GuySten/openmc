@@ -6,7 +6,8 @@ import numpy as np
 import h5py
 
 from . import HDF5_VERSION
-from .data import ATOMIC_SYMBOL, gnds_name
+from .ace import Table, get_table, get_metadata, TableType
+from .data import ATOMIC_SYMBOL, gnds_name, EV_PER_MEV, K_BOLTZMANN
 from .endf import Evaluation, get_head_record, get_tab1_record
 from .function import Tabulated1D, Sum
 from .product import Product
@@ -253,6 +254,11 @@ class IncidentChargedParticle(EqualityMixin):
             # For elastic (MT=2), ejectile is same as projectile
             if mt == 2:
                 ejectiles.append(self.projectile)
+            elif mt == 5:
+                # MT=5 is a lumped reaction with multiple possible products.
+                # Don't assign a specific ejectile - use projectile to indicate
+                # no secondary particle should be created (similar to elastic).
+                ejectiles.append(self.projectile)
             elif rx.products:
                 # First product is typically the ejectile
                 ejectiles.append(standardize_particle_name(rx.products[0].particle))
@@ -295,6 +301,33 @@ class IncidentChargedParticle(EqualityMixin):
 
             # Write cross section matrix
             g.create_dataset('xs', data=xs_matrix)
+
+            # Write reactions group with full product data
+            # This enables energy-dependent product yields and distributions
+            rxs_group = g.create_group('reactions')
+            for j, mt in enumerate(mt_list):
+                rx = self.reactions[mt]
+                rx_group = rxs_group.create_group(f'reaction_{mt:03d}')
+                rx_group.attrs['mt'] = mt
+                rx_group.attrs['Q_value'] = rx.q_value
+
+                # Write products if available
+                if rx.products:
+                    for i, prod in enumerate(rx.products):
+                        pgroup = rx_group.create_group(f'product_{i}')
+                        try:
+                            prod.to_hdf5(pgroup)
+                        except (AttributeError, TypeError, ValueError) as e:
+                            # If full product export fails (e.g., incompatible distribution),
+                            # delete the partial group and write minimal data
+                            del rx_group[f'product_{i}']
+                            pgroup = rx_group.create_group(f'product_{i}')
+                            # Write minimal data: particle type and yield
+                            # The C++ code handles missing distributions
+                            pgroup.attrs['particle'] = np.bytes_(prod.particle)
+                            pgroup.attrs['emission_mode'] = np.bytes_(prod.emission_mode)
+                            prod.yield_.to_hdf5(pgroup, 'yield')
+                            pgroup.attrs['n_distribution'] = 0
 
     @classmethod
     def from_hdf5(cls, group_or_filename):
@@ -416,6 +449,155 @@ class IncidentChargedParticle(EqualityMixin):
                 data.reactions[mt] = Reaction.from_endf(ev, mt)
 
         data._evaluation = ev
+        return data
+
+    @classmethod
+    def from_ace(cls, ace_or_filename, metastable_scheme='nndc'):
+        """Generate incident charged particle data from an ACE table
+
+        Parameters
+        ----------
+        ace_or_filename : openmc.data.ace.Table or str
+            ACE table to read from. If the value is a string, it is assumed to
+            be the filename for the ACE file.
+        metastable_scheme : {'nndc', 'mcnp'}
+            Determine how ZAID identifiers are to be interpreted in the case of
+            a metastable nuclide. Because the normal ZAID (=1000*Z + A) does not
+            encode metastable information, different conventions are used among
+            different libraries. In MCNP libraries, the convention is to add 400
+            for a metastable nuclide except for Am242m, for which 95242 is
+            metastable and 95642 (or 1095242 in newer libraries) is the ground
+            state. For NNDC libraries, ZAID is given as 1000*Z + A + 100*m.
+
+        Returns
+        -------
+        openmc.data.IncidentChargedParticle
+            Incident charged particle continuous-energy data
+
+        """
+        # First obtain the data for the first provided ACE table/file
+        if isinstance(ace_or_filename, Table):
+            ace = ace_or_filename
+        else:
+            ace = get_table(ace_or_filename)
+
+        # Parse ZAID and suffix to determine projectile type
+        zaid, xs = ace.name.split('.')
+        suffix = xs[-1]
+
+        # Map ACE suffix to projectile type
+        suffix_to_projectile = {
+            'h': 'proton',
+            'o': 'deuteron',
+            'r': 'triton',
+            's': 'helion',
+            'a': 'alpha',
+        }
+
+        if suffix not in suffix_to_projectile:
+            raise TypeError(
+                f"{ace} is not a charged particle ACE table. "
+                f"Expected suffix in {list(suffix_to_projectile.keys())}, got '{suffix}'."
+            )
+
+        projectile = suffix_to_projectile[suffix]
+
+        # Get target metadata from ZAID
+        name, element, Z, mass_number, metastable = \
+            get_metadata(int(zaid), metastable_scheme)
+
+        # Get temperature string for indexing
+        temperature_K = ace.temperature * EV_PER_MEV / K_BOLTZMANN
+        strT = str(int(round(temperature_K))) + "K"
+
+        # Create the IncidentChargedParticle instance
+        data = cls(projectile, name, Z, mass_number, metastable,
+                   ace.atomic_weight_ratio)
+
+        # Read energy grid
+        n_energy = ace.nxs[3]
+        i = ace.jxs[1]
+        energy = ace.xss[i : i + n_energy] * EV_PER_MEV
+
+        # Read total cross section (at offset n_energy from start of ESZ block)
+        total_xs = ace.xss[i + n_energy : i + 2*n_energy]
+
+        # Read elastic cross section (at offset 3*n_energy from start of ESZ block)
+        elastic_xs = ace.xss[i + 3*n_energy : i + 4*n_energy]
+
+        # Create total reaction (MT=1) - redundant
+        total = Reaction(1)
+        total.xs[strT] = Tabulated1D(energy, total_xs)
+        total.redundant = True
+        data.reactions[1] = total
+
+        # Create elastic reaction (MT=2)
+        elastic = Reaction(2)
+        # Fix negative cross sections if any
+        if np.any(elastic_xs < 0.0):
+            elastic_xs = elastic_xs.copy()
+            elastic_xs[elastic_xs < 0.0] = 0.0
+        elastic.xs[strT] = Tabulated1D(energy, elastic_xs)
+        data.reactions[2] = elastic
+
+        # Read non-elastic reactions
+        n_reaction = ace.nxs[4]  # Number of reactions excluding elastic
+        for i_reaction in range(n_reaction):
+            # Get MT number
+            mt = int(ace.xss[ace.jxs[3] + i_reaction])
+
+            rx = Reaction(mt)
+
+            # Get Q-value
+            rx.q_value = ace.xss[ace.jxs[4] + i_reaction] * EV_PER_MEV
+
+            # Get locator for cross-section data
+            loc = int(ace.xss[ace.jxs[6] + i_reaction])
+
+            # Determine starting index on energy grid
+            threshold_idx = int(ace.xss[ace.jxs[7] + loc - 1]) - 1
+
+            # Determine number of energies in reaction
+            n_energy_rx = int(ace.xss[ace.jxs[7] + loc])
+
+            # Get energy values for this reaction
+            energy_rx = energy[threshold_idx:threshold_idx + n_energy_rx]
+
+            # Read reaction cross section
+            xs = ace.xss[ace.jxs[7] + loc + 1:ace.jxs[7] + loc + 1 + n_energy_rx]
+
+            # Fix negative cross sections if any
+            if np.any(xs < 0.0):
+                xs = xs.copy()
+                xs[xs < 0.0] = 0.0
+
+            rx.xs[strT] = Tabulated1D(energy_rx, xs)
+
+            # Set products to indicate the ejectile particle type
+            # This is important for OpenMC to know what secondary particles to create
+            # MT 50-91: (x,n) reactions - neutron emission to discrete levels
+            # MT 600-649: (x,p) reactions - proton emission
+            # MT 650-699: (x,d) reactions - deuteron emission
+            # MT 700-749: (x,t) reactions - triton emission
+            # MT 750-799: (x,3He) reactions - He-3 emission
+            # MT 800-849: (x,a) reactions - alpha emission
+            if 50 <= mt <= 91:
+                # (x,n) reactions - neutron is the ejectile
+                rx.products = [Product('neutron')]
+            elif 600 <= mt <= 649:
+                rx.products = [Product('proton')]
+            elif 650 <= mt <= 699:
+                rx.products = [Product('deuteron')]
+            elif 700 <= mt <= 749:
+                rx.products = [Product('triton')]
+            elif 750 <= mt <= 799:
+                rx.products = [Product('helion')]
+            elif 800 <= mt <= 849:
+                rx.products = [Product('alpha')]
+            # For MT 4 (inelastic sum), don't set products - it's a sum reaction
+
+            data.reactions[mt] = rx
+
         return data
 
 

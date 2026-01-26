@@ -345,7 +345,7 @@ class Settings:
     use_decay_photons : bool
         Produce decay photons from neutron reactions instead of prompt
     verbosity : int
-        Verbosity during simulation between 1 and 10. Verbosity levels are
+        Verbosity during simulation between 1 and 11. Verbosity levels are
         described in :ref:`verbosity`.
     volume_calculations : VolumeCalculation or iterable of VolumeCalculation
         Stochastic volume calculation specifications
@@ -1033,7 +1033,7 @@ class Settings:
     def verbosity(self, verbosity: int):
         cv.check_type('verbosity', verbosity, Integral)
         cv.check_greater_than('verbosity', verbosity, 1, True)
-        cv.check_less_than('verbosity', verbosity, 10, True)
+        cv.check_less_than('verbosity', verbosity, 11, True)
         self._verbosity = verbosity
 
     @property

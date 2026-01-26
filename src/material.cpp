@@ -1,6 +1,7 @@
 #include "openmc/material.h"
 
 #include <algorithm> // for min, max, sort, fill
+#include <array>
 #include <cassert>
 #include <cmath>
 #include <iterator>
@@ -1171,19 +1172,163 @@ double Material::temperature() const
   return temperature_ >= 0 ? temperature_ : settings::temperature_default;
 }
 
+namespace {
+
+//! Get rest mass of charged particle in eV/c^2
+double get_particle_mass(ParticleType type)
+{
+  switch (type) {
+  case ParticleType::proton:
+    return MASS_PROTON_EV;
+  case ParticleType::deuteron:
+    return MASS_DEUTERON_EV;
+  case ParticleType::triton:
+    return MASS_TRITON_EV;
+  case ParticleType::helion:
+    return MASS_HELION_EV;
+  case ParticleType::alpha:
+    return MASS_ALPHA_EV;
+  default:
+    return MASS_PROTON_EV;
+  }
+}
+
+//! Get charge number of charged particle
+int get_particle_charge(ParticleType type)
+{
+  switch (type) {
+  case ParticleType::proton:
+  case ParticleType::deuteron:
+  case ParticleType::triton:
+    return 1;
+  case ParticleType::helion:
+  case ParticleType::alpha:
+    return 2;
+  default:
+    return 0;
+  }
+}
+
+// Mean excitation energies for elements Z=1 to Z=92
+// Source: https://pdg.lbl.gov/2021/AtomicNuclearProperties/adndt.pdf
+// Index 0 is a placeholder; index Z gives I for element with atomic number Z
+constexpr std::array<double, 93> mean_excitation_energy_eV = {
+    0.0,   19.2,  41.8,  40.0,  63.7,  76.0,  78.0,  82.0,  95.0,  115.0,
+    137.0, 149.0, 156.0, 166.0, 173.0, 173.0, 180.0, 174.0, 188.0, 190.0,
+    191.0, 216.0, 233.0, 245.0, 257.0, 272.0, 286.0, 297.0, 311.0, 322.0,
+    330.0, 334.0, 350.0, 347.0, 348.0, 343.0, 352.0, 363.0, 366.0, 379.0,
+    393.0, 417.0, 424.0, 428.0, 441.0, 449.0, 470.0, 470.0, 469.0, 488.0,
+    488.0, 487.0, 485.0, 491.0, 482.0, 488.0, 491.0, 501.0, 523.0, 535.0,
+    546.0, 560.0, 574.0, 580.0, 591.0, 614.0, 628.0, 650.0, 658.0, 674.0,
+    684.0, 694.0, 705.0, 718.0, 727.0, 736.0, 746.0, 757.0, 790.0, 790.0,
+    800.0, 810.0, 823.0, 823.0, 830.0, 825.0, 794.0, 827.0, 826.0, 841.0,
+    847.0, 878.0, 890.0
+};
+
+//! Get mean excitation potential for an element
+//! \param[in] Z Atomic number
+//! \return Mean excitation potential in eV
+double mean_excitation_potential(int Z)
+{
+  if (Z < 1 || Z > 92) {
+    // Fall back to Bloch approximation for unknown elements
+    return 10.0 * Z;
+  }
+  return mean_excitation_energy_eV[Z];
+}
+
+} // anonymous namespace
+
 double Material::stopping_power(ParticleType type, double E) const
 {
+  // Charged particle transport requires continuous-energy mode
+  if (!settings::run_CE) {
+    fatal_error("Charged particle transport requires continuous-energy mode. "
+                "Multi-group mode is not supported.");
+  }
+
   switch (stopping_power_model_) {
   case StoppingPowerModel::NONE:
-    return 0.0;
+    fatal_error("Charged particle transport attempted in material " +
+                std::to_string(id_) +
+                " but no stopping power model is defined. "
+                "Please specify a stopping power model for this material.");
 
   case StoppingPowerModel::CONSTANT:
     // Return constant stopping power (default 1 MeV/cm)
     return stopping_power_constant_;
 
-  case StoppingPowerModel::BETHE_BLOCH:
-    // TODO: Implement Bethe-Bloch formula
-    return stopping_power_constant_;
+  case StoppingPowerModel::BETHE_BLOCH: {
+    // Bethe-Bloch stopping power formula for charged particles
+    // Reference: PDG Review of Particle Physics, Passage of particles through matter
+    //
+    // dE/dx = K * n_e * (z^2/β^2) * [ln(2*m_e*c^2*β^2*γ^2*T_max/I^2) - β^2]
+
+    // Get particle properties
+    double m = get_particle_mass(type);   // rest mass in eV/c^2
+    int z = get_particle_charge(type);    // charge number
+
+    // Calculate relativistic kinematics
+    double E_total = E + m;               // total energy in eV
+    double gamma = E_total / m;           // Lorentz factor
+    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+
+    // Protect against very low energies where beta -> 0
+    if (beta_sq < 1.0e-10) {
+      return stopping_power_constant_;
+    }
+
+    // Maximum energy transfer to an electron
+    double m_e = MASS_ELECTRON_EV;
+    double m_ratio = m_e / m;
+    double T_max = (2.0 * m_e * beta_sq * gamma * gamma) /
+                   (1.0 + 2.0 * gamma * m_ratio + m_ratio * m_ratio);
+
+    // Calculate mean excitation potential using Bragg additivity rule
+    double numerator = 0.0;
+    double denominator = 0.0;
+
+    for (size_t i = 0; i < nuclide_.size(); ++i) {
+      int i_nuc = nuclide_[i];
+      int Z_i = settings::run_CE ? data::nuclides[i_nuc]->Z_ : 1;
+      double n_i = atom_density_(i);
+      double I_i = mean_excitation_potential(Z_i);
+
+      numerator += n_i * Z_i * std::log(I_i);
+      denominator += n_i * Z_i;
+    }
+
+    double I_eff = std::exp(numerator / denominator);
+
+    // Bethe-Bloch prefactor K = 4π * r_e^2 * m_e * c^2 * 10^24
+    constexpr double K_BETHE = 5.1006e5;  // eV when n_e is in e/b-cm
+
+    // Get electron density
+    double n_e = electron_density();
+
+    // Calculate the logarithmic term
+    double log_arg = 2.0 * m_e * beta_sq * gamma * gamma * T_max / (I_eff * I_eff);
+
+    if (log_arg <= 0.0) {
+      return stopping_power_constant_;
+    }
+
+    double log_term = std::log(log_arg);
+
+    // Bracket term with 1/2 factor per PDG Bethe formula:
+    // -dE/dx = K z² (Z/A) (1/β²) [½ ln(2 m_e c² β² γ² T_max / I²) - β²]
+    double bracket = 0.5 * log_term - beta_sq;
+
+    // Clamp bracket term for low-energy regime where Bethe-Bloch breaks down
+    if (bracket < 0.5) {
+      bracket = 0.5;
+    }
+
+    // Stopping power in eV/cm
+    double dEdx = K_BETHE * n_e * (z * z / beta_sq) * bracket;
+
+    return dEdx;
+  }
 
   case StoppingPowerModel::LI_PETRASSO:
     // TODO: Implement Li-Petrasso model

@@ -137,6 +137,15 @@ public:
   //! \return Charge density in [e/b-cm]
   double charge_density() const { return charge_density_; };
 
+  //! Get electron density in [e/b-cm]
+  //!
+  //! For neutral materials, the electron density equals the charge density
+  //! (sum of atom_density * Z for each nuclide). This is used in the
+  //! Bethe-Bloch stopping power formula.
+  //!
+  //! \return Electron density in [e/b-cm]
+  double electron_density() const { return charge_density_; };
+
   //! Get name
   //! \return Material name
   const std::string& name() const { return name_; }

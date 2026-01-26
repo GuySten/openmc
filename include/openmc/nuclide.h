@@ -39,6 +39,7 @@ public:
 
   //============================================================================
   // Constructors/destructors
+  Nuclide() = default;
   Nuclide(hid_t group, const vector<double>& temperature);
   ~Nuclide();
 

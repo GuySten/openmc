@@ -533,6 +533,8 @@ void finalize_generation()
       global_tally_tracklength;
   }
   gt(GlobalTally::LEAKAGE, TallyResult::VALUE) += global_tally_leakage;
+  gt(GlobalTally::NEUTRON_PRODUCTION, TallyResult::VALUE) +=
+    global_tally_neutron_production;
 
   // reset tallies
   if (settings::run_mode == RunMode::EIGENVALUE) {
@@ -541,6 +543,7 @@ void finalize_generation()
     global_tally_tracklength = 0.0;
   }
   global_tally_leakage = 0.0;
+  global_tally_neutron_production = 0.0;
 
   if (settings::run_mode == RunMode::EIGENVALUE &&
       settings::solver_type == SolverType::MONTE_CARLO) {

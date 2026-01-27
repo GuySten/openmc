@@ -97,12 +97,11 @@ bool Particle::create_secondary(
     return false;
   }
 
-  // For eigenvalue mode, place all secondary neutrons in the fission bank
-  // instead of the secondary bank so they become source particles for the
-  // next generation. This allows neutron multiplication chains (e.g., fusion
-  // followed by (n,2n) reactions) to propagate across generations.
+  // For eigenvalue mode, if a neutron is produced from a non-neutron particle
+  // (e.g., fusion reaction), place it in the fission bank instead of the
+  // secondary bank so it becomes a source particle for the next generation.
   if (settings::run_mode == RunMode::EIGENVALUE &&
-      type == ParticleType::neutron) {
+      type == ParticleType::neutron && this->type() != ParticleType::neutron) {
 
     // Score k-effective estimate and neutron production tally based on the
     // actual weight before any population control adjustments

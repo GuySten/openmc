@@ -1263,13 +1263,13 @@ double chandrasekhar_dpsi(double x)
 //! \param[in] E Particle kinetic energy in eV
 //! \param[in] m Particle mass in eV/c^2
 //! \param[in] z Particle charge number
-//! \param[in] rho_gpcc Mass density in g/cm^3
+//! \param[in] n_e Electron density in cm^-3
 //! \param[in] T_eV Plasma temperature in eV
 //! \return Stopping power in eV/cm
-double li_petrasso_stopping_power(double E, double m, int z, double rho_gpcc, double T_eV)
+double li_petrasso_stopping_power(double E, double m, int z, double n_e, double T_eV)
 {
-  // Protect against very low energies
-  if (E < 100.0) {  // Below 100 eV, return 0
+  // Protect against very low energies or zero density
+  if (E < 100.0 || n_e <= 0.0) {
     return 0.0;
   }
 
@@ -1287,10 +1287,6 @@ double li_petrasso_stopping_power(double E, double m, int z, double rho_gpcc, do
 
   // Projectile velocity
   double v = std::sqrt(2.0 * E_erg / m_ion_cgs);  // cm/s
-
-  // Electron density from mass density (assuming hydrogen plasma for now)
-  // For hydrogen: n_e = rho / m_p
-  double n_e = rho_gpcc / m_p_cgs;  // cm^-3
 
   // Electron thermal velocity
   double v_th_e = std::sqrt(2.0 * T_e_erg / m_e_cgs);  // cm/s
@@ -1446,9 +1442,10 @@ double Material::stopping_power(ParticleType type, double E) const
     int z = get_particle_charge(type);    // charge number
 
     // Get material properties
-    double rho = density_gpcc();          // mass density in g/cm^3
-    double T_K = temperature();           // temperature in K
-    double T_eV = T_K * K_BOLTZMANN;      // convert to eV
+    // electron_density() returns e/b-cm; convert to cm^-3 by multiplying by 1e24
+    double n_e = electron_density() * 1.0e24;  // cm^-3
+    double T_K = temperature();                // temperature in K
+    double T_eV = T_K * K_BOLTZMANN;           // convert to eV
 
     // Check for valid temperature
     if (T_eV < 1.0) {
@@ -1456,7 +1453,7 @@ double Material::stopping_power(ParticleType type, double E) const
       return stopping_power_constant_;
     }
 
-    return li_petrasso_stopping_power(E, m, z, rho, T_eV);
+    return li_petrasso_stopping_power(E, m, z, n_e, T_eV);
   }
 
   default:

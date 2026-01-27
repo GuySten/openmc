@@ -1237,6 +1237,113 @@ double mean_excitation_potential(int Z)
   return mean_excitation_energy_eV[Z];
 }
 
+//==============================================================================
+// Li-Petrasso stopping power helper functions
+//==============================================================================
+
+//! Chandrasekhar function psi(x) = erf(x) - (2x/sqrt(pi)) * exp(-x^2)
+//! This appears in the stopping power formula for a Maxwellian plasma
+double chandrasekhar_psi(double x)
+{
+  if (x > 30.0) return 1.0;
+  if (x < 1.0e-4) return (4.0 / (3.0 * std::sqrt(PI))) * x * x * x;
+  return std::erf(x) - (2.0 * x / std::sqrt(PI)) * std::exp(-x * x);
+}
+
+//! Derivative of Chandrasekhar function: dpsi/dx = (4x^2/sqrt(pi)) * exp(-x^2)
+double chandrasekhar_dpsi(double x)
+{
+  if (x > 30.0) return 0.0;
+  return (4.0 * x * x / std::sqrt(PI)) * std::exp(-x * x);
+}
+
+//! Li-Petrasso stopping power for a charged particle in a plasma
+//! Reference: C. K. Li and R. D. Petrasso, Phys. Rev. Lett. 70, 3059 (1993)
+//!
+//! \param[in] E Particle kinetic energy in eV
+//! \param[in] m Particle mass in eV/c^2
+//! \param[in] z Particle charge number
+//! \param[in] rho_gpcc Mass density in g/cm^3
+//! \param[in] T_eV Plasma temperature in eV
+//! \return Stopping power in eV/cm
+double li_petrasso_stopping_power(double E, double m, int z, double rho_gpcc, double T_eV)
+{
+  // Protect against very low energies
+  if (E < 100.0) {  // Below 100 eV, return 0
+    return 0.0;
+  }
+
+  // CGS constants
+  constexpr double e_cgs = 4.803e-10;    // elementary charge in statcoulomb
+  constexpr double m_e_cgs = 9.109e-28;  // electron mass in g
+  constexpr double m_p_cgs = 1.673e-24;  // proton mass in g
+  constexpr double hbar_cgs = 1.055e-27; // reduced Planck constant in erg·s
+  constexpr double eV_to_erg = 1.602e-12; // conversion factor
+
+  // Convert inputs to CGS
+  double E_erg = E * eV_to_erg;          // eV to erg
+  double T_e_erg = T_eV * eV_to_erg;     // eV to erg
+  double m_ion_cgs = m * eV_to_erg / (C_LIGHT * C_LIGHT); // eV/c^2 to g
+
+  // Projectile velocity
+  double v = std::sqrt(2.0 * E_erg / m_ion_cgs);  // cm/s
+
+  // Electron density from mass density (assuming hydrogen plasma for now)
+  // For hydrogen: n_e = rho / m_p
+  double n_e = rho_gpcc / m_p_cgs;  // cm^-3
+
+  // Electron thermal velocity
+  double v_th_e = std::sqrt(2.0 * T_e_erg / m_e_cgs);  // cm/s
+
+  // Velocity ratio for electrons
+  double x_e = v / v_th_e;
+  double psi_e = chandrasekhar_psi(x_e);
+
+  // Debye length
+  double lambda_D = std::sqrt(T_e_erg / (4.0 * PI * n_e * e_cgs * e_cgs));  // cm
+
+  // Minimum impact parameter (quantum mechanical limit)
+  double m_r = m_e_cgs;  // reduced mass ≈ m_e for ion-electron
+  double p_min_classical = e_cgs * e_cgs / (m_r * v * v);
+  double p_min_quantum = hbar_cgs / (m_r * v);
+  double p_min = std::max(p_min_classical, p_min_quantum);
+
+  // Coulomb logarithm
+  double ln_Lambda = 2.0;  // minimum value
+  if (lambda_D > p_min) {
+    ln_Lambda = std::max(std::log(lambda_D / p_min), 2.0);
+  }
+
+  // Electron stopping power (CGS formula)
+  // dE/dx = (4π z² e⁴ n_e / m_e v²) × ψ(x) × lnΛ
+  double dEdx_e_erg = (4.0 * PI * z * z * std::pow(e_cgs, 4) * n_e * psi_e * ln_Lambda) /
+                      (m_e_cgs * v * v);
+
+  // Ion stopping power (projectile on background ions)
+  // For ion-ion collisions, use ion thermal velocity
+  double v_th_i = std::sqrt(2.0 * T_e_erg / m_p_cgs);  // assuming T_i = T_e
+  double x_i = v / v_th_i;
+  double psi_i = chandrasekhar_psi(x_i);
+  double dpsi_i = chandrasekhar_dpsi(x_i);
+
+  // G function for equal mass particles (mass ratio = 1)
+  // G = ψ - (m_f/m_t) dψ/dx - (1/lnΛ)(ψ + dψ/dx)
+  double G_i = psi_i - 1.0 * dpsi_i - (1.0 / ln_Lambda) * (psi_i + dpsi_i);
+  G_i = std::max(G_i, 0.0);
+
+  double dEdx_i_erg = (4.0 * PI * z * z * std::pow(e_cgs, 4) * n_e * G_i * ln_Lambda) /
+                      (m_p_cgs * v * v);
+
+  // Total stopping power in erg/cm
+  double dEdx_total_erg = dEdx_e_erg + dEdx_i_erg;
+
+  // Convert to eV/cm: 1 erg = 6.242e11 eV
+  constexpr double erg_to_eV = 6.242e11;
+  double dEdx_eV_cm = dEdx_total_erg * erg_to_eV;
+
+  return dEdx_eV_cm;
+}
+
 } // anonymous namespace
 
 double Material::stopping_power(ParticleType type, double E) const
@@ -1330,9 +1437,27 @@ double Material::stopping_power(ParticleType type, double E) const
     return dEdx;
   }
 
-  case StoppingPowerModel::LI_PETRASSO:
-    // TODO: Implement Li-Petrasso model
-    return stopping_power_constant_;
+  case StoppingPowerModel::LI_PETRASSO: {
+    // Li-Petrasso stopping power for plasma
+    // Requires temperature to be set on the material
+
+    // Get particle properties
+    double m = get_particle_mass(type);   // rest mass in eV/c^2
+    int z = get_particle_charge(type);    // charge number
+
+    // Get material properties
+    double rho = density_gpcc();          // mass density in g/cm^3
+    double T_K = temperature();           // temperature in K
+    double T_eV = T_K * K_BOLTZMANN;      // convert to eV
+
+    // Check for valid temperature
+    if (T_eV < 1.0) {
+      // Temperature too low for plasma model, fall back to constant
+      return stopping_power_constant_;
+    }
+
+    return li_petrasso_stopping_power(E, m, z, rho, T_eV);
+  }
 
   default:
     return 0.0;

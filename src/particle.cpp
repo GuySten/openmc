@@ -97,6 +97,55 @@ bool Particle::create_secondary(
     return false;
   }
 
+  // For eigenvalue mode, place all secondary neutrons in the fission bank
+  // instead of the secondary bank so they become source particles for the
+  // next generation. This allows neutron multiplication chains (e.g., fusion
+  // followed by (n,2n) reactions) to propagate across generations.
+  if (settings::run_mode == RunMode::EIGENVALUE &&
+      type == ParticleType::neutron) {
+
+    // Score k-effective estimate and neutron production tally based on the
+    // actual weight before any population control adjustments
+    keff_tally_tracklength() += wgt;
+    neutron_production_tally() += wgt;
+
+    // Determine expected number of sites to bank, adjusting by 1/keff to
+    // maintain constant population size (same approach as fission)
+    double nu_t = wgt / simulation::keff;
+
+    // Sample the number of sites to create
+    int nu = static_cast<int>(nu_t);
+    if (prn(current_seed()) <= (nu_t - nu))
+      ++nu;
+
+    // Bank the sampled number of sites, each with unit weight
+    for (int i = 0; i < nu; ++i) {
+      SourceSite site;
+      site.r = r();
+      site.u = u;
+      site.E = settings::run_CE ? E : g();
+      site.time = time();
+      site.wgt = 1.0;
+      site.particle = ParticleType::neutron;
+      site.surf_id = 0;
+      site.delayed_group = 0;
+      site.parent_id = id();
+      site.progeny_id = n_progeny()++;
+
+      int64_t idx = simulation::fission_bank.thread_safe_append(site);
+      if (idx == -1) {
+        warning(
+          "The shared fission bank is full. Additional fission sites created "
+          "in this generation will not be banked. Results may be "
+          "non-deterministic.");
+        n_progeny()--;
+        break;
+      } 
+    }
+
+    return true;
+  }
+
   auto& bank = secondary_bank().emplace_back();
   bank.particle = type;
   bank.wgt = wgt;

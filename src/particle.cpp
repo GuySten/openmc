@@ -211,7 +211,7 @@ void Particle::event_calculate_xs()
   if (material() != MATERIAL_VOID) {
     if (settings::run_CE) {
       if (material() != material_last() || sqrtkT() != sqrtkT_last() ||
-          density_mult() != density_mult_last()) {
+          density_mult() != density_mult_last() || macro_xs().last_E() != E()) {
         // If the material is the same as the last material and the
         // temperature hasn't changed, we don't need to lookup cross
         // sections again.
@@ -231,6 +231,7 @@ void Particle::event_calculate_xs()
     macro_xs().absorption = 0.0;
     macro_xs().fission = 0.0;
     macro_xs().nu_fission = 0.0;
+    macro_xs().last_E() = E();
   }
 }
 
@@ -396,10 +397,6 @@ void Particle::event_collide()
 
   // Save coordinates for tallying purposes
   r_last_current() = r();
-
-  // Set last material to none since cross sections will need to be
-  // re-evaluated
-  material_last() = C_NONE;
 
   // Set all directions to base level -- right now, after a collision, only
   // the base level directions are changed

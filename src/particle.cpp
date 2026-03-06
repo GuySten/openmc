@@ -192,12 +192,6 @@ void Particle::event_calculate_xs()
     // Set birth cell attribute
     if (cell_born() == C_NONE)
       cell_born() = lowest_coord().cell();
-
-    // Initialize last cells from current cell
-    for (int j = 0; j < n_coord(); ++j) {
-      cell_last(j) = coord(j).cell();
-    }
-    n_coord_last() = n_coord();
   }
 
   // Write particle track.
@@ -211,7 +205,7 @@ void Particle::event_calculate_xs()
   if (material() != MATERIAL_VOID) {
     if (settings::run_CE) {
       if (material() != material_last() || sqrtkT() != sqrtkT_last() ||
-          density_mult() != density_mult_last() || macro_xs().last_E() != E()) {
+          density_mult() != density_mult_last() || macro_xs().last_E != E()) {
         // If the material is the same as the last material and the
         // temperature hasn't changed, we don't need to lookup cross
         // sections again.
@@ -231,7 +225,7 @@ void Particle::event_calculate_xs()
     macro_xs().absorption = 0.0;
     macro_xs().fission = 0.0;
     macro_xs().nu_fission = 0.0;
-    macro_xs().last_E() = E();
+    macro_xs().last_E = E();
   }
 }
 
@@ -463,12 +457,6 @@ void Particle::event_revive_from_secondary()
         // Set birth cell attribute
         if (cell_born() == C_NONE)
           cell_born() = lowest_coord().cell();
-
-        // Initialize last cells from current cell
-        for (int j = 0; j < n_coord(); ++j) {
-          cell_last(j) = coord(j).cell();
-        }
-        n_coord_last() = n_coord();
       }
       pht_secondary_particles();
     }
@@ -693,6 +681,7 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
 
   // Reassign particle's cell and surface
   coord(0).cell() = cell_last(0);
+  material() = material_last();
   surface() = -surface();
 
   // If a reflective surface is coincident with a lattice or universe

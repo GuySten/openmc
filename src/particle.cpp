@@ -192,12 +192,6 @@ void Particle::event_calculate_xs()
     // Set birth cell attribute
     if (cell_born() == C_NONE)
       cell_born() = lowest_coord().cell();
-
-    // Initialize last cells from current cell
-    for (int j = 0; j < n_coord(); ++j) {
-      cell_last(j) = coord(j).cell();
-    }
-    n_coord_last() = n_coord();
   }
 
   // Write particle track.
@@ -466,12 +460,6 @@ void Particle::event_revive_from_secondary()
         // Set birth cell attribute
         if (cell_born() == C_NONE)
           cell_born() = lowest_coord().cell();
-
-        // Initialize last cells from current cell
-        for (int j = 0; j < n_coord(); ++j) {
-          cell_last(j) = coord(j).cell();
-        }
-        n_coord_last() = n_coord();
       }
       pht_secondary_particles();
     }

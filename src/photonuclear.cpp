@@ -14,12 +14,6 @@
 #include "openmc/settings.h"
 #include "openmc/string_utils.h"
 
-#include "xtensor/xbuilder.hpp"
-#include "xtensor/xmath.hpp"
-#include "xtensor/xoperation.hpp"
-#include "xtensor/xslice.hpp"
-#include "xtensor/xview.hpp"
-
 #include <cmath>
 #include <fmt/core.h>
 #include <tuple> // for tie
@@ -171,8 +165,6 @@ int PhotonuclearInteraction::XS_NEUTRON_PROD {2};
 
 PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
 {
-  using namespace xt::placeholders;
-
   // Set index of element in global vector
   index_ = data::photonuclears.size();
 
@@ -205,35 +197,32 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
 void PhotonuclearInteraction::create_derived()
 {
   // Allocate and initialize cross section
-  this->xs_ = xt::xtensor<double, 2>({energy_.size(), 3}, 0.0);
+  this->xs_ = tensor::zeros<double>({energy_.size(), 3});
 
   for (int i = 0; i < reactions_.size(); ++i) {
 
     const auto& rx {reactions_[i]};
     int n = rx->xs_.value.size();
     int j = rx->xs_.threshold;
-    auto xs = xt::adapt(rx->xs_.value);
-    auto nprod = xt::view(xs_, xt::range(j, j + n), XS_NEUTRON_PROD);
+    auto xs = tensor::Tensor<double>(rx->xs_.value.data(), n);
     for (const auto& p : rx->products_) {
-      if (p.particle_ == ParticleType::neutron) {
+      if (p.particle_ == ParticleType::neutron()) {
         for (int k = 0; k < n; ++k) {
           double E = energy_[k];
           if ((*p.yield_)(E) > 0.0)
-            nprod[k] += xs[k];
+            xs_(j + k, XS_NEUTRON_PROD) += xs[k];
         }
       }
     }
-    if (rx->mt_ == 301) {
-      auto heating = xt::view(xs_, xt::range(j, j + n), XS_HEATING);
-      heating += xs;
-    }
+    if (rx->mt_ == 301)
+      xs_.slice(tensor::range(j, j + n), XS_HEATING) += xs;
+
     // Skip redundant reactions
     if (rx->redundant_)
       continue;
 
     // Add contribution to total cross section
-    auto total = xt::view(xs_, xt::range(j, j + n), XS_TOTAL);
-    total += xs;
+    xs_.slice(tensor::range(j, j + n), XS_TOTAL) += xs;
   }
 }
 

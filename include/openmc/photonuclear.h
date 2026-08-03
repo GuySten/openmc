@@ -8,7 +8,7 @@
 #include "openmc/reaction_product.h"
 #include "openmc/vector.h"
 
-#include "xtensor/xtensor.hpp"
+#include "openmc/tensor.h"
 #include <hdf5.h>
 
 #include <string>
@@ -80,8 +80,8 @@ public:
   int64_t index_;    //!< Index in the photonuclears array
 
   // Microscopic cross sections
-  xt::xtensor<double, 1> energy_;
-  xt::xtensor<double, 2> xs_; //!< Cross sections
+  tensor::Tensor<double> energy_;
+  tensor::Tensor<double> xs_; //!< Cross sections
 
   vector<unique_ptr<PhotonuclearReaction>> reactions_; //!< Reactions
 private:

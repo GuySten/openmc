@@ -78,6 +78,7 @@ extern bool output_tallies;           //!< write tallies.out?
 extern bool particle_restart_run;     //!< particle restart run?
 extern "C" bool photon_transport;     //!< photon transport turned on?
 extern "C" bool photonuclear_physics; //!< photonuclear physics turned on?
+extern bool atomic_relaxation;        //!< atomic relaxation enabled?
 extern "C" bool reduce_tallies;       //!< reduce tallies at end of batch?
 extern bool res_scat_on;              //!< use resonance upscattering method?
 extern "C" bool restart_run;          //!< restart run?
@@ -96,9 +97,10 @@ extern "C" bool trigger_on;           //!< tally triggers enabled?
 extern bool trigger_predict;          //!< predict batches for triggers?
 extern bool uniform_source_sampling;  //!< sample sources uniformly?
 extern bool ufs_on;                   //!< uniform fission site method on?
-extern bool urr_ptables_on;        //!< use unresolved resonance prob. tables?
-extern bool use_decay_photons;     //!< use decay photons for D1S
-extern "C" bool weight_windows_on; //!< are weight windows are enabled?
+extern bool urr_ptables_on;    //!< use unresolved resonance prob. tables?
+extern bool use_decay_photons; //!< use decay photons for D1S
+extern bool use_shared_secondary_bank; //!< Use shared bank for secondaries
+extern "C" bool weight_windows_on;     //!< are weight windows are enabled?
 extern bool weight_window_checkpoint_surface;   //!< enable weight window check
                                                 //!< upon surface crossing?
 extern bool weight_window_checkpoint_collision; //!< enable weight window check
@@ -114,6 +116,8 @@ extern std::string path_particle_restart; //!< path to a particle restart file
 extern std::string path_sourcepoint;      //!< path to a source file
 extern std::string path_statepoint;       //!< path to a statepoint file
 extern std::string weight_windows_file;   //!< Location of weight window file to
+                                          //!< load on simulation initialization
+extern std::string properties_file;       //!< Location of properties file to
                                           //!< load on simulation initialization
 
 // This is required because the c_str() may not be the first thing in
@@ -182,6 +186,8 @@ extern int64_t ssw_cell_id;       //!< Cell id for the surface source
                                   //!< write setting
 extern SSWCellType ssw_cell_type; //!< Type of option for the cell
                                   //!< argument of surface source write
+extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
+extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod
   temperature_method; //!< method for choosing temperatures
 extern double

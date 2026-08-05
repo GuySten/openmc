@@ -238,7 +238,7 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
   int n_grid = energy_.size();
   double E = p.E();
   int i_grid;
-  if (E <= energy_[0]) {
+  if (E <= energy_[0] || E > energy_(n_grid - 1)) {
     auto& xs {p.photonuclear_xs(index_)};
     xs.index_grid = -1;
     xs.heating = 0.0;
@@ -246,8 +246,6 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
     xs.neutron_prod = 0.0;
     xs.last_E = p.E();
     return;
-  } else if (E > energy_(n_grid - 1)) {
-    i_grid = n_grid - 2;
   } else {
     // We use upper_bound_index here because sometimes photons are created with
     // energies that exactly match a grid point

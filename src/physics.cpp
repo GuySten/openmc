@@ -32,8 +32,8 @@
 #include <fmt/core.h>
 
 #include "openmc/tensor.h"
-#include <algorithm> // for max, min, max_element
-#include <cmath>     // for sqrt, exp, log, abs, copysign
+#include <algorithm> // for clamp, max, min, max_element
+#include <cmath>     // for sqrt, exp, log, abs
 
 namespace openmc {
 
@@ -933,8 +933,7 @@ void elastic_scatter(int i_nuclide, const Reaction& rx, double kT, Particle& p)
   // Because of floating-point roundoff, it may be possible for mu_lab to be
   // outside of the range [-1,1). In these cases, we just set mu_lab to exactly
   // -1 or 1
-  if (std::abs(p.mu()) > 1.0)
-    p.mu() = std::copysign(1.0, p.mu());
+  p.mu() = std::clamp(p.mu(), -1.0, 1.0);
 }
 
 void sab_scatter(int i_nuclide, int i_sab, Particle& p)
@@ -1263,8 +1262,7 @@ void inelastic_scatter(const Nuclide& nuc, const Reaction& rx, Particle& p)
   // Because of floating-point roundoff, it may be possible for mu to be
   // outside of the range [-1,1). In these cases, we just set mu to exactly -1
   // or 1
-  if (std::abs(mu) > 1.0)
-    mu = std::copysign(1.0, mu);
+  mu = std::clamp(mu, -1.0, 1.0);
 
   // Set outgoing energy and scattering angle
   p.E() = E;
@@ -1383,12 +1381,13 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
     }
   }
 
-  double E_in = p.E();
-  int n_sample = 0;
+  const double E_in = p.E();
+  const int neutron = ParticleType::neutron().transport_index();
+  const double E_max = data::energy_max[neutron];
   double E;
   double mu;
 
-  while (true) {
+  for (int n_sample = 0; n_sample < MAX_SAMPLE; ++n_sample) {
 
     // Sample the outgoing energy and angle
     product.sample(E_in, E, mu, p.current_seed());
@@ -1412,25 +1411,12 @@ void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
       // Because of floating-point roundoff, it may be possible for mu to be
       // outside of the range [-1,1). In these cases, we just set mu to exactly
       // -1 or 1
-      if (std::abs(mu) > 1.0)
-        mu = std::copysign(1.0, mu);
+      mu = std::clamp(mu, -1.0, 1.0);
     }
 
     // resample if energy is greater than maximum neutron energy
-    int neutron = ParticleType::neutron().transport_index();
-    if (E < data::energy_max[neutron])
+    if (E < E_max)
       break;
-
-    // check for large number of resamples
-    ++n_sample;
-    if (n_sample == MAX_SAMPLE) {
-      // particle_write_restart(p)
-      auto& nuc = data::photonuclears[i_nuclide];
-      fatal_error(
-        "Resampled photonuclear energy distribution maximum number of times "
-        "for nuclide " +
-        nuc->name_);
-    }
   }
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());

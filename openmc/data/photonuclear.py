@@ -633,13 +633,46 @@ class IncidentPhotonuclear(EqualityMixin):
         n_energy = ace.nxs[3]
         i = ace.jxs[1]
         energy = ace.xss[i : i + n_energy] * EV_PER_MEV
-        data.energy = energy
 
         total_xs = ace.xss[ace.jxs[2] : ace.jxs[2] + n_energy]
         nonelastic_xs = ace.xss[ace.jxs[3] : ace.jxs[3] + n_energy]
-        elastic_xs = total_xs-nonelastic_xs 
+        elastic_xs = total_xs-nonelastic_xs
         heating_number = ace.xss[ace.jxs[5] : ace.jxs[5] +  n_energy] * EV_PER_MEV
-        
+        heating_number = Tabulated1D(energy, heating_number)
+            
+        # Read each reaction
+        n_reaction = ace.nxs[4] + 1
+        for i in range(n_reaction):
+            if i==0:
+                if ace.jxs[4]==0:
+                    assert np.allclose(total_xs, nonelastic_xs)
+                else:
+                    raise NotImplementedError('photonuclear elastic scattering is not supported.')
+            else:
+                rx = PhotonuclearReaction.from_ace(ace, i)
+
+                # Fix for inelastic scattering threshold
+                for product in rx.products:
+                    for dist in product.distribution:
+                        if isinstance(dist.energy, LevelInelastic):
+                            threshold = dist.energy.threshold
+                            energy = np.union1d(energy, threshold)
+                            e = np.union1d(rx.xs.x, threshold)
+                            e = e[e>=threshold]
+                            xs = rx.xs(e)
+                            xs[0] = 0.0
+                            rx.xs = Tabulated1D(e, xs)                              
+                data.reactions[rx.mt] = rx
+
+        data.energy = energy
+
+        # Adjust data
+        total_xs = np.zeros_like(energy)
+        for rx in data.reactions.values():
+            if rx.redundant:
+                continue
+            total_xs += rx.xs(energy)
+            
         # Create redundant reaction for total (MT=1)
         total = PhotonuclearReaction(1)
         total.xs = Tabulated1D(energy, total_xs)
@@ -648,27 +681,15 @@ class IncidentPhotonuclear(EqualityMixin):
         
         # Create redundant reaction for nonelastic (MT=3)
         nonelastic = PhotonuclearReaction(3)
-        nonelastic.xs = Tabulated1D(energy, nonelastic_xs)
+        nonelastic.xs = Tabulated1D(energy, total_xs)
         nonelastic.redundant = True
         data.reactions[3] = nonelastic
 
         # Create redundant reaction for heating (MT=301)
         heating = PhotonuclearReaction(301)
-        heating.xs = Tabulated1D(energy, heating_number*total_xs)
+        heating.xs = Tabulated1D(energy, heating_number(energy)*total_xs)
         heating.redundant = True
         data.reactions[301] = heating
-            
-        # Read each reaction
-        n_reaction = ace.nxs[4] + 1
-        for i in range(n_reaction):
-            if i==0:
-                if ace.jxs[4]==0:
-                    assert np.allclose(total_xs,nonelastic_xs)
-                else:
-                    raise NotImplementedError('photonuclear elastic scattering is not supported.')
-            else:
-                rx = PhotonuclearReaction.from_ace(ace, i)
-                data.reactions[rx.mt] = rx
 
         return data
 

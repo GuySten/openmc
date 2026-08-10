@@ -147,7 +147,7 @@ private:
 //! energy
 //==============================================================================
 
-struct NuclideMicroXS {
+struct NeutronMicroXS {
   // Microscopic cross sections in barns
   double total;      //!< total cross section
   double absorption; //!< absorption (disappearance)
@@ -186,7 +186,7 @@ struct NuclideMicroXS {
 //! current energy
 //==============================================================================
 
-struct ElementMicroXS {
+struct PhotoAtomicMicroXS {
   int index_grid;         //!< index on element energy grid
   double last_E {0.0};    //!< last evaluated energy in [eV]
   double interp_factor;   //!< interpolation factor on energy grid
@@ -493,8 +493,8 @@ private:
   //==========================================================================
   // Data members -- see public: below for descriptions
 
-  vector<NuclideMicroXS> neutron_xs_;
-  vector<ElementMicroXS> photon_xs_;
+  vector<NeutronMicroXS> neutron_xs_;
+  vector<PhotoAtomicMicroXS> photon_xs_;
   MacroXS macro_xs_;
   CacheDataMG mg_xs_cache_;
 
@@ -584,11 +584,11 @@ public:
 
   // Cross section caches
   // Microscopic neutron cross sections
-  NuclideMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
-  const NuclideMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
+  NeutronMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
+  const NeutronMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
 
   // Microscopic photon cross sections
-  ElementMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  PhotoAtomicMicroXS& photon_xs(int i) { return photon_xs_[i]; }
 
   // Macroscopic cross sections
   MacroXS& macro_xs() { return macro_xs_; }

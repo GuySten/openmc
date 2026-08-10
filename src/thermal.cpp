@@ -292,7 +292,7 @@ void ThermalData::calculate_xs(
 }
 
 AngleEnergy& ThermalData::sample_dist(
-  const NuclideMicroXS& micro_xs, double E, uint64_t* seed) const
+  const NeutronMicroXS& micro_xs, double E, uint64_t* seed) const
 {
   // Determine whether inelastic or elastic scattering will occur
   if (prn(seed) < micro_xs.thermal_elastic / micro_xs.thermal) {
@@ -302,7 +302,7 @@ AngleEnergy& ThermalData::sample_dist(
   }
 }
 
-void ThermalData::sample(const NuclideMicroXS& micro_xs, double E,
+void ThermalData::sample(const NeutronMicroXS& micro_xs, double E,
   double* E_out, double* mu, uint64_t* seed) const
 {
   sample_dist(micro_xs, E, seed).sample(E, *E_out, *mu, seed);
@@ -313,7 +313,7 @@ void ThermalData::sample(const NuclideMicroXS& micro_xs, double E,
     *mu = std::copysign(1.0, *mu);
 }
 
-double ThermalData::sample_energy_and_pdf(const NuclideMicroXS& micro_xs,
+double ThermalData::sample_energy_and_pdf(const NeutronMicroXS& micro_xs,
   double E_in, double mu, double& E_out, uint64_t* seed) const
 {
   return sample_dist(micro_xs, E_in, seed)

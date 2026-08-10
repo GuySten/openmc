@@ -1,7 +1,12 @@
+from numbers import Integral
+
 import numpy as np
 import h5py
-from .data import Tabulated1D
-from .ace import Table
+
+import openmc.checkvalue as cv
+from .function import Tabulated1D
+from .ace import get_metadata, Table, Library
+from .data import ATOMIC_SYMBOL
 
 
 class IncidentElectron:
@@ -15,20 +20,35 @@ class IncidentElectron:
         self.excitation_xs = None
         self.ionization_xs = {}  # Keyed by subshell index
 
+    def __repr__(self):
+        return f"<IncidentElectron: {self.name}>"
+
+    @property
+    def atomic_number(self):
+        return self._atomic_number
+
+    @atomic_number.setter
+    def atomic_number(self, atomic_number):
+        cv.check_type("atomic number", atomic_number, Integral)
+        cv.check_greater_than("atomic number", atomic_number, 0, True)
+        self._atomic_number = atomic_number
+
+    @property
+    def name(self):
+        return ATOMIC_SYMBOL[self.atomic_number]
+
     @classmethod
     def from_ace(cls, ace_table_or_filename):
         """Parse an eprdata14 electron-containing table."""
         if isinstance(ace_table_or_filename, Table):
             ace = ace_table_or_filename
         else:
-            from .ace import Library
-
             lib = Library(ace_table_or_filename)
             ace = lib.tables[0]
 
         # Initialize instance using ZA or Atomic Number
-        atomic_number = ace.zaid // 1000
-        data = cls(atomic_number)
+        Z = get_metadata(int(ace.zaid))[2]
+        data = cls(Z)
 
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[1]
@@ -59,30 +79,44 @@ class IncidentElectron:
 
         return data
 
-    def export_to_hdf5(self, path_or_group, mode="w"):
-        """Write data instance contents out to an HDF5 group layer."""
-        if isinstance(path_or_group, h5py.Group):
-            group = path_or_group
-        else:
-            f = h5py.File(path_or_group, mode)
-            group = f.create_group(f"z{self.atomic_number}")
+    def export_to_hdf5(self, path, mode="a", libver="earliest"):
+        """Export incident photon data to an HDF5 file.
 
-        # Metadata
-        group.attrs["atomic_number"] = self.atomic_number
+        Parameters
+        ----------
+        path : str
+            Path to write HDF5 file to
+        mode : {'r+', 'w', 'x', 'a'}
+            Mode that is used to open the HDF5 file. This is the second argument
+            to the :class:`h5py.File` constructor.
+        libver : {'earliest', 'latest'}
+            Compatibility mode for the HDF5 file. 'latest' will produce files
+            that are less backwards compatible but have performance benefits.
 
-        # Master energy grid
-        group.create_dataset("energy", data=self.energy_grid)
+        """
+        with h5py.File(str(path), mode, libver=libver) as f:
+            # Write filetype and version
+            f.attrs["filetype"] = np.bytes_("data_electron")
+            if "version" not in f.attrs:
+                f.attrs["version"] = np.array(HDF5_VERSION)
 
-        # Total individual cross section datasets
-        xs_group = group.create_group("cross_sections")
-        xs_group.create_dataset("elastic", data=self.elastic_xs)
-        xs_group.create_dataset("bremsstrahlung", data=self.bremsstrahlung_xs)
-        xs_group.create_dataset("excitation", data=self.excitation_xs)
+            group = f.create_group(self.name)
+            group.attrs["Z"] = Z = self.atomic_number
 
-        # Subshell nested breakdown
-        sub_group = xs_group.create_group("ionization")
-        for subshell_name, xs_array in self.ionization_xs.items():
-            sub_group.create_dataset(subshell_name, data=xs_array)
+            group.create_dataset("energy", data=self.energy_grid)
+
+            group.create_dataset("elastic", data=self.elastic_xs)
+            group.create_dataset("bremsstrahlung", data=self.bremsstrahlung_xs)
+            group.create_dataset("excitation", data=self.excitation_xs)
+
+            # Subshell nested breakdown
+            sub_group = group.create_group("ionization")
+            for subshell_name, xs_array in self.ionization_xs.items():
+                sub_group.create_dataset(subshell_name, data=xs_array)
+
+            if self.angular_distribution:
+                ang_group = group.create_group("angular_distribution")
+                self.angular_distribution.to_hdf5(ang_group)
 
 
 class ElectronAngularDistribution:
@@ -158,6 +192,3 @@ class ElectronAngularDistribution:
         if self.legendre_coefficients is not None:
             leg_group = group.create_group("legendre")
             leg_group.create_dataset("coefficients", data=self.legendre_coefficients)
-        if self.angular_distribution:
-            ang_group = group.create_group("angular_distribution")
-            self.angular_distribution.to_hdf5(ang_group)

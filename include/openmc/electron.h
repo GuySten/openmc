@@ -28,15 +28,9 @@ public:
   // Methods
   void calculate_xs(Particle& p) const;
 
-  void compton_scatter(double alpha, bool doppler, double* alpha_out,
-    double* mu, int* i_shell, uint64_t* seed) const;
+  void elastic_scatter(double E, double* mu, uint64_t* seed) const;
 
-  double rayleigh_scatter(double alpha, uint64_t* seed) const;
-
-  void pair_production(double alpha, double* E_electron, double* E_positron,
-    double* mu_electron, double* mu_positron, uint64_t* seed) const;
-
-  void atomic_relaxation(int i_shell, Particle& p) const;
+  void excitation(double E_in, double* E_out) const;
 
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
@@ -62,6 +56,15 @@ extern std::unordered_map<std::string, int> element_map;
 extern vector<unique_ptr<ElectronInteraction>> electroatomic;
 
 } // namespace data
+
+namespace detail {
+
+double  evaluate_2BN_differential(double T_0, double k_photon, double theta);
+
+double  sample_2BN(double T_0, double k_photon, uint64_t* seed);
+
+double  sample_schiff_2BS(double E_electron, double k_photon, int Z, uint64_t* seed);
+} // namespace detail  
 
 } // namespace openmc
 

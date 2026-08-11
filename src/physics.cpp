@@ -15,6 +15,7 @@
 #include "openmc/ncrystal_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/electron.h"
 #include "openmc/physics_common.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -305,9 +306,9 @@ void sample_photon_reaction(Particle& p)
   }
 
   // Sample element within material
-  int i_element = sample_element(p);
+  int i_element = sample_photon_element(p);
   const auto& micro {p.photon_xs(i_element)};
-  const auto& element {*data::elements[i_element]};
+  const auto& element {*data::photoatomic[i_element]};
 
   // Calculate photon energy over electron rest mass equivalent
   double alpha = p.E() / MASS_ELECTRON_EV;
@@ -500,9 +501,28 @@ void sample_electron_reaction(Particle& p)
     thick_target_bremsstrahlung(p);
   }
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+  if (settings::electron_treatment != ElectronTreatment::Transport) {
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
+  }
+  int electron = ParticleType::electron().transport_index();
+  if (p.E() < settings::energy_cutoff[electron]) {
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    return;
+  }
+  // Sample element within material
+  int i_element = sample_electron_element(p);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::electroatomic[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff = prn(p.current_seed()) * micro.total;
+  
 }
 
 void sample_positron_reaction(Particle& p)
@@ -551,7 +571,7 @@ int sample_nuclide(Particle& p)
   throw std::runtime_error {"Did not sample any nuclide during collision."};
 }
 
-int sample_element(Particle& p)
+int sample_photon_element(Particle& p)
 {
   // Sample cumulative distribution function
   double cutoff = prn(p.current_seed()) * p.macro_xs().total;
@@ -567,6 +587,38 @@ int sample_element(Particle& p)
 
     // Determine microscopic cross section
     double sigma = atom_density * p.photon_xs(i_element).total;
+
+    // Increment probability to compare to cutoff
+    prob += sigma;
+    if (prob > cutoff) {
+      // Save which nuclide particle had collision with for tally purpose
+      p.event_nuclide() = mat->nuclide_[i];
+
+      return i_element;
+    }
+  }
+
+  // If we made it here, no element was sampled
+  p.write_restart();
+  fatal_error("Did not sample any element during collision.");
+}
+
+int sample_electron_element(Particle& p)
+{
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+
+  // Get pointers to elements, densities
+  const auto& mat {model::materials[p.material()]};
+
+  double prob = 0.0;
+  for (int i = 0; i < mat->element_.size(); ++i) {
+    // Find atom density
+    int i_element = mat->element_[i];
+    double atom_density = mat->atom_density(i, p.density_mult());
+
+    // Determine microscopic cross section
+    double sigma = atom_density * p.electron_xs(i_element).total;
 
     // Increment probability to compare to cutoff
     prob += sigma;

@@ -273,7 +273,8 @@ enum class ResScatMethod {
 
 enum class ElectronTreatment {
   LED, // Local Energy Deposition
-  TTB  // Thick Target Bremsstrahlung
+  TTB,  // Thick Target Bremsstrahlung
+  Transport, // Transport
 };
 
 // ============================================================================

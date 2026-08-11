@@ -616,7 +616,7 @@ public:
 
   // Microscopic electron cross sections
   ElectroAtomicMicroXS& electron_xs(int i) { return electron_xs_[i]; }
-  const ElectroAtomicMicroXS& electron_xs(int i) const { return electro_xs_[i]; \
+  const ElectroAtomicMicroXS& electron_xs(int i) const { return electron_xs_[i]; \
   }
 
   // Macroscopic cross sections

@@ -92,6 +92,12 @@ public:
   // Check if this is a photon
   constexpr bool is_photon() const { return pdg_number_ == PDG_PHOTON; }
 
+  // Check if this is an electron
+  constexpr bool is_electron() const { return pdg_number_ == PDG_ELECTRON; }
+
+  // Check if this is a positron
+  constexpr bool is_positron() const { return pdg_number_ == PDG_POSITRON; }
+  
   constexpr bool is_transportable() const
   {
     return this->transport_index() != C_NONE;

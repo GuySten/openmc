@@ -1,4 +1,4 @@
-#include "openmc/photon.h"
+#include "openmc/electron.h"
 
 #include "openmc/array.h"
 #include "openmc/bremsstrahlung.h"
@@ -24,18 +24,13 @@
 
 namespace openmc {
 
-constexpr int PhotonInteraction::MAX_STACK_SIZE;
-
 //==============================================================================
 // Global variables
 //==============================================================================
 
 namespace data {
 
-tensor::Tensor<double> compton_profile_pz;
-
-std::unordered_map<std::string, int> element_map;
-vector<unique_ptr<PhotonInteraction>> photoatomic;
+vector<unique_ptr<ElectronInteraction>> electroatomic;
 
 } // namespace data
 

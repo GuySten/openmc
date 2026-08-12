@@ -230,12 +230,6 @@ struct MacroXS {
   double incoherent;      //!< macroscopic incoherent xs
   double photoelectric;   //!< macroscopic photoelectric xs
   double pair_production; //!< macroscopic pair production xs
-
-  // Electron cross sections
-  double elastic;        //!< macroscopic elastic xs
-  double excitation;     //!< macroscopic excitation xs
-  double ionization;     //!< macroscopic ionization xs
-  double bremsstrahlung; //!< macroscopic bremsstrahlung xs
 };
 
 //==============================================================================

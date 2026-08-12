@@ -28,9 +28,15 @@ public:
   // Methods
   void calculate_xs(Particle& p) const;
 
-  void elastic_scatter(double E, double* mu, uint64_t* seed) const;
+  double elastic_scatter(double E, uint64_t* seed) const;
 
-  void excitation(double E_in, double* E_out) const;
+  double excitation(double E) const;
+
+  void ionization(Particle& p, int i_shell) const;
+
+  int sample_ionization_shell(double E, uint64_t* seed) const;
+
+  void bremsstrahlung(Particle& p) const;
 
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
@@ -42,6 +48,7 @@ public:
   tensor::Tensor<double> elastic_;
   tensor::Tensor<double> ionization_;
   tensor::Tensor<double> excitation_;
+  tensor::Tensor<double> excitation_energy_loss_;
   tensor::Tensor<double> bremsstrahlung_;
 };
 

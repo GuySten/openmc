@@ -815,6 +815,9 @@ void Material::calculate_xs(Particle& p) const
 {
   // Set all material macroscopic cross sections to zero
   p.macro_xs().total = 0.0;
+  p.macro_xs().absorption = 0.0;
+  p.macro_xs().fission = 0.0;
+  p.macro_xs().nu_fission = 0.0;
 
   if (p.type().is_neutron()) {
     this->calculate_neutron_xs(p);
@@ -827,10 +830,6 @@ void Material::calculate_xs(Particle& p) const
 
 void Material::calculate_neutron_xs(Particle& p) const
 {
-  p.macro_xs().absorption = 0.0;
-  p.macro_xs().fission = 0.0;
-  p.macro_xs().nu_fission = 0.0;
-
   // Find energy index on energy grid
   int neutron = ParticleType::neutron().transport_index();
   int i_grid =
@@ -941,11 +940,6 @@ void Material::calculate_photon_xs(Particle& p) const
 
 void Material::calculate_electron_xs(Particle& p) const
 {
-  p.macro_xs().elastic = 0.0;
-  p.macro_xs().excitation = 0.0;
-  p.macro_xs().ionization = 0.0;
-  p.macro_xs().bremsstrahlung = 0.0;
-
   // Add contribution from each nuclide in material
   for (int i = 0; i < nuclide_.size(); ++i) {
     // ========================================================================
@@ -968,10 +962,6 @@ void Material::calculate_electron_xs(Particle& p) const
 
     // Add contributions to material macroscopic cross sections
     p.macro_xs().total += atom_density * micro.total;
-    p.macro_xs().elastic += atom_density * micro.elastic;
-    p.macro_xs().ionization += atom_density * micro.ionization;
-    p.macro_xs().excitation += atom_density * micro.excitation;
-    p.macro_xs().bremsstrahlung += atom_density * micro.bremsstrahlung;
   }
 }
 

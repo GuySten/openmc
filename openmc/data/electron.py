@@ -16,6 +16,7 @@ class IncidentElectron:
         self.atomic_number = atomic_number
         self.energy_grid = None
         self.elastic_xs = None
+        self.elastic_dist = None
         self.bremsstrahlung_xs = None
         self.excitation_xs = None
         self.ionization_xs = {}  # Keyed by subshell index
@@ -39,7 +40,20 @@ class IncidentElectron:
 
     @classmethod
     def from_ace(cls, ace_table_or_filename):
-        """Parse an eprdata14 electron-containing table."""
+        """Generate incident electron data from an ACE table
+
+        Parameters
+        ----------
+        ace_or_filename : str or openmc.data.ace.Table
+            ACE table to read from. If given as a string, it is assumed to be
+            the filename for the ACE file.
+
+        Returns
+        -------
+        openmc.data.IncidentElectron
+            Electron interaction data
+
+        """
         if isinstance(ace_table_or_filename, Table):
             ace = ace_table_or_filename
         else:
@@ -59,23 +73,31 @@ class IncidentElectron:
         j_ionization = ace.jxs[3]
         j_brem = ace.jxs[4]
         j_excitation = ace.jxs[5]
+        j_excitation_loss = ace.jxs[20]
+        j_shell = ace.jxs[11]
+        
+        data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[ace.jxs[11] : ace.jxs[11]+n_subshells]]
 
         # Extract underlying XSS master arrays
         # Subtraction accounts for Python's 0-indexed slicing vs FORTRAN 1-indexed
         data.energy_grid = ace.xss[j_energy - 1 : j_energy - 1 + n_energy]
 
-        # Read Cross Sections (Convert log scales if necessary, check eprdata14 spec)
+        # Read Cross Sections
         data.elastic_xs = ace.xss[j_elastic - 1 : j_elastic - 1 + n_energy]
         data.bremsstrahlung_xs = ace.xss[j_brem - 1 : j_brem - 1 + n_energy]
         data.excitation_xs = ace.xss[j_excitation - 1 : j_excitation - 1 + n_energy]
+        data.excitation_energy_loss = ace.xss[j_excitation_loss - 1 : j_excitation_loss - 1 + n_energy]
 
         # Read Subshell Ionization Data Blocks
         idx = j_ionization - 1
-        for s in range(n_subshells):
+        for shell in data.shells:
             # Parse individual binding energies and localized grids if variable
             subshell_xs = ace.xss[idx : idx + n_energy]
-            data.ionization_xs[f"subshell_{s+1}"] = subshell_xs
+            
+            data.ionization_xs[shell] = subshell_xs
             idx += n_energy
+            
+        self.elastic_dist = ElasticAngularDist.from_ace(ace)
 
         return data
 
@@ -104,22 +126,29 @@ class IncidentElectron:
             group.attrs["Z"] = Z = self.atomic_number
 
             group.create_dataset("energy", data=self.energy_grid)
+            
+            elastic_group = group.create_group("elastic")
+            elastic_group.create_dataset("xs", data=self.elastic_xs)
+            dist_group = elastic_group.create_group("distribution")
+            self.elastic_dist.to_hdf5(ang_group)
+            
+            excitation_group = group.create_group("excitation")
+            excitation_group.create_dataset("xs", data=self.excitation_xs)
+            excitation_group.create_dataset("energy_loss", data=self.excitation_energy_loss)
+            
+            ionization_group = group.create_group("ionization")
+            ionization_group.attrs['designators'] = np.array(self.shells, dtype='S')
+            xs = np.zeros((len(self.shells), len(self.energy_grid)))
+            for i, shell in enumerate(self.shells):
+                xs[i] = self.ionization_xs[shell]
+            ionization_group.create_dataset("xs", data=xs)
+            
+            bremsstrahlung_group = group.create_group("bremsstrahlung")
+            bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)
 
-            group.create_dataset("elastic", data=self.elastic_xs)
-            group.create_dataset("bremsstrahlung", data=self.bremsstrahlung_xs)
-            group.create_dataset("excitation", data=self.excitation_xs)
-
-            # Subshell nested breakdown
-            sub_group = group.create_group("ionization")
-            for subshell_name, xs_array in self.ionization_xs.items():
-                sub_group.create_dataset(subshell_name, data=xs_array)
-
-            if self.angular_distribution:
-                ang_group = group.create_group("angular_distribution")
-                self.angular_distribution.to_hdf5(ang_group)
 
 
-class ElectronAngularDistribution:
+class ElasticAngularDist:
     """Contains low-energy tabular distributions and high-energy analytical moments."""
 
     def __init__(self):
@@ -177,7 +206,6 @@ class ElectronAngularDistribution:
                 idx : idx + total_leg_elements
             ].reshape(n_high_energies, instance.n_legendre_coefficients)
 
-        data.angular_distribution = ElectronAngularDistribution.from_ace(ace)
         return instance
 
     def to_hdf5(self, group):

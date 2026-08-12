@@ -198,21 +198,21 @@ struct PhotoAtomicMicroXS {
 };
 
 //==============================================================================
-  //! Cached microscopic electron cross sections for a particular element at the
-  //! current energy
-  //==============================================================================
+//! Cached microscopic electron cross sections for a particular element at the
+//! current energy
+//==============================================================================
 
 struct ElectroAtomicMicroXS {
-  int index_grid;         //!< index on element energy grid
-  double last_E {0.0};    //!< last evaluated energy in [eV]
-  double interp_factor;   //!< interpolation factor on energy grid
-  double total;           //!< microscopic total electron xs
+  int index_grid;        //!< index on element energy grid
+  double last_E {0.0};   //!< last evaluated energy in [eV]
+  double interp_factor;  //!< interpolation factor on energy grid
+  double total;          //!< microscopic total electron xs
   double elastic;        //!< microscopic elastic xs
-  double excitation;      //!< microscopic excitation xs
-  double ionization;   //!< microscopic ionization xs
+  double excitation;     //!< microscopic excitation xs
+  double ionization;     //!< microscopic ionization xs
   double bremsstrahlung; //!< microscopic bremsstrahlung xs
 };
-  
+
 //==============================================================================
 // MacroXS contains cached macroscopic cross sections for the material a
 // particle is traveling through
@@ -233,8 +233,8 @@ struct MacroXS {
 
   // Electron cross sections
   double elastic;        //!< macroscopic elastic xs
-  double excitation;      //!< macroscopic excitation xs
-  double ionization;   //!< macroscopic ionization xs
+  double excitation;     //!< macroscopic excitation xs
+  double ionization;     //!< macroscopic ionization xs
   double bremsstrahlung; //!< macroscopic bremsstrahlung xs
 };
 
@@ -616,7 +616,9 @@ public:
 
   // Microscopic electron cross sections
   ElectroAtomicMicroXS& electron_xs(int i) { return electron_xs_[i]; }
-  const ElectroAtomicMicroXS& electron_xs(int i) const { return electron_xs_[i]; \
+  const ElectroAtomicMicroXS& electron_xs(int i) const
+  {
+    return electron_xs_[i];
   }
 
   // Macroscopic cross sections

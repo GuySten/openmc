@@ -99,7 +99,7 @@ public:
 
   // Check if this is a positron
   constexpr bool is_positron() const { return pdg_number_ == PDG_POSITRON; }
-  
+
   constexpr bool is_transportable() const
   {
     return this->transport_index() != C_NONE;

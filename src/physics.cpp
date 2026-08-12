@@ -6,6 +6,7 @@
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
+#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/ifp.h"
@@ -15,7 +16,6 @@
 #include "openmc/ncrystal_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
-#include "openmc/electron.h"
 #include "openmc/physics_common.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -522,7 +522,6 @@ void sample_electron_reaction(Particle& p)
   // case, we need to sample a reaction via the cutoff variable
   double prob = 0.0;
   double cutoff = prn(p.current_seed()) * micro.total;
-  
 }
 
 void sample_positron_reaction(Particle& p)

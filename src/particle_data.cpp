@@ -3,12 +3,12 @@
 #include <sstream>
 
 #include "openmc/cell.h"
+#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/geometry.h"
 #include "openmc/material.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
-#include "openmc/electron.h"
 #include "openmc/settings.h"
 #include "openmc/tallies/derivative.h"
 #include "openmc/tallies/filter.h"

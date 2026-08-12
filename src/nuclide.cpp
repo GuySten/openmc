@@ -3,12 +3,12 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
+#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/message_passing.h"
 #include "openmc/photon.h"
-#include "openmc/electron.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
@@ -1168,30 +1168,31 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         close_group(group);
         file_close(file_id);
-	if (settings::electron_treatment==ElectronTreatment::Transport) {
-	  LibraryKey key {Library::Type::electron, element};
-	  const auto& it = data::library_map.find(key);
-	  if (it == data::library_map.end()) {
-	    set_errmsg("Element '" + std::string {element} +
-		       "' is not present in library.");
-	    return OPENMC_E_DATA;
-	  }
-	  
-	  int idx = it->second;
-	  const auto& filename = data::libraries[idx].path_;
-	  write_message(6, "Reading {} from {} ", element, filename);
+        if (settings::electron_treatment == ElectronTreatment::Transport) {
+          LibraryKey key {Library::Type::electron, element};
+          const auto& it = data::library_map.find(key);
+          if (it == data::library_map.end()) {
+            set_errmsg("Element '" + std::string {element} +
+                       "' is not present in library.");
+            return OPENMC_E_DATA;
+          }
 
-	  // Open file and make sure version is sufficient
-	  hid_t file_id = file_open(filename, 'r');
-	  check_data_version(file_id);
+          int idx = it->second;
+          const auto& filename = data::libraries[idx].path_;
+          write_message(6, "Reading {} from {} ", element, filename);
 
-	  // Read element data from HDF5
-	  hid_t group = open_group(file_id, element.c_str());
-	  data::electroatomic.push_back(make_unique<ElectronInteraction>(group));
+          // Open file and make sure version is sufficient
+          hid_t file_id = file_open(filename, 'r');
+          check_data_version(file_id);
 
-	  close_group(group);
-	  file_close(file_id);
-	}
+          // Read element data from HDF5
+          hid_t group = open_group(file_id, element.c_str());
+          data::electroatomic.push_back(
+            make_unique<ElectronInteraction>(group));
+
+          close_group(group);
+          file_close(file_id);
+        }
       }
     }
   }

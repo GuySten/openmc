@@ -13,6 +13,7 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
+#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/hdf5_interface.h"
@@ -21,7 +22,6 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
-#include "openmc/electron.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -830,7 +830,7 @@ void Material::calculate_neutron_xs(Particle& p) const
   p.macro_xs().absorption = 0.0;
   p.macro_xs().fission = 0.0;
   p.macro_xs().nu_fission = 0.0;
-  
+
   // Find energy index on energy grid
   int neutron = ParticleType::neutron().transport_index();
   int i_grid =

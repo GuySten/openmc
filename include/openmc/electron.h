@@ -50,7 +50,7 @@ public:
 //==============================================================================
 
 namespace data {
-  
+
 //! Photon interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
 extern vector<unique_ptr<ElectronInteraction>> electroatomic;
@@ -59,12 +59,13 @@ extern vector<unique_ptr<ElectronInteraction>> electroatomic;
 
 namespace detail {
 
-double  evaluate_2BN_differential(double T_0, double k_photon, double theta);
+double evaluate_2BN_differential(double T_0, double k_photon, double theta);
 
-double  sample_2BN(double T_0, double k_photon, uint64_t* seed);
+double sample_2BN(double T_0, double k_photon, uint64_t* seed);
 
-double  sample_schiff_2BS(double E_electron, double k_photon, int Z, uint64_t* seed);
-} // namespace detail  
+double sample_schiff_2BS(
+  double E_electron, double k_photon, int Z, uint64_t* seed);
+} // namespace detail
 
 } // namespace openmc
 

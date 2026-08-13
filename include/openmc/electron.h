@@ -34,7 +34,7 @@ public:
 
   void ionization(Particle& p, int i_shell) const;
 
-  int sample_ionization_shell(double E, uint64_t* seed) const;
+  int sample_ionization_shell(const Particle& p) const;
 
   void bremsstrahlung(Particle& p) const;
 
@@ -48,7 +48,7 @@ public:
   tensor::Tensor<double> elastic_;
   tensor::Tensor<double> ionization_;
   tensor::Tensor<double> excitation_;
-  tensor::Tensor<double> excitation_energy_loss_;
+  Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> bremsstrahlung_;
 };
 

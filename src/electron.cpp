@@ -61,7 +61,9 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read excitation
   rgroup = open_group(group, "excitation");
   read_dataset(rgroup, "xs", excitation_);
-  read_dataset(rgroup, "energy_loss", excitation_energy_loss_);
+  hid_t dset = open_dataset(rgroup, "energy_loss");
+  excitation_energy_loss_ = Tabulated1D {dset};
+  close_dataset(dset);
   close_group(rgroup);
 
   // Read ionization
@@ -73,23 +75,6 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   rgroup = open_group(group, "bremsstrahlung");
   read_dataset(rgroup, "xs", bremsstrahlung_);
   close_group(rgroup);
-
-  // Take logarithm of energies and cross sections since they are log-log
-  // interpolated. Note that cross section libraries converted from ACE files
-  // represent zero as exp(-500) to avoid log-log interpolation errors. For
-  // values below exp(-499) we store the log as -900, for which exp(-900)
-  // evaluates to zero.
-  double limit = std::exp(-499.0);
-  energy_ = tensor::log(energy_);
-  elastic_ = tensor::where(elastic_ > limit, tensor::log(elastic_), -900.0);
-  excitation_ =
-    tensor::where(excitation_ > limit, tensor::log(excitation_), -900.0);
-  excitation_energy_loss_ = tensor::where(excitation_energy_loss_ > limit,
-    tensor::log(excitation_energy_loss_), -900.0);
-  ionization_ =
-    tensor::where(ionization_ > limit, tensor::log(ionization_), -900.0);
-  bremsstrahlung_ = tensor::where(
-    bremsstrahlung_ > limit, tensor::log(bremsstrahlung_), -900.0);
 }
 
 void ElectronInteraction::calculate_xs(Particle& p) const
@@ -97,16 +82,16 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
   int n_grid = energy_.size();
-  double log_E = std::log(p.E());
+  double E = p.E();
   int i_grid;
-  if (log_E <= energy_[0]) {
+  if (E <= energy_[0]) {
     i_grid = 0;
-  } else if (log_E > energy_(n_grid - 1)) {
+  } else if (E > energy_(n_grid - 1)) {
     i_grid = n_grid - 2;
   } else {
     // We use upper_bound_index here because sometimes photons are created with
     // energies that exactly match a grid point
-    i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), log_E);
+    i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), E);
   }
 
   // check for case where two energy points are the same
@@ -115,28 +100,25 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
   // calculate interpolation factor
   double f =
-    (log_E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
+    (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
 
   auto& xs {p.electron_xs(index_)};
   xs.index_grid = i_grid;
   xs.interp_factor = f;
 
   // Calculate microscopic elastic cross section
-  xs.elastic =
-    std::exp(elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid)));
+  xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
 
   // Calculate microscopic excitation cross section
-  xs.excitation = std::exp(
-    excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid)));
+  xs.excitation = excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
 
   // Calculate microscopic ionization cross section
-  xs.ionization = std::exp(
-    ionization_(i_grid) + f * (ionization_(i_grid + 1) - ionization_(i_grid)));
+  const auto ion_i = ionization_.slice(i_grid, tensor::all).sum();
+  const auto ion_ip1 = ionization_.slice(i_grid + 1, tensor::all).sum();
+  xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
   // Calculate microscopic bremsstrahlung cross section
-  xs.bremsstrahlung =
-    std::exp(bremsstrahlung_(i_grid) +
-             f * (bremsstrahlung_(i_grid + 1) - bremsstrahlung_(i_grid)));
+  xs.bremsstrahlung = bremsstrahlung_(i_grid) + f * (bremsstrahlung_(i_grid + 1) - bremsstrahlung_(i_grid));
 
   // Calculate microscopic total cross section
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;
@@ -151,8 +133,7 @@ double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 
 double ElectronInteraction::excitation(double E) const
 {
-  double E_out;
-  return E_out;
+  return E - excitation_energy_loss_(E);
 }
 
 void ElectronInteraction::ionization(Particle& p, int i_shell) const
@@ -160,10 +141,29 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
   return;
 }
 
-int ElectronInteraction::sample_ionization_shell(double E, uint64_t* seed) const
+int ElectronInteraction::sample_ionization_shell(const Particle& p) const
 {
+  auto& xs {p.electron_xs(index_)};
+  
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * xs.ionization;
+  int n_shell = ionization.shape(1);
+  int i_grid = xs.index_grid;
+  double f = xs.interp_factor;
+
   int i_shell;
-  return i_shell;
+  double prob = 0.0;
+  for (i_shell = 0; i_shell < n_shell; ++i_shell) {
+    double sigma = ionization_(i_grid, i_shell) + f * (ionization_(i_grid + 1, i_shell) - ionization_(i_grid, i_shell));
+    // Increment probability to compare to cutoff
+    prob += sigma;
+    if (prob > cutoff)
+      return i_shell;  
+  }  
+  
+  // If we made it here, no shell was sampled
+  p.write_restart();
+  fatal_error("Did not sample any electron shell during electro-ionization.");  
 }
 
 void ElectronInteraction::bremsstrahlung(Particle& p) const

@@ -4,10 +4,13 @@ import numpy as np
 import h5py
 
 import openmc.checkvalue as cv
+from openmc.stats import Tabular
 from .function import Tabulated1D
 from .ace import get_metadata, Table, Library
-from .data import ATOMIC_SYMBOL
-
+from .data import ATOMIC_SYMBOL, EV_PER_MEV
+from .energy_distribution import ContinuousTabular
+from .photon import _SUBSHELLS
+from .uncorrelated import UncorrelatedAngleEnergy
 
 class IncidentElectron:
     """Continuous-energy incident electron interaction data parsed from ACE."""
@@ -19,7 +22,9 @@ class IncidentElectron:
         self.elastic_dist = None
         self.bremsstrahlung_xs = None
         self.excitation_xs = None
+        self.excitation_energy_loss = None        
         self.ionization_xs = {}  # Keyed by subshell index
+        self.ionization_dist = {} # Keyed by subshell index
 
     def __repr__(self):
         return f"<IncidentElectron: {self.name}>"
@@ -65,39 +70,52 @@ class IncidentElectron:
         data = cls(Z)
 
         # Parse NXS/JXS array layout
-        n_energy = ace.nxs[1]
+        n_energy = ace.nxs[8]
+        n_xl = ace.nxs[9]
         n_subshells = ace.nxs[5]
+        
 
-        j_energy = ace.jxs[1]
-        j_elastic = ace.jxs[2]
-        j_ionization = ace.jxs[3]
-        j_brem = ace.jxs[4]
+        j_energy = ace.jxs[19]
+        j_elastic = ace.jxs[21]
+        j_ionization = ace.jxs[23]
+        j_brem = ace.jxs[24]
         j_excitation = ace.jxs[5]
         j_excitation_loss = ace.jxs[20]
         j_shell = ace.jxs[11]
         
-        data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[ace.jxs[11] : ace.jxs[11]+n_subshells]]
-
-        # Extract underlying XSS master arrays
-        # Subtraction accounts for Python's 0-indexed slicing vs FORTRAN 1-indexed
-        data.energy_grid = ace.xss[j_energy - 1 : j_energy - 1 + n_energy]
+        data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
+        data.energy_grid = ace.xss[j_energy : j_energy + n_energy]*EV_PER_MEV
+        
+        j_xs = j_energy + n_energy
 
         # Read Cross Sections
-        data.elastic_xs = ace.xss[j_elastic - 1 : j_elastic - 1 + n_energy]
-        data.bremsstrahlung_xs = ace.xss[j_brem - 1 : j_brem - 1 + n_energy]
-        data.excitation_xs = ace.xss[j_excitation - 1 : j_excitation - 1 + n_energy]
-        data.excitation_energy_loss = ace.xss[j_excitation_loss - 1 : j_excitation_loss - 1 + n_energy]
-
-        # Read Subshell Ionization Data Blocks
-        idx = j_ionization - 1
-        for shell in data.shells:
-            # Parse individual binding energies and localized grids if variable
-            subshell_xs = ace.xss[idx : idx + n_energy]
+        data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
+        data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
+        data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
+        data.excitation_energy_loss = Tabulated1D(ace.xss[j_excitation : j_excitation + n_xl],ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl])
+        
+        j_subshell_xs = j_xs + 5 * n_energy
+        for s, shell in enumerate(data.shells):
+            start_idx = j_subshell_xs + s * n_energy
+            data.ionization_xs[shell] = ace.xss[start_idx : start_idx + n_energy]
             
-            data.ionization_xs[shell] = subshell_xs
-            idx += n_energy
-            
-        self.elastic_dist = ElasticAngularDist.from_ace(ace)
+        ni = ace.xss[j_ionization : j_ionization + n_subshells].astype(int)
+        locinfo = ace.xss[j_ionization + n_subshells: j_ionization + 2*n_subshells].astype(int)
+        loctab = ace.xss[j_ionization + 2*n_subshells: j_ionization + 3*n_subshells].astype(int)
+        for s, shell in enumerate(data.shells):
+            data.ionization_dist[shell] = UncorrelatedAngleEnergy()
+            energy = ace.xss[locinfo[s]:locinfo[s]+ni[s]]*EV_PER_MEV
+            ls = ace.xss[locinfo[s]+ni[s]:locinfo[s]+2*ni[s]].astype(int)
+            offsets = ace.xss[locinfo[s]+2*ni[s]:locinfo[s]+3*ni[s]].astype(int)
+            energy_out = []
+            for t in range(ni[s]):
+                e = ace.xss[loctab[s]+offsets[t]:loctab[s]+offsets[t]+ls[t]]*EV_PER_MEV
+                c = ace.xss[loctab[s]+offsets[t]+ls[t]:loctab[s]+offsets[t]+2*ls[t]]
+                p = np.append(np.diff(c)/np.diff(e), 0.0)
+                energy_out.append(Tabular(e, p, interpolation='histogram'))
+            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out)    
+             
+        data.elastic_dist = ElasticAngularDist.from_ace(ace)
 
         return data
 
@@ -134,7 +152,7 @@ class IncidentElectron:
             
             excitation_group = group.create_group("excitation")
             excitation_group.create_dataset("xs", data=self.excitation_xs)
-            excitation_group.create_dataset("energy_loss", data=self.excitation_energy_loss)
+            self.excitation_energy_loss.to_hdf5(excitation_group, "energy_loss")
             
             ionization_group = group.create_group("ionization")
             ionization_group.attrs['designators'] = np.array(self.shells, dtype='S')
@@ -142,6 +160,10 @@ class IncidentElectron:
             for i, shell in enumerate(self.shells):
                 xs[i] = self.ionization_xs[shell]
             ionization_group.create_dataset("xs", data=xs)
+            
+            for shell in self.shells:
+                shell_group = ionization_group.create_group(shell)
+                self.ionization_dist[shell].to_hdf5(shell_group)
             
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)

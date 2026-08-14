@@ -23,7 +23,6 @@ class ElectronInteraction {
 public:
   // Constructors/destructor
   ElectronInteraction(hid_t group);
-  ~ElectronInteraction();
 
   // Methods
   void calculate_xs(Particle& p) const;

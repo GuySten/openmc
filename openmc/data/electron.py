@@ -74,7 +74,7 @@ class IncidentElectron:
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
         n_xl = ace.nxs[9]
-        n_subshells = ace.nxs[5]
+        n_subshells = ace.nxs[7]
         
 
         j_energy = ace.jxs[19]

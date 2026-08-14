@@ -34,7 +34,7 @@ public:
 
   void ionization(Particle& p, int i_shell) const;
 
-  int sample_ionization_shell(const Particle& p) const;
+  int sample_ionization_shell(Particle& p) const;
 
   void bremsstrahlung(Particle& p) const;
 

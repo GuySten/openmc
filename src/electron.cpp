@@ -99,8 +99,7 @@ void ElectronInteraction::calculate_xs(Particle& p) const
     ++i_grid;
 
   // calculate interpolation factor
-  double f =
-    (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
+  double f = (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
 
   auto& xs {p.electron_xs(index_)};
   xs.index_grid = i_grid;
@@ -110,7 +109,8 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
 
   // Calculate microscopic excitation cross section
-  xs.excitation = excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
+  xs.excitation =
+    excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
 
   // Calculate microscopic ionization cross section
   const auto ion_i = ionization_.slice(i_grid, tensor::all).sum();
@@ -118,7 +118,9 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
   // Calculate microscopic bremsstrahlung cross section
-  xs.bremsstrahlung = bremsstrahlung_(i_grid) + f * (bremsstrahlung_(i_grid + 1) - bremsstrahlung_(i_grid));
+  xs.bremsstrahlung =
+    bremsstrahlung_(i_grid) +
+    f * (bremsstrahlung_(i_grid + 1) - bremsstrahlung_(i_grid));
 
   // Calculate microscopic total cross section
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;
@@ -141,29 +143,31 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
   return;
 }
 
-int ElectronInteraction::sample_ionization_shell(const Particle& p) const
+int ElectronInteraction::sample_ionization_shell(Particle& p) const
 {
   auto& xs {p.electron_xs(index_)};
-  
+
   // Sample cumulative distribution function
   double cutoff = prn(p.current_seed()) * xs.ionization;
-  int n_shell = ionization.shape(1);
+  int n_shell = ionization_.shape(1);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
 
   int i_shell;
   double prob = 0.0;
   for (i_shell = 0; i_shell < n_shell; ++i_shell) {
-    double sigma = ionization_(i_grid, i_shell) + f * (ionization_(i_grid + 1, i_shell) - ionization_(i_grid, i_shell));
+    double sigma =
+      ionization_(i_grid, i_shell) +
+      f * (ionization_(i_grid + 1, i_shell) - ionization_(i_grid, i_shell));
     // Increment probability to compare to cutoff
     prob += sigma;
     if (prob > cutoff)
-      return i_shell;  
-  }  
-  
+      return i_shell;
+  }
+
   // If we made it here, no shell was sampled
   p.write_restart();
-  fatal_error("Did not sample any electron shell during electro-ionization.");  
+  fatal_error("Did not sample any electron shell during electro-ionization.");
 }
 
 void ElectronInteraction::bremsstrahlung(Particle& p) const

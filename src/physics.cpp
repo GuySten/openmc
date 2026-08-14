@@ -546,7 +546,7 @@ void sample_electron_reaction(Particle& p)
   if (prob > cutoff) {
     // Sample which atomic subshell was ionized based on the subshell cross
     // sections
-    int i_shell = element.sample_ionization_shell(p.E(), p.current_seed());
+    int i_shell = element.sample_ionization_shell(p);
 
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);

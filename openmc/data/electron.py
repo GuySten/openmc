@@ -5,11 +5,12 @@ import h5py
 
 import openmc.checkvalue as cv
 from openmc.stats import Tabular
-from .function import Tabulated1D
+from . import HDF5_VERSION
 from .ace import get_metadata, Table, Library
 from .angle_distribution import AngleDistribution
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
 from .energy_distribution import ContinuousTabular
+from .function import Tabulated1D
 from .photon import _SUBSHELLS
 from .uncorrelated import UncorrelatedAngleEnergy
 
@@ -113,19 +114,24 @@ class IncidentElectron:
                 e = ace.xss[loctab[s]+offsets[t]:loctab[s]+offsets[t]+ls[t]]*EV_PER_MEV
                 c = ace.xss[loctab[s]+offsets[t]+ls[t]:loctab[s]+offsets[t]+2*ls[t]]
                 p = np.append(np.diff(c)/np.diff(e), 0.0)
-                energy_out.append(Tabular(e, p, interpolation='histogram'))
+                t = Tabular(e, p, interpolation='histogram')
+                t.c = c
+                energy_out.append(t)
             data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out) 
             
         ne = ace.nxs[10]
         energy = ace.xss[ace.jxs[21] : ace.jxs[21] + ne]*EV_PER_MEV
-        le = ace.xss[ace.jxs[21] + ne : ace.jxs[21] + 2 * ne]
-        offsets = ace.xss[ace.jxs[21] + 2 * ne : ace.jxs[21] + 3 * ne]
+        le = ace.xss[ace.jxs[21] + ne : ace.jxs[21] + 2 * ne].astype(int)
+        offsets = ace.xss[ace.jxs[21] + 2 * ne : ace.jxs[21] + 3 * ne].astype(int)
         mu = []        
         for t in range(ne):
             cos = ace.xss[ace.jxs[22]+offsets[t]:ace.jxs[22]+offsets[t]+le[t]]
             c = ace.xss[ace.jxs[22]+offsets[t]+le[t]:ace.jxs[22]+offsets[t]+2*le[t]]
             p = np.append(np.diff(c)/np.diff(cos), 0.0)
-            mu.append(Tabular(e, p, interpolation='histogram'))
+            t = Tabular(cos, p, interpolation='histogram')
+            t.c = c
+            mu.append(t)
+        
         data.elastic_dist = AngleDistribution(energy, mu)
 
         return data
@@ -158,7 +164,7 @@ class IncidentElectron:
             
             elastic_group = group.create_group("elastic")
             elastic_group.create_dataset("xs", data=self.elastic_xs)
-            self.elastic_dist.to_hdf5(elastic_group)
+            self.elastic_dist.to_hdf5(elastic_group.create_group("distribution"))
             
             excitation_group = group.create_group("excitation")
             excitation_group.create_dataset("xs", data=self.excitation_xs)

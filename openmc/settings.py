@@ -94,9 +94,9 @@ class Settings:
         release of delayed photons.
 
         .. versionadded:: 0.12
-    electron_treatment : {'led', 'ttb'}
-        Whether to deposit all energy from electrons locally ('led') or create
-        secondary bremsstrahlung photons ('ttb').
+    electron_treatment : {'led', 'ttb', 'transport'}
+        Whether to deposit all energy from electrons locally ('led'), create
+        secondary bremsstrahlung photons ('ttb') or transport electrons ('transport').
     energy_mode : {'continuous-energy', 'multi-group'}
         Set whether the calculation should be continuous-energy or multi-group.
     entropy_mesh : openmc.RegularMesh
@@ -682,7 +682,7 @@ class Settings:
     @electron_treatment.setter
     def electron_treatment(self, electron_treatment: str):
         cv.check_value('electron treatment',
-                       electron_treatment, ['led', 'ttb'])
+                       electron_treatment, ['led', 'ttb', 'transport'])
         self._electron_treatment = electron_treatment
 
     @property

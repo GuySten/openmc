@@ -603,6 +603,8 @@ void read_settings_xml(pugi::xml_node root)
       electron_treatment = ElectronTreatment::LED;
     } else if (temp_str == "ttb") {
       electron_treatment = ElectronTreatment::TTB;
+    } else if (temp_str == "transport") {
+      electron_treatment = ElectronTreatment::Transport;
     } else {
       fatal_error("Unrecognized electron treatment: " + temp_str + ".");
     }

@@ -7,6 +7,7 @@ import openmc.checkvalue as cv
 from openmc.stats import Tabular
 from .function import Tabulated1D
 from .ace import get_metadata, Table, Library
+from .angle_distribution import AngleDistribution
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
 from .energy_distribution import ContinuousTabular
 from .photon import _SUBSHELLS
@@ -113,9 +114,19 @@ class IncidentElectron:
                 c = ace.xss[loctab[s]+offsets[t]+ls[t]:loctab[s]+offsets[t]+2*ls[t]]
                 p = np.append(np.diff(c)/np.diff(e), 0.0)
                 energy_out.append(Tabular(e, p, interpolation='histogram'))
-            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out)    
-             
-        data.elastic_dist = ElasticAngularDist.from_ace(ace)
+            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out) 
+            
+        ne = ace.nxs[10]
+        energy = ace.xss[ace.jxs[21] : ace.jxs[21] + ne]*EV_PER_MEV
+        le = ace.xss[ace.jxs[21] + ne : ace.jxs[21] + 2 * ne]
+        offsets = ace.xss[ace.jxs[21] + 2 * ne : ace.jxs[21] + 3 * ne]
+        mu = []        
+        for t in range(ne):
+            cos = ace.xss[ace.jxs[22]+offsets[t]:ace.jxs[22]+offsets[t]+le[t]]
+            c = ace.xss[ace.jxs[22]+offsets[t]+le[t]:ace.jxs[22]+offsets[t]+2*le[t]]
+            p = np.append(np.diff(c)/np.diff(cos), 0.0)
+            mu.append(Tabular(e, p, interpolation='histogram'))
+        data.elastic_dist = AngleDistribution(energy, mu)
 
         return data
 
@@ -147,8 +158,7 @@ class IncidentElectron:
             
             elastic_group = group.create_group("elastic")
             elastic_group.create_dataset("xs", data=self.elastic_xs)
-            dist_group = elastic_group.create_group("distribution")
-            self.elastic_dist.to_hdf5(ang_group)
+            self.elastic_dist.to_hdf5(elastic_group)
             
             excitation_group = group.create_group("excitation")
             excitation_group.create_dataset("xs", data=self.excitation_xs)

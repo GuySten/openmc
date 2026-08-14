@@ -62,6 +62,7 @@ bool output_summary {true};
 bool output_tallies {true};
 bool particle_restart_run {false};
 bool photon_transport {false};
+bool photonuclear_physics {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
 bool res_scat_on {false};
@@ -615,6 +616,16 @@ void read_settings_xml(pugi::xml_node root)
     if (!run_CE && photon_transport) {
       fatal_error("Photon transport is not currently supported in "
                   "multigroup mode");
+    }
+  }
+
+  // Check for photonuclear physics
+  if (check_for_node(root, "photonuclear_physics")) {
+    photonuclear_physics = get_node_value_bool(root, "photonuclear_physics");
+
+    if (!photon_transport && photonuclear_physics) {
+      fatal_error("Photon transport must be enabled when photonuclear physics "
+                  "is enabled");
     }
   }
 

@@ -17,7 +17,7 @@ namespace openmc {
 class Library {
 public:
   // Types, enums
-  enum class Type { neutron, photon, electron, thermal, multigroup, wmp };
+  enum class Type { neutron, photon, photonuclear, electron, thermal, multigroup, wmp };
 
   // Constructors
   Library() {};

@@ -113,8 +113,8 @@ void ElectronInteraction::calculate_xs(Particle& p) const
     excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
 
   // Calculate microscopic ionization cross section
-  const auto ion_i = ionization_.slice(i_grid, tensor::all).sum();
-  const auto ion_ip1 = ionization_.slice(i_grid + 1, tensor::all).sum();
+  const auto ion_i = ionization_.slice(tensor::all, i_grid).sum();
+  const auto ion_ip1 = ionization_.slice(tensor::all, i_grid + 1).sum();
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
   // Calculate microscopic bremsstrahlung cross section
@@ -149,7 +149,7 @@ int ElectronInteraction::sample_ionization_shell(Particle& p) const
 
   // Sample cumulative distribution function
   double cutoff = prn(p.current_seed()) * xs.ionization;
-  int n_shell = ionization_.shape(1);
+  int n_shell = ionization_.shape(0);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
 
@@ -157,8 +157,8 @@ int ElectronInteraction::sample_ionization_shell(Particle& p) const
   double prob = 0.0;
   for (i_shell = 0; i_shell < n_shell; ++i_shell) {
     double sigma =
-      ionization_(i_grid, i_shell) +
-      f * (ionization_(i_grid + 1, i_shell) - ionization_(i_grid, i_shell));
+      ionization_(i_shell, i_grid) +
+      f * (ionization_(i_shell, i_grid + 1) - ionization_(i_shell, i_grid));
     // Increment probability to compare to cutoff
     prob += sigma;
     if (prob > cutoff)

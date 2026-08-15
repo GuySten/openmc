@@ -137,7 +137,7 @@ class IncidentElectron:
         return data
 
     def export_to_hdf5(self, path, mode="a", libver="earliest"):
-        """Export incident photon data to an HDF5 file.
+        """Export incident electron data to an HDF5 file.
 
         Parameters
         ----------
@@ -183,78 +183,3 @@ class IncidentElectron:
             
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)
-
-
-
-class ElasticAngularDist:
-    """Contains low-energy tabular distributions and high-energy analytical moments."""
-
-    def __init__(self):
-        self.n_legendre_coefficients = 0
-        self.tabular_energies = None
-        self.tabular_pdf = None  # Discrete angles
-        self.legendre_coefficients = None  # Energy-dependent moments
-
-    @classmethod
-    def from_ace(cls, ace):
-        """Parses elastic scattering distribution blocks from an ACE table object.
-
-        Parameters
-        ----------
-        ace : openmc.data.ace.Table
-            The underlying ACE table object being parsed.
-        """
-        j_elastic = ace.jxs[1]  # JXS(2) corresponds to elastic scattering data
-        if j_elastic == 0:
-            return None
-
-        instance = cls()
-
-        # 1. Read base structural dimensions from the XSS array
-        idx = j_elastic - 1
-        instance.n_legendre_coefficients = int(ace.xss[idx])
-        n_tabular_energies = int(ace.xss[idx + 1])
-
-        # Advance slice index past the internal block structural headers
-        idx += 2
-
-        # 2. Extract Low-Energy Tabular Angular Data (Screened Rutherford Distribution)
-        if n_tabular_energies > 0:
-            # Extract the specialized energy grid for these tabular data points
-            instance.tabular_energies = ace.xss[idx : idx + n_tabular_energies]
-            idx += n_tabular_energies
-
-            # Parse angular bins for each tabulated energy step
-            # EPRDATA14 files use 32 equiprobable bin boundaries
-            n_bins = 32
-            total_tab_elements = n_tabular_energies * n_bins
-            instance.tabular_pdf = ace.xss[idx : idx + total_tab_elements].reshape(
-                n_tabular_energies, n_bins
-            )
-            idx += total_tab_elements
-
-        # 3. Extract High-Energy Legendre Moments (Goudsmit-Saunderson Data)
-        if instance.n_legendre_coefficients > 0:
-            # Total energy grid points (NXS(1)) minus the low energy points
-            n_energy_grid = ace.nxs[0]
-            n_high_energies = n_energy_grid - n_tabular_energies
-            total_leg_elements = n_high_energies * instance.n_legendre_coefficients
-
-            instance.legendre_coefficients = ace.xss[
-                idx : idx + total_leg_elements
-            ].reshape(n_high_energies, instance.n_legendre_coefficients)
-
-        return instance
-
-    def to_hdf5(self, group):
-        """Write the angular distribution datasets into an OpenMC HDF5 group."""
-        group.attrs["n_legendre_coefficients"] = self.n_legendre_coefficients
-
-        if self.tabular_energies is not None:
-            tab_group = group.create_group("tabular")
-            tab_group.create_dataset("energies", data=self.tabular_energies)
-            tab_group.create_dataset("pdf_bins", data=self.tabular_pdf)
-
-        if self.legendre_coefficients is not None:
-            leg_group = group.create_group("legendre")
-            leg_group.create_dataset("coefficients", data=self.legendre_coefficients)

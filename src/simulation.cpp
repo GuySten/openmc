@@ -886,7 +886,7 @@ void initialize_data()
         }
       }
     }
-    if (settings::electron_treatment == ElectronTreatment::Transport) {
+    if (settings::electron_transport) {
       int photon = ParticleType::photon().transport_index();
       int electron = ParticleType::electron().transport_index();
       int positron = ParticleType::positron().transport_index();

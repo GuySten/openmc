@@ -5,9 +5,11 @@
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
+#include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
+#include "openmc/photon.h"
 #include "openmc/physics.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -56,6 +58,9 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read elastic scattering
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
+  hid_t dist_group = open_group(rgroup, "distribution");
+  elastic_angle_ = AngleDistribution {dist_group};
+  close_group(dist_group);
   close_group(rgroup);
 
   // Read excitation
@@ -69,6 +74,15 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read ionization
   rgroup = open_group(group, "ionization");
   read_dataset(rgroup, "xs", ionization_);
+  vector<std::string> designators;
+  read_attribute(rgroup, "designators", designators);
+  for (auto designator : designators) {
+    hid_t shell_group = open_group(rgroup, designator.c_str());
+    hid_t egroup = open_group(shell_group, "energy");
+    ionization_dist_.push_back(make_unique<ContinuousTabular>(egroup));
+    close_group(egroup);
+    close_group(shell_group);
+  }
   close_group(rgroup);
 
   // Read bremsstrahlung
@@ -129,8 +143,7 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  double mu;
-  return mu;
+  return elastic_angle_.sample(E, seed);
 }
 
 double ElectronInteraction::excitation(double E) const
@@ -140,7 +153,20 @@ double ElectronInteraction::excitation(double E) const
 
 void ElectronInteraction::ionization(Particle& p, int i_shell) const
 {
-  return;
+  double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
+  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+  const auto& element {*data::photoatomic[index_]};
+  double e_b = element.binding_energy_[i_shell];
+  double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
+                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_knock));
+  Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
+  p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
+
+  p.mu() = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
+                     (1.0 + 2.0 * MASS_ELECTRON_EV / (p.E() - E_knock - e_b)));
+  phi += PI;
+  Direction u = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
+  p.E() = p.E() - E_knock - e_b;
 }
 
 int ElectronInteraction::sample_ionization_shell(Particle& p) const

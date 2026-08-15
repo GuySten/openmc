@@ -1,6 +1,8 @@
 #ifndef OPENMC_ELECTRON_H
 #define OPENMC_ELECTRON_H
 
+#include "openmc/distribution_angle.h"
+#include "openmc/distribution_energy.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -45,7 +47,9 @@ public:
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
   tensor::Tensor<double> elastic_;
+  AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
+  vector<unique_ptr<ContinuousTabular>> ionization_dist_;
   tensor::Tensor<double> excitation_;
   Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> bremsstrahlung_;

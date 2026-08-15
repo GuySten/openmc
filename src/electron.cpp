@@ -170,7 +170,7 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
   p.mu() = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
                      (1.0 + 2.0 * MASS_ELECTRON_EV / (p.E() - E_knock - e_b)));
   phi += PI;
-  Direction u = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
+  p.u() = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
   p.E() = p.E() - E_knock - e_b;
 }
 

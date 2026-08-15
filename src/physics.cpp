@@ -475,6 +475,11 @@ void process_charged_secondary(
   if (idx == C_NONE || E < settings::energy_cutoff[idx])
     return;
 
+  if (settings::electron_transport) {
+    p.create_secondary(p.wgt(), u, E, type);
+    return;
+  }
+
   if (settings::electron_treatment == ElectronTreatment::TTB) {
     thick_target_bremsstrahlung(p, type, u, E);
   }
@@ -495,11 +500,10 @@ void process_charged_secondary(
 
 void sample_electron_reaction(Particle& p)
 {
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
-  }
-
-  if (settings::electron_treatment != ElectronTreatment::Transport) {
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
     p.E() = 0.0;
     p.wgt() = 0.0;
     p.event() = TallyEvent::ABSORB;
@@ -638,7 +642,6 @@ int sample_photon_element(Particle& p)
     if (prob > cutoff) {
       // Save which nuclide particle had collision with for tally purpose
       p.event_nuclide() = mat->nuclide_[i];
-
       return i_element;
     }
   }

@@ -1168,7 +1168,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         close_group(group);
         file_close(file_id);
-        if (settings::electron_treatment == ElectronTreatment::Transport) {
+        if (settings::electron_transport) {
           LibraryKey key {Library::Type::electron, element};
           const auto& it = data::library_map.find(key);
           if (it == data::library_map.end()) {

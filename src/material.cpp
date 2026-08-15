@@ -823,9 +823,9 @@ void Material::calculate_xs(Particle& p) const
     this->calculate_neutron_xs(p);
   } else if (p.type().is_photon()) {
     this->calculate_photon_xs(p);
-  } else if (p.type().is_electron() &&
-             settings::electron_treatment == ElectronTreatment::Transport) {
-    this->calculate_electron_xs(p);
+  } else if (p.type().is_electron() || p.type().is_positron()) {
+    if (settings::electron_transport)
+      this->calculate_electron_xs(p);
   }
 }
 

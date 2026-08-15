@@ -53,6 +53,7 @@ public:
   tensor::Tensor<double> excitation_;
   Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> bremsstrahlung_;
+  unique_ptr<ContinuousTabular> bremsstrahlung_dist_;
 };
 
 //==============================================================================

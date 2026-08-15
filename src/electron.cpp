@@ -88,6 +88,11 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read bremsstrahlung
   rgroup = open_group(group, "bremsstrahlung");
   read_dataset(rgroup, "xs", bremsstrahlung_);
+  dist_group = open_group(rgroup, "distribution");
+  hid_t egroup = open_group(dist_group, "energy");
+  bremsstrahlung_dist_ = make_unique<ContinuousTabular>(egroup);
+  close_group(egroup);
+  close_group(dist_group);
   close_group(rgroup);
 }
 
@@ -198,7 +203,9 @@ int ElectronInteraction::sample_ionization_shell(Particle& p) const
 
 void ElectronInteraction::bremsstrahlung(Particle& p) const
 {
-  return;
+  double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
+  p.E() -= E_photon;
+  p.create_secondary(p.wgt(), p.u(), E_photon, ParticleType::photon());
 }
 
 //==============================================================================

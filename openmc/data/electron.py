@@ -128,8 +128,8 @@ class IncidentElectron:
         offsets = ace.xss[ace.jxs[24]+2*nb:ace.jxs[24]+3*nb].astype(int)
         energy_out = []
         for t in range(nb):
-            e = ace.xss[ace.jxs[24]+offsets[4]:ace.jxs[24]+offsets[t]+lb[t]]*EV_PER_MEV
-            c = ace.xss[ace.jxs[24]+offsets[4]+lb[t]:ace.jxs[24]+offsets[t]+2*lb[t]]
+            e = ace.xss[ace.jxs[25]+offsets[t]:ace.jxs[25]+offsets[t]+lb[t]]*EV_PER_MEV
+            c = ace.xss[ace.jxs[25]+offsets[t]+lb[t]:ace.jxs[25]+offsets[t]+2*lb[t]]
             p = np.append(np.diff(c)/np.diff(e), 0.0)
             t = Tabular(e, p, interpolation='histogram')
             t.c = c

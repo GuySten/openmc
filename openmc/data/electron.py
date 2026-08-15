@@ -23,6 +23,7 @@ class IncidentElectron:
         self.elastic_xs = None
         self.elastic_dist = None
         self.bremsstrahlung_xs = None
+        self.bremsstrahlung_dist = None
         self.excitation_xs = None
         self.excitation_energy_loss = None        
         self.ionization_xs = {}  # Keyed by subshell index
@@ -117,7 +118,23 @@ class IncidentElectron:
                 t = Tabular(e, p, interpolation='histogram')
                 t.c = c
                 energy_out.append(t)
-            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out) 
+            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
+            
+        
+        data.bremsstrahlung_dist = UncorrelatedAngleEnergy()
+        nb = ace.nxs[11]
+        energy = ace.xss[ace.jxs[24]:ace.jxs[24]+nb]*EV_PER_MEV
+        lb = ace.xss[ace.jxs[24]+nb:ace.jxs[24]+2*nb].astype(int)
+        offsets = ace.xss[ace.jxs[24]+2*nb:ace.jxs[24]+3*nb].astype(int)
+        energy_out = []
+        for t in range(nb):
+            e = ace.xss[ace.jxs[24]+offsets[4]:ace.jxs[24]+offsets[t]+lb[t]]*EV_PER_MEV
+            c = ace.xss[ace.jxs[24]+offsets[4]+lb[t]:ace.jxs[24]+offsets[t]+2*lb[t]]
+            p = np.append(np.diff(c)/np.diff(e), 0.0)
+            t = Tabular(e, p, interpolation='histogram')
+            t.c = c
+            energy_out.append(t)
+        data.bremsstrahlung_dist.energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
             
         ne = ace.nxs[10]
         energy = ace.xss[ace.jxs[21] : ace.jxs[21] + ne]*EV_PER_MEV
@@ -183,3 +200,4 @@ class IncidentElectron:
             
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)
+            self.bremsstrahlung_dist.to_hdf5(bremsstrahlung_group.create_group("distribution"))

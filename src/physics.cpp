@@ -567,7 +567,7 @@ void sample_electron_reaction(Particle& p)
   }
 
   // Bremsstrahlung
-  prob += micro.excitation;
+  prob += micro.bremsstrahlung;
   if (prob > cutoff) {
     element.bremsstrahlung(p);
     return;
@@ -576,22 +576,84 @@ void sample_electron_reaction(Particle& p)
 
 void sample_positron_reaction(Particle& p)
 {
-  // TODO: create reaction types
-
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
   }
 
-  // Sample angle isotropically
-  Direction u = isotropic_direction(p.current_seed());
+  int positron = ParticleType::positron().transport_index();
+  if (p.E() < settings::energy_cutoff[positron] ||
+      !settings::electron_transport) {
+    // Sample angle isotropically
+    Direction u = isotropic_direction(p.current_seed());
 
-  // Create annihilation photon pair traveling in opposite directions
-  p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
-  p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+    // Create annihilation photon pair traveling in opposite directions
+    p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+    p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
+  }
+
+  // Sample element within material
+  int i_element = sample_electron_element(p);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::electroatomic[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff = prn(p.current_seed()) * micro.total;
+
+  // Mott scattering
+  prob += micro.elastic;
+  if (prob > cutoff) {
+    p.mu() = element.elastic_scatter(p.E(), p.current_seed());
+    p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
+  // Excitation
+  prob += micro.excitation;
+  if (prob > cutoff) {
+    p.E() = element.excitation(p.E());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROEXCITATION;
+    return;
+  }
+
+  // Ionization
+  prob += micro.ionization;
+  if (prob > cutoff) {
+    // Sample which atomic subshell was ionized based on the subshell cross
+    // sections
+    int i_shell = element.sample_ionization_shell(p);
+
+    // Generate secondary knock-on electron and adjust primary energy
+    element.ionization(p, i_shell);
+
+    // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
+    // data
+    if (settings::atomic_relaxation && i_shell >= 0) {
+      const auto& photoatomic = *data::photoatomic[i_element];
+      if (photoatomic.has_atomic_relaxation_) {
+        photoatomic.atomic_relaxation(i_shell, p);
+      }
+    }
+    return;
+  }
+
+  // Bremsstrahlung
+  prob += micro.bremsstrahlung;
+  if (prob > cutoff) {
+    element.bremsstrahlung(p);
+    return;
+  }
 }
 
 int sample_nuclide(Particle& p)

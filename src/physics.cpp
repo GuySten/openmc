@@ -1519,8 +1519,6 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
 void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
 {
   double wgt = p.wgt();
-  wgt *= p.photonuclear_xs(i_nuclide).neutron_prod /
-         p.photonuclear_xs(i_nuclide).total;
   wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
 
   // Sample the reaction and product

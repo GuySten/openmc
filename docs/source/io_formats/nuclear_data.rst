@@ -494,7 +494,7 @@ Kalbach-Mann
 
 :Object type: Group
 :Attributes: - **type** (*char[]*) -- 'kalbach-mann'
-             - **is_photon** (*bool*) -- Whether the incident particle is a photon.
+             - **particle** (*char[]*) -- Type of particle
 :Datasets: - **energy** (*double[]*) -- Incoming energies at which distributions exist
 
              :Attributes:

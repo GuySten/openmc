@@ -269,8 +269,8 @@ class KalbachMann(AngleEnergy):
     slope : Iterable of openmc.data.Tabulated1D
         Kalbach-Chadwick angular distribution slope value 'a' as a function of
         outgoing energy for each incoming energy
-    is_photon : bool 
-        Whether projectile is a photon, defaults to False
+    particle : {'neutron', 'photon'}
+        Incident particle type, defaults to neutron
 
     Attributes
     ----------
@@ -288,21 +288,21 @@ class KalbachMann(AngleEnergy):
     slope : Iterable of openmc.data.Tabulated1D
         Kalbach-Chadwick angular distribution slope value 'a' as a function of
         outgoing energy for each incoming energy
-    is_photon : bool 
-        Whether projectile particle is a photon        
+    particle : {'neutron', 'photon'} 
+        incident particle type, defaults to neutron        
 
     """
 
     def __init__(self, breakpoints, interpolation, energy, energy_out,
-                 precompound, slope, is_photon=False):
+                 precompound, slope, particle = 'neutron'):
         super().__init__()
         self.breakpoints = breakpoints
         self.interpolation = interpolation
-        self.is_photon = is_photon
         self.energy = energy
         self.energy_out = energy_out
         self.precompound = precompound
         self.slope = slope
+        self.particle = particle
 
     @property
     def breakpoints(self):
@@ -325,13 +325,13 @@ class KalbachMann(AngleEnergy):
         self._interpolation = interpolation
         
     @property
-    def is_photon(self):
-        return self._is_photon
+    def particle(self):
+        return self._particle
 
-    @is_photon.setter
-    def is_photon(self, is_photon):
-        cv.check_type('Kalbach-Mann is_photon', is_photon, bool)
-        self._is_photon = is_photon     
+    @particle.setter
+    def particle(self, particle):
+        cv.check_value('Kalbach-Mann incident particle', particle, ['neutron', 'photon'])
+        self._particle = particle
 
     @property
     def energy(self):
@@ -382,7 +382,7 @@ class KalbachMann(AngleEnergy):
 
         """
         group.attrs['type'] = np.bytes_('kalbach-mann')
-        group.attrs['is_photon'] = self.is_photon
+        group.attrs['particle'] = np.bytes_(self.particle)
 
         dset = group.create_dataset('energy', data=self.energy)
         dset.attrs['interpolation'] = np.vstack((self.breakpoints,
@@ -452,7 +452,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy distribution
 
         """
-        is_photon = bool(group.attrs.get("is_photon", False))
+        particle = group.attrs.get("particle", b"neutron").decode()
         interp_data = group['energy'].attrs['interpolation']
         energy_breakpoints = interp_data[0, :]
         energy_interpolation = interp_data[1, :]
@@ -508,7 +508,7 @@ class KalbachMann(AngleEnergy):
             slope.append(km_a)
 
         return cls(energy_breakpoints, energy_interpolation,
-                   energy, energy_out, precompound, slope, is_photon=is_photon)
+                   energy, energy_out, precompound, slope, particle = particle)
 
     @classmethod
     def from_ace(cls, ace, idx, ldis):
@@ -524,8 +524,6 @@ class KalbachMann(AngleEnergy):
         ldis : int
             Index in XSS array of the start of the energy distribution block
             (e.g. JXS[11])
-        is_photon : bool
-            Whether projectile is photon
 
         Returns
         -------
@@ -533,7 +531,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        is_photon = bool(ace.data_type.value == 'u')
+        particle = {'u':'photon', 'c':'neutron'}[ace.data_type.value]
         # Read number of interpolation regions and incoming energies
         n_regions = int(ace.xss[idx])
         n_energy_in = int(ace.xss[idx + 1 + 2*n_regions])
@@ -606,7 +604,7 @@ class KalbachMann(AngleEnergy):
             km_r.append(Tabulated1D(data[0], data[3]))
             km_a.append(Tabulated1D(data[0], data[4]))
 
-        return cls(breakpoints, interpolation, energy, energy_out, km_r, km_a, is_photon=is_photon)
+        return cls(breakpoints, interpolation, energy, energy_out, km_r, km_a, particle = particle)
 
     @classmethod
     def from_endf(cls, file_obj, za_emitted, za_target, za_projectile):
@@ -635,7 +633,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        is_photon = bool(za_projectile==0)
+        particle = {0: 'photon', 1: 'neutron'}[za_projectile]        
         params, tab2 = get_tab2_record(file_obj)
         lep = params[3]
         ne = params[5]
@@ -681,7 +679,7 @@ class KalbachMann(AngleEnergy):
             slope.append(Tabulated1D(eout_i, a_i))
 
         km_distribution = cls(tab2.breakpoints, tab2.interpolation, energy,
-                              energy_out, precompound, slope, is_photon)
+                              energy_out, precompound, slope, particle = particle)
 
         # List of bool to indicate slope calculation by OpenMC
         km_distribution._calculated_slope = calculated_slope

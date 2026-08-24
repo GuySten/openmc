@@ -9,6 +9,7 @@
 
 #include "openmc/hdf5_interface.h"
 #include "openmc/math_functions.h"
+#include "openmc/particle_type.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
@@ -22,13 +23,15 @@ namespace openmc {
 
 KalbachMann::KalbachMann(hid_t group)
 {
+  is_photon_ = false;
   // Check if projectile is a photon
-  if (attribute_exists(group, "is_photon")) {
-    read_attribute(group, "is_photon", is_photon_);
-  } else {
-    is_photon_ = false;
+  if (attribute_exists(group, "particle")) {
+    std::string temp;
+    read_attribute(group, "particle", temp);
+    auto type = ParticleType(temp);
+    if (type.is_photon())
+      is_photon_ = true;
   }
-
   // Open incoming energy dataset
   hid_t dset = open_dataset(group, "energy");
 
@@ -233,10 +236,10 @@ void KalbachMann::sample(
   // Sampled correlated angle from Kalbach-Mann parameters
   if (is_photon_) {
     if (prn(seed) > km_r) {
+      mu = uniform_distribution(-1., 1., seed);
+    } else {
       double T = uniform_distribution(-1., 1., seed);
       mu = std::log(std::cosh(km_a) + T * std::sinh(km_a)) / km_a;
-    } else {
-      mu = uniform_distribution(-1., 1., seed);
     }
   } else {
     if (prn(seed) > km_r) {

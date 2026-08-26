@@ -75,8 +75,8 @@ void initialize_batch();
 void initialize_generation();
 
 //! Full initialization of a particle track
-void initialize_particle_track(
-  Particle& p, int64_t index_source, bool is_secondary);
+void initialize_particle_track(Particle& p, int64_t index_source,
+  bool is_secondary, bool is_virtual = false);
 
 //! Finalize a batch
 //!

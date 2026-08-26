@@ -591,6 +591,23 @@ void Particle::event_death()
       finalize_particle_track(*this);
     }
 
+    if (!model::active_pulse_height_tallies.empty()) {
+      score_pulse_height_tally(*this, model::active_pulse_height_tallies);
+    }
+
+    // Accumulate track count for this particle history
+    if (!settings::use_shared_secondary_bank) {
+#pragma omp atomic
+      simulation::simulation_tracks_completed += n_tracks();
+    }
+
+    // Record the number of progeny created by this particle.
+    // This data will be used to efficiently sort the fission bank.
+    if (settings::run_mode == RunMode::EIGENVALUE ||
+        settings::use_shared_secondary_bank) {
+      simulation::progeny_per_particle[current_work()] = n_progeny();
+    }
+
     // Contribute tally reduction variables to global accumulator
     const auto k_absorption = keff_tally_absorption();
     const auto k_collision = keff_tally_collision();
@@ -615,30 +632,13 @@ void Particle::event_death()
 #pragma omp atomic
       global_tally_leakage += leakage;
     }
-
-    // Reset particle tallies once accumulated
-    keff_tally_absorption() = 0.0;
-    keff_tally_collision() = 0.0;
-    keff_tally_tracklength() = 0.0;
-    keff_tally_leakage() = 0.0;
-
-    if (!model::active_pulse_height_tallies.empty()) {
-      score_pulse_height_tally(*this, model::active_pulse_height_tallies);
-    }
-
-    // Accumulate track count for this particle history
-    if (!settings::use_shared_secondary_bank) {
-#pragma omp atomic
-      simulation::simulation_tracks_completed += n_tracks();
-    }
-
-    // Record the number of progeny created by this particle.
-    // This data will be used to efficiently sort the fission bank.
-    if (settings::run_mode == RunMode::EIGENVALUE ||
-        settings::use_shared_secondary_bank) {
-      simulation::progeny_per_particle[current_work()] = n_progeny();
-    }
   }
+
+  // Reset particle tallies once accumulated
+  keff_tally_absorption() = 0.0;
+  keff_tally_collision() = 0.0;
+  keff_tally_tracklength() = 0.0;
+  keff_tally_leakage() = 0.0;
 }
 
 void Particle::pht_collision_energy()

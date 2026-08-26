@@ -341,7 +341,7 @@ int n_lost_particles {0};
 bool need_depletion_rx {false};
 int restart_batch;
 bool satisfy_triggers {false};
-bool superhistory_on {false};
+bool superhistory_on {true};
 int ssw_current_file;
 int total_gen {0};
 double total_weight;
@@ -706,7 +706,7 @@ void sample_source_particle(Particle& p, int64_t index_source)
 }
 
 void initialize_particle_track(
-  Particle& p, int64_t index_source, bool is_secondary)
+  Particle& p, int64_t index_source, bool is_secondary, bool is_virtual)
 {
   // Note: index_source is 1-based (first particle = 1), but current_work() is
   // stored as 0-based for direct use as an array index into
@@ -738,7 +738,7 @@ void initialize_particle_track(
   // set particle history start weight
   p.wgt_born() = p.wgt();
 
-  p.super_gen() = (simulation::superhistory_on) ? 0 : -1;
+  p.super_gen() = is_virtual ? 0 : -1;
 
   // Reset pulse_height_storage
   std::fill(p.pht_storage().begin(), p.pht_storage().end(), 0);
@@ -769,7 +769,7 @@ void initialize_particle_track(
   }
 
   // Add particle's starting weight to count for normalizing tallies later
-  if (!is_secondary) {
+  if (!is_secondary && !is_virtual) {
 #pragma omp atomic
     simulation::total_weight += p.wgt();
   }
@@ -984,7 +984,7 @@ void transport_history_based()
     Particle p;
 #pragma omp for schedule(runtime)
     for (int64_t i_work = 1; i_work <= simulation::work_per_rank; ++i_work) {
-      initialize_particle_track(p, i_work, false);
+      initialize_particle_track(p, i_work, false, simulation::superhistory_on);
       transport_history_based_single_particle(p);
       if (simulation::superhistory_on) {
         double wgt_super = p.local_secondary_bank().size();

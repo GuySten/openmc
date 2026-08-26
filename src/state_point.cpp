@@ -203,6 +203,12 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
           continue;
         }
 
+        if (tally->adjoint_) {
+          write_attribute(tally_group, "adjoint", 1);
+        } else {
+          write_attribute(tally_group, "adjoint", 0);
+        }
+
         if (tally->multiply_density()) {
           write_attribute(tally_group, "multiply_density", 1);
         } else {

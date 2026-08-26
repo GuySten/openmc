@@ -108,6 +108,7 @@ bool Particle::create_secondary(
   }
   bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
+  bank.wgt_super = wgt_super();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
 
@@ -135,6 +136,7 @@ void Particle::split(double wgt)
 
   bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
+  bank.wgt_super = wgt_super();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
   bank.n_collision = n_collision();
@@ -195,6 +197,7 @@ void Particle::from_source(const SourceSite* src)
   }
   super_gen() = src->super_gen;
   wgt_born() = src->wgt_born;
+  wgt_super() = src->wgt_super;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
 }

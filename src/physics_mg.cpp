@@ -206,6 +206,7 @@ void create_fission_sites(Particle& p)
       site.n_split = p.n_split();
       if (p.super_gen() >= 0)
         site.super_gen = p.super_gen() + 1;
+      site.wgt_super = p.wgt_super();
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }

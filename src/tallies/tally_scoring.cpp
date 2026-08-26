@@ -2328,6 +2328,9 @@ void score_analog_tally_ce(Particle& p)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
+
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
         auto i_nuclide = tally.nuclides_[i];
@@ -2371,6 +2374,9 @@ void score_analog_tally_mg(Particle& p)
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
+
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2425,6 +2431,9 @@ void score_tracklength_tally_general(
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
+
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2556,6 +2565,9 @@ void score_collision_tally(Particle& p)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
+
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
         auto i_nuclide = tally.nuclides_[i];
@@ -2628,6 +2640,9 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
+
       // Loop over scores.
       // There is only one score type for current tallies so there is no need
       // for a further scoring function.
@@ -2684,6 +2699,9 @@ void score_surface_tally(
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
+
+      if (tally->adjoint_)
+        filter_weight *= p.wgt_super();
 
       // Loop over scores.
       for (auto score_index = 0; score_index < tally.scores_.size();

@@ -139,7 +139,7 @@ void sample_neutron_reaction(Particle& p)
   }
 
   // Create secondary photons
-  if (settings::photon_transport) {
+  if (settings::photon_transport && p.super_gen() < 0) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -202,7 +202,8 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
 
   // Determine whether to place fission sites into the shared fission bank
   // or the secondary particle bank.
-  bool use_fission_bank = (settings::run_mode == RunMode::EIGENVALUE);
+  bool use_fission_bank =
+    (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() < 0);
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank

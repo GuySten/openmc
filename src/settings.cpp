@@ -139,6 +139,7 @@ int64_t ssw_max_particles;
 int64_t ssw_max_files;
 int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
+int super_n_generation {-1};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -563,17 +564,30 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Relative max lost particles must be between zero and one.");
     }
 
-    // Check for user value for the number of generation of the Iterated Fission
-    // Probability (IFP) method
-    if (check_for_node(root, "ifp_n_generation")) {
-      ifp_n_generation = std::stoi(get_node_value(root, "ifp_n_generation"));
-      if (ifp_n_generation <= 0) {
-        fatal_error("'ifp_n_generation' must be greater than 0.");
+    if (run_mode == RunMode::EIGENVALUE) {
+      // Check for user value for the number of generation of the Iterated
+      // Fission Probability (IFP) method
+      if (check_for_node(root, "ifp_n_generation")) {
+        ifp_n_generation = std::stoi(get_node_value(root, "ifp_n_generation"));
+        if (ifp_n_generation <= 0) {
+          fatal_error("'ifp_n_generation' must be greater than 0.");
+        }
+        // Avoid tallying 0 if IFP logs are not complete when active cycles
+        // start
+        if (ifp_n_generation > n_inactive) {
+          fatal_error("'ifp_n_generation' must be lower than or equal to the "
+                      "number of inactive cycles.");
+        }
       }
-      // Avoid tallying 0 if IFP logs are not complete when active cycles start
-      if (ifp_n_generation > n_inactive) {
-        fatal_error("'ifp_n_generation' must be lower than or equal to the "
-                    "number of inactive cycles.");
+
+      // Check for user value for the number of generation of the superhistory
+      // method
+      if (check_for_node(root, "superhistory_n_generation")) {
+        super_n_generation =
+          std::stoi(get_node_value(root, "superhistory_n_generation"));
+        if (super_n_generation <= 0) {
+          fatal_error("'superhistory_n_generation' must be greater than 0.");
+        }
       }
     }
   }

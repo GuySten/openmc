@@ -507,6 +507,7 @@ private:
 
   double wgt_ {1.0};
   double wgt_born_ {1.0};
+  double wgt_super_ {1.0};
   double wgt_ww_born_ {-1.0};
   double mu_;
   double time_ {0.0};
@@ -565,6 +566,8 @@ private:
 
   double collision_distance_;
 
+  int super_gen_ {-1};
+
   int n_event_ {0};
 
   int64_t n_tracks_ {0}; //!< number of tracks in this particle history
@@ -622,6 +625,10 @@ public:
   // Statistic weight of particle at birth
   double& wgt_born() { return wgt_born_; }
   double wgt_born() const { return wgt_born_; }
+
+  // Super history adjoint weight of particle at birth
+  double& wgt_super() { return wgt_super_; }
+  double wgt_super() const { return wgt_super_; }
 
   // Weight window value at birth
   double& wgt_ww_born() { return wgt_ww_born_; }
@@ -687,6 +694,10 @@ public:
   // Total number of collisions suffered by particle
   int& n_collision() { return n_collision_; }
   const int& n_collision() const { return n_collision_; }
+
+  // Superhistory index of particle
+  int& super_gen() { return super_gen_; }
+  const int& super_gen() const { return super_gen_; }
 
   // whether this track is to be written
   bool& write_track() { return write_track_; }

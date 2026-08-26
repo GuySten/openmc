@@ -299,24 +299,26 @@ void Particle::event_advance()
   this->time() += dt;
   this->lifetime() += dt;
 
-  // Score timed track-length tallies
-  if (!model::active_timed_tracklength_tallies.empty()) {
-    score_timed_tracklength_tally(*this, distance);
-  }
+  if (super_gen() < 0) {
+    // Score timed track-length tallies
+    if (!model::active_timed_tracklength_tallies.empty()) {
+      score_timed_tracklength_tally(*this, distance);
+    }
 
-  // Score track-length tallies
-  if (!model::active_tracklength_tallies.empty()) {
-    score_tracklength_tally(*this, distance);
-  }
+    // Score track-length tallies
+    if (!model::active_tracklength_tallies.empty()) {
+      score_tracklength_tally(*this, distance);
+    }
 
-  // Score track-length estimate of k-eff
-  if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
-    keff_tally_tracklength() += wgt() * distance * macro_xs().nu_fission;
-  }
+    // Score track-length estimate of k-eff
+    if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
+      keff_tally_tracklength() += wgt() * distance * macro_xs().nu_fission;
+    }
 
-  // Score flux derivative accumulators for differential tallies.
-  if (!model::active_tallies.empty()) {
-    score_track_derivative(*this, distance);
+    // Score flux derivative accumulators for differential tallies.
+    if (!model::active_tallies.empty()) {
+      score_track_derivative(*this, distance);
+    }
   }
 
   // Set particle weight to zero if it hit the time boundary
@@ -352,7 +354,7 @@ void Particle::event_cross_surface()
     event() = TallyEvent::LATTICE;
 
     // Score cell to cell partial currents
-    if (!model::active_surface_tallies.empty()) {
+    if (!model::active_surface_tallies.empty() && super_gen() < 0) {
       auto& lat {*model::lattices[i_lattice]};
       bool is_valid;
       Direction normal =
@@ -383,7 +385,7 @@ void Particle::event_cross_surface()
     event() = TallyEvent::SURFACE;
 
     // Score cell to cell partial currents
-    if (!model::active_surface_tallies.empty()) {
+    if (!model::active_surface_tallies.empty() && super_gen() < 0) {
       Direction normal = surf.normal(r());
       normal /= normal.norm();
       score_surface_tally(*this, model::active_surface_tallies, normal);
@@ -394,17 +396,19 @@ void Particle::event_cross_surface()
 void Particle::event_collide()
 {
 
-  // Score collision estimate of keff
-  if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
-    keff_tally_collision() += wgt() * macro_xs().nu_fission / macro_xs().total;
+  if (super_gen() < 0) {
+    // Score collision estimate of keff
+    if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
+      keff_tally_collision() +=
+        wgt() * macro_xs().nu_fission / macro_xs().total;
+    }
+
+    // Score surface current tallies -- this has to be done before the collision
+    // since the direction of the particle will change and we need to use the
+    // pre-collision direction to figure out what mesh surfaces were crossed
+    if (!model::active_meshsurf_tallies.empty())
+      score_meshsurface_tally(*this, model::active_meshsurf_tallies);
   }
-
-  // Score surface current tallies -- this has to be done before the collision
-  // since the direction of the particle will change and we need to use the
-  // pre-collision direction to figure out what mesh surfaces were crossed
-
-  if (!model::active_meshsurf_tallies.empty())
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
 
   // Preserve whether the particle is still associated with a recently crossed
   // surface so that a direction change during a near-surface collision can be
@@ -419,26 +423,28 @@ void Particle::event_collide()
     collision_mg(*this);
   }
 
-  // Collision track feature to recording particle interaction
-  if (settings::collision_track) {
-    collision_track_record(*this);
-  }
-
-  // Score collision estimator tallies -- this is done after a collision
-  // has occurred rather than before because we need information on the
-  // outgoing energy for any tallies with an outgoing energy filter
-  if (!model::active_collision_tallies.empty())
-    score_collision_tally(*this);
-  if (!model::active_analog_tallies.empty()) {
-    if (settings::run_CE) {
-      score_analog_tally_ce(*this);
-    } else {
-      score_analog_tally_mg(*this);
+  if (super_gen() < 0) {
+    // Collision track feature to recording particle interaction
+    if (settings::collision_track) {
+      collision_track_record(*this);
     }
-  }
 
-  if (!model::active_pulse_height_tallies.empty() && type().is_photon()) {
-    pht_collision_energy();
+    // Score collision estimator tallies -- this is done after a collision
+    // has occurred rather than before because we need information on the
+    // outgoing energy for any tallies with an outgoing energy filter
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty()) {
+      if (settings::run_CE) {
+        score_analog_tally_ce(*this);
+      } else {
+        score_analog_tally_mg(*this);
+      }
+    }
+
+    if (!model::active_pulse_height_tallies.empty() && type().is_photon()) {
+      pht_collision_energy();
+    }
   }
 
   // Reset banked weight during collision
@@ -477,7 +483,7 @@ void Particle::event_collide()
   }
 
   // Score flux derivative accumulators for differential tallies.
-  if (!model::active_tallies.empty())
+  if (!model::active_tallies.empty() && super_gen() < 0)
     score_collision_derivative(*this);
 
 #ifdef OPENMC_DAGMC_ENABLED
@@ -493,7 +499,7 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // Write final position for the previous track (skip if this is a freshly
   // constructed particle with no prior track, e.g., Phase 2 of shared
   // secondary transport)
-  if (write_track() && n_event() > 0) {
+  if (write_track() && n_event() > 0 && super_gen() < 0) {
     write_particle_track(*this);
   }
 
@@ -509,7 +515,8 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // In shared secondary mode, this subtraction was already done on the parent
   // particle during create_secondary(), so skip it here.
   if (!settings::use_shared_secondary_bank &&
-      !model::active_pulse_height_tallies.empty() && this->type().is_photon()) {
+      !model::active_pulse_height_tallies.empty() && this->type().is_photon() &&
+      super_gen() < 0) {
     // Since the birth cell of the particle has not been set we
     // have to determine it before the energy of the secondary particle can be
     // removed from the pulse-height of this cell.
@@ -563,58 +570,61 @@ void Particle::event_death()
   history().reset();
 #endif
 
-  // Finish particle track output.
-  if (write_track()) {
-    write_particle_track(*this);
-    finalize_particle_track(*this);
-  }
+  if (super_gen() < 0) {
 
-  // Contribute tally reduction variables to global accumulator
-  const auto k_absorption = keff_tally_absorption();
-  const auto k_collision = keff_tally_collision();
-  const auto k_tracklength = keff_tally_tracklength();
-  const auto leakage = keff_tally_leakage();
-
-  if (settings::run_mode == RunMode::EIGENVALUE) {
-    if (k_absorption != 0.0) {
-#pragma omp atomic
-      global_tally_absorption += k_absorption;
+    // Finish particle track output.
+    if (write_track()) {
+      write_particle_track(*this);
+      finalize_particle_track(*this);
     }
-    if (k_collision != 0.0) {
+
+    // Contribute tally reduction variables to global accumulator
+    const auto k_absorption = keff_tally_absorption();
+    const auto k_collision = keff_tally_collision();
+    const auto k_tracklength = keff_tally_tracklength();
+    const auto leakage = keff_tally_leakage();
+
+    if (settings::run_mode == RunMode::EIGENVALUE) {
+      if (k_absorption != 0.0) {
 #pragma omp atomic
-      global_tally_collision += k_collision;
+        global_tally_absorption += k_absorption;
+      }
+      if (k_collision != 0.0) {
+#pragma omp atomic
+        global_tally_collision += k_collision;
+      }
+      if (k_tracklength != 0.0) {
+#pragma omp atomic
+        global_tally_tracklength += k_tracklength;
+      }
     }
-    if (k_tracklength != 0.0) {
+    if (leakage != 0.0) {
 #pragma omp atomic
-      global_tally_tracklength += k_tracklength;
+      global_tally_leakage += leakage;
     }
-  }
-  if (leakage != 0.0) {
+
+    // Reset particle tallies once accumulated
+    keff_tally_absorption() = 0.0;
+    keff_tally_collision() = 0.0;
+    keff_tally_tracklength() = 0.0;
+    keff_tally_leakage() = 0.0;
+
+    if (!model::active_pulse_height_tallies.empty()) {
+      score_pulse_height_tally(*this, model::active_pulse_height_tallies);
+    }
+
+    // Accumulate track count for this particle history
+    if (!settings::use_shared_secondary_bank) {
 #pragma omp atomic
-    global_tally_leakage += leakage;
-  }
+      simulation::simulation_tracks_completed += n_tracks();
+    }
 
-  // Reset particle tallies once accumulated
-  keff_tally_absorption() = 0.0;
-  keff_tally_collision() = 0.0;
-  keff_tally_tracklength() = 0.0;
-  keff_tally_leakage() = 0.0;
-
-  if (!model::active_pulse_height_tallies.empty()) {
-    score_pulse_height_tally(*this, model::active_pulse_height_tallies);
-  }
-
-  // Accumulate track count for this particle history
-  if (!settings::use_shared_secondary_bank) {
-#pragma omp atomic
-    simulation::simulation_tracks_completed += n_tracks();
-  }
-
-  // Record the number of progeny created by this particle.
-  // This data will be used to efficiently sort the fission bank.
-  if (settings::run_mode == RunMode::EIGENVALUE ||
-      settings::use_shared_secondary_bank) {
-    simulation::progeny_per_particle[current_work()] = n_progeny();
+    // Record the number of progeny created by this particle.
+    // This data will be used to efficiently sort the fission bank.
+    if (settings::run_mode == RunMode::EIGENVALUE ||
+        settings::use_shared_secondary_bank) {
+      simulation::progeny_per_particle[current_work()] = n_progeny();
+    }
   }
 }
 
@@ -770,24 +780,27 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
     return;
   }
 
-  // Score surface currents since reflection causes the direction of the
-  // particle to change. For surface filters, we need to score the tallies
-  // twice, once before the particle's surface attribute has changed and
-  // once after. For mesh surface filters, we need to artificially move
-  // the particle slightly back in case the surface crossing is coincident
-  // with a mesh boundary
+  if (super_gen() < 0) {
 
-  if (!model::active_surface_tallies.empty()) {
-    Direction normal = surf.normal(r());
-    normal /= normal.norm();
-    score_surface_tally(*this, model::active_surface_tallies, normal);
-  }
+    // Score surface currents since reflection causes the direction of the
+    // particle to change. For surface filters, we need to score the tallies
+    // twice, once before the particle's surface attribute has changed and
+    // once after. For mesh surface filters, we need to artificially move
+    // the particle slightly back in case the surface crossing is coincident
+    // with a mesh boundary
 
-  if (!model::active_meshsurf_tallies.empty()) {
-    Position r {this->r()};
-    this->r() -= TINY_BIT * u();
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
-    this->r() = r;
+    if (!model::active_surface_tallies.empty()) {
+      Direction normal = surf.normal(r());
+      normal /= normal.norm();
+      score_surface_tally(*this, model::active_surface_tallies, normal);
+    }
+
+    if (!model::active_meshsurf_tallies.empty()) {
+      Position r {this->r()};
+      this->r() -= TINY_BIT * u();
+      score_meshsurface_tally(*this, model::active_meshsurf_tallies);
+      this->r() = r;
+    }
   }
 
   // Set the new particle direction
@@ -833,7 +846,7 @@ void Particle::cross_periodic_bc(
   // Score surface currents since reflection causes the direction of the
   // particle to change -- artificially move the particle slightly back in
   // case the surface crossing is coincident with a mesh boundary
-  if (!model::active_meshsurf_tallies.empty()) {
+  if (!model::active_meshsurf_tallies.empty() && super_gen() < 0) {
     Position r {this->r()};
     this->r() -= TINY_BIT * u();
     score_meshsurface_tally(*this, model::active_meshsurf_tallies);
@@ -989,7 +1002,7 @@ void Particle::update_neutron_xs(
 void add_surf_source_to_bank(Particle& p, const Surface& surf)
 {
   if (simulation::current_batch <= settings::n_inactive ||
-      simulation::surf_source_bank.full()) {
+      simulation::surf_source_bank.full() || p.super_gen() >= 0) {
     return;
   }
 

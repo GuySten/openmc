@@ -99,6 +99,11 @@ Tally::Tally(pugi::xml_node node)
   int32_t id = std::stoi(get_node_value(node, "id"));
   this->set_id(id);
 
+  if (check_for_node(node, "adjoint")) {
+    bool adjoint = get_node_value_bool(node, "adjoint");
+    this->set_adjoint(adjoint);
+  }
+
   if (check_for_node(node, "name"))
     name_ = get_node_value(node, "name");
 
@@ -248,6 +253,31 @@ Tally::Tally(pugi::xml_node node)
         }
         break;
       }
+    }
+  }
+
+  if (!simulation::superhistory_on) {
+    if (adjoint_) {
+      simulation::superhistory_on = true;
+    }
+  }
+
+  if (simulation::superhistory_on) {
+    if (settings::run_mode == RunMode::EIGENVALUE) {
+      if (settings::event_based) {
+        fatal_error("Superhistory method cannot be used in event-mode.");
+      }
+      if (settings::super_n_generation < 0) {
+        settings::super_n_generation = DEFAULT_SUPER_N_GENERATION;
+        warning(
+          fmt::format("{} generations will be used for superhistory (default "
+                      "value). It can be "
+                      "changed using the 'superhistory_n_generation' settings.",
+            settings::super_n_generation));
+      }
+    } else if (settings::run_mode == RunMode::FIXED_SOURCE) {
+      fatal_error("Superhistory method can only be used in an eigenvalue "
+                  "calculation.");
     }
   }
 

@@ -558,11 +558,22 @@ void Particle::event_check_limit_and_revive()
   }
 
   // In non-shared-secondary mode, revive from local secondary bank
-  if (!alive() && !settings::use_shared_secondary_bank &&
+  if (!alive() && (!settings::use_shared_secondary_bank || super_gen() >= 0) &&
       !local_secondary_bank().empty()) {
-    SourceSite& site = local_secondary_bank().back();
-    event_revive_from_secondary(site);
-    local_secondary_bank().pop_back();
+    auto& bank = local_secondary_bank();
+    // Iterate from the back (top of stack) to the front
+    for (auto it = bank.rbegin(); it != bank.rend(); ++it) {
+      // If the site's super_gen is smaller than the threshold, revive from it
+      if (it->super_gen < settings::super_n_generation) {
+        SourceSite& site = *it;
+        event_revive_from_secondary(site);
+
+        // Convert reverse_iterator to a standard iterator to erase it safely,
+        // then exit the loop since we only revive one site at a time.
+        bank.erase(std::next(it).base());
+        break;
+      }
+    }
   }
 }
 

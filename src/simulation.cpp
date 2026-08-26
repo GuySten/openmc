@@ -738,6 +738,8 @@ void initialize_particle_track(
   // set particle history start weight
   p.wgt_born() = p.wgt();
 
+  p.super_gen() = (simulation::superhistory_on) ? 0 : -1;
+
   // Reset pulse_height_storage
   std::fill(p.pht_storage().begin(), p.pht_storage().end(), 0);
 
@@ -984,6 +986,14 @@ void transport_history_based()
     for (int64_t i_work = 1; i_work <= simulation::work_per_rank; ++i_work) {
       initialize_particle_track(p, i_work, false);
       transport_history_based_single_particle(p);
+      if (simulation::superhistory_on) {
+        double wgt_super = p.local_secondary_bank().size();
+        p.local_secondary_bank().clear();
+        initialize_particle_track(p, i_work, false);
+        p.super_gen() = -1;
+        p.wgt_super() = wgt_super;
+        transport_history_based_single_particle(p);
+      }
     }
   }
 }

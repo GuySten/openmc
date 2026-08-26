@@ -119,7 +119,8 @@ void sample_neutron_reaction(Particle& p)
 
   if (nuc->fissionable_ && p.neutron_xs(i_nuclide).fission > 0.0) {
     auto& rx = sample_fission(i_nuclide, p);
-    if (settings::run_mode == RunMode::EIGENVALUE) {
+    if (settings::run_mode == RunMode::EIGENVALUE &&
+        p.super_gen() < settings::super_n_generation) {
       create_fission_sites(p, i_nuclide, rx);
     } else if (settings::run_mode == RunMode::FIXED_SOURCE &&
                settings::create_fission_neutrons) {
@@ -258,6 +259,8 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
+      if (p.super_gen() >= 0)
+        site.super_gen = p.super_gen() + 1;
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }

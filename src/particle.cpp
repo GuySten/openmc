@@ -106,6 +106,7 @@ bool Particle::create_secondary(
   if (settings::use_shared_secondary_bank) {
     bank.progeny_id = n_progeny()++;
   }
+  bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -132,6 +133,7 @@ void Particle::split(double wgt)
     bank.surf_id = (surface() > 0) ? surf_id : -surf_id;
   }
 
+  bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -191,7 +193,7 @@ void Particle::from_source(const SourceSite* src)
       surface() = (src->surf_id > 0) ? index_plus_one : -index_plus_one;
     }
   }
-
+  super_gen() = src->super_gen;
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
@@ -541,7 +543,7 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   }
 
   // Enter new particle in particle track file
-  if (write_track())
+  if (write_track() && super_gen() < 0)
     add_particle_track(*this);
 }
 

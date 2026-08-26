@@ -52,6 +52,7 @@ struct SourceSite {
   int parent_nuclide {-1};
   int64_t parent_id {0};
   int64_t progeny_id {0};
+  int super_gen {-1};
   double wgt_born {1.0};
   double wgt_ww_born {-1.0};
   int64_t n_split {0};

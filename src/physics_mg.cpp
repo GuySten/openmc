@@ -127,7 +127,8 @@ void create_fission_sites(Particle& p)
 
   // Determine whether to place fission sites into the shared fission bank
   // or the secondary particle bank.
-  bool use_fission_bank = (settings::run_mode == RunMode::EIGENVALUE);
+  bool use_fission_bank =
+    (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() < 0);
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -203,6 +204,8 @@ void create_fission_sites(Particle& p)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
+      if (p.super_gen() >= 0)
+        site.super_gen = p.super_gen() + 1;
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }

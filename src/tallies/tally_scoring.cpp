@@ -2328,7 +2328,7 @@ void score_analog_tally_ce(Particle& p)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
@@ -2375,7 +2375,7 @@ void score_analog_tally_mg(Particle& p)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
@@ -2432,7 +2432,7 @@ void score_tracklength_tally_general(
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
@@ -2565,7 +2565,7 @@ void score_collision_tally(Particle& p)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
@@ -2640,7 +2640,7 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over scores.
@@ -2700,7 +2700,7 @@ void score_surface_tally(
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally->adjoint_)
+      if (tally.adjoint_)
         filter_weight *= p.wgt_super();
 
       // Loop over scores.

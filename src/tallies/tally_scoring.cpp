@@ -2860,21 +2860,6 @@ bool is_fission_production_score(int score_bin)
          score_bin == SCORE_PROMPT_NU_FISSION;
 }
 
-//! Does this score's operator move the neutron before phi-dagger is
-//! evaluated?
-//!
-//! Scattering is non-diagonal in energy: <phi-dagger, S phi> evaluates
-//! phi-dagger at the OUTGOING energy. Unlike fission, the outgoing neutron
-//! is the same particle continuing, so the trajectory itself samples that
-//! importance -- the fission events it goes on to produce are an estimate
-//! of phi-dagger(r, E_out). The only adjustment needed is to exclude the
-//! current collision's own emitted neutrons from the weight, which is the
-//! difference between an inclusive and an exclusive suffix sum.
-bool is_scattering_operator_score(int score_bin)
-{
-  return score_bin == SCORE_SCATTER || score_bin == SCORE_NU_SCATTER;
-}
-
 } // namespace
 
 void record_adjoint_fission_filters(Particle& p, int event_id)
@@ -2935,21 +2920,20 @@ void commit_adjoint_scores(
   //     point: an INCLUSIVE suffix sum, counting this collision's own
   //     emitted neutrons.
   //
-  //   the scattering operator S moves the neutron to a new energy, but the
-  //     scattered neutron is the SAME particle continuing, so its onward
-  //     trajectory already samples phi-dagger(r, E_out). Only the current
-  //     collision's emitted neutrons must be dropped: an EXCLUSIVE suffix
-  //     sum.
-  //
   //   the fission operator F emits NEW neutrons onto separate branches
   //     that this trajectory never visits, so their importance has to be
   //     tracked per emitted neutron. Prompt and delayed siblings from one
   //     collision must not be merged -- chi_d is softer than chi_p, and
   //     that spectral difference is the entire content of beta_eff.
   //
-  // The first two are suffix sums differing by one term; the third is
-  // accumulated per fission event so it lands in the filter bins of the
-  // collision it came from.
+  // The first is a suffix sum; the second is accumulated per fission event
+  // so it lands in the filter bins of the collision it came from.
+  //
+  // Scattering (<phi-dagger, S phi>) would need phi-dagger at the OUTGOING
+  // energy -- an exclusive suffix -- but it also needs a discrete
+  // per-scatter estimator, and discrete estimators are barred from adjoint
+  // tallies because their per-event score correlates with the realized
+  // terminal weight. See the guard in the Tally constructor.
   struct EventWeight {
     double all {0.0};
     double delayed {0.0};
@@ -3000,11 +2984,12 @@ void commit_adjoint_scores(
         if (is_fission_production_score(score_bin))
           continue; // built from the emitted neutrons instead, below
 
-        // Pre-collision phi-dagger includes this collision's own emitted
-        // neutrons; post-collision (scattering) excludes them.
-        int m = anchor + (is_scattering_operator_score(score_bin) ? 1 : 0);
-        if (m < 0)
-          m = 0;
+        // phi-dagger at the pre-collision phase point: an INCLUSIVE
+        // suffix, counting this collision's own emitted neutrons. Only
+        // track-length adjoint tallies exist (enforced in the Tally
+        // constructor), and for a diagonal operator that is the correct
+        // evaluation point.
+        int m = anchor;
         double weight = (m > n_events) ? 0.0 : suffix[m];
         if (weight == 0.0)
           continue;

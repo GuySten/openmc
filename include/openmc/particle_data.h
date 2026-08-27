@@ -583,17 +583,20 @@ private:
   // the event-loop iteration the score belongs to -- i.e. the id that this
   // collision's fission event will take (or would take). Keying on it
   // makes the adjoint weight independent of WHEN a score happens to be
-  // staged: track-length scores are staged in event_advance, before the
-  // collision, and collision/analog scores after it, but both carry the
-  // same anchor and so can be weighted by whichever phi-dagger their
-  // operator calls for. Previously the weighting fell out of staging
-  // order by accident, which made it estimator-dependent.
+  // staged, rather than letting it fall out of staging order by accident
+  // as it used to.
+  //
+  // Note this did NOT make the collision estimator agree with track-length
+  // (it stayed ~32% high before and after), which is why adjoint tallies
+  // are still restricted to track-length -- see the guard in the Tally
+  // constructor. The value of anchoring is that the weighting is now
+  // explicit and provably order-independent, so that discrepancy is known
+  // NOT to come from here.
   //
   // At commit, a score with anchor m is weighted by a suffix sum over the
-  // per-event terminal weights: sum over e >= m for operators evaluated at
-  // the pre-collision phase point (diagonal ones), and sum over e >= m+1
-  // for operators that move the neutron before phi-dagger is evaluated
-  // (scattering). See commit_adjoint_scores().
+  // per-event terminal weights: sum over e >= m, which is phi-dagger at
+  // the pre-collision phase point and correct for the diagonal operators
+  // adjoint tallies are restricted to. See commit_adjoint_scores().
   //
   // Sparse maps throughout: a super-history touches few anchors, few
   // tallies and few filter bins relative to the space of possibilities,

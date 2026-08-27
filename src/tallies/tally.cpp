@@ -439,41 +439,42 @@ Tally::Tally(pugi::xml_node node)
     }
   }
 
-  // Adjoint (super-history) estimator rules.
+  // Adjoint (super-history) weighting is supported only with the
+  // track-length estimator.
   //
-  // The adjoint weight is now anchored to the event-loop iteration a score
-  // belongs to rather than falling out of staging order (see
-  // Particle::collision_event_anchor_), so every estimator receives the
-  // same phi-dagger and the estimator is free for ordinary scores.
+  // Not a staging-order problem: scores are anchored to the event-loop
+  // iteration they belong to (see Particle::collision_event_anchor_), so
+  // every estimator provably receives the same suffix sum over per-event
+  // terminal weights. Anchoring was introduced partly to make the
+  // collision estimator agree, and it did not -- collision-estimator
+  // inverse-velocity sat 32.9% above track-length before anchoring and
+  // 32.4% above it after, i.e. the weighting was never the cause.
   //
-  // Scattering-operator scores are the exception and REQUIRE the analog
-  // estimator. <phi-dagger, S phi> evaluates phi-dagger at the outgoing
-  // energy, which here is estimated by the weight the continuing particle
-  // goes on to leave at the terminal generation. That is only a valid
-  // estimate when the particle actually scattered: track-length and
-  // collision estimators score Sigma_s * flux at every collision, including
-  // ones where the history was absorbed instead, and there the estimate is
-  // identically zero. Score and weight would then refer to different
-  // events, biasing the result badly low -- measured at roughly a factor of
-  // two, enough to drive the adjoint neutron balance to a negative leakage.
-  // The analog estimator skips non-scattering events, so score and weight
-  // refer to the same realized scatter.
-  if (adjoint_) {
-    bool has_scatter = false;
-    for (int score : scores_) {
-      if (score == SCORE_SCATTER || score == SCORE_NU_SCATTER) {
-        has_scatter = true;
-        break;
-      }
-    }
-    if (has_scatter && estimator_ != TallyEstimator::ANALOG) {
-      fatal_error(fmt::format(
-        "Tally {} combines adjoint (super-history) weighting with a "
-        "scattering score, which requires the analog estimator. Set "
-        "<estimator>analog</estimator> on this tally, and put any "
-        "non-scattering adjoint scores in a separate tally.",
-        id_));
-    }
+  // The working explanation is the SHAPE of the estimator. Track-length
+  // spreads a score smoothly along each flight; collision and analog
+  // estimators concentrate it at discrete events, and the per-event score
+  // (w / Sigma_t) spikes exactly where Sigma_t is small -- which is also
+  // where fission probability per collision is highest. The score then
+  // correlates with the realized terminal weight it gets multiplied by,
+  // and the product is biased high. Realized (single-sample) importance
+  // appears usable only with a smooth estimator. This is a hypothesis, not
+  // a demonstrated mechanism; what IS demonstrated is that the discrepancy
+  // is large, reproducible, and unaffected by the weighting itself.
+  //
+  // The same reasoning rules out scattering-operator scores
+  // (<phi-dagger, S phi>), which need phi-dagger at the outgoing energy
+  // and therefore a discrete per-scatter estimator. An analog scattering
+  // score overshot the adjoint neutron balance -- it exceeded even the
+  // value that would make the adjoint leakage zero -- so scattering
+  // perturbations are NOT supported by this feature.
+  if (adjoint_ && estimator_ != TallyEstimator::TRACKLENGTH) {
+    fatal_error(fmt::format(
+      "Tally {} uses adjoint (super-history) weighting, which is supported "
+      "only with the track-length estimator. Remove the <estimator> entry "
+      "to use the default, or set it to 'tracklength'. Scores that force a "
+      "collision or analog estimator -- including scatter and nu-scatter -- "
+      "cannot be used on an adjoint tally.",
+      id_));
   }
 
 #ifdef OPENMC_LIBMESH_ENABLED
@@ -1432,16 +1433,13 @@ extern "C" int openmc_tally_set_estimator(int32_t index, const char* estimator)
     return OPENMC_E_INVALID_ARGUMENT;
   }
 
-  // See the matching check in the Tally constructor: on an adjoint tally a
-  // scattering score requires the analog estimator.
-  if (t->adjoint_ && t->estimator_ != TallyEstimator::ANALOG) {
-    for (int score : t->scores_) {
-      if (score == SCORE_SCATTER || score == SCORE_NU_SCATTER) {
-        t->estimator_ = TallyEstimator::ANALOG;
-        set_errmsg("Adjoint scattering scores require the analog estimator.");
-        return OPENMC_E_INVALID_ARGUMENT;
-      }
-    }
+  // See the matching check in the Tally constructor: adjoint weighting is
+  // supported only with the track-length estimator.
+  if (t->adjoint_ && t->estimator_ != TallyEstimator::TRACKLENGTH) {
+    t->estimator_ = TallyEstimator::TRACKLENGTH;
+    set_errmsg("Adjoint (super-history) tallies only support the "
+               "track-length estimator.");
+    return OPENMC_E_INVALID_ARGUMENT;
   }
   return 0;
 }

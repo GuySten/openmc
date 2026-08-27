@@ -802,11 +802,22 @@ void Particle::cross_surface(const Surface& surf)
 
 void Particle::cross_vacuum_bc(const Surface& surf)
 {
+  // Only generation 0 (or non-superhistory mode) is real. Generations >=1
+  // exist purely to measure eventual descendant weight and must not
+  // contribute to the real leakage tally or to surface-current tallies --
+  // otherwise every lookahead generation adds its own leakage on top of
+  // generation 0's, and the reported leakage fraction comes out multiplied
+  // by roughly the generation count (it exceeded 1.0, which is impossible
+  // for a fraction, before this gate was added). Same reasoning as the
+  // super_gen()<=0 gate in absorption(); leakage was missed because it is
+  // accumulated here rather than alongside the other k-eff estimators.
+  bool real = super_gen() <= 0;
+
   // Score any surface current tallies -- note that the particle is moved
   // forward slightly so that if the mesh boundary is on the surface, it is
   // still processed
 
-  if (!model::active_meshsurf_tallies.empty()) {
+  if (real && !model::active_meshsurf_tallies.empty()) {
     // TODO: Find a better solution to score surface currents than
     // physically moving the particle forward slightly
 
@@ -815,7 +826,9 @@ void Particle::cross_vacuum_bc(const Surface& surf)
   }
 
   // Score to global leakage tally
-  keff_tally_leakage() += wgt();
+  if (real) {
+    keff_tally_leakage() += wgt();
+  }
 
   // Kill the particle
   wgt() = 0.0;

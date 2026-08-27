@@ -754,10 +754,10 @@ void initialize_particle_track(
   // mid-history, which share the same super-history and staging buffer).
   if (!is_secondary) {
     p.adjoint_stage().clear();
-    p.adjoint_event_snapshots().clear();
     p.adjoint_site_info().clear();
     p.adjoint_event_filters().clear();
     p.next_fission_event_id() = 0;
+    p.collision_event_anchor() = 0;
     p.next_adjoint_site_id() = 0;
     // adjoint_id() itself is intentionally NOT reset here: generation 0
     // has no originating site within its own super-history (it's the

@@ -213,6 +213,14 @@ void Particle::event_calculate_xs()
   // Set the random number stream
   stream() = STREAM_TRACKING;
 
+  // Anchor every adjoint score arising from this iteration to the id this
+  // collision's fission event will take. Set here, before anything is
+  // staged and before create_fission_sites() can bump the counter, so
+  // track-length scores (staged in event_advance, before the collision)
+  // and collision/analog scores (staged after it) share one anchor and the
+  // adjoint weighting stops depending on staging order.
+  collision_event_anchor() = next_fission_event_id();
+
   // Store pre-collision particle properties
   wgt_last() = wgt();
   E_last() = E();

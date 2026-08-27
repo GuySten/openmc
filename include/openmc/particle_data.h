@@ -575,35 +575,32 @@ private:
 
   // Staged (uncommitted) score contributions for adjoint-weighted
   // super-history tallies, accumulated ONLY during generation-0 transport.
-  // This keeps accumulating across generation 0's ENTIRE lifetime (it is
-  // NOT reset between generation-0's own fission events); at each such
-  // event, its CURRENT (cumulative-from-birth) state is snapshotted into
-  // adjoint_event_snapshots_ below, matching how OpenMC's native IFP
-  // records an ancestor's cumulative lifetime at each of its own fission
-  // events. Keyed by tally index, then by a flattened
-  // (filter_index * n_scores + score_index) key.
   //
-  // Sparse (map-of-maps) rather than a dense per-tally array: a single
-  // particle's generation-0 trajectory typically touches only a handful
-  // of filter bins even when the tally itself has many (e.g. a mesh
-  // filter with many cells), so a dense n_filter_bins()-sized array per
-  // particle per tally would be wasteful. This also means there's no
-  // assumption anywhere about how many distinct filter bins one particle
-  // can score to within a super-history -- any number of bins, from any
-  // number of collisions, stage correctly.
-  std::unordered_map<int, std::unordered_map<int64_t, double>> adjoint_stage_;
-
-  // Snapshots of adjoint_stage_ taken at each of generation 0's OWN
-  // fission events (there can be more than one), keyed by that event's
-  // id. Used for scores whose operator is DIAGONAL -- inverse-velocity,
-  // flux, absorption, and every ordinary reaction rate that doesn't
-  // emit a neutron. For those, phi-dagger is evaluated at the parent's
-  // own phase point, so the cumulative-from-birth snapshot is the right
-  // thing to weight, and the weight is the total terminal weight over
-  // all neutrons emitted at that event -- see commit_adjoint_scores().
+  // Keyed by ANCHOR -> tally index -> flattened
+  // (filter_index * n_scores + score_index).
+  //
+  // The anchor is the value of next_fission_event_id_ as of the start of
+  // the event-loop iteration the score belongs to -- i.e. the id that this
+  // collision's fission event will take (or would take). Keying on it
+  // makes the adjoint weight independent of WHEN a score happens to be
+  // staged: track-length scores are staged in event_advance, before the
+  // collision, and collision/analog scores after it, but both carry the
+  // same anchor and so can be weighted by whichever phi-dagger their
+  // operator calls for. Previously the weighting fell out of staging
+  // order by accident, which made it estimator-dependent.
+  //
+  // At commit, a score with anchor m is weighted by a suffix sum over the
+  // per-event terminal weights: sum over e >= m for operators evaluated at
+  // the pre-collision phase point (diagonal ones), and sum over e >= m+1
+  // for operators that move the neutron before phi-dagger is evaluated
+  // (scattering). See commit_adjoint_scores().
+  //
+  // Sparse maps throughout: a super-history touches few anchors, few
+  // tallies and few filter bins relative to the space of possibilities,
+  // and nothing here assumes how many of any of them there are.
   std::unordered_map<int,
     std::unordered_map<int, std::unordered_map<int64_t, double>>>
-    adjoint_event_snapshots_;
+    adjoint_stage_;
 
   // Provenance of each generation-0-emitted fission neutron, keyed by the
   // adjoint_id stamped on its SourceSite. Lets commit_adjoint_scores()
@@ -647,6 +644,14 @@ private:
   // Counter assigning a fresh id to each of generation 0's OWN fission
   // events (incremented only when super_gen_==0 fissions).
   int next_fission_event_id_ {0};
+
+  // next_fission_event_id_ as of the start of the current event-loop
+  // iteration -- the id this collision's fission event will take. Set once
+  // per iteration in event_calculate_xs(), before anything is staged and
+  // before create_fission_sites() can bump the counter, so every score
+  // arising from this iteration shares it regardless of staging order.
+  int collision_event_anchor_ {0};
+
 
   // Counter assigning a fresh id to each NEUTRON generation 0 emits
   // (incremented per site, so one fission event producing three neutrons
@@ -721,6 +726,7 @@ public:
   // Counter for assigning fresh ids to generation 0's own fission events
   int& next_fission_event_id() { return next_fission_event_id_; }
   int next_fission_event_id() const { return next_fission_event_id_; }
+
 
   // Counter for assigning ids to neutrons generation 0 emits
   int& next_adjoint_site_id() { return next_adjoint_site_id_; }
@@ -847,19 +853,17 @@ public:
 
   // Staged adjoint-tally scores, pending commit at end of super-history
   // (see adjoint_stage_ declaration above)
-  std::unordered_map<int, std::unordered_map<int64_t, double>>& adjoint_stage()
+  std::unordered_map<int,
+    std::unordered_map<int, std::unordered_map<int64_t, double>>>&
+  adjoint_stage()
   {
     return adjoint_stage_;
   }
 
-  // Per-fission-event snapshots of adjoint_stage_, keyed by event id
-  // (see adjoint_event_snapshots_ declaration above)
-  std::unordered_map<int,
-    std::unordered_map<int, std::unordered_map<int64_t, double>>>&
-  adjoint_event_snapshots()
-  {
-    return adjoint_event_snapshots_;
-  }
+  // Anchor for scores arising from the current event-loop iteration
+  // (see collision_event_anchor_ declaration above)
+  int& collision_event_anchor() { return collision_event_anchor_; }
+  int collision_event_anchor() const { return collision_event_anchor_; }
 
   // Provenance of each generation-0-emitted fission neutron
   // (see adjoint_site_info_ declaration above)

@@ -439,24 +439,41 @@ Tally::Tally(pugi::xml_node node)
     }
   }
 
-  // Super-history adjoint weighting is only validated for the track-length
-  // estimator, which is also the default. The staged generation-0 scores
-  // are snapshotted inside create_fission_sites(), i.e. during collision()
-  // and therefore BEFORE collision- and analog-estimator scoring for that
-  // same collision. Those estimators consequently see a different
-  // cumulative total at snapshot time than track-length does, and the
-  // resulting adjoint weight is measurably biased -- verified against both
-  // IFP and plain (non-adjoint) tallies, where the two estimators agree
-  // with each other to within 0.01% as they must. Rather than silently
-  // return a biased number, refuse the combination.
-  if (adjoint_ && estimator_ != TallyEstimator::TRACKLENGTH) {
-    fatal_error(fmt::format(
-      "Tally {} uses adjoint (super-history) weighting, which is only "
-      "supported with the track-length estimator. Remove the <estimator> "
-      "entry to use the default, or set it to 'tracklength'. Note that "
-      "some scores force a collision or analog estimator, in which case "
-      "they cannot currently be used on an adjoint tally.",
-      id_));
+  // Adjoint (super-history) estimator rules.
+  //
+  // The adjoint weight is now anchored to the event-loop iteration a score
+  // belongs to rather than falling out of staging order (see
+  // Particle::collision_event_anchor_), so every estimator receives the
+  // same phi-dagger and the estimator is free for ordinary scores.
+  //
+  // Scattering-operator scores are the exception and REQUIRE the analog
+  // estimator. <phi-dagger, S phi> evaluates phi-dagger at the outgoing
+  // energy, which here is estimated by the weight the continuing particle
+  // goes on to leave at the terminal generation. That is only a valid
+  // estimate when the particle actually scattered: track-length and
+  // collision estimators score Sigma_s * flux at every collision, including
+  // ones where the history was absorbed instead, and there the estimate is
+  // identically zero. Score and weight would then refer to different
+  // events, biasing the result badly low -- measured at roughly a factor of
+  // two, enough to drive the adjoint neutron balance to a negative leakage.
+  // The analog estimator skips non-scattering events, so score and weight
+  // refer to the same realized scatter.
+  if (adjoint_) {
+    bool has_scatter = false;
+    for (int score : scores_) {
+      if (score == SCORE_SCATTER || score == SCORE_NU_SCATTER) {
+        has_scatter = true;
+        break;
+      }
+    }
+    if (has_scatter && estimator_ != TallyEstimator::ANALOG) {
+      fatal_error(fmt::format(
+        "Tally {} combines adjoint (super-history) weighting with a "
+        "scattering score, which requires the analog estimator. Set "
+        "<estimator>analog</estimator> on this tally, and put any "
+        "non-scattering adjoint scores in a separate tally.",
+        id_));
+    }
   }
 
 #ifdef OPENMC_LIBMESH_ENABLED
@@ -1415,13 +1432,16 @@ extern "C" int openmc_tally_set_estimator(int32_t index, const char* estimator)
     return OPENMC_E_INVALID_ARGUMENT;
   }
 
-  // See the matching check in the Tally constructor: adjoint weighting is
-  // only supported with the track-length estimator.
-  if (t->adjoint_ && t->estimator_ != TallyEstimator::TRACKLENGTH) {
-    t->estimator_ = TallyEstimator::TRACKLENGTH;
-    set_errmsg("Adjoint (super-history) tallies only support the "
-               "track-length estimator.");
-    return OPENMC_E_INVALID_ARGUMENT;
+  // See the matching check in the Tally constructor: on an adjoint tally a
+  // scattering score requires the analog estimator.
+  if (t->adjoint_ && t->estimator_ != TallyEstimator::ANALOG) {
+    for (int score : t->scores_) {
+      if (score == SCORE_SCATTER || score == SCORE_NU_SCATTER) {
+        t->estimator_ = TallyEstimator::ANALOG;
+        set_errmsg("Adjoint scattering scores require the analog estimator.");
+        return OPENMC_E_INVALID_ARGUMENT;
+      }
+    }
   }
   return 0;
 }

@@ -59,6 +59,22 @@ struct SourceSite {
   double wgt_ww_born {-1.0};
   int64_t n_split {0};
   int n_collision {0};
+  // Which generation-0-EMITTED fission neutron this site -- and its whole
+  // descendant subtree -- traces back to. Every neutron emitted by
+  // generation 0 gets its own id; deeper generations inherit it unchanged,
+  // so the realized weight surviving to the terminal generation can be
+  // attributed back to the specific emitted neutron it descends from.
+  //
+  // Per EMITTED NEUTRON, not per fission event, because the adjoint
+  // function phi-dagger has to be evaluated wherever each operator's
+  // structure says it should be. The fission operator F emits at a new
+  // energy drawn from chi(E), so <phi-dagger, F phi> evaluates
+  // phi-dagger at the EMITTED neutron's phase point, not the parent's.
+  // Tagging per event (i.e. at the parent) makes prompt and delayed
+  // neutrons born at the same collision indistinguishable, which erases
+  // the chi_p/chi_d spectral difference that beta_eff consists of.
+  // -1 for ordinary (non-superhistory) sites.
+  int adjoint_id {-1};
 };
 
 struct CollisionTrackSite {
@@ -510,13 +526,6 @@ private:
 
   double wgt_ {1.0};
   double wgt_born_ {1.0};
-  // Realized descendant weight at the final super-history generation,
-  // known only once the WHOLE super-history has concluded. Replaces the
-  // old per-collision-index superhistory_bank_ array: the CEA/PHYSOR2020
-  // super-history method (Filiciotto, Jinaphanh & Zoia) applies a SINGLE
-  // scalar multiplier to the generation-0 contribution, not a spatially-
-  // varying weight applied throughout the trajectory.
-  double adjoint_weight_ {1.0};
   double wgt_ww_born_ {-1.0};
   double mu_;
   double time_ {0.0};
@@ -566,9 +575,12 @@ private:
 
   // Staged (uncommitted) score contributions for adjoint-weighted
   // super-history tallies, accumulated ONLY during generation-0 transport.
-  // Committed to the real tally results (multiplied by adjoint_weight_)
-  // once the whole super-history concludes -- see commit_adjoint_scores()
-  // in tally_scoring.cpp. Keyed by tally index, then by a flattened
+  // This keeps accumulating across generation 0's ENTIRE lifetime (it is
+  // NOT reset between generation-0's own fission events); at each such
+  // event, its CURRENT (cumulative-from-birth) state is snapshotted into
+  // adjoint_event_snapshots_ below, matching how OpenMC's native IFP
+  // records an ancestor's cumulative lifetime at each of its own fission
+  // events. Keyed by tally index, then by a flattened
   // (filter_index * n_scores + score_index) key.
   //
   // Sparse (map-of-maps) rather than a dense per-tally array: a single
@@ -580,6 +592,30 @@ private:
   // can score to within a super-history -- any number of bins, from any
   // number of collisions, stage correctly.
   std::unordered_map<int, std::unordered_map<int64_t, double>> adjoint_stage_;
+
+  // Snapshots of adjoint_stage_ taken at each of generation 0's OWN
+  // fission events (there can be more than one), keyed by that event's
+  // id. Used for scores whose operator is DIAGONAL -- inverse-velocity,
+  // flux, absorption, and every ordinary reaction rate that doesn't
+  // emit a neutron. For those, phi-dagger is evaluated at the parent's
+  // own phase point, so the cumulative-from-birth snapshot is the right
+  // thing to weight, and the weight is the total terminal weight over
+  // all neutrons emitted at that event -- see commit_adjoint_scores().
+  std::unordered_map<int,
+    std::unordered_map<int, std::unordered_map<int64_t, double>>>
+    adjoint_event_snapshots_;
+
+  // Provenance of each generation-0-emitted fission neutron, keyed by the
+  // adjoint_id stamped on its SourceSite. Lets commit_adjoint_scores()
+  // route each site's realized terminal weight to the right place:
+  // `event` back to the snapshot above (diagonal scores), and `delayed`
+  // to separate <phi-dagger, F_d phi> from <phi-dagger, F phi>, which is
+  // the entire content of beta_eff.
+  struct AdjointSiteInfo {
+    int event {-1};       // which fission event emitted this neutron
+    bool delayed {false}; // was it born from a delayed group?
+  };
+  std::unordered_map<int, AdjointSiteInfo> adjoint_site_info_;
 
   vector<double> pht_storage_;
 
@@ -593,6 +629,22 @@ private:
   double collision_distance_;
 
   int super_gen_ {-1};
+
+  // Counter assigning a fresh id to each of generation 0's OWN fission
+  // events (incremented only when super_gen_==0 fissions).
+  int next_fission_event_id_ {0};
+
+  // Counter assigning a fresh id to each NEUTRON generation 0 emits
+  // (incremented per site, so one fission event producing three neutrons
+  // consumes three ids). Deeper generations inherit rather than allocate.
+  int next_adjoint_site_id_ {0};
+
+  // The adjoint_id THIS particle's own site was tagged with (-1 for
+  // generation 0 itself, which is the root and was not emitted by any
+  // fission within this super-history). Restored via from_source() when
+  // reviving from a site, and propagated UNCHANGED to that site's own
+  // descendants if it, in turn, fissions -- see create_fission_sites().
+  int adjoint_id_ {-1};
 
   int n_event_ {0};
 
@@ -652,10 +704,17 @@ public:
   double& wgt_born() { return wgt_born_; }
   double wgt_born() const { return wgt_born_; }
 
-  // Realized descendant weight at the final super-history generation
-  // (single scalar per super-history; see adjoint_weight_ above)
-  double& adjoint_weight() { return adjoint_weight_; }
-  double adjoint_weight() const { return adjoint_weight_; }
+  // Counter for assigning fresh ids to generation 0's own fission events
+  int& next_fission_event_id() { return next_fission_event_id_; }
+  int next_fission_event_id() const { return next_fission_event_id_; }
+
+  // Counter for assigning ids to neutrons generation 0 emits
+  int& next_adjoint_site_id() { return next_adjoint_site_id_; }
+  int next_adjoint_site_id() const { return next_adjoint_site_id_; }
+
+  // The adjoint_id this particle's own site was tagged with
+  int& adjoint_id() { return adjoint_id_; }
+  int adjoint_id() const { return adjoint_id_; }
 
   // Weight window value at birth
   double& wgt_ww_born() { return wgt_ww_born_; }
@@ -778,6 +837,22 @@ public:
   adjoint_stage()
   {
     return adjoint_stage_;
+  }
+
+  // Per-fission-event snapshots of adjoint_stage_, keyed by event id
+  // (see adjoint_event_snapshots_ declaration above)
+  std::unordered_map<int,
+    std::unordered_map<int, std::unordered_map<int64_t, double>>>&
+  adjoint_event_snapshots()
+  {
+    return adjoint_event_snapshots_;
+  }
+
+  // Provenance of each generation-0-emitted fission neutron
+  // (see adjoint_site_info_ declaration above)
+  std::unordered_map<int, AdjointSiteInfo>& adjoint_site_info()
+  {
+    return adjoint_site_info_;
   }
 
   // Interim pulse height tally storage

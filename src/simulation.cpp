@@ -1,5 +1,7 @@
 #include "openmc/simulation.h"
 
+#include <unordered_map>
+
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
@@ -751,6 +753,15 @@ void initialize_particle_track(
   // mid-history, which share the same super-history and staging buffer).
   if (!is_secondary) {
     p.adjoint_stage().clear();
+    p.adjoint_event_snapshots().clear();
+    p.adjoint_site_info().clear();
+    p.next_fission_event_id() = 0;
+    p.next_adjoint_site_id() = 0;
+    // adjoint_id() itself is intentionally NOT reset here: generation 0
+    // has no originating site within its own super-history (it's the
+    // root), and adjoint_id_ defaults to -1 anyway; it only gets a
+    // meaningful value via from_source() when reviving a generation >=1
+    // particle.
   }
 
   // Reset pulse_height_storage
@@ -1016,22 +1027,24 @@ void transport_history_based()
 
       if (simulation::superhistory_on) {
         // Only terminal-generation sites remain in the bank at this
-        // point (everything revivable already was, above). Their total
-        // weight is the single realized scalar this super-history
-        // produced -- the multiplier for generation 0's staged
-        // contributions.
-        double adjoint_weight = 0.0;
+        // point (everything revivable already was, above). Group their
+        // weight by the generation-0 NEUTRON each descends from, not
+        // into one combined total and not merely per fission event.
+        // Per-neutron is the finest provenance the adjoint weighting
+        // needs: <phi-dagger, F phi> evaluates phi-dagger at the emitted
+        // neutron, so prompt and delayed neutrons born at the same
+        // collision must stay distinguishable (that difference IS
+        // beta_eff). commit_adjoint_scores() re-aggregates these back up
+        // per fission event where a score's operator calls for it.
+        std::unordered_map<int, double> terminal_weight_by_site;
         for (auto& site : p.local_secondary_bank()) {
-          adjoint_weight += site.wgt;
+          terminal_weight_by_site[site.adjoint_id] += site.wgt;
         }
         p.local_secondary_bank().clear();
-        p.adjoint_weight() = adjoint_weight;
 
-        // Commit generation 0's staged adjoint-tally contributions
-        // (accumulated during the transport_history_based_single_particle
-        // call above, in score_general_ce_nonanalog/score_general_mg's
-        // staging block) multiplied by this scalar.
-        commit_adjoint_scores(p);
+        // Commit the staged generation-0 contributions, routing each
+        // score to the evaluation point its operator requires.
+        commit_adjoint_scores(p, terminal_weight_by_site);
       }
     }
   }

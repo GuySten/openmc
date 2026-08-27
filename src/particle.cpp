@@ -110,6 +110,7 @@ bool Particle::create_secondary(
     bank.progeny_id = n_progeny()++;
   }
   bank.super_gen = super_gen();
+  bank.adjoint_id = adjoint_id();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -137,6 +138,7 @@ void Particle::split(double wgt)
   }
 
   bank.super_gen = super_gen();
+  bank.adjoint_id = adjoint_id();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -200,6 +202,10 @@ void Particle::from_source(const SourceSite* src)
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
+  // Restore which of generation-0's fission events this particle (and,
+  // if it fissions again, its own further descendants) traces back to --
+  // see the adjoint_id field on SourceSite.
+  adjoint_id() = src->adjoint_id;
 }
 
 void Particle::event_calculate_xs()

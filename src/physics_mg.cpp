@@ -127,11 +127,22 @@ void create_fission_sites(Particle& p)
 
   p.fission() = true;
 
+  // For generation 0, open a new fission event and snapshot the staged
+  // scores as of this moment. See the identical block in physics.cpp's
+  // create_fission_sites() for full rationale.
+  int event_id = -1;
+  if (simulation::superhistory_on && p.super_gen() == 0) {
+    event_id = p.next_fission_event_id()++;
+    p.adjoint_event_snapshots()[event_id] = p.adjoint_stage();
+  }
+
   // Determine whether to place fission sites into the shared fission bank
-  // or the secondary particle bank. See the identical change in
-  // physics.cpp's create_fission_sites() for rationale.
+  // and/or the local secondary bank. See the identical change in
+  // physics.cpp's create_fission_sites() for rationale -- these are NOT
+  // mutually exclusive for generation 0.
   bool use_fission_bank =
     (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() <= 0);
+  bool use_local_bank = simulation::superhistory_on && p.super_gen() >= 0;
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -191,7 +202,8 @@ void create_fission_sites(Particle& p)
     site.parent_id = p.current_work();
     site.progeny_id = use_fission_bank ? p.n_progeny()++ : n_sites_stored;
 
-    // Store fission site in bank
+    // Store a real copy in the shared fission bank (generation 0, or any
+    // non-superhistory run).
     if (use_fission_bank) {
       int64_t idx = simulation::fission_bank.thread_safe_append(site);
       if (idx == -1) {
@@ -208,16 +220,30 @@ void create_fission_sites(Particle& p)
         // Break out of loop as no more sites can be added to fission bank
         break;
       }
-    } else {
-      site.wgt_born = p.wgt_born();
-      site.wgt_ww_born = p.wgt_ww_born();
-      site.n_split = p.n_split();
-      if (p.super_gen() >= 0) {
-        site.super_gen = p.super_gen() + 1;
-        // (no longer tagging site.n_collision -- see the identical change
-        // in physics.cpp's create_fission_sites() for rationale)
+    }
+
+    // ALSO store a local copy, tagged with the next generation, to seed
+    // (or continue) the super-history lookahead chain. Independent of the
+    // real-bank branch above -- both can and, for generation 0, do run.
+    if (use_local_bank) {
+      SourceSite local_site = site;
+      local_site.wgt_born = p.wgt_born();
+      local_site.wgt_ww_born = p.wgt_ww_born();
+      local_site.n_split = p.n_split();
+      local_site.super_gen = p.super_gen() + 1;
+      if (p.super_gen() == 0) {
+        // See the identical block in physics.cpp's create_fission_sites().
+        // site.delayed_group was set above (MG stores it as dg + 1, so
+        // > 0 means delayed exactly as in the CE path).
+        local_site.adjoint_id = p.next_adjoint_site_id()++;
+        p.adjoint_site_info()[local_site.adjoint_id] = {
+          event_id, local_site.delayed_group > 0};
+      } else {
+        local_site.adjoint_id = p.adjoint_id();
       }
-      p.local_secondary_bank().push_back(site);
+      // (no longer tagging local_site.n_collision -- see the identical
+      // change in physics.cpp's create_fission_sites() for rationale)
+      p.local_secondary_bank().push_back(local_site);
       p.n_secondaries()++;
     }
 

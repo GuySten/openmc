@@ -2843,28 +2843,131 @@ void score_pulse_height_tally(Particle& p, const vector<int>& tallies)
   p.E_last() = orig_E_last;
 }
 
-void commit_adjoint_scores(Particle& p)
+namespace {
+
+//! Is this score a fission-production operator?
+//!
+//! These are the scores whose operator EMITS a neutron, so
+//! <phi-dagger, F phi> evaluates phi-dagger at the emitted neutron's
+//! phase point rather than at the parent's. Everything else (flux,
+//! inverse-velocity, absorption, ordinary reaction rates) is diagonal:
+//! the operator doesn't move the neutron, so phi-dagger is evaluated
+//! where the parent already is.
+bool is_fission_production_score(int score_bin)
 {
-  double weight = p.adjoint_weight();
-  for (auto& [i_tally, stage] : p.adjoint_stage()) {
-    if (stage.empty())
-      continue;
-    Tally& tally {*model::tallies[i_tally]};
-    auto n_scores = static_cast<int64_t>(tally.scores_.size());
-    // Sparse: only iterate the (filter_index, score_index) combinations
-    // this particle's generation-0 transport actually staged something
-    // for, however few or many that turned out to be -- no assumption
-    // about, or iteration over, the tally's full filter-bin space.
-    for (auto& [key, staged] : stage) {
-      if (staged == 0.0)
-        continue;
-      int64_t filter_index = key / n_scores;
-      int64_t score_index = key % n_scores;
-#pragma omp atomic
-      tally.results_(filter_index, score_index, TallyResult::VALUE) +=
-        staged * weight;
+  return score_bin == SCORE_NU_FISSION ||
+         score_bin == SCORE_DELAYED_NU_FISSION ||
+         score_bin == SCORE_PROMPT_NU_FISSION;
+}
+
+} // namespace
+
+void commit_adjoint_scores(
+  Particle& p, const std::unordered_map<int, double>& terminal_weight_by_site)
+{
+  // phi-dagger is ONE function of phase space; it does not depend on what
+  // is being tallied. What differs between scores is only WHERE that one
+  // function gets evaluated, and that is dictated by the operator:
+  //
+  //   diagonal operators (v^-1, flux, absorption, ...) do not move the
+  //     neutron, so phi-dagger is evaluated at the parent's own phase
+  //     point. Its importance there is the total terminal weight over
+  //     every neutron the parent emitted at that fission event, and the
+  //     quantity it multiplies is the cumulative-from-birth snapshot.
+  //
+  //   the fission operator F emits at a new energy drawn from chi(E), so
+  //     phi-dagger is evaluated at the EMITTED neutron's phase point. Its
+  //     importance is that individual neutron's own terminal weight, and
+  //     prompt/delayed siblings from one collision must not be merged --
+  //     chi_d is softer than chi_p, and that spectral difference is the
+  //     entire content of beta_eff.
+  //
+  // So: aggregate the per-neutron terminal weights back up per fission
+  // event for the diagonal scores, and keep them per-neutron (split by
+  // delayed provenance) for the fission-production scores.
+  std::unordered_map<int, double> weight_by_event;
+  double weight_all = 0.0;
+  double weight_delayed = 0.0;
+  double weight_prompt = 0.0;
+  for (const auto& [site_id, w] : terminal_weight_by_site) {
+    auto info_it = p.adjoint_site_info().find(site_id);
+    if (info_it == p.adjoint_site_info().end())
+      continue; // not a generation-0-emitted neutron we are tracking
+    weight_by_event[info_it->second.event] += w;
+    weight_all += w;
+    if (info_it->second.delayed) {
+      weight_delayed += w;
+    } else {
+      weight_prompt += w;
     }
   }
+
+  for (auto& [event_id, stage] : p.adjoint_event_snapshots()) {
+    auto it = weight_by_event.find(event_id);
+    double event_weight = (it == weight_by_event.end()) ? 0.0 : it->second;
+
+    for (auto& [i_tally, tally_stage] : stage) {
+      if (tally_stage.empty())
+        continue;
+      Tally& tally {*model::tallies[i_tally]};
+      auto n_scores = static_cast<int64_t>(tally.scores_.size());
+      for (auto& [key, staged] : tally_stage) {
+        int64_t filter_index = key / n_scores;
+        int64_t score_index = key % n_scores;
+        int score_bin = tally.scores_[score_index];
+
+        if (is_fission_production_score(score_bin))
+          continue; // handled once per super-history below, not per event
+
+        if (staged == 0.0 || event_weight == 0.0)
+          continue;
+#pragma omp atomic
+        tally.results_(filter_index, score_index, TallyResult::VALUE) +=
+          staged * event_weight;
+      }
+    }
+  }
+
+  // Fission-production scores. These are NOT built from the staged
+  // track-length accumulation at all: the emitted neutrons themselves are
+  // the sampling of F, so the estimator is just the importance-weighted
+  // sum over them. Committed once per super-history rather than once per
+  // event, because each emitted neutron already carries its own weight.
+  //
+  // LIMITATION: committed to filter bin 0, so adjoint fission-production
+  // scores are correct only for tallies whose filters put the whole
+  // super-history in a single bin (the unfiltered case). Carrying the
+  // emitting collision's filter bins onto each site would lift this; the
+  // diagonal scores above are already general.
+  for (int64_t i_tally = 0;
+       i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
+    Tally& tally {*model::tallies[i_tally]};
+    // active_ is what gates every other scoring path (see
+    // setup_active_tallies): during inactive batches the tally is off and
+    // nothing may be committed to it. The diagonal path above is gated
+    // implicitly -- adjoint_stage() stays empty while tallies are off, so
+    // there is nothing to commit -- but the weights below are computed
+    // from the fission banks regardless of tally state, so without this
+    // check every inactive batch would dump into the first active one.
+    if (!tally.adjoint_ || !tally.active_)
+      continue;
+    auto n_scores = static_cast<int64_t>(tally.scores_.size());
+    for (int64_t score_index = 0; score_index < n_scores; ++score_index) {
+      int score_bin = tally.scores_[score_index];
+      if (!is_fission_production_score(score_bin))
+        continue;
+      double value = (score_bin == SCORE_NU_FISSION)           ? weight_all
+                     : (score_bin == SCORE_DELAYED_NU_FISSION) ? weight_delayed
+                                                               : weight_prompt;
+      if (value == 0.0)
+        continue;
+#pragma omp atomic
+      tally.results_(0, score_index, TallyResult::VALUE) += value;
+    }
+  }
+
+  p.adjoint_event_snapshots().clear();
+  p.adjoint_site_info().clear();
   p.adjoint_stage().clear();
 }
 

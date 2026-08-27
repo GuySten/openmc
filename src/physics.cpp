@@ -206,13 +206,56 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
 
   p.fission() = true;
 
+  // Assign/determine the fission-event id for sites created by THIS
+  // fission event, and (for generation 0 specifically) snapshot the
+  // currently-staged adjoint scores under that id.
+  //
+  // Generation 0 gets a FRESH id each time it fissions, because OpenMC's
+  // implicit-capture-style fission sampling means create_fission_sites()
+  // can fire multiple times over a single generation-0 particle's
+  // lifetime (it doesn't require the particle itself to be absorbed) --
+  // each such event needs its own, separately-tracked lookahead chain and
+  // its own adjoint-weight multiplier, exactly as OpenMC's native IFP
+  // records a fresh ancestor-lifetime snapshot at each of an ancestor's
+  // own fission events, not just once per particle. Deeper (lookahead-
+  // only) generations don't get a fresh id -- they inherit whichever
+  // generation-0 event they ultimately descend from, so their eventual
+  // terminal weight gets attributed back to the correct originating
+  // event.
+  // For generation 0, open a new fission event and snapshot the staged
+  // scores as of this moment. adjoint_stage() is cumulative from
+  // generation 0's own birth (see its declaration), so this captures its
+  // value AS OF this specific fission event -- matching how native IFP's
+  // ancestor "lifetime" is the ancestor's cumulative time from birth to
+  // ITS fission, not time since some earlier fission. Each neutron
+  // emitted below then gets its OWN id (see the per-site loop), because
+  // phi-dagger for the fission operator is evaluated at the emitted
+  // neutron, not at the parent.
+  int event_id = -1;
+  if (simulation::superhistory_on && p.super_gen() == 0) {
+    event_id = p.next_fission_event_id()++;
+    p.adjoint_event_snapshots()[event_id] = p.adjoint_stage();
+  }
+
   // Determine whether to place fission sites into the shared fission bank
-  // or the secondary particle bank. Generation 0's fissions are real and
-  // go to the shared bank exactly as ordinary (non-superhistory) fissions
-  // do; only generations >=1 (the lookahead-only continuation) divert to
-  // the local secondary bank.
+  // and/or the local secondary bank. These are NOT mutually exclusive for
+  // generation 0: its fissions are real (go to the shared bank exactly as
+  // ordinary, non-superhistory fissions do, feeding k-eff and the next
+  // real generation) AND ALSO need a local copy to seed the super-history
+  // lookahead chain into generation 1 (without this second copy,
+  // local_secondary_bank() never receives anything from generation 0, the
+  // revival chain into generation 1+ never starts, and the realized
+  // terminal-generation weight computed in transport_history_based() is
+  // always an empty sum -- i.e. every event's weight is always exactly 0,
+  // zeroing out every adjoint tally).
+  //
+  // Deeper (lookahead-only) generations (super_gen() >= 1) only ever get
+  // a local copy, tagged with the next generation. Non-superhistory runs
+  // (super_gen() == -1) only ever get the real copy, exactly as before
+  // this feature existed.
   bool use_fission_bank =
     (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() <= 0);
+  bool use_local_bank = simulation::superhistory_on && p.super_gen() >= 0;
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -247,7 +290,10 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
     site.parent_id = p.current_work();
     site.progeny_id = use_fission_bank ? p.n_progeny()++ : n_sites_stored;
 
-    // Store fission site in bank
+    bool stored = false;
+
+    // Store a real copy in the shared fission bank (generation 0, or any
+    // non-superhistory run).
     if (use_fission_bank) {
       int64_t idx = simulation::fission_bank.thread_safe_append(site);
       if (idx == -1) {
@@ -264,23 +310,53 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
         // Break out of loop as no more sites can be added to fission bank
         break;
       }
+      stored = true;
       // Iterated Fission Probability (IFP) method
       if (settings::ifp_on) {
         ifp(p, idx);
       }
-    } else {
-      site.wgt_born = p.wgt_born();
-      site.wgt_ww_born = p.wgt_ww_born();
-      site.n_split = p.n_split();
-      if (p.super_gen() >= 0) {
-        site.super_gen = p.super_gen() + 1;
-        // (no longer tagging site.n_collision -- the per-collision-index
-        // superhistory_bank() array this fed is gone; only the terminal
-        // generation's total weight matters now, computed in
-        // transport_history_based())
+    }
+
+    // ALSO store a local copy, tagged with the next generation, to seed
+    // (or continue) the super-history lookahead chain. Independent of the
+    // real-bank branch above -- both can and, for generation 0, do run.
+    if (use_local_bank) {
+      SourceSite local_site = site;
+      local_site.wgt_born = p.wgt_born();
+      local_site.wgt_ww_born = p.wgt_ww_born();
+      local_site.n_split = p.n_split();
+      local_site.super_gen = p.super_gen() + 1;
+      if (p.super_gen() == 0) {
+        // A neutron generation 0 just emitted: give it its own id and
+        // record where it came from, so its realized terminal weight can
+        // be attributed both to this fission event (for diagonal scores)
+        // and to its own delayed/prompt provenance (for beta_eff).
+        // site.delayed_group was set by sample_fission_neutron() above.
+        local_site.adjoint_id = p.next_adjoint_site_id()++;
+        p.adjoint_site_info()[local_site.adjoint_id] = {
+          event_id, local_site.delayed_group > 0};
+      } else {
+        // Deeper generations inherit unchanged, so terminal weight keeps
+        // pointing back at the generation-0 neutron it descends from.
+        local_site.adjoint_id = p.adjoint_id();
       }
-      p.local_secondary_bank().push_back(site);
+      // (no longer tagging local_site.n_collision -- the per-collision-
+      // index superhistory_bank() array this fed is gone; only the
+      // terminal generation's total weight matters now, computed in
+      // transport_history_based())
+      p.local_secondary_bank().push_back(local_site);
       p.n_secondaries()++;
+      stored = true;
+    }
+
+    if (!stored) {
+      // Neither bank applies (e.g. use_fission_bank was false and this
+      // isn't a superhistory run) -- nothing to do for this site, but
+      // don't silently drop it from the nu-bank bookkeeping below either;
+      // this mirrors the pre-existing non-superhistory else-branch, which
+      // never occurs in practice since use_fission_bank is always true
+      // whenever use_local_bank would be false and vice versa isn't
+      // guaranteed, so this is defensive only.
     }
 
     // Increment the number of neutrons born delayed

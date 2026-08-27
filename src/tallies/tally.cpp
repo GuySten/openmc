@@ -430,6 +430,26 @@ Tally::Tally(pugi::xml_node node)
     }
   }
 
+  // Super-history adjoint weighting is only validated for the track-length
+  // estimator, which is also the default. The staged generation-0 scores
+  // are snapshotted inside create_fission_sites(), i.e. during collision()
+  // and therefore BEFORE collision- and analog-estimator scoring for that
+  // same collision. Those estimators consequently see a different
+  // cumulative total at snapshot time than track-length does, and the
+  // resulting adjoint weight is measurably biased -- verified against both
+  // IFP and plain (non-adjoint) tallies, where the two estimators agree
+  // with each other to within 0.01% as they must. Rather than silently
+  // return a biased number, refuse the combination.
+  if (adjoint_ && estimator_ != TallyEstimator::TRACKLENGTH) {
+    fatal_error(fmt::format(
+      "Tally {} uses adjoint (super-history) weighting, which is only "
+      "supported with the track-length estimator. Remove the <estimator> "
+      "entry to use the default, or set it to 'tracklength'. Note that "
+      "some scores force a collision or analog estimator, in which case "
+      "they cannot currently be used on an adjoint tally.",
+      id_));
+  }
+
 #ifdef OPENMC_LIBMESH_ENABLED
   // ensure a tracklength tally isn't used with a libMesh filter
   for (auto i : this->filters_) {
@@ -1364,6 +1384,15 @@ extern "C" int openmc_tally_set_estimator(int32_t index, const char* estimator)
     t->estimator_ = TallyEstimator::TRACKLENGTH;
   } else {
     set_errmsg("Unknown tally estimator: " + est);
+    return OPENMC_E_INVALID_ARGUMENT;
+  }
+
+  // See the matching check in the Tally constructor: adjoint weighting is
+  // only supported with the track-length estimator.
+  if (t->adjoint_ && t->estimator_ != TallyEstimator::TRACKLENGTH) {
+    t->estimator_ = TallyEstimator::TRACKLENGTH;
+    set_errmsg("Adjoint (super-history) tallies only support the "
+               "track-length estimator.");
     return OPENMC_E_INVALID_ARGUMENT;
   }
   return 0;

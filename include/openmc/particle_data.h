@@ -833,8 +833,7 @@ public:
 
   // Staged adjoint-tally scores, pending commit at end of super-history
   // (see adjoint_stage_ declaration above)
-  std::unordered_map<int, std::unordered_map<int64_t, double>>&
-  adjoint_stage()
+  std::unordered_map<int, std::unordered_map<int64_t, double>>& adjoint_stage()
   {
     return adjoint_stage_;
   }

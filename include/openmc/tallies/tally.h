@@ -38,6 +38,8 @@ public:
 
   void set_active(bool active) { active_ = active; }
 
+  void set_adjoint(bool adjoint) { adjoint_ = adjoint; }
+
   void set_multiply_density(bool value) { multiply_density_ = value; }
 
   void set_writable(bool writable) { writable_ = writable; }
@@ -146,6 +148,9 @@ public:
 
   //! Whether this tally is currently being updated
   bool active_ {false};
+
+  //! Wheter this tally should be adjoint-weighted
+  bool adjoint_ {false};
 
   //! Number of realizations
   int n_realizations_ {0};

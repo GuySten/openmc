@@ -24,6 +24,7 @@
 #include "openmc/tallies/derivative.h"
 #include "openmc/tallies/filter.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/tallies/tally_scoring.h"
 #include "openmc/tallies/trigger.h"
 #include "openmc/timer.h"
 #include "openmc/track_output.h"
@@ -341,6 +342,7 @@ int n_lost_particles {0};
 bool need_depletion_rx {false};
 int restart_batch;
 bool satisfy_triggers {false};
+bool superhistory_on {false};
 int ssw_current_file;
 int total_gen {0};
 double total_weight;
@@ -737,6 +739,20 @@ void initialize_particle_track(
   // set particle history start weight
   p.wgt_born() = p.wgt();
 
+  // Generation 0 is the real, tally-contributing start of a super-history;
+  // -1 means super-history mode isn't active for this run at all. There's
+  // no longer a separate "virtual" state (see the transport_history_based()
+  // restructuring): the whole chain of generations 0..L is one continuous,
+  // real simulation.
+  p.super_gen() = simulation::superhistory_on ? 0 : -1;
+
+  // Fresh staging for this new super-history's adjoint-tally contributions
+  // (only relevant for a new top-level particle, not secondaries created
+  // mid-history, which share the same super-history and staging buffer).
+  if (!is_secondary) {
+    p.adjoint_stage().clear();
+  }
+
   // Reset pulse_height_storage
   std::fill(p.pht_storage().begin(), p.pht_storage().end(), 0);
 
@@ -982,7 +998,41 @@ void transport_history_based()
 #pragma omp for schedule(runtime)
     for (int64_t i_work = 1; i_work <= simulation::work_per_rank; ++i_work) {
       initialize_particle_track(p, i_work, false);
+
+      // When simulation::superhistory_on, this single call transports the
+      // WHOLE super-history, not just generation 0: generation 0 (real,
+      // tally-contributing, feeds the real fission bank exactly like
+      // ordinary transport) runs first; when it dies,
+      // event_check_limit_and_revive() (unchanged) revives it into
+      // generation 1 from local_secondary_bank(), continuing the SAME,
+      // uninterrupted random stream -- no reseeding -- matching
+      // Filiciotto, Jinaphanh & Zoia (PHYSOR2020): "the super-history
+      // method simulates a neutron and its progeny over L generations
+      // before simulating the next neutron." This repeats until either
+      // the bank is empty or only terminal-generation
+      // (super_gen == super_n_generation) sites remain, which
+      // event_check_limit_and_revive() won't revive further.
       transport_history_based_single_particle(p);
+
+      if (simulation::superhistory_on) {
+        // Only terminal-generation sites remain in the bank at this
+        // point (everything revivable already was, above). Their total
+        // weight is the single realized scalar this super-history
+        // produced -- the multiplier for generation 0's staged
+        // contributions.
+        double adjoint_weight = 0.0;
+        for (auto& site : p.local_secondary_bank()) {
+          adjoint_weight += site.wgt;
+        }
+        p.local_secondary_bank().clear();
+        p.adjoint_weight() = adjoint_weight;
+
+        // Commit generation 0's staged adjoint-tally contributions
+        // (accumulated during the transport_history_based_single_particle
+        // call above, in score_general_ce_nonanalog/score_general_mg's
+        // staging block) multiplied by this scalar.
+        commit_adjoint_scores(p);
+      }
     }
   }
 }

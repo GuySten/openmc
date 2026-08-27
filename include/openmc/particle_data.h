@@ -1,6 +1,8 @@
 #ifndef OPENMC_PARTICLE_DATA_H
 #define OPENMC_PARTICLE_DATA_H
 
+#include <unordered_map>
+
 #include "openmc/array.h"
 #include "openmc/constants.h"
 #include "openmc/particle_type.h"
@@ -52,6 +54,7 @@ struct SourceSite {
   int parent_nuclide {-1};
   int64_t parent_id {0};
   int64_t progeny_id {0};
+  int super_gen {-1};
   double wgt_born {1.0};
   double wgt_ww_born {-1.0};
   int64_t n_split {0};
@@ -507,6 +510,13 @@ private:
 
   double wgt_ {1.0};
   double wgt_born_ {1.0};
+  // Realized descendant weight at the final super-history generation,
+  // known only once the WHOLE super-history has concluded. Replaces the
+  // old per-collision-index superhistory_bank_ array: the CEA/PHYSOR2020
+  // super-history method (Filiciotto, Jinaphanh & Zoia) applies a SINGLE
+  // scalar multiplier to the generation-0 contribution, not a spatially-
+  // varying weight applied throughout the trajectory.
+  double adjoint_weight_ {1.0};
   double wgt_ww_born_ {-1.0};
   double mu_;
   double time_ {0.0};
@@ -554,6 +564,23 @@ private:
 
   vector<NuBank> nu_bank_;
 
+  // Staged (uncommitted) score contributions for adjoint-weighted
+  // super-history tallies, accumulated ONLY during generation-0 transport.
+  // Committed to the real tally results (multiplied by adjoint_weight_)
+  // once the whole super-history concludes -- see commit_adjoint_scores()
+  // in tally_scoring.cpp. Keyed by tally index, then by a flattened
+  // (filter_index * n_scores + score_index) key.
+  //
+  // Sparse (map-of-maps) rather than a dense per-tally array: a single
+  // particle's generation-0 trajectory typically touches only a handful
+  // of filter bins even when the tally itself has many (e.g. a mesh
+  // filter with many cells), so a dense n_filter_bins()-sized array per
+  // particle per tally would be wasteful. This also means there's no
+  // assumption anywhere about how many distinct filter bins one particle
+  // can score to within a super-history -- any number of bins, from any
+  // number of collisions, stage correctly.
+  std::unordered_map<int, std::unordered_map<int64_t, double>> adjoint_stage_;
+
   vector<double> pht_storage_;
 
   double keff_tally_absorption_ {0.0};
@@ -564,6 +591,8 @@ private:
   bool trace_ {false};
 
   double collision_distance_;
+
+  int super_gen_ {-1};
 
   int n_event_ {0};
 
@@ -622,6 +651,11 @@ public:
   // Statistic weight of particle at birth
   double& wgt_born() { return wgt_born_; }
   double wgt_born() const { return wgt_born_; }
+
+  // Realized descendant weight at the final super-history generation
+  // (single scalar per super-history; see adjoint_weight_ above)
+  double& adjoint_weight() { return adjoint_weight_; }
+  double adjoint_weight() const { return adjoint_weight_; }
 
   // Weight window value at birth
   double& wgt_ww_born() { return wgt_ww_born_; }
@@ -688,6 +722,10 @@ public:
   int& n_collision() { return n_collision_; }
   const int& n_collision() const { return n_collision_; }
 
+  // Superhistory index of particle
+  int& super_gen() { return super_gen_; }
+  const int& super_gen() const { return super_gen_; }
+
   // whether this track is to be written
   bool& write_track() { return write_track_; }
 
@@ -733,6 +771,14 @@ public:
   // Bank of recently fissioned particles
   decltype(nu_bank_)& nu_bank() { return nu_bank_; }
   NuBank& nu_bank(int i) { return nu_bank_[i]; }
+
+  // Staged adjoint-tally scores, pending commit at end of super-history
+  // (see adjoint_stage_ declaration above)
+  std::unordered_map<int, std::unordered_map<int64_t, double>>&
+  adjoint_stage()
+  {
+    return adjoint_stage_;
+  }
 
   // Interim pulse height tally storage
   vector<double>& pht_storage() { return pht_storage_; }

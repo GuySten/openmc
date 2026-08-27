@@ -25,8 +25,10 @@ namespace openmc {
 
 void collision_mg(Particle& p)
 {
-  // Add to the collision counter for the particle
-  p.n_collision()++;
+  // Add to the collision counter for the particle. Unconditional again --
+  // see the identical change in physics.cpp's collision() for rationale.
+  ++p.n_collision();
+
   p.secondary_bank_index() = p.local_secondary_bank().size();
 
   // Sample the reaction type
@@ -126,8 +128,10 @@ void create_fission_sites(Particle& p)
   p.fission() = true;
 
   // Determine whether to place fission sites into the shared fission bank
-  // or the secondary particle bank.
-  bool use_fission_bank = (settings::run_mode == RunMode::EIGENVALUE);
+  // or the secondary particle bank. See the identical change in
+  // physics.cpp's create_fission_sites() for rationale.
+  bool use_fission_bank =
+    (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() <= 0);
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -178,9 +182,14 @@ void create_fission_sites(Particle& p)
       }
     }
 
-    // Set parent and progeny ID
+    // Set parent and progeny ID. Only increment the particle's REAL
+    // progeny counter (used elsewhere to size/sort the real fission
+    // bank) for sites that actually go into the real fission bank;
+    // lookahead-only sites (use_fission_bank==false) get a locally-
+    // unique id from the loop counter instead, so they don't inflate a
+    // count that downstream code assumes reflects only real progeny.
     site.parent_id = p.current_work();
-    site.progeny_id = p.n_progeny()++;
+    site.progeny_id = use_fission_bank ? p.n_progeny()++ : n_sites_stored;
 
     // Store fission site in bank
     if (use_fission_bank) {
@@ -203,6 +212,11 @@ void create_fission_sites(Particle& p)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
+      if (p.super_gen() >= 0) {
+        site.super_gen = p.super_gen() + 1;
+        // (no longer tagging site.n_collision -- see the identical change
+        // in physics.cpp's create_fission_sites() for rationale)
+      }
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }

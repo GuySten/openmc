@@ -44,15 +44,18 @@ namespace openmc {
 // Particle implementation
 //==============================================================================
 
+double Particle::speed(double E) const
+{
+  // Determine mass in eV/c^2
+  double mass = this->mass();
+  // Equivalent to C * sqrt(1-(m/(m+E))^2) without problem at E<<m:
+  return C_LIGHT * std::sqrt(E * (E + 2 * mass)) / (E + mass);
+}
+
 double Particle::speed() const
 {
   if (settings::run_CE) {
-    // Determine mass in eV/c^2
-    double mass = this->mass();
-
-    // Equivalent to C * sqrt(1-(m/(m+E))^2) without problem at E<<m:
-    return C_LIGHT * std::sqrt(this->E() * (this->E() + 2 * mass)) /
-           (this->E() + mass);
+    return speed(this->E());
   } else {
     auto mat = this->material();
     if (mat == MATERIAL_VOID)
@@ -106,6 +109,7 @@ bool Particle::create_secondary(
   if (settings::use_shared_secondary_bank) {
     bank.progeny_id = n_progeny()++;
   }
+  bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -132,6 +136,7 @@ void Particle::split(double wgt)
     bank.surf_id = (surface() > 0) ? surf_id : -surf_id;
   }
 
+  bank.super_gen = super_gen();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -191,7 +196,7 @@ void Particle::from_source(const SourceSite* src)
       surface() = (src->surf_id > 0) ? index_plus_one : -index_plus_one;
     }
   }
-
+  super_gen() = src->super_gen;
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
@@ -299,24 +304,30 @@ void Particle::event_advance()
   this->time() += dt;
   this->lifetime() += dt;
 
-  // Score timed track-length tallies
-  if (!model::active_timed_tracklength_tallies.empty()) {
-    score_timed_tracklength_tally(*this, distance);
-  }
+  // Generation 0 (or non-superhistory mode, super_gen()==-1) is the real,
+  // tally-contributing generation. Generations >=1 exist only to measure
+  // how much weight this same trajectory eventually produces by the final
+  // generation (see transport_history_based()) and score nothing here.
+  if (super_gen() <= 0) {
+    // Score timed track-length tallies
+    if (!model::active_timed_tracklength_tallies.empty()) {
+      score_timed_tracklength_tally(*this, distance);
+    }
 
-  // Score track-length tallies
-  if (!model::active_tracklength_tallies.empty()) {
-    score_tracklength_tally(*this, distance);
-  }
+    // Score track-length tallies
+    if (!model::active_tracklength_tallies.empty()) {
+      score_tracklength_tally(*this, distance);
+    }
 
-  // Score track-length estimate of k-eff
-  if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
-    keff_tally_tracklength() += wgt() * distance * macro_xs().nu_fission;
-  }
+    // Score track-length estimate of k-eff
+    if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
+      keff_tally_tracklength() += wgt() * distance * macro_xs().nu_fission;
+    }
 
-  // Score flux derivative accumulators for differential tallies.
-  if (!model::active_tallies.empty()) {
-    score_track_derivative(*this, distance);
+    // Score flux derivative accumulators for differential tallies.
+    if (!model::active_tallies.empty()) {
+      score_track_derivative(*this, distance);
+    }
   }
 
   // Set particle weight to zero if it hit the time boundary
@@ -352,7 +363,7 @@ void Particle::event_cross_surface()
     event() = TallyEvent::LATTICE;
 
     // Score cell to cell partial currents
-    if (!model::active_surface_tallies.empty()) {
+    if (!model::active_surface_tallies.empty() && super_gen() <= 0) {
       auto& lat {*model::lattices[i_lattice]};
       bool is_valid;
       Direction normal =
@@ -383,7 +394,7 @@ void Particle::event_cross_surface()
     event() = TallyEvent::SURFACE;
 
     // Score cell to cell partial currents
-    if (!model::active_surface_tallies.empty()) {
+    if (!model::active_surface_tallies.empty() && super_gen() <= 0) {
       Direction normal = surf.normal(r());
       normal /= normal.norm();
       score_surface_tally(*this, model::active_surface_tallies, normal);
@@ -394,17 +405,20 @@ void Particle::event_cross_surface()
 void Particle::event_collide()
 {
 
-  // Score collision estimate of keff
-  if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
-    keff_tally_collision() += wgt() * macro_xs().nu_fission / macro_xs().total;
+  // Generation 0 (or non-superhistory mode) is real; see event_advance().
+  if (super_gen() <= 0) {
+    // Score collision estimate of keff
+    if (settings::run_mode == RunMode::EIGENVALUE && type().is_neutron()) {
+      keff_tally_collision() +=
+        wgt() * macro_xs().nu_fission / macro_xs().total;
+    }
+
+    // Score surface current tallies -- this has to be done before the collision
+    // since the direction of the particle will change and we need to use the
+    // pre-collision direction to figure out what mesh surfaces were crossed
+    if (!model::active_meshsurf_tallies.empty())
+      score_meshsurface_tally(*this, model::active_meshsurf_tallies);
   }
-
-  // Score surface current tallies -- this has to be done before the collision
-  // since the direction of the particle will change and we need to use the
-  // pre-collision direction to figure out what mesh surfaces were crossed
-
-  if (!model::active_meshsurf_tallies.empty())
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
 
   // Preserve whether the particle is still associated with a recently crossed
   // surface so that a direction change during a near-surface collision can be
@@ -419,26 +433,28 @@ void Particle::event_collide()
     collision_mg(*this);
   }
 
-  // Collision track feature to recording particle interaction
-  if (settings::collision_track) {
-    collision_track_record(*this);
-  }
-
-  // Score collision estimator tallies -- this is done after a collision
-  // has occurred rather than before because we need information on the
-  // outgoing energy for any tallies with an outgoing energy filter
-  if (!model::active_collision_tallies.empty())
-    score_collision_tally(*this);
-  if (!model::active_analog_tallies.empty()) {
-    if (settings::run_CE) {
-      score_analog_tally_ce(*this);
-    } else {
-      score_analog_tally_mg(*this);
+  if (super_gen() <= 0) {
+    // Collision track feature to recording particle interaction
+    if (settings::collision_track) {
+      collision_track_record(*this);
     }
-  }
 
-  if (!model::active_pulse_height_tallies.empty() && type().is_photon()) {
-    pht_collision_energy();
+    // Score collision estimator tallies -- this is done after a collision
+    // has occurred rather than before because we need information on the
+    // outgoing energy for any tallies with an outgoing energy filter
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty()) {
+      if (settings::run_CE) {
+        score_analog_tally_ce(*this);
+      } else {
+        score_analog_tally_mg(*this);
+      }
+    }
+
+    if (!model::active_pulse_height_tallies.empty() && type().is_photon()) {
+      pht_collision_energy();
+    }
   }
 
   // Reset banked weight during collision
@@ -477,7 +493,7 @@ void Particle::event_collide()
   }
 
   // Score flux derivative accumulators for differential tallies.
-  if (!model::active_tallies.empty())
+  if (!model::active_tallies.empty() && super_gen() <= 0)
     score_collision_derivative(*this);
 
 #ifdef OPENMC_DAGMC_ENABLED
@@ -493,7 +509,7 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // Write final position for the previous track (skip if this is a freshly
   // constructed particle with no prior track, e.g., Phase 2 of shared
   // secondary transport)
-  if (write_track() && n_event() > 0) {
+  if (write_track() && n_event() > 0 && super_gen() <= 0) {
     write_particle_track(*this);
   }
 
@@ -509,7 +525,8 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // In shared secondary mode, this subtraction was already done on the parent
   // particle during create_secondary(), so skip it here.
   if (!settings::use_shared_secondary_bank &&
-      !model::active_pulse_height_tallies.empty() && this->type().is_photon()) {
+      !model::active_pulse_height_tallies.empty() && this->type().is_photon() &&
+      super_gen() <= 0) {
     // Since the birth cell of the particle has not been set we
     // have to determine it before the energy of the secondary particle can be
     // removed from the pulse-height of this cell.
@@ -534,7 +551,7 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   }
 
   // Enter new particle in particle track file
-  if (write_track())
+  if (write_track() && super_gen() <= 0)
     add_particle_track(*this);
 }
 
@@ -549,11 +566,22 @@ void Particle::event_check_limit_and_revive()
   }
 
   // In non-shared-secondary mode, revive from local secondary bank
-  if (!alive() && !settings::use_shared_secondary_bank &&
+  if (!alive() && (!settings::use_shared_secondary_bank || super_gen() >= 0) &&
       !local_secondary_bank().empty()) {
-    SourceSite& site = local_secondary_bank().back();
-    event_revive_from_secondary(site);
-    local_secondary_bank().pop_back();
+    auto& bank = local_secondary_bank();
+    // Iterate from the back (top of stack) to the front
+    for (auto it = bank.rbegin(); it != bank.rend(); ++it) {
+      // If the site's super_gen is smaller than the threshold, revive from it
+      if (it->super_gen < settings::super_n_generation) {
+        SourceSite& site = *it;
+        event_revive_from_secondary(site);
+
+        // Convert reverse_iterator to a standard iterator to erase it safely,
+        // then exit the loop since we only revive one site at a time.
+        bank.erase(std::next(it).base());
+        break;
+      }
+    }
   }
 }
 
@@ -563,10 +591,50 @@ void Particle::event_death()
   history().reset();
 #endif
 
-  // Finish particle track output.
-  if (write_track()) {
+  // NOTE: this runs once per super-history (after the whole chain of
+  // generations 0..L has concluded via revival), not once per generation
+  // -- by this point super_gen() reflects whatever the LAST generation
+  // was, not generation 0. That's fine: everything flushed below
+  // (keff_tally_*, pht_storage, progeny count, track output) was only
+  // ever POPULATED during generation 0's own transport, thanks to the
+  // super_gen()<=0 gates at each accumulation site (absorption(),
+  // event_collide(), event_advance(), create_fission_sites(), photon
+  // creation, etc.) -- so flushing unconditionally here is correct; the
+  // old "if (super_gen() <= 0)" gate around this whole block would
+  // incorrectly skip the flush whenever the super-history advanced past
+  // generation 0, discarding generation 0's real contribution.
+
+  // Finish particle track output. Gated on super_gen()<=0 (unlike the
+  // rest of this function) because, unlike the keff/progeny accumulators
+  // below, write_particle_track() records the particle's CURRENT
+  // position -- and by the time event_death() runs, that position may
+  // belong to a lookahead-only generation (>=1), not generation 0's own
+  // final position. Gating this off means track visualization is
+  // incomplete for histories that underwent any revival, rather than
+  // recording an outright wrong position; a full fix would need to
+  // capture generation 0's own final state before revival occurs, which
+  // isn't done here. Not a physics-correctness issue -- track files are
+  // a visualization aid, not consumed by any tally.
+  if (super_gen() <= 0 && write_track()) {
     write_particle_track(*this);
     finalize_particle_track(*this);
+  }
+
+  if (!model::active_pulse_height_tallies.empty()) {
+    score_pulse_height_tally(*this, model::active_pulse_height_tallies);
+  }
+
+  // Accumulate track count for this particle history
+  if (!settings::use_shared_secondary_bank) {
+#pragma omp atomic
+    simulation::simulation_tracks_completed += n_tracks();
+  }
+
+  // Record the number of progeny created by this particle.
+  // This data will be used to efficiently sort the fission bank.
+  if (settings::run_mode == RunMode::EIGENVALUE ||
+      settings::use_shared_secondary_bank) {
+    simulation::progeny_per_particle[current_work()] = n_progeny();
   }
 
   // Contribute tally reduction variables to global accumulator
@@ -599,23 +667,6 @@ void Particle::event_death()
   keff_tally_collision() = 0.0;
   keff_tally_tracklength() = 0.0;
   keff_tally_leakage() = 0.0;
-
-  if (!model::active_pulse_height_tallies.empty()) {
-    score_pulse_height_tally(*this, model::active_pulse_height_tallies);
-  }
-
-  // Accumulate track count for this particle history
-  if (!settings::use_shared_secondary_bank) {
-#pragma omp atomic
-    simulation::simulation_tracks_completed += n_tracks();
-  }
-
-  // Record the number of progeny created by this particle.
-  // This data will be used to efficiently sort the fission bank.
-  if (settings::run_mode == RunMode::EIGENVALUE ||
-      settings::use_shared_secondary_bank) {
-    simulation::progeny_per_particle[current_work()] = n_progeny();
-  }
 }
 
 void Particle::pht_collision_energy()
@@ -770,24 +821,27 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
     return;
   }
 
-  // Score surface currents since reflection causes the direction of the
-  // particle to change. For surface filters, we need to score the tallies
-  // twice, once before the particle's surface attribute has changed and
-  // once after. For mesh surface filters, we need to artificially move
-  // the particle slightly back in case the surface crossing is coincident
-  // with a mesh boundary
+  if (super_gen() <= 0) {
 
-  if (!model::active_surface_tallies.empty()) {
-    Direction normal = surf.normal(r());
-    normal /= normal.norm();
-    score_surface_tally(*this, model::active_surface_tallies, normal);
-  }
+    // Score surface currents since reflection causes the direction of the
+    // particle to change. For surface filters, we need to score the tallies
+    // twice, once before the particle's surface attribute has changed and
+    // once after. For mesh surface filters, we need to artificially move
+    // the particle slightly back in case the surface crossing is coincident
+    // with a mesh boundary
 
-  if (!model::active_meshsurf_tallies.empty()) {
-    Position r {this->r()};
-    this->r() -= TINY_BIT * u();
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
-    this->r() = r;
+    if (!model::active_surface_tallies.empty()) {
+      Direction normal = surf.normal(r());
+      normal /= normal.norm();
+      score_surface_tally(*this, model::active_surface_tallies, normal);
+    }
+
+    if (!model::active_meshsurf_tallies.empty()) {
+      Position r {this->r()};
+      this->r() -= TINY_BIT * u();
+      score_meshsurface_tally(*this, model::active_meshsurf_tallies);
+      this->r() = r;
+    }
   }
 
   // Set the new particle direction
@@ -833,7 +887,7 @@ void Particle::cross_periodic_bc(
   // Score surface currents since reflection causes the direction of the
   // particle to change -- artificially move the particle slightly back in
   // case the surface crossing is coincident with a mesh boundary
-  if (!model::active_meshsurf_tallies.empty()) {
+  if (!model::active_meshsurf_tallies.empty() && super_gen() <= 0) {
     Position r {this->r()};
     this->r() -= TINY_BIT * u();
     score_meshsurface_tally(*this, model::active_meshsurf_tallies);
@@ -989,7 +1043,10 @@ void Particle::update_neutron_xs(
 void add_surf_source_to_bank(Particle& p, const Surface& surf)
 {
   if (simulation::current_batch <= settings::n_inactive ||
-      simulation::surf_source_bank.full()) {
+      simulation::surf_source_bank.full() || p.super_gen() > 0) {
+    // Generation 0 is real and should behave like ordinary
+    // (non-superhistory) surf-source writing; only exclude the
+    // lookahead-only generations (>=1).
     return;
   }
 

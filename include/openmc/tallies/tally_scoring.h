@@ -122,6 +122,21 @@ void score_surface_tally(
 //! \param tallies A vector of the indices of the tallies to score to
 void score_pulse_height_tally(Particle& p, const vector<int>& tallies);
 
+//! Commit a super-history's staged adjoint-tally contributions
+//!
+//! Generation 0's contributions to adjoint=True tallies are staged (not
+//! committed) during transport -- see the staging block in
+//! score_general_ce_nonanalog/score_general_mg -- because the multiplier
+//! (realized descendant weight at the final super-history generation)
+//! isn't known until the whole super-history concludes. This applies that
+//! multiplier and performs the real, atomic commit into each tally's
+//! results, then clears the particle's staging buffer.
+//!
+//! \param p The particle whose staged super-history contributions should
+//!   be committed. p.adjoint_weight() must already hold the realized
+//!   terminal-generation weight for this super-history.
+void commit_adjoint_scores(Particle& p);
+
 } // namespace openmc
 
 #endif // OPENMC_TALLIES_TALLY_SCORING_H

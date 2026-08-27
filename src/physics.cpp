@@ -42,8 +42,11 @@ namespace openmc {
 
 void collision(Particle& p)
 {
-  // Add to collision counter for particle
+  // Add to collision counter for particle. Unconditional again -- the
+  // super-history restructuring no longer needs a per-collision-index
+  // array, so there's no reason to special-case this by generation.
   ++(p.n_collision());
+
   p.secondary_bank_index() = p.local_secondary_bank().size();
 
   // Sample reaction for the material the particle is in
@@ -119,7 +122,8 @@ void sample_neutron_reaction(Particle& p)
 
   if (nuc->fissionable_ && p.neutron_xs(i_nuclide).fission > 0.0) {
     auto& rx = sample_fission(i_nuclide, p);
-    if (settings::run_mode == RunMode::EIGENVALUE) {
+    if (settings::run_mode == RunMode::EIGENVALUE &&
+        p.super_gen() < settings::super_n_generation) {
       create_fission_sites(p, i_nuclide, rx);
     } else if (settings::run_mode == RunMode::FIXED_SOURCE &&
                settings::create_fission_neutrons) {
@@ -138,8 +142,10 @@ void sample_neutron_reaction(Particle& p)
     p.event_mt() = rx.mt_;
   }
 
-  // Create secondary photons
-  if (settings::photon_transport) {
+  // Create secondary photons. Generation 0 is now the real, tally-
+  // contributing generation (unlike the old virtual/real split where -1
+  // alone meant "real"), so the gate is <= 0, not < 0.
+  if (settings::photon_transport && p.super_gen() <= 0) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -201,8 +207,12 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
   p.fission() = true;
 
   // Determine whether to place fission sites into the shared fission bank
-  // or the secondary particle bank.
-  bool use_fission_bank = (settings::run_mode == RunMode::EIGENVALUE);
+  // or the secondary particle bank. Generation 0's fissions are real and
+  // go to the shared bank exactly as ordinary (non-superhistory) fissions
+  // do; only generations >=1 (the lookahead-only continuation) divert to
+  // the local secondary bank.
+  bool use_fission_bank =
+    (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() <= 0);
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -228,9 +238,14 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       }
     }
 
-    // Set parent and progeny IDs
+    // Set parent and progeny IDs. Only increment the particle's REAL
+    // progeny counter (used elsewhere to size/sort the real fission
+    // bank) for sites that actually go into the real fission bank;
+    // lookahead-only sites (use_fission_bank==false) get a locally-
+    // unique id from the loop counter instead, so they don't inflate a
+    // count that downstream code assumes reflects only real progeny.
     site.parent_id = p.current_work();
-    site.progeny_id = p.n_progeny()++;
+    site.progeny_id = use_fission_bank ? p.n_progeny()++ : n_sites_stored;
 
     // Store fission site in bank
     if (use_fission_bank) {
@@ -257,6 +272,13 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
+      if (p.super_gen() >= 0) {
+        site.super_gen = p.super_gen() + 1;
+        // (no longer tagging site.n_collision -- the per-collision-index
+        // superhistory_bank() array this fed is gone; only the terminal
+        // generation's total weight matters now, computed in
+        // transport_history_based())
+      }
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }
@@ -671,6 +693,11 @@ void sample_photon_product(
 
 void absorption(Particle& p, int i_nuclide)
 {
+  // Only generation 0 (or non-superhistory mode) is real; generations >=1
+  // exist purely to measure eventual descendant weight and must not
+  // contaminate the real k-eff estimators.
+  bool real = p.super_gen() <= 0;
+
   if (settings::survival_biasing) {
     // Determine weight absorbed in survival biasing
     const double wgt_absorb = p.wgt() * p.neutron_xs(i_nuclide).absorption /
@@ -680,7 +707,7 @@ void absorption(Particle& p, int i_nuclide)
     p.wgt() -= wgt_absorb;
 
     // Score implicit absorption estimate of keff
-    if (settings::run_mode == RunMode::EIGENVALUE) {
+    if (settings::run_mode == RunMode::EIGENVALUE && real) {
       p.keff_tally_absorption() += wgt_absorb *
                                    p.neutron_xs(i_nuclide).nu_fission /
                                    p.neutron_xs(i_nuclide).absorption;
@@ -690,7 +717,7 @@ void absorption(Particle& p, int i_nuclide)
     if (p.neutron_xs(i_nuclide).absorption >
         prn(p.current_seed()) * p.neutron_xs(i_nuclide).total) {
       // Score absorption estimate of keff
-      if (settings::run_mode == RunMode::EIGENVALUE) {
+      if (settings::run_mode == RunMode::EIGENVALUE && real) {
         p.keff_tally_absorption() += p.wgt() *
                                      p.neutron_xs(i_nuclide).nu_fission /
                                      p.neutron_xs(i_nuclide).absorption;
@@ -1189,7 +1216,7 @@ void inelastic_scatter(const Nuclide& nuc, const Reaction& rx, Particle& p)
 
   // evaluate yield
   double yield = (*rx.products_[0].yield_)(E_in);
-  if (std::floor(yield) == yield && yield > 0) {
+  if (std::floor(yield) == yield && yield > 0 && !simulation::superhistory_on) {
     // If yield is integral, create exactly that many secondary particles
     for (int i = 0; i < static_cast<int>(std::round(yield)) - 1; ++i) {
       p.create_secondary(p.wgt(), p.u(), p.E(), ParticleType::neutron());

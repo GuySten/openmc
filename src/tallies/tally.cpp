@@ -259,6 +259,16 @@ Tally::Tally(pugi::xml_node node)
   if (!simulation::superhistory_on) {
     if (adjoint_) {
       simulation::superhistory_on = true;
+      for (int score : scores_) {
+        if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
+            score == SCORE_IFP_DENOM) {
+          fatal_error(
+            "Cannot combine superhistory adjoint weighting with IFP scores.");
+        } else if (score == SCORE_PULSE_HEIGHT) {
+          fatal_error("Cannot combine superhistory adjoint weighting with "
+                      "pulse-height score.");
+        }
+      }
     }
   }
 

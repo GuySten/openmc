@@ -87,6 +87,8 @@ class Tally(IDManagerMixin):
         Unique identifier for the tally
     name : str
         Name of the tally
+    adjoint : bool
+        Whether to adjoint weight all tally results.
     multiply_density : bool
         Whether reaction rates should be multiplied by atom density
 
@@ -167,6 +169,7 @@ class Tally(IDManagerMixin):
         self._triggers = cv.CheckedList(openmc.Trigger, 'tally triggers')
         self._derivative = None
         self._multiply_density = True
+        self._adjoint = False
 
         self._num_realizations = 0
         self._with_summary = False
@@ -225,7 +228,7 @@ class Tally(IDManagerMixin):
             self_nuclides.remove('total')
         if other_nuclides != self_nuclides:
             return False
-        for attr in {'scores', 'triggers', 'derivative', 'multiply_density'}:
+        for attr in {'scores', 'triggers', 'derivative', 'multiply_density', 'adjoint'}:
             if getattr(other, attr) != getattr(self, attr):
                 return False
         return True
@@ -243,6 +246,7 @@ class Tally(IDManagerMixin):
         parts.append('{: <15}=\t{}'.format('Scores', self.scores))
         parts.append('{: <15}=\t{}'.format('Estimator', self.estimator))
         parts.append('{: <15}=\t{}'.format('Multiply dens.', self.multiply_density))
+        parts.append('{: <15}=\t{}'.format('Adjoint-weighted.', self.adjoint))
         return '\n\t'.join(parts)
 
     @staticmethod
@@ -272,6 +276,15 @@ class Tally(IDManagerMixin):
     def name(self, name):
         cv.check_type('tally name', name, str, none_ok=True)
         self._name = name
+        
+    @property
+    def adjoint(self):
+        return self._adjoint
+
+    @adjoint.setter
+    def adjoint(self, value):
+        cv.check_type('adjoint', value, bool)
+        self._adjoint = value        
 
     @property
     def multiply_density(self):
@@ -1445,6 +1458,10 @@ class Tally(IDManagerMixin):
         # Multiply by density
         if not self.multiply_density:
             element.set("multiply_density", str(self.multiply_density).lower())
+        
+        # Weight tally results by adjoint flux    
+        if self.adjoint:
+            element.set("adjoint", str(self.adjoint).lower())
 
         # Optional Tally filters
         if len(self.filters) > 0:
@@ -1597,6 +1614,10 @@ class Tally(IDManagerMixin):
         tally_id = int(get_text(elem, "id"))
         name = get_text(elem, "name", "")
         tally = cls(tally_id=tally_id, name=name)
+        
+        text = get_text(elem, 'adjoint')
+        if text is not None:
+            tally.adjoint = text in ('true', '1')
 
         text = get_text(elem, 'multiply_density')
         if text is not None:

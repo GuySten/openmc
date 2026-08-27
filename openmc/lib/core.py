@@ -32,10 +32,12 @@ class _SourceSite(Structure):
                 ('parent_nuclide', c_int),
                 ('parent_id', c_int64),
                 ('progeny_id', c_int64),
+                ('super_gen', c_int),
                 ('wgt_born', c_double),
                 ('wgt_ww_born', c_double),
                 ('n_split', c_int64),
-                ('n_collision', c_int)]
+                ('n_collision', c_int),
+                ('adjoint_id', c_int)]
 
 # Define input type for numpy arrays that will be passed into C++ functions
 # Must be an int or double array, with single dimension that is contiguous

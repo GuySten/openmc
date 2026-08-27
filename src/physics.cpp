@@ -43,7 +43,9 @@ namespace openmc {
 void collision(Particle& p)
 {
   // Add to collision counter for particle
-  ++(p.n_collision());
+  if (p.super_gen() <= 0)
+    ++(p.n_collision());
+
   p.secondary_bank_index() = p.local_secondary_bank().size();
 
   // Sample reaction for the material the particle is in
@@ -62,6 +64,11 @@ void collision(Particle& p)
     break;
   default:
     fatal_error("Unsupported particle PDG for collision sampling.");
+  }
+
+  if (p.super_gen() < 0 && simulation::superhistory_on) {
+    assert(p.n_collision() < p.superhistory_bank().size());
+    p.wgt_super() = p.superhistory_bank()[p.n_collision()];
   }
 
   if (settings::weight_windows_on) {
@@ -259,9 +266,10 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
-      if (p.super_gen() >= 0)
+      if (p.super_gen() >= 0) {
         site.super_gen = p.super_gen() + 1;
-      site.wgt_super = p.wgt_super();
+        site.n_collision = p.n_collision();
+      }
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }
@@ -1194,7 +1202,7 @@ void inelastic_scatter(const Nuclide& nuc, const Reaction& rx, Particle& p)
 
   // evaluate yield
   double yield = (*rx.products_[0].yield_)(E_in);
-  if (std::floor(yield) == yield && yield > 0) {
+  if (std::floor(yield) == yield && yield > 0 && !simulation::superhistory_on) {
     // If yield is integral, create exactly that many secondary particles
     for (int i = 0; i < static_cast<int>(std::round(yield)) - 1; ++i) {
       p.create_secondary(p.wgt(), p.u(), p.E(), ParticleType::neutron());

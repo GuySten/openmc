@@ -26,12 +26,18 @@ namespace openmc {
 void collision_mg(Particle& p)
 {
   // Add to the collision counter for the particle
-  p.n_collision()++;
+  if (p.super_gen() <= 0)
+    ++p.n_collision();
+
   p.secondary_bank_index() = p.local_secondary_bank().size();
 
   // Sample the reaction type
   sample_reaction(p);
 
+  if (p.super_gen() < 0) {
+    assert(p.n_collision() < p.superhistory_bank().size());
+    p.wgt_super() = p.superhistory_bank()[p.n_collision()];
+  }
   if (settings::weight_windows_on) {
     auto [ww_found, ww] = search_weight_window(p);
     if (!ww_found && p.type() == ParticleType::neutron()) {
@@ -204,8 +210,10 @@ void create_fission_sites(Particle& p)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
-      if (p.super_gen() >= 0)
+      if (p.super_gen() >= 0) {
         site.super_gen = p.super_gen() + 1;
+        site.n_collision = p.n_collision();
+      }
       site.wgt_super = p.wgt_super();
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;

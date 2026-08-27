@@ -910,11 +910,6 @@ void Tally::accumulate()
       total_source = 1.0;
     }
 
-    if (adjoint_) {
-      total_source *=
-        simulation::total_superhistory_weight / simulation::total_weight;
-    }
-
     // Determine number of particles contributing to tally
     double contributing_particles = settings::reduce_tallies
                                       ? settings::n_particles

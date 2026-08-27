@@ -557,6 +557,8 @@ private:
 
   vector<NuBank> nu_bank_;
 
+  vector<double> superhistory_bank_;
+
   vector<double> pht_storage_;
 
   double keff_tally_absorption_ {0.0};
@@ -746,6 +748,9 @@ public:
   // Bank of recently fissioned particles
   decltype(nu_bank_)& nu_bank() { return nu_bank_; }
   NuBank& nu_bank(int i) { return nu_bank_[i]; }
+
+  // Interim superhistory bank
+  vector<double>& superhistory_bank() { return superhistory_bank_; }
 
   // Interim pulse height tally storage
   vector<double>& pht_storage() { return pht_storage_; }

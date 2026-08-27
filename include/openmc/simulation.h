@@ -112,7 +112,7 @@ int64_t compute_transport_seed(int64_t particle_id);
 //! Simulate a single particle history from birth to death, inclusive of any
 //! secondary particles. In shared secondary mode, only a single track is
 //! transported and secondaries are deposited into a shared bank instead.
-void transport_history_based_single_particle(Particle& p);
+int32_t transport_history_based_single_particle(Particle& p);
 
 //! Simulate all particle histories using history-based parallelism
 void transport_history_based();

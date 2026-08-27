@@ -960,8 +960,10 @@ void free_memory_simulation()
   simulation::entropy.clear();
 }
 
-void transport_history_based_single_particle(Particle& p)
+int32_t transport_history_based_single_particle(Particle& p)
 {
+  int32_t n_col;
+  bool stored = false;
   while (p.alive()) {
     p.event_calculate_xs();
     if (p.alive()) {
@@ -974,9 +976,14 @@ void transport_history_based_single_particle(Particle& p)
         p.event_collide();
       }
     }
+    if (!p.alive() && !stored) {
+      n_col = p.n_collision();
+      stored = true;
+    }
     p.event_check_limit_and_revive();
   }
   p.event_death();
+  return n_col;
 }
 
 void transport_history_based()
@@ -987,17 +994,23 @@ void transport_history_based()
 #pragma omp for schedule(runtime)
     for (int64_t i_work = 1; i_work <= simulation::work_per_rank; ++i_work) {
       initialize_particle_track(p, i_work, false, simulation::superhistory_on);
-      transport_history_based_single_particle(p);
+      auto n_col = transport_history_based_single_particle(p);
       if (simulation::superhistory_on) {
-        double wgt_super = 0.0;
+        vector<double> wgt_super(n_col + 1);
         for (auto& site : p.local_secondary_bank()) {
-          wgt_super += site.wgt;
+          wgt_super[site.n_collision] += site.wgt;
         }
-#pragma omp atomic
-        simulation::total_superhistory_weight += wgt_super;
+        for (int i = n_col; i > 0; --i) {
+          wgt_super[i - 1] += wgt_super[i];
+        }
+        // #pragma omp atomic
+        // simulation::total_superhistory_weight += wgt_super;
         p.local_secondary_bank().clear();
         initialize_particle_track(p, i_work, false);
-        p.wgt_super() = wgt_super;
+        p.wgt_super() = wgt_super[0];
+        p.superhistory_bank() = std::move(wgt_super);
+        assert(std::is_sorted(
+          p.superhistory_bank().rbegin(), p.superhistory_bank().rend()));
         transport_history_based_single_particle(p);
       }
     }

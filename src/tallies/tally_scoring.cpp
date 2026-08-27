@@ -26,6 +26,36 @@
 
 namespace openmc {
 
+namespace {
+
+//! Convert a staged score to an INTENSIVE quantity for adjoint weighting.
+//!
+//! The realized terminal weight W that a staged score gets multiplied by is
+//! extensive -- it scales with the particle's weight at the time, since a
+//! heavier particle emits proportionally more fission neutrons. The adjoint
+//! function phi-dagger is intensive: importance PER UNIT WEIGHT, i.e.
+//! W / wgt. A staged score is itself proportional to the flux and so
+//! carries a factor of wgt already, so multiplying it by W directly counts
+//! the weight twice.
+//!
+//! Dividing by the weight that defines the flux removes the duplicate. The
+//! resulting estimator, sum over segments of dt * W(t), reduces exactly to
+//! IFP's sum(L * w) / sum(w) form for the generation time.
+//!
+//! Invisible under analog transport, where generation 0 carries wgt == 1
+//! throughout -- which is why every result validated so far is unaffected.
+//! It matters as soon as the weight varies, e.g. under survival biasing,
+//! where the generation time came out 28.5% low without it.
+double adjoint_flux_weight(const Tally& tally, Particle& p)
+{
+  // Must match the weight the estimator used to build `flux`: track-length
+  // uses p.wgt(), collision and analog use p.wgt_last().
+  return (tally.estimator_ == TallyEstimator::TRACKLENGTH) ? p.wgt()
+                                                           : p.wgt_last();
+}
+
+} // namespace
+
 //==============================================================================
 // FilterBinIter implementation
 //==============================================================================
@@ -172,8 +202,13 @@ void score_fission_delayed_dg(
   if (tally.adjoint_ && simulation::superhistory_on) {
     // See the identical staging block in score_general_ce_nonanalog for
     // rationale. Sparse map: no pre-allocation needed.
-    p.adjoint_stage()[p.collision_event_anchor()][i_tally][filter_index * tally.scores_.size() +
-      score_index] += score * filter_weight;
+    {
+      double aw = adjoint_flux_weight(tally, p);
+      if (aw != 0.0)
+        p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+          [filter_index * tally.scores_.size() + score_index] +=
+          (score * filter_weight) / aw;
+    }
   } else {
 // Update the tally result
 #pragma omp atomic
@@ -1117,9 +1152,13 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       // the super-history is done. Per-particle staging needs no atomic.
       // Sparse map keyed by (filter_index, score_index): no assumption
       // about how many distinct filter bins one particle can hit.
-      p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      {
+        double aw = adjoint_flux_weight(tally, p);
+        if (aw != 0.0)
+          p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+            [filter_index * tally.scores_.size() + score_index] +=
+            (score * filter_weight) / aw;
+      }
     } else {
 // Update tally results
 #pragma omp atomic
@@ -1629,9 +1668,13 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     if (tally.adjoint_ && simulation::superhistory_on) {
       // See the identical staging block in score_general_ce_nonanalog for
       // rationale and limitations.
-      p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      {
+        double aw = adjoint_flux_weight(tally, p);
+        if (aw != 0.0)
+          p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+            [filter_index * tally.scores_.size() + score_index] +=
+            (score * filter_weight) / aw;
+      }
     } else {
 // Update tally results
 #pragma omp atomic
@@ -2333,9 +2376,13 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
     if (tally.adjoint_ && simulation::superhistory_on) {
       // See the identical staging block in score_general_ce_nonanalog for
       // rationale and limitations.
-      p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      {
+        double aw = adjoint_flux_weight(tally, p);
+        if (aw != 0.0)
+          p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+            [filter_index * tally.scores_.size() + score_index] +=
+            (score * filter_weight) / aw;
+      }
     } else {
 // Update tally results
 #pragma omp atomic
@@ -2679,8 +2726,13 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
         if (tally.adjoint_ && simulation::superhistory_on) {
           // See the identical staging block in score_general_ce_nonanalog
           // for rationale. Sparse map: no pre-allocation needed.
-          p.adjoint_stage()[p.collision_event_anchor()][i_tally][filter_index * tally.scores_.size() +
-            score_index] += score;
+          {
+      double aw = adjoint_flux_weight(tally, p);
+      if (aw != 0.0)
+        p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+          [filter_index * tally.scores_.size() + score_index] +=
+          (score) / aw;
+    }
         } else {
 #pragma omp atomic
           tally.results_(filter_index, score_index, TallyResult::VALUE) +=
@@ -2750,8 +2802,13 @@ void score_surface_tally(
         if (tally.adjoint_ && simulation::superhistory_on) {
           // See the identical staging block in score_general_ce_nonanalog
           // for rationale. Sparse map: no pre-allocation needed.
-          p.adjoint_stage()[p.collision_event_anchor()][i_tally][filter_index * tally.scores_.size() +
-            score_index] += score * filter_weight;
+          {
+      double aw = adjoint_flux_weight(tally, p);
+      if (aw != 0.0)
+        p.adjoint_stage()[p.collision_event_anchor()][i_tally]
+          [filter_index * tally.scores_.size() + score_index] +=
+          (score * filter_weight) / aw;
+    }
         } else {
 #pragma omp atomic
           tally.results_(filter_index, score_index, TallyResult::VALUE) +=

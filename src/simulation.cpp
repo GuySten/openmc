@@ -41,6 +41,7 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <numeric>
 #include <string>

@@ -1131,16 +1131,6 @@ void reduce_tally_results()
     0, mpi::intracomm);
   if (mpi::master)
     simulation::total_weight = weight_reduced;
-
-  if (simulation::superhistory_on) {
-    // We also need to determine the total superhistory weight of particles from
-    // the last realization
-    double superhistory_weight_reduced;
-    MPI_Reduce(&simulation::total_superhistory_weight,
-      &superhistory_weight_reduced, 1, MPI_DOUBLE, MPI_SUM, 0, mpi::intracomm);
-    if (mpi::master)
-      simulation::total_superhistory_weight = superhistory_weight_reduced;
-  }
 }
 #endif
 

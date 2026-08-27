@@ -345,7 +345,6 @@ bool superhistory_on {false};
 int ssw_current_file;
 int total_gen {0};
 double total_weight;
-double total_superhistory_weight;
 int64_t work_per_rank;
 
 const RegularMesh* entropy_mesh {nullptr};
@@ -493,7 +492,6 @@ void initialize_batch()
 
   // Reset total starting particle weight used for normalizing tallies
   simulation::total_weight = 0.0;
-  simulation::total_superhistory_weight = 0.0;
 
   // Determine if this batch is the first inactive or active batch.
   bool first_inactive = false;
@@ -1004,21 +1002,12 @@ void transport_history_based()
         for (int i = n_col; i > 0; --i) {
           wgt_super[i - 1] += wgt_super[i];
         }
-        // #pragma omp atomic
-        // simulation::total_superhistory_weight += wgt_super;
         p.local_secondary_bank().clear();
         initialize_particle_track(p, i_work, false);
         p.wgt_super() = wgt_super[0];
         p.superhistory_bank() = std::move(wgt_super);
         assert(std::is_sorted(
           p.superhistory_bank().rbegin(), p.superhistory_bank().rend()));
-        if (simulation::superhistory_on &&
-            i_work <= 5) { // just the first few particles
-          fmt::print("particle {}: n_col={}, bank=", i_work, n_col);
-          for (auto v : p.superhistory_bank())
-            fmt::print("{} ", v);
-          fmt::print("\n");
-        }
         transport_history_based_single_particle(p);
       }
     }

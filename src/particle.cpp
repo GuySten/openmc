@@ -279,11 +279,6 @@ void Particle::event_calculate_xs()
 
 void Particle::event_advance()
 {
-
-  if (super_gen() < 0 && simulation::superhistory_on && current_work() < 5) {
-    fmt::print(
-      "  [advance] n_collision={}, wgt_super={}\n", n_collision(), wgt_super());
-  }
   // Find the distance to the nearest boundary
   boundary() = distance_to_boundary(*this);
 

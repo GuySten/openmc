@@ -256,23 +256,18 @@ Tally::Tally(pugi::xml_node node)
     }
   }
 
-  if (!simulation::superhistory_on) {
-    if (adjoint_) {
-      simulation::superhistory_on = true;
-      for (int score : scores_) {
-        if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
-            score == SCORE_IFP_DENOM) {
-          fatal_error(
-            "Cannot combine superhistory adjoint weighting with IFP scores.");
-        } else if (score == SCORE_PULSE_HEIGHT) {
-          fatal_error("Cannot combine superhistory adjoint weighting with "
-                      "pulse-height score.");
-        }
+  if (adjoint_) {
+    for (int score : scores_) {
+      if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
+          score == SCORE_IFP_DENOM) {
+        fatal_error(
+          "Cannot combine superhistory adjoint weighting with IFP scores.");
+      } else if (score == SCORE_PULSE_HEIGHT) {
+        fatal_error("Cannot combine superhistory adjoint weighting with "
+                    "pulse-height score.");
       }
     }
-  }
 
-  if (simulation::superhistory_on) {
     if (settings::run_mode == RunMode::EIGENVALUE) {
       if (settings::event_based) {
         fatal_error("Superhistory method cannot be used in event-mode.");
@@ -1226,10 +1221,15 @@ void setup_active_tallies()
   model::active_pulse_height_tallies.clear();
   model::time_grid.clear();
 
+  simulation::superhistory_on = false;
+
   for (auto i = 0; i < model::tallies.size(); ++i) {
     const auto& tally {*model::tallies[i]};
 
     if (tally.active_) {
+      if (tally.adjoint_) {
+        simulation::superhistory_on = true;
+      }
       model::active_tallies.push_back(i);
       bool mesh_present = (tally.get_filter<MeshFilter>() ||
                            tally.get_filter<MeshMaterialFilter>());

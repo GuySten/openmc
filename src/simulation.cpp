@@ -345,6 +345,7 @@ bool need_depletion_rx {false};
 int restart_batch;
 bool satisfy_triggers {false};
 bool superhistory_on {false};
+bool superhistory_enabled {false};
 int ssw_current_file;
 int total_gen {0};
 double total_weight;

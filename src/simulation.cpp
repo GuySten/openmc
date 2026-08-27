@@ -746,7 +746,8 @@ void initialize_particle_track(
   std::fill(p.pht_storage().begin(), p.pht_storage().end(), 0);
 
   // set random number seed
-  int64_t particle_seed = compute_transport_seed(p.id());
+  int64_t particle_seed =
+    compute_transport_seed(p.id() + (is_virtual ? settings::n_particles : 0));
   init_particle_seeds(particle_seed, p.seeds());
 
   // set particle trace
@@ -1011,6 +1012,13 @@ void transport_history_based()
         p.superhistory_bank() = std::move(wgt_super);
         assert(std::is_sorted(
           p.superhistory_bank().rbegin(), p.superhistory_bank().rend()));
+        if (simulation::superhistory_on &&
+            i_work <= 5) { // just the first few particles
+          fmt::print("particle {}: n_col={}, bank=", i_work, n_col);
+          for (auto v : p.superhistory_bank())
+            fmt::print("{} ", v);
+          fmt::print("\n");
+        }
         transport_history_based_single_particle(p);
       }
     }

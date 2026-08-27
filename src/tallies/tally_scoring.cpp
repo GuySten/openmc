@@ -679,6 +679,21 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       } else {
         score = p.macro_xs().nu_fission * flux;
       }
+      if (tally.estimator_ == TallyEstimator::COLLISION) {
+        if (simulation::superhistory_on && tally.adjoint_ &&
+            p.current_work() < 5) {
+          fmt::print(
+            "  [COLL score] n_collision={} score={}\n", p.n_collision(), score);
+        }
+      } else {
+        // in score_tracklength_tally_general, right where score is computed for
+        // SCORE_NU_FISSION:
+        if (simulation::superhistory_on && tally.adjoint_ &&
+            p.current_work() < 5) {
+          fmt::print(
+            "  [TL score] n_collision={} score={}\n", p.n_collision(), score);
+        }
+      }
       break;
 
     case SCORE_PROMPT_NU_FISSION:
@@ -2538,6 +2553,10 @@ void score_tracklength_tally(Particle& p, double distance)
 
 void score_collision_tally(Particle& p)
 {
+  if (simulation::superhistory_on && p.current_work() < 5) {
+    fmt::print("  [score_collision] n_collision={}, wgt_super={}\n",
+      p.n_collision(), p.wgt_super());
+  }
   // Determine the collision estimate of the flux
   double flux = 0.0;
   if (p.type().is_neutron() || p.type().is_photon()) {

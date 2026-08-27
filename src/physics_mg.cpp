@@ -34,10 +34,6 @@ void collision_mg(Particle& p)
   // Sample the reaction type
   sample_reaction(p);
 
-  if (p.super_gen() < 0) {
-    assert(p.n_collision() < p.superhistory_bank().size());
-    p.wgt_super() = p.superhistory_bank()[p.n_collision()];
-  }
   if (settings::weight_windows_on) {
     auto [ww_found, ww] = search_weight_window(p);
     if (!ww_found && p.type() == ParticleType::neutron()) {

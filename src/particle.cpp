@@ -279,6 +279,11 @@ void Particle::event_calculate_xs()
 
 void Particle::event_advance()
 {
+
+  if (super_gen() < 0 && simulation::superhistory_on && current_work() < 5) {
+    fmt::print(
+      "  [advance] n_collision={}, wgt_super={}\n", n_collision(), wgt_super());
+  }
   // Find the distance to the nearest boundary
   boundary() = distance_to_boundary(*this);
 
@@ -308,6 +313,12 @@ void Particle::event_advance()
   this->lifetime() += dt;
 
   if (super_gen() < 0) {
+    if (simulation::superhistory_on) {
+      int next = n_collision() + 1;
+      if (next < superhistory_bank().size()) {
+        wgt_super() = superhistory_bank()[next];
+      }
+    }
     // Score timed track-length tallies
     if (!model::active_timed_tracklength_tallies.empty()) {
       score_timed_tracklength_tally(*this, distance);

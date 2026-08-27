@@ -987,10 +987,12 @@ void transport_history_based()
       initialize_particle_track(p, i_work, false, simulation::superhistory_on);
       transport_history_based_single_particle(p);
       if (simulation::superhistory_on) {
-        double wgt_super = p.local_secondary_bank().size();
+        double wgt_super = 0.0;
+        for (auto& site : p.local_secondary_bank()) {
+          wgt_super += site.wgt;
+        }
         p.local_secondary_bank().clear();
         initialize_particle_track(p, i_work, false);
-        p.super_gen() = -1;
         p.wgt_super() = wgt_super;
         transport_history_based_single_particle(p);
       }

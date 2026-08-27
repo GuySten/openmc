@@ -277,7 +277,7 @@ Tally::Tally(pugi::xml_node node)
       if (settings::event_based) {
         fatal_error("Superhistory method cannot be used in event-mode.");
       }
-      if (settings::super_n_generation < 0) {
+      if (settings::super_n_generation <= 0) {
         settings::super_n_generation = DEFAULT_SUPER_N_GENERATION;
         warning(
           fmt::format("{} generations will be used for superhistory (default "

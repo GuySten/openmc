@@ -290,6 +290,8 @@ class Settings:
         :batches: list of batches at which to write statepoint files
     stride : int
         Number of random numbers allocated for each source particle history
+    superhistory_n_generation : int
+        Number of generations to consider for the Super-History method.        
     surf_source_read : dict
         Options for reading surface source points. Acceptable keys are:
 
@@ -445,6 +447,9 @@ class Settings:
 
         # Iterated Fission Probability
         self._ifp_n_generation = None
+        
+        # Super-History method
+        self._superhistory_n_generation = None
 
         # Collision track feature
         self._collision_track = {}
@@ -1038,6 +1043,17 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
+        
+    @property
+    def superhistory_n_generation(self) -> int:
+        return self._superhistory_n_generation
+
+    @superhistory_n_generation.setter
+    def superhistory_n_generation(self, superhistory_n_generation: int):
+        if superhistory_n_generation is not None:
+            cv.check_type("number of generations", superhistory_n_generation, Integral)
+            cv.check_greater_than("number of generations", superhistory_n_generation, 0)
+        self._superhistory_n_generation = superhistory_n_generation        
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1797,6 +1813,11 @@ class Settings:
         if self._ifp_n_generation is not None:
             element = ET.SubElement(root, "ifp_n_generation")
             element.text = str(self._ifp_n_generation)
+            
+    def _create_superhistory_n_generation_subelement(self, root):
+        if self._superhistory_n_generation is not None:
+            element = ET.SubElement(root, "superhistory_n_generation")
+            element.text = str(self._superhistory_n_generation)            
 
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
@@ -2328,6 +2349,11 @@ class Settings:
         if text is not None:
             self.ifp_n_generation = int(text)
 
+    def _superhistory_n_generation_from_xml_element(self, root):
+        text = get_text(root, 'superhistory_n_generation')
+        if text is not None:
+            self.superhistory_n_generation = int(text)
+            
     def _tabular_legendre_from_xml_element(self, root):
         elem = root.find('tabular_legendre')
         if elem is not None:
@@ -2607,6 +2633,7 @@ class Settings:
         self._create_no_reduce_subelement(element)
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
+        self._create_superhistory_n_generation_subelement(element)        
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2726,6 +2753,7 @@ class Settings:
         settings._no_reduce_from_xml_element(elem)
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
+        settings._superhistory_n_generation_from_xml_element(elem)        
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

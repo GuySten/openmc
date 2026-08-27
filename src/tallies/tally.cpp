@@ -910,6 +910,10 @@ void Tally::accumulate()
       total_source = 1.0;
     }
 
+    if (adjoint_) {
+      total_source *= simulation::total_superhistory_weight;
+    }
+
     // Determine number of particles contributing to tally
     double contributing_particles = settings::reduce_tallies
                                       ? settings::n_particles
@@ -1131,6 +1135,16 @@ void reduce_tally_results()
     0, mpi::intracomm);
   if (mpi::master)
     simulation::total_weight = weight_reduced;
+
+  if (simulation::superhistory_on) {
+    // We also need to determine the total superhistory weight of particles from
+    // the last realization
+    double superhistory_weight_reduced;
+    MPI_Reduce(&simulation::total_superhistory_weight,
+      &superhistory_weight_reduced, 1, MPI_DOUBLE, MPI_SUM, 0, mpi::intracomm);
+    if (mpi::master)
+      simulation::total_superhistory_weight = superhistory_weight_reduced;
+  }
 }
 #endif
 

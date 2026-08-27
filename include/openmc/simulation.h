@@ -42,7 +42,9 @@ extern "C" bool superhistory_on;   //!< Use superhistory method?
 extern int ssw_current_file;       //!< current surface source file
 extern "C" int total_gen;          //!< total number of generations simulated
 extern double total_weight;        //!< Total source weight in a batch
-extern int64_t work_per_rank;      //!< number of particles per MPI rank
+extern double
+  total_superhistory_weight;  //!< Total superhistory weight in a batch
+extern int64_t work_per_rank; //!< number of particles per MPI rank
 
 extern const RegularMesh* entropy_mesh;
 extern const RegularMesh* ufs_mesh;

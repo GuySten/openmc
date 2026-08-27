@@ -2323,13 +2323,12 @@ void score_analog_tally_ce(Particle& p)
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
-
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2340,7 +2339,7 @@ void score_analog_tally_ce(Particle& p)
         // density argument for score_general is not used for analog tallies.
         if (i_nuclide == p.event_nuclide() || i_nuclide == -1)
           score_general_ce_analog(p, i_tally, i * tally.scores_.size(),
-            filter_index, filter_weight, i_nuclide, -1.0, flux);
+            filter_index, filter_weight, i_nuclide, -1.0, flux * flux_adj);
       }
     }
 
@@ -2370,13 +2369,12 @@ void score_analog_tally_mg(Particle& p)
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
-
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2393,7 +2391,7 @@ void score_analog_tally_mg(Particle& p)
         }
 
         score_general_mg(p, i_tally, i * tally.scores_.size(), filter_index,
-          filter_weight, i_nuclide, atom_density, 1.0);
+          filter_weight, i_nuclide, atom_density, flux_adj);
       }
     }
 
@@ -2427,13 +2425,12 @@ void score_tracklength_tally_general(
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
-
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2466,10 +2463,11 @@ void score_tracklength_tally_general(
         // TODO: consider replacing this "if" with pointers or templates
         if (settings::run_CE) {
           score_general_ce_nonanalog(p, i_tally, i * tally.scores_.size(),
-            filter_index, filter_weight, i_nuclide, atom_density, flux);
+            filter_index, filter_weight, i_nuclide, atom_density,
+            flux * flux_adj);
         } else {
           score_general_mg(p, i_tally, i * tally.scores_.size(), filter_index,
-            filter_weight, i_nuclide, atom_density, flux);
+            filter_weight, i_nuclide, atom_density, flux * flux_adj);
         }
       }
     }
@@ -2560,13 +2558,12 @@ void score_collision_tally(Particle& p)
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
-
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
 
       // Loop over nuclide bins.
       for (auto i = 0; i < tally.nuclides_.size(); ++i) {
@@ -2599,10 +2596,11 @@ void score_collision_tally(Particle& p)
         // TODO: consider replacing this "if" with pointers or templates
         if (settings::run_CE) {
           score_general_ce_nonanalog(p, i_tally, i * tally.scores_.size(),
-            filter_index, filter_weight, i_nuclide, atom_density, flux);
+            filter_index, filter_weight, i_nuclide, atom_density,
+            flux * flux_adj);
         } else {
           score_general_mg(p, i_tally, i * tally.scores_.size(), filter_index,
-            filter_weight, i_nuclide, atom_density, flux);
+            filter_weight, i_nuclide, atom_density, flux * flux_adj);
         }
       }
     }
@@ -2635,18 +2633,17 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
 
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
-
       // Loop over scores.
       // There is only one score type for current tallies so there is no need
       // for a further scoring function.
-      double score = current * filter_weight;
+      double score = current * filter_weight * flux_adj;
       for (auto score_index = 0; score_index < tally.scores_.size();
            ++score_index) {
 #pragma omp atomic
@@ -2695,13 +2692,12 @@ void score_surface_tally(
     if (filter_iter == end)
       continue;
 
+    double flux_adj = tally.adjoint_ ? (p.wgt_super()) : 1.0;
+
     // Loop over filter bins.
     for (; filter_iter != end; ++filter_iter) {
       auto filter_index = filter_iter.index_;
       auto filter_weight = filter_iter.weight_;
-
-      if (tally.adjoint_)
-        filter_weight *= p.wgt_super();
 
       // Loop over scores.
       for (auto score_index = 0; score_index < tally.scores_.size();
@@ -2717,7 +2713,7 @@ void score_surface_tally(
         }
 #pragma omp atomic
         tally.results_(filter_index, score_index, TallyResult::VALUE) +=
-          score * filter_weight;
+          score * filter_weight * flux_adj;
       }
     }
     // If the user has specified that we can assume all tallies are spatially

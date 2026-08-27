@@ -911,7 +911,8 @@ void Tally::accumulate()
     }
 
     if (adjoint_) {
-      total_source *= simulation::total_superhistory_weight;
+      total_source *=
+        simulation::total_superhistory_weight / simulation::total_weight;
     }
 
     // Determine number of particles contributing to tally

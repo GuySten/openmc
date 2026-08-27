@@ -617,6 +617,20 @@ private:
   };
   std::unordered_map<int, AdjointSiteInfo> adjoint_site_info_;
 
+  // Filter bins matched at each of generation 0's fission events, keyed by
+  // event id then by tally index. Recorded at the event itself, because
+  // that is the only moment the emitting collision's phase point is
+  // available -- an adjoint tally's own scoring call happens in
+  // event_advance, over the segment BEFORE the collision, so it cannot
+  // supply the bins for fission production. A collision may match several
+  // bins of one tally, hence the vector.
+  struct AdjointFilterBin {
+    int64_t index {0};
+    double weight {1.0};
+  };
+  std::unordered_map<int, std::unordered_map<int, vector<AdjointFilterBin>>>
+    adjoint_event_filters_;
+
   vector<double> pht_storage_;
 
   double keff_tally_absorption_ {0.0};
@@ -852,6 +866,14 @@ public:
   std::unordered_map<int, AdjointSiteInfo>& adjoint_site_info()
   {
     return adjoint_site_info_;
+  }
+
+  // Filter bins matched at each generation-0 fission event
+  // (see adjoint_event_filters_ declaration above)
+  std::unordered_map<int, std::unordered_map<int, vector<AdjointFilterBin>>>&
+  adjoint_event_filters()
+  {
+    return adjoint_event_filters_;
   }
 
   // Interim pulse height tally storage

@@ -25,6 +25,7 @@
 #include "openmc/simulation.h"
 #include "openmc/string_utils.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/tallies/tally_scoring.h"
 #include "openmc/thermal.h"
 #include "openmc/weight_windows.h"
 
@@ -235,6 +236,10 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
   if (simulation::superhistory_on && p.super_gen() == 0) {
     event_id = p.next_fission_event_id()++;
     p.adjoint_event_snapshots()[event_id] = p.adjoint_stage();
+    // Record which filter bins this collision falls in, while we are
+    // still at it -- the adjoint tally's own scoring call happens in
+    // event_advance, before this collision, so it cannot supply them.
+    record_adjoint_fission_filters(p, event_id);
   }
 
   // Determine whether to place fission sites into the shared fission bank

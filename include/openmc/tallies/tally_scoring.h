@@ -143,6 +143,21 @@ void score_pulse_height_tally(Particle& p, const vector<int>& tallies);
 //!   descends from. A neutron with no entry (or an entry of 0)
 //!   contributes nothing -- its subtree died out before the terminal
 //!   generation.
+//! Record the filter bins matched at a generation-0 fission event
+//!
+//! Must be called at the fission event itself: adjoint tallies use the
+//! track-length estimator, so their own scoring call happens in
+//! event_advance over the segment BEFORE this collision and cannot supply
+//! the bins that fission production belongs in. Evaluates the filters for
+//! every adjoint tally at the particle's current phase point and stores
+//! the result in p.adjoint_event_filters()[event_id]. Leaves the
+//! particle's filter matches invalidated, so any scoring later in this
+//! same event recomputes them rather than reusing these.
+//!
+//! \param p The particle at the fission event
+//! \param event_id The fission event's id
+void record_adjoint_fission_filters(Particle& p, int event_id);
+
 void commit_adjoint_scores(
   Particle& p, const std::unordered_map<int, double>& terminal_weight_by_site);
 

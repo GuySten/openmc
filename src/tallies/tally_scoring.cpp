@@ -173,7 +173,7 @@ void score_fission_delayed_dg(
     // See the identical staging block in score_general_ce_nonanalog for
     // rationale. Sparse map: no pre-allocation needed.
     p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
-      score_index] += score * filter_weight;
+                               score_index] += score * filter_weight;
   } else {
 // Update the tally result
 #pragma omp atomic
@@ -496,8 +496,8 @@ void score_fission_eout(Particle& p, int i_tally, int i_score, int score_bin)
               filter_weight *= match.weights_[i_bin];
             }
 
-            score_fission_delayed_dg(p, i_tally, d_bin, score * filter_weight,
-              i_score);
+            score_fission_delayed_dg(
+              p, i_tally, d_bin, score * filter_weight, i_score);
           }
         }
 
@@ -729,8 +729,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
               E, ReactionProduct::EmissionMode::delayed, d);
             score =
               p.neutron_xs(i_nuclide).fission * yield * atom_density * flux;
-            score_fission_delayed_dg(
-              p, i_tally, d_bin, score, score_index);
+            score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
           }
           continue;
         } else {
@@ -759,8 +758,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
                   E, ReactionProduct::EmissionMode::delayed, d);
                 score =
                   p.neutron_xs(j_nuclide).fission * yield * atom_density * flux;
-                score_fission_delayed_dg(
-                  p, i_tally, d_bin, score, score_index);
+                score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
               }
             }
           }
@@ -801,8 +799,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
             auto rate = rxn.products_[d].decay_rate_;
             score = p.neutron_xs(i_nuclide).fission * yield * flux *
                     atom_density * rate;
-            score_fission_delayed_dg(
-              p, i_tally, d_bin, score, score_index);
+            score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
           }
           continue;
         } else {
@@ -976,8 +973,8 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
                   const DelayedGroupFilter& filt {
                     *dynamic_cast<DelayedGroupFilter*>(
                       model::tally_filters[i_dg_filt].get())};
-                  score_fission_delayed_dg(p, i_tally, delayed_groups[0] - 1,
-                    score, score_index);
+                  score_fission_delayed_dg(
+                    p, i_tally, delayed_groups[0] - 1, score, score_index);
                   continue;
                 }
               }
@@ -1117,9 +1114,8 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       // the super-history is done. Per-particle staging needs no atomic.
       // Sparse map keyed by (filter_index, score_index): no assumption
       // about how many distinct filter bins one particle can hit.
-      p.adjoint_stage()[i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
+                                 score_index] += score * filter_weight;
     } else {
 // Update tally results
 #pragma omp atomic
@@ -1364,8 +1360,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
               score = p.wgt_last() * yield *
                       p.neutron_xs(p.event_nuclide()).fission /
                       p.neutron_xs(p.event_nuclide()).total * flux;
-              score_fission_delayed_dg(
-                p, i_tally, d_bin, score, score_index);
+              score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
             }
             continue;
           } else {
@@ -1398,8 +1393,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
             auto d = filt.groups()[d_bin];
             score = simulation::keff * p.wgt_bank() / p.n_bank() *
                     p.n_delayed_bank(d - 1) * flux;
-            score_fission_delayed_dg(
-              p, i_tally, d_bin, score, score_index);
+            score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
           }
           continue;
         } else {
@@ -1434,8 +1428,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
               score = p.wgt_last() * yield *
                       p.neutron_xs(p.event_nuclide()).fission /
                       p.neutron_xs(p.event_nuclide()).total * rate * flux;
-              score_fission_delayed_dg(
-                p, i_tally, d_bin, score, score_index);
+              score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
             }
             continue;
           } else {
@@ -1629,9 +1622,8 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
     if (tally.adjoint_ && simulation::superhistory_on) {
       // See the identical staging block in score_general_ce_nonanalog for
       // rationale and limitations.
-      p.adjoint_stage()[i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
+                                 score_index] += score * filter_weight;
     } else {
 // Update tally results
 #pragma omp atomic
@@ -2035,8 +2027,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
                              nullptr, nullptr, &d, macro_t, macro_a) /
                            abs_xs;
                 }
-                score_fission_delayed_dg(
-                  p, i_tally, d_bin, score, score_index);
+                score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
               }
               continue;
             } else {
@@ -2081,8 +2072,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
                   nuc_xs.get_xs(MgxsType::FISSION, p_g, nuc_t, nuc_a) /
                   macro_xs.get_xs(MgxsType::FISSION, p_g, macro_t, macro_a);
               }
-              score_fission_delayed_dg(
-                p, i_tally, d_bin, score, score_index);
+              score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
             }
             continue;
           } else {
@@ -2115,8 +2105,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
               score = flux * macro_xs.get_xs(MgxsType::DELAYED_NU_FISSION, p_g,
                                nullptr, nullptr, &d, macro_t, macro_a);
             }
-            score_fission_delayed_dg(
-              p, i_tally, d_bin, score, score_index);
+            score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
           }
           continue;
         } else {
@@ -2163,8 +2152,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
                              nullptr, nullptr, &d, macro_t, macro_a) /
                            abs_xs;
                 }
-                score_fission_delayed_dg(
-                  p, i_tally, d_bin, score, score_index);
+                score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
               }
               continue;
             } else {
@@ -2260,8 +2248,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
                       macro_xs.get_xs(MgxsType::DELAYED_NU_FISSION, p_g,
                         nullptr, nullptr, &d, macro_t, macro_a);
             }
-            score_fission_delayed_dg(
-              p, i_tally, d_bin, score, score_index);
+            score_fission_delayed_dg(p, i_tally, d_bin, score, score_index);
           }
           continue;
         } else {
@@ -2333,9 +2320,8 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
     if (tally.adjoint_ && simulation::superhistory_on) {
       // See the identical staging block in score_general_ce_nonanalog for
       // rationale and limitations.
-      p.adjoint_stage()[i_tally]
-        [filter_index * tally.scores_.size() + score_index] +=
-        score * filter_weight;
+      p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
+                                 score_index] += score * filter_weight;
     } else {
 // Update tally results
 #pragma omp atomic
@@ -2497,8 +2483,7 @@ void score_tracklength_tally_general(
         // TODO: consider replacing this "if" with pointers or templates
         if (settings::run_CE) {
           score_general_ce_nonanalog(p, i_tally, i * tally.scores_.size(),
-            filter_index, filter_weight, i_nuclide, atom_density,
-            flux);
+            filter_index, filter_weight, i_nuclide, atom_density, flux);
         } else {
           score_general_mg(p, i_tally, i * tally.scores_.size(), filter_index,
             filter_weight, i_nuclide, atom_density, flux);
@@ -2628,8 +2613,7 @@ void score_collision_tally(Particle& p)
         // TODO: consider replacing this "if" with pointers or templates
         if (settings::run_CE) {
           score_general_ce_nonanalog(p, i_tally, i * tally.scores_.size(),
-            filter_index, filter_weight, i_nuclide, atom_density,
-            flux);
+            filter_index, filter_weight, i_nuclide, atom_density, flux);
         } else {
           score_general_mg(p, i_tally, i * tally.scores_.size(), filter_index,
             filter_weight, i_nuclide, atom_density, flux);
@@ -2680,7 +2664,7 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
           // See the identical staging block in score_general_ce_nonanalog
           // for rationale. Sparse map: no pre-allocation needed.
           p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
-            score_index] += score;
+                                     score_index] += score;
         } else {
 #pragma omp atomic
           tally.results_(filter_index, score_index, TallyResult::VALUE) +=
@@ -2751,7 +2735,7 @@ void score_surface_tally(
           // See the identical staging block in score_general_ce_nonanalog
           // for rationale. Sparse map: no pre-allocation needed.
           p.adjoint_stage()[i_tally][filter_index * tally.scores_.size() +
-            score_index] += score * filter_weight;
+                                     score_index] += score * filter_weight;
         } else {
 #pragma omp atomic
           tally.results_(filter_index, score_index, TallyResult::VALUE) +=
@@ -2862,6 +2846,52 @@ bool is_fission_production_score(int score_bin)
 
 } // namespace
 
+void record_adjoint_fission_filters(Particle& p, int event_id)
+{
+  auto& per_tally = p.adjoint_event_filters()[event_id];
+  bool touched_matches = false;
+
+  for (int64_t i_tally = 0;
+       i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
+    const Tally& tally {*model::tallies[i_tally]};
+    if (!tally.adjoint_ || !tally.active_)
+      continue;
+    // Only tallies that actually carry a fission-production score need
+    // their bins recorded; diagonal scores are handled by the staged path.
+    bool needs = false;
+    for (int score_bin : tally.scores_) {
+      if (is_fission_production_score(score_bin)) {
+        needs = true;
+        break;
+      }
+    }
+    if (!needs)
+      continue;
+
+    auto& bins = per_tally[i_tally];
+    auto filter_iter = FilterBinIter(tally, p);
+    auto end = FilterBinIter(tally, true, &p.filter_matches());
+    touched_matches = true;
+    for (; filter_iter != end; ++filter_iter) {
+      bins.push_back({filter_iter.index_, filter_iter.weight_});
+    }
+    if (bins.empty())
+      per_tally.erase(i_tally); // matched nothing -- scores nowhere
+  }
+
+  if (per_tally.empty())
+    p.adjoint_event_filters().erase(event_id);
+
+  // Invalidate the matches we just computed. Other tallies score later in
+  // this same event (a non-adjoint collision-estimator tally, for
+  // instance) and must recompute from their own phase point rather than
+  // reuse whatever state this left behind.
+  if (touched_matches) {
+    for (auto& match : p.filter_matches())
+      match.bins_present_ = false;
+  }
+}
+
 void commit_adjoint_scores(
   Particle& p, const std::unordered_map<int, double>& terminal_weight_by_site)
 {
@@ -2882,29 +2912,33 @@ void commit_adjoint_scores(
   //     chi_d is softer than chi_p, and that spectral difference is the
   //     entire content of beta_eff.
   //
-  // So: aggregate the per-neutron terminal weights back up per fission
-  // event for the diagonal scores, and keep them per-neutron (split by
-  // delayed provenance) for the fission-production scores.
-  std::unordered_map<int, double> weight_by_event;
-  double weight_all = 0.0;
-  double weight_delayed = 0.0;
-  double weight_prompt = 0.0;
+  // Both are accumulated PER FISSION EVENT so that each lands in the
+  // filter bins of the collision it came from.
+  struct EventWeight {
+    double all {0.0};
+    double delayed {0.0};
+    double prompt {0.0};
+  };
+  std::unordered_map<int, EventWeight> weight_by_event;
   for (const auto& [site_id, w] : terminal_weight_by_site) {
     auto info_it = p.adjoint_site_info().find(site_id);
     if (info_it == p.adjoint_site_info().end())
       continue; // not a generation-0-emitted neutron we are tracking
-    weight_by_event[info_it->second.event] += w;
-    weight_all += w;
+    auto& ew = weight_by_event[info_it->second.event];
+    ew.all += w;
     if (info_it->second.delayed) {
-      weight_delayed += w;
+      ew.delayed += w;
     } else {
-      weight_prompt += w;
+      ew.prompt += w;
     }
   }
 
+  // ---- diagonal scores: staged snapshot x that event's total weight ----
   for (auto& [event_id, stage] : p.adjoint_event_snapshots()) {
     auto it = weight_by_event.find(event_id);
-    double event_weight = (it == weight_by_event.end()) ? 0.0 : it->second;
+    if (it == weight_by_event.end() || it->second.all == 0.0)
+      continue;
+    double event_weight = it->second.all;
 
     for (auto& [i_tally, tally_stage] : stage) {
       if (tally_stage.empty())
@@ -2914,12 +2948,9 @@ void commit_adjoint_scores(
       for (auto& [key, staged] : tally_stage) {
         int64_t filter_index = key / n_scores;
         int64_t score_index = key % n_scores;
-        int score_bin = tally.scores_[score_index];
-
-        if (is_fission_production_score(score_bin))
-          continue; // handled once per super-history below, not per event
-
-        if (staged == 0.0 || event_weight == 0.0)
+        if (is_fission_production_score(tally.scores_[score_index]))
+          continue; // handled below, from the emitted neutrons instead
+        if (staged == 0.0)
           continue;
 #pragma omp atomic
         tally.results_(filter_index, score_index, TallyResult::VALUE) +=
@@ -2928,45 +2959,40 @@ void commit_adjoint_scores(
     }
   }
 
-  // Fission-production scores. These are NOT built from the staged
-  // track-length accumulation at all: the emitted neutrons themselves are
-  // the sampling of F, so the estimator is just the importance-weighted
-  // sum over them. Committed once per super-history rather than once per
-  // event, because each emitted neutron already carries its own weight.
-  //
-  // LIMITATION: committed to filter bin 0, so adjoint fission-production
-  // scores are correct only for tallies whose filters put the whole
-  // super-history in a single bin (the unfiltered case). Carrying the
-  // emitting collision's filter bins onto each site would lift this; the
-  // diagonal scores above are already general.
-  for (int64_t i_tally = 0;
-       i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
-    Tally& tally {*model::tallies[i_tally]};
-    // active_ is what gates every other scoring path (see
-    // setup_active_tallies): during inactive batches the tally is off and
-    // nothing may be committed to it. The diagonal path above is gated
-    // implicitly -- adjoint_stage() stays empty while tallies are off, so
-    // there is nothing to commit -- but the weights below are computed
-    // from the fission banks regardless of tally state, so without this
-    // check every inactive batch would dump into the first active one.
-    if (!tally.adjoint_ || !tally.active_)
+  // ---- fission production: emitted neutrons, in their event's bins ----
+  // Not built from the staged track-length accumulation at all -- the
+  // emitted neutrons ARE the sampling of F, so the estimator is the
+  // importance-weighted sum over them, placed in the filter bins recorded
+  // at the emitting collision by record_adjoint_fission_filters().
+  for (const auto& [event_id, per_tally] : p.adjoint_event_filters()) {
+    auto wit = weight_by_event.find(event_id);
+    if (wit == weight_by_event.end())
       continue;
-    auto n_scores = static_cast<int64_t>(tally.scores_.size());
-    for (int64_t score_index = 0; score_index < n_scores; ++score_index) {
-      int score_bin = tally.scores_[score_index];
-      if (!is_fission_production_score(score_bin))
-        continue;
-      double value = (score_bin == SCORE_NU_FISSION)           ? weight_all
-                     : (score_bin == SCORE_DELAYED_NU_FISSION) ? weight_delayed
-                                                               : weight_prompt;
-      if (value == 0.0)
-        continue;
+    const EventWeight& ew = wit->second;
+
+    for (const auto& [i_tally, bins] : per_tally) {
+      Tally& tally {*model::tallies[i_tally]};
+      auto n_scores = static_cast<int64_t>(tally.scores_.size());
+      for (int64_t score_index = 0; score_index < n_scores; ++score_index) {
+        int score_bin = tally.scores_[score_index];
+        if (!is_fission_production_score(score_bin))
+          continue;
+        double value = (score_bin == SCORE_NU_FISSION)           ? ew.all
+                       : (score_bin == SCORE_DELAYED_NU_FISSION) ? ew.delayed
+                                                                 : ew.prompt;
+        if (value == 0.0)
+          continue;
+        for (const auto& b : bins) {
 #pragma omp atomic
-      tally.results_(0, score_index, TallyResult::VALUE) += value;
+          tally.results_(b.index, score_index, TallyResult::VALUE) +=
+            value * b.weight;
+        }
+      }
     }
   }
 
   p.adjoint_event_snapshots().clear();
+  p.adjoint_event_filters().clear();
   p.adjoint_site_info().clear();
   p.adjoint_stage().clear();
 }

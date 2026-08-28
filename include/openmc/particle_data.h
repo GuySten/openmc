@@ -613,7 +613,7 @@ private:
   // scores. Separating prompt from delayed is the entire content of
   // beta_eff, since chi_d is softer than chi_p.
   struct AdjointSiteInfo {
-    int event {-1};       // which fission event emitted this neutron
+    int event {-1}; // which fission event emitted this neutron
     // Precursor group it was born from, 0 for prompt -- i.e. the site's
     // own delayed_group, kept verbatim rather than collapsed to a bool.
     // The group is what the physics actually carries; prompt/delayed is
@@ -673,7 +673,6 @@ private:
   // before create_fission_sites() can bump the counter, so every score
   // arising from this iteration shares it regardless of staging order.
   int collision_event_anchor_ {0};
-
 
   // Counter assigning a fresh id to each NEUTRON generation 0 emits
   // (incremented per site, so one fission event producing three neutrons
@@ -748,7 +747,6 @@ public:
   // Counter for assigning fresh ids to generation 0's own fission events
   int& next_fission_event_id() { return next_fission_event_id_; }
   int next_fission_event_id() const { return next_fission_event_id_; }
-
 
   // Counter for assigning ids to neutrons generation 0 emits
   int& next_adjoint_site_id() { return next_adjoint_site_id_; }

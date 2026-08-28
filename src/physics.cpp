@@ -22,10 +22,10 @@
 #include "openmc/search.h"
 #include "openmc/secondary_uncorrelated.h"
 #include "openmc/settings.h"
-#include "openmc/tallies/tally_scoring.h"
 #include "openmc/simulation.h"
 #include "openmc/string_utils.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/tallies/tally_scoring.h"
 #include "openmc/thermal.h"
 #include "openmc/weight_windows.h"
 

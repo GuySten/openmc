@@ -17,9 +17,9 @@
 #include "openmc/physics_common.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
-#include "openmc/tallies/tally_scoring.h"
 #include "openmc/simulation.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/tallies/tally_scoring.h"
 #include "openmc/weight_windows.h"
 
 namespace openmc {

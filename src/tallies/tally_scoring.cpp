@@ -54,6 +54,20 @@ double adjoint_flux_weight(const Tally& tally, Particle& p)
                                                            : p.wgt_last();
 }
 
+
+//! Width of a tally's score dimension: scores x nuclide bins.
+//!
+//! results_ is (filter_bin, score_bin, moment) with
+//! score_bin = i_nuclide_bin * scores_.size() + i_score, so the stride that
+//! separates filter bins is the PRODUCT, not scores_.size(). Using
+//! scores_.size() aliases nuclide bins onto filter bins, and indexing
+//! scores_ with the composite value reads past the end of that vector.
+int64_t adjoint_score_stride(const Tally& tally)
+{
+  return static_cast<int64_t>(tally.scores_.size()) *
+         static_cast<int64_t>(tally.nuclides_.size());
+}
+
 } // namespace
 
 //==============================================================================
@@ -206,7 +220,7 @@ void score_fission_delayed_dg(
       double aw = adjoint_flux_weight(tally, p);
       if (aw != 0.0)
         p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-          [filter_index * tally.scores_.size() + score_index] +=
+          [filter_index * adjoint_score_stride(tally) + score_index] +=
           (score * filter_weight) / aw;
     }
   } else {
@@ -1156,7 +1170,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
         double aw = adjoint_flux_weight(tally, p);
         if (aw != 0.0)
           p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-            [filter_index * tally.scores_.size() + score_index] +=
+            [filter_index * adjoint_score_stride(tally) + score_index] +=
             (score * filter_weight) / aw;
       }
     } else {
@@ -1672,7 +1686,7 @@ void score_general_ce_analog(Particle& p, int i_tally, int start_index,
         double aw = adjoint_flux_weight(tally, p);
         if (aw != 0.0)
           p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-            [filter_index * tally.scores_.size() + score_index] +=
+            [filter_index * adjoint_score_stride(tally) + score_index] +=
             (score * filter_weight) / aw;
       }
     } else {
@@ -2380,7 +2394,7 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
         double aw = adjoint_flux_weight(tally, p);
         if (aw != 0.0)
           p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-            [filter_index * tally.scores_.size() + score_index] +=
+            [filter_index * adjoint_score_stride(tally) + score_index] +=
             (score * filter_weight) / aw;
       }
     } else {
@@ -2730,7 +2744,7 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
       double aw = adjoint_flux_weight(tally, p);
       if (aw != 0.0)
         p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-          [filter_index * tally.scores_.size() + score_index] +=
+          [filter_index * adjoint_score_stride(tally) + score_index] +=
           (score) / aw;
     }
         } else {
@@ -2806,7 +2820,7 @@ void score_surface_tally(
       double aw = adjoint_flux_weight(tally, p);
       if (aw != 0.0)
         p.adjoint_stage()[p.collision_event_anchor()][i_tally]
-          [filter_index * tally.scores_.size() + score_index] +=
+          [filter_index * adjoint_score_stride(tally) + score_index] +=
           (score * filter_weight) / aw;
     }
         } else {
@@ -2919,18 +2933,23 @@ bool is_fission_production_score(int score_bin)
 
 } // namespace
 
-void record_adjoint_fission_filters(Particle& p, int event_id)
+void record_adjoint_site_filters(
+  Particle& p, int site_id, const SourceSite& site)
 {
-  auto& per_tally = p.adjoint_event_filters()[event_id];
+  auto& per_tally = p.adjoint_site_filters()[site_id];
   bool touched_matches = false;
+
+  // Present the EMITTED neutron's phase point to the filters. EnergyoutFilter
+  // reads p.E(), so it must see the emitted energy rather than the parent's.
+  // Position and incoming energy are already those of this collision.
+  double saved_E = p.E();
+  p.E() = site.E;
 
   for (int64_t i_tally = 0;
        i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
     const Tally& tally {*model::tallies[i_tally]};
     if (!tally.adjoint_ || !tally.active_)
       continue;
-    // Only tallies that actually carry a fission-production score need
-    // their bins recorded; diagonal scores are handled by the staged path.
     bool needs = false;
     for (int score_bin : tally.scores_) {
       if (is_fission_production_score(score_bin)) {
@@ -2941,24 +2960,37 @@ void record_adjoint_fission_filters(Particle& p, int event_id)
     if (!needs)
       continue;
 
+    // DelayedGroupFilter always reports bin 0 (see its get_all_bins -- the
+    // real bin is supplied by the scoring code), so the bins this iteration
+    // produces need shifting to this neutron's own precursor group. Because
+    // the filter's contribution to the flattened index is exactly
+    // 0 * stride, the correction is a simple additive offset.
+    int64_t dg_offset = 0;
+    if (tally.delayedgroup_filter_ != C_NONE) {
+      if (site.delayed_group <= 0)
+        continue; // prompt neutron: no delayed-group bin to score to
+      dg_offset = static_cast<int64_t>(site.delayed_group - 1) *
+                  tally.strides(tally.delayedgroup_filter_);
+    }
+
     auto& bins = per_tally[i_tally];
     auto filter_iter = FilterBinIter(tally, p);
-    auto end = FilterBinIter(tally, true, &p.filter_matches());
+    auto end_iter = FilterBinIter(tally, true, &p.filter_matches());
     touched_matches = true;
-    for (; filter_iter != end; ++filter_iter) {
-      bins.push_back({filter_iter.index_, filter_iter.weight_});
+    for (; filter_iter != end_iter; ++filter_iter) {
+      bins.push_back({filter_iter.index_ + dg_offset, filter_iter.weight_});
     }
     if (bins.empty())
-      per_tally.erase(i_tally); // matched nothing -- scores nowhere
+      per_tally.erase(i_tally);
   }
 
+  p.E() = saved_E;
   if (per_tally.empty())
-    p.adjoint_event_filters().erase(event_id);
+    p.adjoint_site_filters().erase(site_id);
 
-  // Invalidate the matches we just computed. Other tallies score later in
-  // this same event (a non-adjoint collision-estimator tally, for
-  // instance) and must recompute from their own phase point rather than
-  // reuse whatever state this left behind.
+  // Invalidate the matches we just computed: they were evaluated at the
+  // emitted neutron's energy, and other tallies score later in this same
+  // event from the parent's phase point.
   if (touched_matches) {
     for (auto& match : p.filter_matches())
       match.bins_present_ = false;
@@ -2991,23 +3023,16 @@ void commit_adjoint_scores(
   // per-scatter estimator, and discrete estimators are barred from adjoint
   // tallies because their per-event score correlates with the realized
   // terminal weight. See the guard in the Tally constructor.
-  struct EventWeight {
-    double all {0.0};
-    double delayed {0.0};
-    double prompt {0.0};
-  };
-  std::unordered_map<int, EventWeight> weight_by_event;
+  // Total terminal weight per fission event, for the diagonal scores.
+  // Fission-production scores are committed per emitted neutron further
+  // below, where that neutron's own nuclide, precursor group and filter
+  // bins are all available, so no split is needed here.
+  std::unordered_map<int, double> weight_by_event;
   for (const auto& [site_id, w] : terminal_weight_by_site) {
     auto info_it = p.adjoint_site_info().find(site_id);
     if (info_it == p.adjoint_site_info().end())
       continue; // not a generation-0-emitted neutron we are tracking
-    auto& ew = weight_by_event[info_it->second.event];
-    ew.all += w;
-    if (info_it->second.delayed) {
-      ew.delayed += w;
-    } else {
-      ew.prompt += w;
-    }
+    weight_by_event[info_it->second.event] += w;
   }
 
   // ---- suffix sums over the per-event terminal weights ----
@@ -3020,7 +3045,7 @@ void commit_adjoint_scores(
   vector<double> suffix(n_events + 2, 0.0);
   for (int e = n_events - 1; e >= 0; --e) {
     auto it = weight_by_event.find(e);
-    double w = (it == weight_by_event.end()) ? 0.0 : it->second.all;
+    double w = (it == weight_by_event.end()) ? 0.0 : it->second;
     suffix[e] = suffix[e + 1] + w;
   }
 
@@ -3031,12 +3056,15 @@ void commit_adjoint_scores(
         continue;
       Tally& tally {*model::tallies[i_tally]};
       auto n_scores = static_cast<int64_t>(tally.scores_.size());
+      auto stride = adjoint_score_stride(tally);
       for (auto& [key, staged] : tally_stage) {
         if (staged == 0.0)
           continue;
-        int64_t filter_index = key / n_scores;
-        int64_t score_index = key % n_scores;
-        int score_bin = tally.scores_[score_index];
+        int64_t filter_index = key / stride;
+        int64_t score_index = key % stride;
+        // score_index runs over nuclide bins too; scores_ is indexed by the
+        // within-nuclide position.
+        int score_bin = tally.scores_[score_index % n_scores];
 
         if (is_fission_production_score(score_bin))
           continue; // built from the emitted neutrons instead, below
@@ -3057,40 +3085,54 @@ void commit_adjoint_scores(
     }
   }
 
-  // ---- fission production: emitted neutrons, in their event's bins ----
-  // Not built from the staged track-length accumulation at all -- the
-  // emitted neutrons ARE the sampling of F, so the estimator is the
-  // importance-weighted sum over them, placed in the filter bins recorded
-  // at the emitting collision by record_adjoint_fission_filters().
-  for (const auto& [event_id, per_tally] : p.adjoint_event_filters()) {
-    auto wit = weight_by_event.find(event_id);
-    if (wit == weight_by_event.end())
+  // ---- fission production: one commit per emitted neutron ----
+  // Not built from the staged track-length accumulation at all: the emitted
+  // neutrons ARE the sampling of F, so the estimator is the sum of their
+  // realized terminal weights, each placed in the filter bins recorded for
+  // it by record_adjoint_site_filters(). Working per neutron is what lets
+  // nuclide, prompt/delayed and delayed-group all be resolved -- every one
+  // of those is a property of the individual neutron, not of the collision.
+  for (const auto& [site_id, w] : terminal_weight_by_site) {
+    if (w == 0.0)
       continue;
-    const EventWeight& ew = wit->second;
+    auto info_it = p.adjoint_site_info().find(site_id);
+    if (info_it == p.adjoint_site_info().end())
+      continue;
+    auto filt_it = p.adjoint_site_filters().find(site_id);
+    if (filt_it == p.adjoint_site_filters().end())
+      continue;
+    const auto& info = info_it->second;
 
-    for (const auto& [i_tally, bins] : per_tally) {
+    for (const auto& [i_tally, bins] : filt_it->second) {
       Tally& tally {*model::tallies[i_tally]};
       auto n_scores = static_cast<int64_t>(tally.scores_.size());
-      for (int64_t score_index = 0; score_index < n_scores; ++score_index) {
-        int score_bin = tally.scores_[score_index];
+      auto stride = adjoint_score_stride(tally);
+      for (int64_t score_index = 0; score_index < stride; ++score_index) {
+        int score_bin = tally.scores_[score_index % n_scores];
         if (!is_fission_production_score(score_bin))
           continue;
-        double value = (score_bin == SCORE_NU_FISSION)           ? ew.all
-                       : (score_bin == SCORE_DELAYED_NU_FISSION) ? ew.delayed
-                                                                 : ew.prompt;
-        if (value == 0.0)
+
+        // Prompt/delayed split.
+        if (score_bin == SCORE_DELAYED_NU_FISSION && !info.delayed)
           continue;
+        if (score_bin == SCORE_PROMPT_NU_FISSION && info.delayed)
+          continue;
+
+        // Nuclide bin: -1 is the total over all fissioning nuclides.
+        int i_nuclide = tally.nuclides_[score_index / n_scores];
+        if (i_nuclide != -1 && i_nuclide != info.i_nuclide)
+          continue;
+
         for (const auto& b : bins) {
 #pragma omp atomic
           tally.results_(b.index, score_index, TallyResult::VALUE) +=
-            value * b.weight;
+            w * b.weight;
         }
       }
     }
   }
 
-  p.adjoint_event_filters().clear();
-  p.adjoint_site_info().clear();
+  p.adjoint_site_filters().clear();
   p.adjoint_stage().clear();
 }
 

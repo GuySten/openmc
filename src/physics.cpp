@@ -235,10 +235,6 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
   int event_id = -1;
   if (simulation::superhistory_on && p.super_gen() == 0) {
     event_id = p.next_fission_event_id()++;
-    // Record which filter bins this collision falls in, while we are
-    // still at it -- the adjoint tally's own scoring call happens in
-    // event_advance, before this collision, so it cannot supply them.
-    record_adjoint_fission_filters(p, event_id);
   }
 
   // Determine whether to place fission sites into the shared fission bank
@@ -338,7 +334,10 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
         // site.delayed_group was set by sample_fission_neutron() above.
         local_site.adjoint_id = p.next_adjoint_site_id()++;
         p.adjoint_site_info()[local_site.adjoint_id] = {
-          event_id, local_site.delayed_group > 0};
+          event_id, local_site.delayed_group > 0, i_nuclide};
+        // Record this neutron's own filter bins now, while its outgoing
+        // energy and precursor group are available.
+        record_adjoint_site_filters(p, local_site.adjoint_id, local_site);
       } else {
         // Deeper generations inherit unchanged, so terminal weight keeps
         // pointing back at the generation-0 neutron it descends from.

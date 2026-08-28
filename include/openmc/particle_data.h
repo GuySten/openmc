@@ -614,22 +614,34 @@ private:
   struct AdjointSiteInfo {
     int event {-1};       // which fission event emitted this neutron
     bool delayed {false}; // was it born from a delayed group?
+    // Which nuclide fissioned to produce it. Without this the
+    // fission-production estimator -- a sum of importance over emitted
+    // neutrons -- cannot be resolved by nuclide at all: no slicing of
+    // tallies recovers the attribution, because the information simply
+    // isn't carried by the sites. -1 means unresolved (multigroup, where
+    // fission is sampled from macroscopic data).
+    int i_nuclide {-1};
   };
   std::unordered_map<int, AdjointSiteInfo> adjoint_site_info_;
 
-  // Filter bins matched at each of generation 0's fission events, keyed by
-  // event id then by tally index. Recorded at the event itself, because
-  // that is the only moment the emitting collision's phase point is
-  // available -- an adjoint tally's own scoring call happens in
+  // Filter bins matched for each generation-0-EMITTED fission neutron,
+  // keyed by that neutron's adjoint_id then by tally index. Recorded when
+  // the neutron is created, because that is the only moment its phase point
+  // is available -- an adjoint tally's own scoring call happens in
   // event_advance, over the segment BEFORE the collision, so it cannot
-  // supply the bins for fission production. A collision may match several
-  // bins of one tally, hence the vector.
+  // supply these bins.
+  //
+  // Per EMITTED NEUTRON rather than per fission event, because the filters
+  // that matter here separate siblings born at the same collision:
+  // EnergyoutFilter bins on the emitted energy, and DelayedGroupFilter on
+  // the precursor group. One collision's neutrons land in different bins of
+  // both. A neutron may match several bins of one tally, hence the vector.
   struct AdjointFilterBin {
     int64_t index {0};
     double weight {1.0};
   };
   std::unordered_map<int, std::unordered_map<int, vector<AdjointFilterBin>>>
-    adjoint_event_filters_;
+    adjoint_site_filters_;
 
   vector<double> pht_storage_;
 
@@ -876,11 +888,11 @@ public:
   }
 
   // Filter bins matched at each generation-0 fission event
-  // (see adjoint_event_filters_ declaration above)
+  // (see adjoint_site_filters_ declaration above)
   std::unordered_map<int, std::unordered_map<int, vector<AdjointFilterBin>>>&
-  adjoint_event_filters()
+  adjoint_site_filters()
   {
-    return adjoint_event_filters_;
+    return adjoint_site_filters_;
   }
 
   // Interim pulse height tally storage

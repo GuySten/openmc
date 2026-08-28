@@ -755,7 +755,7 @@ void initialize_particle_track(
   if (!is_secondary) {
     p.adjoint_stage().clear();
     p.adjoint_site_info().clear();
-    p.adjoint_event_filters().clear();
+    p.adjoint_site_filters().clear();
     p.next_fission_event_id() = 0;
     p.collision_event_anchor() = 0;
     p.next_adjoint_site_id() = 0;

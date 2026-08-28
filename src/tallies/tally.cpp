@@ -467,6 +467,47 @@ Tally::Tally(pugi::xml_node node)
   // score overshot the adjoint neutron balance -- it exceeded even the
   // value that would make the adjoint leakage zero -- so scattering
   // perturbations are NOT supported by this feature.
+  // Adjoint fission-production scores ARE resolved by nuclide: each
+  // generation-0-emitted neutron is tagged with the nuclide that fissioned
+  // to produce it (see Particle::AdjointSiteInfo), so the importance sum
+  // can be split accordingly. Two cases the tagging cannot serve:
+  //
+  //   - multigroup, where fission is sampled from macroscopic data and
+  //     there is no nuclide to attribute an emitted neutron to;
+  //   - multiply_density=false, which asks for a microscopic quantity,
+  //     while the estimator is a realized weight and inherently carries
+  //     the atom density of the material it was produced in.
+  if (adjoint_) {
+    bool has_fission_production = false;
+    for (int score : scores_) {
+      if (score == SCORE_NU_FISSION || score == SCORE_DELAYED_NU_FISSION ||
+          score == SCORE_PROMPT_NU_FISSION) {
+        has_fission_production = true;
+        break;
+      }
+    }
+    bool nuclide_resolved =
+      nuclides_.size() > 1 || (nuclides_.size() == 1 && nuclides_[0] != -1);
+
+    if (has_fission_production && nuclide_resolved && !settings::run_CE) {
+      fatal_error(fmt::format(
+        "Tally {} requests per-nuclide adjoint fission production, which is "
+        "not available in multigroup mode: fission is sampled from "
+        "macroscopic data, so emitted neutrons cannot be attributed to a "
+        "nuclide. Remove the <nuclides> entry.",
+        id_));
+    }
+    if (has_fission_production && !multiply_density_) {
+      fatal_error(fmt::format(
+        "Tally {} combines an adjoint fission-production score with "
+        "multiply_density=false. That score is estimated from the realized "
+        "weight of emitted neutrons, which inherently includes the atom "
+        "density, so a microscopic result is not available. Use a separate "
+        "tally for the microscopic quantity.",
+        id_));
+    }
+  }
+
   if (adjoint_ && estimator_ != TallyEstimator::TRACKLENGTH) {
     fatal_error(fmt::format(
       "Tally {} uses adjoint (super-history) weighting, which is supported "

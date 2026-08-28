@@ -143,20 +143,25 @@ void score_pulse_height_tally(Particle& p, const vector<int>& tallies);
 //!   descends from. A neutron with no entry (or an entry of 0)
 //!   contributes nothing -- its subtree died out before the terminal
 //!   generation.
-//! Record the filter bins matched at a generation-0 fission event
+//! Record the filter bins matched by a generation-0-emitted fission neutron
 //!
-//! Must be called at the fission event itself: adjoint tallies use the
+//! Must be called as the neutron is created: adjoint tallies use the
 //! track-length estimator, so their own scoring call happens in
 //! event_advance over the segment BEFORE this collision and cannot supply
-//! the bins that fission production belongs in. Evaluates the filters for
-//! every adjoint tally at the particle's current phase point and stores
-//! the result in p.adjoint_event_filters()[event_id]. Leaves the
-//! particle's filter matches invalidated, so any scoring later in this
-//! same event recomputes them rather than reusing these.
+//! the bins that fission production belongs in.
+//!
+//! Evaluates the filters for every adjoint tally at the EMITTED neutron's
+//! phase point -- its outgoing energy for EnergyoutFilter, its precursor
+//! group for DelayedGroupFilter -- so that siblings born at one collision
+//! are separated correctly. Stores the result in
+//! p.adjoint_site_filters()[site_id]. Leaves the particle's filter matches
+//! invalidated, so any scoring later in this same event recomputes them.
 //!
 //! \param p The particle at the fission event
-//! \param event_id The fission event's id
-void record_adjoint_fission_filters(Particle& p, int event_id);
+//! \param site_id The emitted neutron's adjoint_id
+//! \param site The emitted neutron's source site
+void record_adjoint_site_filters(
+  Particle& p, int site_id, const SourceSite& site);
 
 void commit_adjoint_scores(
   Particle& p, const std::unordered_map<int, double>& terminal_weight_by_site);

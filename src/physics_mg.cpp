@@ -134,10 +134,6 @@ void create_fission_sites(Particle& p)
   int event_id = -1;
   if (simulation::superhistory_on && p.super_gen() == 0) {
     event_id = p.next_fission_event_id()++;
-    // Record which filter bins this collision falls in, while we are
-    // still at it -- the adjoint tally's own scoring call happens in
-    // event_advance, before this collision, so it cannot supply them.
-    record_adjoint_fission_filters(p, event_id);
   }
 
   // Determine whether to place fission sites into the shared fission bank
@@ -240,8 +236,13 @@ void create_fission_sites(Particle& p)
         // site.delayed_group was set above (MG stores it as dg + 1, so
         // > 0 means delayed exactly as in the CE path).
         local_site.adjoint_id = p.next_adjoint_site_id()++;
+        // Multigroup samples fission from macroscopic data, so there is no
+        // nuclide to attribute the emitted neutron to.
         p.adjoint_site_info()[local_site.adjoint_id] = {
-          event_id, local_site.delayed_group > 0};
+          event_id, local_site.delayed_group > 0, -1};
+        // Record this neutron's own filter bins now, while its outgoing
+        // energy and precursor group are available.
+        record_adjoint_site_filters(p, local_site.adjoint_id, local_site);
       } else {
         local_site.adjoint_id = p.adjoint_id();
       }

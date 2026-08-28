@@ -1025,8 +1025,23 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
                   const DelayedGroupFilter& filt {
                     *dynamic_cast<DelayedGroupFilter*>(
                       model::tally_filters[i_dg_filt].get())};
-                  score_fission_delayed_dg(p, i_tally, delayed_groups[0] - 1,
-                    score, score_index);
+                  // The bin is the group's POSITION in the filter's list,
+                  // not group - 1: set_groups() accepts an arbitrary
+                  // selection, so <bins>2 4</bins> gives n_bins == 2 and
+                  // group 4 belongs in bin 1. Passing group - 1 put group 4
+                  // in bin 3 of a 2-bin filter -- an out-of-range write --
+                  // and silently shifted the groups that did land in range.
+                  int d_bin = C_NONE;
+                  for (int b = 0; b < filt.n_bins(); ++b) {
+                    if (filt.groups()[b] == delayed_groups[0]) {
+                      d_bin = b;
+                      break;
+                    }
+                  }
+                  if (d_bin != C_NONE) {
+                    score_fission_delayed_dg(
+                      p, i_tally, d_bin, score, score_index);
+                  }
                   continue;
                 }
               }

@@ -256,32 +256,24 @@ Tally::Tally(pugi::xml_node node)
     }
   }
 
-  // Run-level latch: does this run contain any adjoint tally at all?
-  // Distinct from simulation::superhistory_on, which setup_active_tallies()
-  // recomputes each batch and which says whether the lookahead needs to RUN
-  // this batch. Keep the two separate: this one is decided once, at
-  // construction, and drives the validation below plus the per-batch scan.
-  // Anything that must stay FIXED for a whole calculation -- a physics or
-  // variance-reduction choice, say -- belongs on this flag, never on the
-  // per-batch one, or the source would converge under one treatment and be
-  // tallied under another.
-  if (!simulation::superhistory_enabled) {
-    if (adjoint_) {
-      simulation::superhistory_enabled = true;
-      for (int score : scores_) {
-        if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
-            score == SCORE_IFP_DENOM) {
-          fatal_error(
-            "Cannot combine superhistory adjoint weighting with IFP scores.");
-        } else if (score == SCORE_PULSE_HEIGHT) {
-          fatal_error("Cannot combine superhistory adjoint weighting with "
-                      "pulse-height score.");
-        }
+  // Validate this tally's own adjoint configuration. No run-level flag is
+  // needed: simulation::superhistory_on is recomputed each batch in
+  // setup_active_tallies() from whether any adjoint tally is currently
+  // active, which is the only question the transport loop ever asks.
+  if (adjoint_) {
+    for (int score : scores_) {
+      if (score == SCORE_IFP_TIME_NUM || score == SCORE_IFP_BETA_NUM ||
+          score == SCORE_IFP_DENOM) {
+        fatal_error(
+          "Cannot combine superhistory adjoint weighting with IFP scores.");
+      } else if (score == SCORE_PULSE_HEIGHT) {
+        fatal_error("Cannot combine superhistory adjoint weighting with "
+                    "pulse-height score.");
       }
     }
   }
 
-  if (simulation::superhistory_enabled) {
+  if (adjoint_) {
     if (settings::run_mode == RunMode::EIGENVALUE) {
       if (settings::event_based) {
         fatal_error("Superhistory method cannot be used in event-mode.");
@@ -1314,16 +1306,12 @@ void setup_active_tallies()
   // transport work by roughly the generation count, so skipping it there
   // is a large saving. Safe because generations >=1 are lookahead-only:
   // they never feed the real fission bank, k-eff, or any tally, so the
-  // source converges identically with or without them. Only the lookahead
-  // is switched here; the run-level latch simulation::superhistory_enabled
-  // is never touched -- see the Tally constructor for the distinction.
+  // source converges identically with or without them.
   simulation::superhistory_on = false;
-  if (simulation::superhistory_enabled) {
-    for (const auto& t : model::tallies) {
-      if (t->adjoint_ && t->active_) {
-        simulation::superhistory_on = true;
-        break;
-      }
+  for (const auto& t : model::tallies) {
+    if (t->adjoint_ && t->active_) {
+      simulation::superhistory_on = true;
+      break;
     }
   }
 

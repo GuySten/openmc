@@ -39,8 +39,6 @@ extern "C" bool need_depletion_rx; //!< need to calculate depletion rx?
 extern "C" int restart_batch;      //!< batch at which a restart job resumed
 extern "C" bool satisfy_triggers;  //!< have tally triggers been satisfied?
 extern "C" bool superhistory_on;   //!< Run the lookahead THIS batch?
-extern "C" bool
-  superhistory_enabled; //!< Any adjoint tally exists in this run?
 extern int ssw_current_file;       //!< current surface source file
 extern "C" int total_gen;          //!< total number of generations simulated
 extern double total_weight;        //!< Total source weight in a batch

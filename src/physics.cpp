@@ -334,7 +334,7 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
         // site.delayed_group was set by sample_fission_neutron() above.
         local_site.adjoint_id = p.next_adjoint_site_id()++;
         p.adjoint_site_info()[local_site.adjoint_id] = {
-          event_id, local_site.delayed_group > 0, i_nuclide};
+          event_id, local_site.delayed_group, i_nuclide};
         // Record this neutron's own filter bins now, while its outgoing
         // energy and precursor group are available.
         record_adjoint_site_filters(p, local_site.adjoint_id, local_site);

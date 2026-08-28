@@ -607,13 +607,20 @@ private:
 
   // Provenance of each generation-0-emitted fission neutron, keyed by the
   // adjoint_id stamped on its SourceSite. Lets commit_adjoint_scores()
-  // route each site's realized terminal weight to the right place:
-  // `event` back to the snapshot above (diagonal scores), and `delayed`
-  // to separate <phi-dagger, F_d phi> from <phi-dagger, F phi>, which is
-  // the entire content of beta_eff.
+  // route each neutron's realized terminal weight to the right place:
+  // `event` back to the suffix sums that weight the diagonal scores, and
+  // `delayed_group` and `i_nuclide` to resolve the fission-production
+  // scores. Separating prompt from delayed is the entire content of
+  // beta_eff, since chi_d is softer than chi_p.
   struct AdjointSiteInfo {
     int event {-1};       // which fission event emitted this neutron
-    bool delayed {false}; // was it born from a delayed group?
+    // Precursor group it was born from, 0 for prompt -- i.e. the site's
+    // own delayed_group, kept verbatim rather than collapsed to a bool.
+    // The group is what the physics actually carries; prompt/delayed is
+    // just `delayed_group > 0`, so storing the bool would discard
+    // information the emitted neutron already has and force it to be
+    // recovered from the site later.
+    int delayed_group {0};
     // Which nuclide fissioned to produce it. Without this the
     // fission-production estimator -- a sum of importance over emitted
     // neutrons -- cannot be resolved by nuclide at all: no slicing of

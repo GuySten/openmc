@@ -2965,11 +2965,29 @@ void record_adjoint_site_filters(
     // produces need shifting to this neutron's own precursor group. Because
     // the filter's contribution to the flattened index is exactly
     // 0 * stride, the correction is a simple additive offset.
+    //
+    // The bin is the group's POSITION in the filter's list, not group - 1:
+    // set_groups() accepts an arbitrary selection (<bins>2 4</bins> is
+    // legal, and gives n_bins == 2), so assuming a full ordered list would
+    // send group 4 to bin 3 of a 2-bin filter. Look the group up the same
+    // way the stock scoring code does, via filt.groups()[d_bin].
     int64_t dg_offset = 0;
     if (tally.delayedgroup_filter_ != C_NONE) {
       if (site.delayed_group <= 0)
         continue; // prompt neutron: no delayed-group bin to score to
-      dg_offset = static_cast<int64_t>(site.delayed_group - 1) *
+      auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
+      const DelayedGroupFilter& dg_filt {*dynamic_cast<DelayedGroupFilter*>(
+        model::tally_filters[i_dg_filt].get())};
+      int d_bin = C_NONE;
+      for (int b = 0; b < dg_filt.n_bins(); ++b) {
+        if (dg_filt.groups()[b] == site.delayed_group) {
+          d_bin = b;
+          break;
+        }
+      }
+      if (d_bin == C_NONE)
+        continue; // this neutron's group was not requested by the filter
+      dg_offset = static_cast<int64_t>(d_bin) *
                   tally.strides(tally.delayedgroup_filter_);
     }
 
@@ -3113,9 +3131,10 @@ void commit_adjoint_scores(
           continue;
 
         // Prompt/delayed split.
-        if (score_bin == SCORE_DELAYED_NU_FISSION && !info.delayed)
+        bool delayed = info.delayed_group > 0;
+        if (score_bin == SCORE_DELAYED_NU_FISSION && !delayed)
           continue;
-        if (score_bin == SCORE_PROMPT_NU_FISSION && info.delayed)
+        if (score_bin == SCORE_PROMPT_NU_FISSION && delayed)
           continue;
 
         // Nuclide bin: -1 is the total over all fissioning nuclides.

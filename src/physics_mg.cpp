@@ -239,7 +239,7 @@ void create_fission_sites(Particle& p)
         // Multigroup samples fission from macroscopic data, so there is no
         // nuclide to attribute the emitted neutron to.
         p.adjoint_site_info()[local_site.adjoint_id] = {
-          event_id, local_site.delayed_group > 0, -1};
+          event_id, local_site.delayed_group, -1};
         // Record this neutron's own filter bins now, while its outgoing
         // energy and precursor group are available.
         record_adjoint_site_filters(p, local_site.adjoint_id, local_site);

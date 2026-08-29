@@ -391,11 +391,16 @@ def test_no_perturbations_writes_no_file(run_in_tmpdir, cells_and_materials):
 # StatePoint parsing
 # ----------------------------------------------------------------------------
 
-def _write_statepoint(path, tau, ids, n_generation, trees_per_pert=None):
+def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
     """Minimal statepoint carrying only a local_perturbation group.
 
     ``tau`` is [generation][tree][depth]. Tree 0 is the shared reference; tree
     ``i + 1`` belongs to perturbation ``ids[i]``.
+
+    ``run_mode`` and ``k_combined`` are written because the reader needs
+    k-effective to turn the fitted slope (dk/k) into a reactivity. The default
+    of 1.0 makes that conversion the identity, so tests that check a slope
+    read unchanged; pass a realistic k to exercise the conversion.
     """
     tau = np.asarray(tau, dtype=float)
     n_rec, n_trees, nd = tau.shape
@@ -403,6 +408,8 @@ def _write_statepoint(path, tau, ids, n_generation, trees_per_pert=None):
     with h5py.File(path, 'w') as f:
         f.attrs['filetype'] = np.bytes_('statepoint')
         f.attrs['version'] = [18, 0]
+        f.create_dataset('run_mode', data=np.bytes_('eigenvalue'))
+        f.create_dataset('k_combined', data=np.array([keff, 1.0e-5]))
         g = f.create_group('local_perturbation')
         g.create_dataset('n_generation', data=n_generation)
         g.create_dataset('n_generations_recorded', data=n_rec)
@@ -498,6 +505,32 @@ def test_slope_is_converted_to_a_reactivity(run_in_tmpdir):
     slope = -np.log1p(-raw.nominal_value / 1e5)
     assert converted.nominal_value == pytest.approx(
         1e5 * (1.0 - np.exp(-slope)) / k, rel=1e-9)
+
+
+def test_statepoint_applies_the_reactivity_conversion(run_in_tmpdir):
+    """The reader must divide the fitted slope by the run's k-effective.
+
+    `test_slope_is_converted_to_a_reactivity` checks the conversion itself;
+    this checks that StatePoint actually supplies k rather than leaving the
+    worth in dk/k. That omission is invisible to every internal consistency
+    check -- it took an independent method on the OECD benchmark to catch it.
+    """
+    L, n_gen, k = 8, 120, 1.38
+    rng = np.random.default_rng(31337)
+    ref, pert = _branching_tau(rng, k, -300e-5, 40, n_gen, L)
+    tau = np.stack([ref, pert], axis=1)
+
+    _write_statepoint('slope.h5', tau, [1], L, keff=1.0)
+    _write_statepoint('rho.h5', tau, [1], L, keff=k)
+
+    with openmc.StatePoint('slope.h5', autolink=False) as sp:
+        slope = sp.perturbations.by_id(1).rho
+    with openmc.StatePoint('rho.h5', autolink=False) as sp:
+        rho = sp.perturbations.by_id(1).rho
+
+    assert rho.nominal_value == pytest.approx(slope.nominal_value / k,
+                                              rel=1e-6)
+    assert rho.std_dev == pytest.approx(slope.std_dev / k, rel=1e-6)
 
 
 def test_statepoint_survives_extinct_generations(run_in_tmpdir):

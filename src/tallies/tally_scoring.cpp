@@ -2737,7 +2737,7 @@ void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
       // for a further scoring function.
       double score = current * filter_weight;
       for (auto score_index = 0; score_index < tally.scores_.size();
-        ++score_index) {
+           ++score_index) {
         if (tally.adjoint_ && simulation::superhistory_on) {
           // See the identical staging block in score_general_ce_nonanalog
           // for rationale. Sparse map: no pre-allocation needed.
@@ -2804,7 +2804,7 @@ void score_surface_tally(
 
       // Loop over scores.
       for (auto score_index = 0; score_index < tally.scores_.size();
-        ++score_index) {
+           ++score_index) {
         auto score_bin = tally.scores_[score_index];
         double score;
         if (score_bin == SCORE_CURRENT) {
@@ -2896,7 +2896,7 @@ void score_pulse_height_tally(Particle& p, const vector<int>& tallies)
 
           // Loop over scores.
           for (auto score_index = 0; score_index < tally.scores_.size();
-            ++score_index) {
+               ++score_index) {
 #pragma omp atomic
             tally.results_(filter_index, score_index, TallyResult::VALUE) +=
               filter_weight;
@@ -2947,7 +2947,7 @@ void record_adjoint_site_filters(
   p.E() = site.E;
 
   for (int64_t i_tally = 0;
-    i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
+       i_tally < static_cast<int64_t>(model::tallies.size()); ++i_tally) {
     const Tally& tally {*model::tallies[i_tally]};
     if (!tally.adjoint_ || !tally.active_)
       continue;

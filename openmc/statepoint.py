@@ -522,8 +522,12 @@ class StatePoint:
                         tau[:, np.asarray(pgroup['ref_trees'][()]), :].sum(1))
                     perturbations.append(p)
 
+            # The fitted slope is ln(k_p / k_ref); k_ref converts it to a
+            # reactivity difference. Without it every worth comes out too
+            # large by a factor of k.
             perturbations._set_results(np.array(numerators),
-                                       np.array(denominators))
+                                       np.array(denominators),
+                                       k_ref=self.keff.nominal_value)
             self._perturbations = perturbations
 
         return self._perturbations

@@ -467,6 +467,39 @@ def test_statepoint_parsing(run_in_tmpdir):
         assert np.isfinite(ps.by_id(1).depth_curve).all()
 
 
+def test_slope_is_converted_to_a_reactivity(run_in_tmpdir):
+    """The fitted slope is dk/k; the reported worth must be a reactivity.
+
+    The slope of ln(tau_p/R_p) is ln(k_p/k_ref). The reactivity difference is
+    1/k_ref - 1/k_p, smaller by a factor of k. Reporting the slope directly
+    overstates every worth by that factor -- which is exactly what the 7x7
+    benchmark showed before this conversion existed.
+    """
+    L, n_gen, k = 8, 120, 1.38
+    rng = np.random.default_rng(4242)
+    ref, pert = _branching_tau(rng, k, -300e-5, 40, n_gen, L)
+
+    def worth(k_ref):
+        ps = openmc.Perturbations(
+            [openmc.LocalPerturbation({71: 92}, perturbation_id=1)],
+            n_generation=L)
+        ps._set_results(np.array([pert]), np.array([ref]), k_ref=k_ref)
+        return ps.by_id(1).rho
+
+    raw = worth(1.0)          # dk/k
+    converted = worth(k)      # reactivity
+
+    assert converted.nominal_value == pytest.approx(
+        raw.nominal_value / k, rel=1e-6), \
+        'the slope was not divided by k'
+    assert converted.std_dev == pytest.approx(raw.std_dev / k, rel=1e-6), \
+        'the uncertainty was not transformed with the same Jacobian'
+    # exact form, not just the first-order 1/k
+    slope = -np.log1p(-raw.nominal_value / 1e5)
+    assert converted.nominal_value == pytest.approx(
+        1e5 * (1.0 - np.exp(-slope)) / k, rel=1e-9)
+
+
 def test_statepoint_survives_extinct_generations(run_in_tmpdir):
     """Generations where a whole shadow forest dies must not poison the run.
 

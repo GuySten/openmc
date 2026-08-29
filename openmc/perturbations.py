@@ -258,7 +258,8 @@ class Perturbations(cv.CheckedList):
         return super().__getitem__(self.ids.index(perturbation_id))
 
     # ------------------------------------------------------------- results
-    def _set_results(self, numerators, denominators, n_blocks=None):
+    def _set_results(self, numerators, denominators, k_ref=1.0,
+                     n_blocks=None):
         """Derive worths and their covariance from recorded shadow weights.
 
         Parameters
@@ -267,16 +268,31 @@ class Perturbations(cv.CheckedList):
             ``tau_p(d)`` per generation, shape (n_perturbations, n_gen, L+1).
         denominators : numpy.ndarray
             The matched reference ``R_p(d)``, same shape.
+        k_ref : float
+            k-effective of the reference system, used to convert the fitted
+            slope into a reactivity. Defaults to 1, which leaves the result
+            in dk/k.
         n_blocks : int, optional
             Number of groups the generations are split into for the
             delete-one-block jackknife.
 
-        The worth is the slope of ``l_p(d) = ln[tau_p(d) / R_p(d)]``. The
-        ratio is formed from sums over MANY generations, never one at a time:
-        a shadow tree is a branching process that can go extinct, so a single
-        generation's ``tau`` may be zero and ``log(0)`` is ``-inf``. Ordinary
-        IFP estimators are robust to exactly this because they sum over every
-        progenitor before dividing.
+        The ratio is formed from sums over MANY generations, never one at a
+        time: a shadow tree is a branching process that can go extinct, so a
+        single generation's ``tau`` may be zero and ``log(0)`` is ``-inf``.
+        Ordinary IFP estimators are robust to exactly this because they sum
+        over every progenitor before dividing.
+
+        The slope of ``l_p(d) = ln[tau_p(d) / R_p(d)]`` is
+        ``ln(k_p / k_ref)``, i.e. dk/k -- NOT a reactivity. The reactivity
+        difference is ``1/k_ref - 1/k_p``, which is smaller by a factor of k.
+        Reporting the slope directly would overstate every worth by that
+        factor, so it is converted here, exactly rather than to first order::
+
+            rho = (1 - exp(-slope)) / k_ref
+
+        k_ref carries its own uncertainty, but as a common multiplicative
+        factor of order 1e-5 relative it is negligible against the worths and
+        is not propagated.
         """
         n_pert, n_gen, nd = numerators.shape
         L = nd - 1
@@ -335,6 +351,13 @@ class Perturbations(cv.CheckedList):
         centred = replicates - replicates.mean(0)
         cov = (n_blocks - 1) / n_blocks * (centred.T @ centred)
         cov = np.atleast_2d(cov)
+
+        # Slope (dk/k) -> reactivity. The Jacobian of
+        # rho = (1 - exp(-s))/k_ref is exp(-s)/k_ref, essentially 1/k_ref for
+        # any realistic worth, and the covariance transforms with it.
+        jacobian = np.exp(-total) / k_ref
+        total = (1.0 - np.exp(-total)) / k_ref
+        cov = cov * np.outer(jacobian, jacobian)
 
         self._n_blocks = n_blocks
 

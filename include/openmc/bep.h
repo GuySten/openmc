@@ -52,10 +52,14 @@
 //!
 //!     l_p(d) = ln[ tau_p(d) / R_p(d) ] = const + d * ln(k_p / k_ref)
 //!
-//! and rho is the SLOPE of l_p(d). The intercept is the mode-overlap
-//! difference; keeping it out of the slope is what makes this exact rather
-//! than first order. Note the LOG: the ratio of importance sums appears as a
-//! multiplicative constant, so it cancels from the slope exactly. Fitting the
+//! and the SLOPE of l_p(d) is ln(k_p / k_ref), i.e. dk/k. That is NOT a
+//! reactivity: the reactivity difference is 1/k_ref - 1/k_p, smaller by a
+//! factor of k. Python converts it (Perturbations._set_results); this file
+//! records only tau, so nothing here needs k. The intercept is the
+//! mode-overlap difference; keeping it out of the slope is what makes this
+//! exact rather than first order. Note the LOG: the ratio of importance sums
+//! appears as a multiplicative constant, so it cancels from the slope
+//! exactly. Fitting the
 //! bare ratio r = tau_p/R_p - 1 instead scales the slope by that constant,
 //! which is second order but not negligible when a sample strongly depresses
 //! the local importance. l is formed as log1p(r) with r built from the

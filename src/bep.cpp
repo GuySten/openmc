@@ -15,6 +15,7 @@
 #include "openmc/file_utils.h"
 #include "openmc/material.h"
 #include "openmc/message_passing.h"
+#include "openmc/openmp_interface.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
@@ -40,7 +41,9 @@ vector<Tree> trees;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
 bool branching {false};
+vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
+vector<double> thread_tau;
 vector<double> tau;
 vector<double> tau_history;
 int64_t n_generations {0};
@@ -325,6 +328,8 @@ void init()
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
   tau.assign(trees.size() * nd, 0.0);
+  thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
+  thread_branch_sites.assign(num_threads(), {});
   tau_history.clear();
   branch_sites.clear();
 
@@ -358,6 +363,9 @@ void reset_generation()
   if (!branching)
     return;
   std::fill(tau.begin(), tau.end(), 0.0);
+  std::fill(thread_tau.begin(), thread_tau.end(), 0.0);
+  for (auto& sites : thread_branch_sites)
+    sites.clear();
   branch_sites.clear();
 }
 
@@ -386,12 +394,11 @@ void maybe_branch(Particle& p, int32_t cell_index)
   // not, because event_revive_from_secondary() resets it.
   site.seed_id = branch_seed(p.id(), p.n_tracks(), p.n_event());
 
-#pragma omp critical(BepBranch)
-  {
-    branch_sites.push_back(site);
-    ++n_branch_total;
-    w_branch_total += site.wgt;
-  }
+  // No synchronisation: this runs in the transport loop, and an omp critical
+  // here serialises every thread on a push_back. The vectors are merged in
+  // run_shadow_pass(), where the order no longer matters because each site
+  // carries its own seed.
+  thread_branch_sites[thread_num()].push_back(site);
 
   // The driver is deliberately NOT stopped and NOT tagged: it carries on in
   // the reference state exactly as in a stock run, so k, the fission source
@@ -412,8 +419,12 @@ void score_site(int tree, int super_gen, double wgt)
   int depth = super_gen - 1; // shadow roots live at super_gen == 1
   if (depth < 0 || depth > settings::bep_n_generation)
     return;
-#pragma omp atomic
-  tau[tau_index(tree, depth)] += wgt;
+  // The innermost operation of the whole feature, once per shadow fission
+  // site. Writing to a per-thread slab rather than an atomic add on shared
+  // memory: the shared array is a few hundred bytes, so every thread would
+  // contend for the same handful of cache lines billions of times.
+  thread_tau[static_cast<size_t>(thread_num()) * tau_stride() +
+             tau_index(tree, depth)] += wgt;
 }
 
 //==============================================================================
@@ -422,12 +433,36 @@ void score_site(int tree, int super_gen, double wgt)
 
 void run_shadow_pass()
 {
-  if (!branching || branch_sites.empty())
+  if (!branching)
     return;
+
+  // Merge the per-thread vectors and put them in a deterministic order. The
+  // order the threads recorded them in varies run to run; sorting by the
+  // seed, which is a property of the branch itself, makes the whole shadow
+  // pass -- including the order the per-thread tau slabs are summed in --
+  // reproducible for a given thread count.
+  branch_sites.clear();
+  for (const auto& sites : thread_branch_sites)
+    branch_sites.insert(branch_sites.end(), sites.begin(), sites.end());
+  if (branch_sites.empty())
+    return;
+  std::sort(branch_sites.begin(), branch_sites.end(),
+    [](const BranchSite& a, const BranchSite& b) {
+      return a.seed_id < b.seed_id;
+    });
+  for (const auto& site : branch_sites) {
+    ++n_branch_total;
+    w_branch_total += site.wgt;
+  }
 
   auto n = static_cast<int64_t>(branch_sites.size());
 
-#pragma omp parallel for schedule(dynamic, 8)
+  // Static, not dynamic: with the sites in a fixed order it gives each thread
+  // a fixed chunk, so the per-thread partial sums are reproducible. Tree cost
+  // varies a lot -- it is a branching process -- but with many sites per
+  // thread that averages out. Switch to dynamic if load imbalance ever shows
+  // up, at the cost of bit-reproducibility.
+#pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < n; ++i) {
     const BranchSite& site = branch_sites[i];
 
@@ -454,6 +489,14 @@ void accumulate_generation()
 {
   if (!branching)
     return;
+
+  // Sum the per-thread slabs, in thread order.
+  std::fill(tau.begin(), tau.end(), 0.0);
+  int stride = tau_stride();
+  for (int t = 0; t < num_threads(); ++t) {
+    for (int i = 0; i < stride; ++i)
+      tau[i] += thread_tau[static_cast<size_t>(t) * stride + i];
+  }
 
 #ifdef OPENMC_MPI
   if (mpi::n_procs > 1) {

@@ -352,6 +352,17 @@ class Perturbations(cv.CheckedList):
         cov = (n_blocks - 1) / n_blocks * (centred.T @ centred)
         cov = np.atleast_2d(cov)
 
+        # Keep the depth curves, per replicate as well as in total. Every
+        # honest diagnostic about the fit -- whether the residuals are
+        # consistent with the noise, whether the slope has stopped moving as
+        # the fit window shrinks -- needs their covariance, and the jackknife
+        # replicates are the only source of it.
+        with np.errstate(divide='ignore', invalid='ignore'):
+            self._ell = np.log(num_all / den_all)             # (n_pert, nd)
+            self._ell_replicates = np.log(num_drop / den_drop)
+        self._k_ref = k_ref
+        self._fit_from = d_min
+
         # Slope (dk/k) -> reactivity. The Jacobian of
         # rho = (1 - exp(-s))/k_ref is exp(-s)/k_ref, essentially 1/k_ref for
         # any realistic worth, and the covariance transforms with it.
@@ -415,27 +426,82 @@ class Perturbations(cv.CheckedList):
         with np.errstate(divide='ignore', invalid='ignore'):
             return cov / np.outer(std_dev, std_dev)
 
+    def _replicate_stats(self, values):
+        """Jackknife mean and standard deviation of a per-replicate array."""
+        n = values.shape[0]
+        centred = values - values.mean(0)
+        return values.mean(0), np.sqrt((n - 1) / n * (centred**2).sum(0))
+
     def linearity(self, perturbation_id, d_min=None):
-        """Reduced chi-square of a straight-line fit to the depth curve.
+        """Reduced chi-square of the straight-line fit to the depth curve.
 
-        Near 1 means the asymptotic regime has been reached over the fitted
-        range. Much above 1 means ``n_generation`` is too small and the
-        estimator is contaminated by the transient. There is no plateau to
-        look for: the curve is linear and its slope is the worth.
+        A real chi-square: residuals are weighted by the jackknife covariance
+        of the depth curve, so the scale is meaningful. Near 1 means the
+        deviations from a straight line are no larger than the noise, i.e. the
+        asymptotic regime has been reached over the fitted range. Well above 1
+        means it has not, and the fitted worth is biased -- see
+        :meth:`worth_by_fit_start`, which shows that bias directly.
 
+        The points are strongly correlated across depth, so the covariance is
+        used in full rather than point-by-point error bars.
         """
-        y = self.by_id(perturbation_id).depth_curve
-        if y is None:
+        if getattr(self, '_ell', None) is None:
             raise ValueError('No results present; read from a statepoint.')
-        d = np.arange(len(y))
-        if d_min is None:
-            d_min = self.n_generation // 2
-        sel = d >= d_min
+        i = self.ids.index(perturbation_id)
+        d = np.arange(self._ell.shape[1])
+        sel = d >= (self._fit_from if d_min is None else d_min)
         if sel.sum() < 3:
             return float('nan')
-        resid = y[sel] - np.polyval(np.polyfit(d[sel], y[sel], 1), d[sel])
-        scale = np.abs(y[sel]).max() or 1.0
-        return float((resid**2).sum() / (sel.sum() - 2)) / scale**2
+
+        y = self._ell[i, sel]
+        reps = self._ell_replicates[:, i, :][:, sel]
+        n = reps.shape[0]
+        centred = reps - reps.mean(0)
+        cov = (n - 1) / n * (centred.T @ centred)
+
+        resid = y - np.polyval(np.polyfit(d[sel], y, 1), d[sel])
+        # pinv, not inv: with n_blocks replicates the covariance has rank at
+        # most n_blocks - 1 and can be ill-conditioned.
+        chi2 = float(resid @ np.linalg.pinv(cov, rcond=1e-10) @ resid)
+        return chi2 / (sel.sum() - 2)
+
+    def worth_by_fit_start(self, perturbation_id):
+        """Worth in pcm as a function of where the slope fit starts.
+
+        The one diagnostic that answers "has the transient died out?"
+        directly. A sub-dominant mode decaying as (dominance ratio)**d biases
+        the slope, always in the same direction, and the bias shrinks as the
+        fit starts later. If these values drift with the starting depth, the
+        quoted worth is biased and ``n_generation`` is too small; if they
+        plateau, it is not.
+
+        Returns
+        -------
+        dict
+            Starting depth -> (worth, sigma) in pcm, fitted over that depth
+            through L.
+        """
+        if getattr(self, '_ell', None) is None:
+            raise ValueError('No results present; read from a statepoint.')
+        i = self.ids.index(perturbation_id)
+        nd = self._ell.shape[1]
+        d = np.arange(nd)
+
+        def fit(curve, d0):
+            sel = d >= d0
+            x = d[sel] - d[sel].mean()
+            return ((curve[..., sel] - curve[..., sel].mean(-1, keepdims=True))
+                    * x).sum(-1) / (x**2).sum()
+
+        out = {}
+        for d0 in range(nd - 2):
+            total = float(fit(self._ell[i], d0))
+            reps = fit(self._ell_replicates[:, i, :], d0)
+            _, sd = self._replicate_stats(reps[:, None])
+            jac = np.exp(-total) / self._k_ref
+            out[d0] = (1.0e5 * (1.0 - np.exp(-total)) / self._k_ref,
+                       1.0e5 * float(sd[0]) * jac)
+        return out
 
     # ----------------------------------------------------------------- XML
     def to_xml_element(self):

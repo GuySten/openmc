@@ -185,8 +185,27 @@ struct BranchSite {
 //! batches instead of merely declining to record.
 extern bool branching;
 
+//! Branch sites collected during the current generation, one vector per
+//! thread. Per-thread rather than shared because the alternative is an omp
+//! critical inside the transport loop, which serialises every thread on a
+//! push_back. Merged and sorted at the start of the shadow pass.
+extern vector<vector<BranchSite>> thread_branch_sites;
+
+//! The merged, sorted branch sites the shadow pass iterates over.
 extern vector<BranchSite> branch_sites;
-extern vector<double> tau; //!< [tree * (L + 1) + depth], this generation
+
+//! Depth-d descendant weight for this generation, one slab per thread,
+//! indexed [thread][tree][depth].
+//!
+//! Per-thread for the same reason, only more so: the shared version needed an
+//! omp atomic per shadow fission site, which is the innermost loop of the
+//! whole feature -- billions of atomic adds onto a handful of cache lines,
+//! contended by every thread. The slabs cost a few kB and are summed once per
+//! generation.
+extern vector<double> thread_tau;
+
+//! Per-thread slabs summed, i.e. this generation's tau. [tree * (L+1) + depth]
+extern vector<double> tau;
 
 //! Per-generation record of `tau`, appended once per active generation and
 //! laid out as [generation][tree][depth]. Everything downstream is derived
@@ -196,9 +215,16 @@ extern int64_t n_generations;
 extern int64_t n_branch_total;
 extern double w_branch_total;
 
+//! Offset within one thread's slab, and within the merged `tau`.
 inline int tau_index(int tree, int depth)
 {
   return tree * (settings::bep_n_generation + 1) + depth;
+}
+
+//! Number of doubles in one thread's slab.
+inline int tau_stride()
+{
+  return static_cast<int>(trees.size()) * (settings::bep_n_generation + 1);
 }
 
 //! Reference tree owning `cell_index`, or -1 if no perturbation touches it.

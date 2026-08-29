@@ -299,18 +299,67 @@ def test_results_accessors_without_results():
         ps.linearity(1)
 
 
-def test_linearity_separates_straight_from_curved():
-    ps = openmc.Perturbations([
-        openmc.LocalPerturbation({71: 92}, perturbation_id=1),
-        openmc.LocalPerturbation({71: 93}, perturbation_id=2),
-    ], n_generation=10)
-    d = np.arange(11)
-    # l(d) is linear in the asymptotic regime; its slope is the worth
-    ps.by_id(1).depth_curve = 1e-4 + d * -5e-4
-    # a transient that never straightens out
-    ps.by_id(2).depth_curve = -5e-4 * d**2
-    assert ps.linearity(1) < 1e-6
-    assert ps.linearity(2) > ps.linearity(1)
+def _transient_tau(amplitude, dominance_ratio, slope=-300e-5, n_gen=400,
+                   L=10, noise=2e-3, seed=7):
+    """Shadow weights whose log ratio is ``c + slope*d + A*r**d``.
+
+    The last term is a sub-dominant mode that has not died out. It biases the
+    fitted slope, always in the same direction, which is exactly the failure
+    the diagnostics below have to catch.
+    """
+    rng = np.random.default_rng(seed)
+    d = np.arange(L + 1)
+    ell = slope * d + amplitude * dominance_ratio**d
+    den = np.exp(np.outer(np.ones(n_gen), 4.0 + 0.3 * d))
+    num = den * np.exp(ell) * np.exp(rng.normal(0, noise, (n_gen, L + 1)))
+    return num[None, ...], den[None, ...]
+
+
+def _fitted(amplitude, dominance_ratio, k_ref=1.38):
+    ps = openmc.Perturbations(
+        [openmc.LocalPerturbation({71: 92}, perturbation_id=1)],
+        n_generation=10)
+    ps._set_results(*_transient_tau(amplitude, dominance_ratio), k_ref=k_ref)
+    return ps
+
+
+def test_linearity_is_a_real_chi_square():
+    """Near 1 without a transient, far above it with one.
+
+    The old version divided the residuals by the curve's own magnitude rather
+    than by their uncertainty, so it read ~0 for any curve with a linear
+    trend -- including one whose slope was biased by hundreds of pcm.
+    """
+    clean = _fitted(0.0, 0.7)
+    assert 0.2 < clean.linearity(1) < 5.0
+
+    contaminated = _fitted(0.05, 0.7)
+    assert contaminated.linearity(1) > 20.0
+
+
+def test_worth_by_fit_start_exposes_a_transient():
+    """The worth must stop moving as the fit window shrinks.
+
+    This is the diagnostic that answers "is n_generation large enough". A
+    sub-dominant mode makes the fitted worth drift monotonically with the
+    starting depth; without one it sits still.
+    """
+    def drift(ps):
+        curve = ps.worth_by_fit_start(1)
+        starts = sorted(curve)
+        return curve[starts[1]][0] - curve[starts[-1]][0]
+
+    assert abs(drift(_fitted(0.0, 0.7))) < 20.0
+    assert abs(drift(_fitted(0.05, 0.7))) > 100.0
+
+
+def test_fit_diagnostics_need_results():
+    ps = openmc.Perturbations([openmc.LocalPerturbation({71: 92},
+                                                        perturbation_id=1)])
+    with pytest.raises(ValueError):
+        ps.linearity(1)
+    with pytest.raises(ValueError):
+        ps.worth_by_fit_start(1)
 
 
 # ----------------------------------------------------------------------------

@@ -167,6 +167,15 @@ struct BranchSite {
   double wgt;
   double time;
   int32_t cell;
+
+  //! Seed for every shadow tree spawned here.
+  //!
+  //! Derived from the driver particle's own identity, NOT from this site's
+  //! position in `branch_sites`: that vector is filled under an omp critical
+  //! from a schedule(runtime) loop, so its order depends on thread timing.
+  //! Indexing by it gave a different seed to the same physical branch point
+  //! on every run, and BEP results were not reproducible.
+  int64_t seed_id;
 };
 
 //! True only while a generation that BEP acts on is being processed: set at

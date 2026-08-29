@@ -53,6 +53,32 @@ double w_branch_total {0.0};
 // down.
 namespace {
 
+//! 64-bit mix (the splitmix64 finalizer), so that small, correlated inputs
+//! give well-separated seeds.
+uint64_t mix(uint64_t x)
+{
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+
+//! Seed for the shadow trees spawned at one branch point.
+//!
+//! Keyed on the branch itself -- the generation and the driver particle's
+//! identity -- so it does not depend on the order branch sites happen to be
+//! recorded in, which is thread-timing dependent. Getting this wrong does
+//! not corrupt anything, it just makes every run give different worths from
+//! the same input.
+int64_t branch_seed(int64_t particle_id, int64_t n_tracks, int n_event)
+{
+  uint64_t h = mix(static_cast<uint64_t>(simulation::total_gen));
+  h = mix(h ^ static_cast<uint64_t>(particle_id));
+  h = mix(h ^ (static_cast<uint64_t>(n_tracks) << 32 |
+                static_cast<uint64_t>(n_event)));
+  return static_cast<int64_t>(h >> 1);
+}
+
 //! Transport one shadow tree rooted at `site` in tree `tree`.
 //!
 //! Depth bookkeeping rides on the existing super-history fields:
@@ -355,6 +381,10 @@ void maybe_branch(Particle& p, int32_t cell_index)
   site.wgt = p.wgt();
   site.time = p.time();
   site.cell = cell_index;
+  // Identity of the branch, not its arrival order. (id, n_tracks, n_event)
+  // is unique for a driver particle within a generation -- n_event alone is
+  // not, because event_revive_from_secondary() resets it.
+  site.seed_id = branch_seed(p.id(), p.n_tracks(), p.n_event());
 
 #pragma omp critical(BepBranch)
   {
@@ -401,12 +431,13 @@ void run_shadow_pass()
   for (int64_t i = 0; i < n; ++i) {
     const BranchSite& site = branch_sites[i];
 
-    // One seed id per branch site, shared by the reference tree and every
+    // One seed per branch site, shared by the reference tree and every
     // perturbed tree spawned here, so all of them draw the same numbers
     // wherever they are doing the same physics. That is what collapses the
     // variance of a difference, and what makes a null perturbation return
-    // zero rather than noise.
-    int64_t seed_id = simulation::total_gen * 1000000007LL + i;
+    // zero rather than noise. It was fixed when the site was recorded, so it
+    // does not depend on this loop's index -- see BranchSite::seed_id.
+    int64_t seed_id = site.seed_id;
 
     run_one_tree(site, cell_ref_tree[site.cell], seed_id);
 

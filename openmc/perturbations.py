@@ -295,6 +295,16 @@ class Perturbations(cv.CheckedList):
                              for a, b in zip(edges[:-1], edges[1:])])
         den_drop = np.array([den_all - denominators[:, a:b].sum(1)
                              for a, b in zip(edges[:-1], edges[1:])])
+        if (numerators[..., 1:] == 0).all():
+            raise DataError(
+                'Every shadow tree has zero weight beyond depth 0, so no '
+                'tree ever produced a fission site. That is a build or '
+                'configuration fault, not a statistics one: check that the '
+                'fission-site creation gate in sample_neutron_reaction() and '
+                'the revival gate in event_check_limit_and_revive() both use '
+                'bep::generation_limit(), rather than '
+                'settings::super_n_generation directly.')
+
         if not ((num_drop > 0).all() and (den_drop > 0).all()):
             raise DataError(
                 'A jackknife replicate has a shadow tree that is extinct at '

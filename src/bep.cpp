@@ -19,6 +19,7 @@
 #include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
+#include "openmc/tallies/tally.h"
 #include "openmc/xml_interface.h"
 #include "openmc/simulation.h"
 
@@ -174,6 +175,17 @@ void init()
   }
   if (perturbations.empty())
     fatal_error("<local_perturbation> given with no perturbations defined.");
+  for (const auto& t : model::tallies) {
+    if (t->adjoint_) {
+      // Checked here, not in the Tally constructor: tallies.xml is read
+      // before perturbations.xml, so settings::bep_on is still false while
+      // tallies are being built and the guard there can never fire.
+      fatal_error("<local_perturbation> cannot be combined with adjoint "
+                  "(super-history) tallies: both drive the revival loop, with "
+                  "different generation counts and different "
+                  "global-contribution rules. Run them separately.");
+    }
+  }
   if (settings::ifp_on) {
     // ifp() indexes simulation::ifp_source_* by current_work(), which a
     // shadow particle does not own.
@@ -230,13 +242,20 @@ void init()
           p.id, s.cell_id));
       }
 
-      auto m = model::material_map.find(s.mat_id);
-      if (m == model::material_map.end()) {
-        fatal_error(fmt::format("<local_perturbation> {}: material {} not "
-                                "found.",
-          p.id, s.mat_id));
+      if (s.mat_id == 0) {
+        // Material id 0 means void, matching how an unfilled cell is stored.
+        // Perturbing a sample to void is the natural "sample against nothing"
+        // reference, so it has to be expressible.
+        s.mat_index = MATERIAL_VOID;
+      } else {
+        auto m = model::material_map.find(s.mat_id);
+        if (m == model::material_map.end()) {
+          fatal_error(fmt::format("<local_perturbation> {}: material {} not "
+                                  "found.",
+            p.id, s.mat_id));
+        }
+        s.mat_index = m->second;
       }
-      s.mat_index = m->second;
 
       if (cell_ref_tree[s.cell_index] < 0) {
         cell_ref_tree[s.cell_index] = static_cast<int>(trees.size());

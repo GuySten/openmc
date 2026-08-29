@@ -275,10 +275,9 @@ void Particle::event_calculate_xs()
         // material there. find_cell() has already set material_last(), so
         // the cross-section cache invalidates on entry.
         int i_pert = bep::trees[bep_tree()].pert;
-        if (i_pert >= 0) {
-          int32_t m = bep::substitute(i_pert, i_cell);
-          if (m >= 0)
-            material() = m;
+        int32_t m;
+        if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m)) {
+          material() = m;
         }
       }
     }
@@ -609,9 +608,7 @@ void Particle::event_check_limit_and_revive()
     // BEP shadow trees run to their own depth. Keying the limit off the
     // particle rather than overwriting settings::super_n_generation keeps the
     // driver's own revival behaviour exactly as it is in a stock run.
-    const int gen_limit = (bep_tree() != BEP_TRUNK)
-                            ? settings::bep_n_generation + 1
-                            : settings::super_n_generation;
+    const int gen_limit = bep::generation_limit(bep_tree());
     // Iterate from the back (top of stack) to the front
     for (auto it = bank.rbegin(); it != bank.rend(); ++it) {
       // If the site's super_gen is smaller than the threshold, revive from it

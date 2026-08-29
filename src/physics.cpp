@@ -125,7 +125,7 @@ void sample_neutron_reaction(Particle& p)
   if (nuc->fissionable_ && p.neutron_xs(i_nuclide).fission > 0.0) {
     auto& rx = sample_fission(i_nuclide, p);
     if (settings::run_mode == RunMode::EIGENVALUE &&
-        p.super_gen() < settings::super_n_generation) {
+        p.super_gen() < bep::generation_limit(p.bep_tree())) {
       create_fission_sites(p, i_nuclide, rx);
     } else if (settings::run_mode == RunMode::FIXED_SOURCE &&
                settings::create_fission_neutrons) {

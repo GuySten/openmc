@@ -115,7 +115,8 @@ constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 namespace settings {
 
 extern bool bep_on;
-extern int bep_n_generation; //!< L, shared by all perturbations
+extern int bep_n_generation;   //!< L, shared by all perturbations
+extern int super_n_generation; //!< declared in settings.h; used above
 
 } // namespace settings
 
@@ -197,16 +198,33 @@ inline int ref_tree_of_cell(int32_t cell_index)
            : -1;
 }
 
-//! Material index perturbation `pert` substitutes into `cell_index`, or -1 if
-//! it does not touch that cell. Substitution lists are tiny, so a linear scan
-//! beats any map here.
-inline int32_t substitute(int pert, int32_t cell_index)
+//! Material perturbation `pert` substitutes into `cell_index`. Returns false
+//! if it does not touch that cell. Out-param rather than a sentinel return,
+//! because MATERIAL_VOID is itself -1. Substitution lists are tiny, so a
+//! linear scan beats any map here.
+inline bool substitute(int pert, int32_t cell_index, int32_t& mat_index)
 {
   for (const auto& s : perturbations[pert].subs) {
-    if (s.cell_index == cell_index)
-      return s.mat_index;
+    if (s.cell_index == cell_index) {
+      mat_index = s.mat_index;
+      return true;
+    }
   }
-  return -1;
+  return false;
+}
+
+//! How deep this particle's super-history chain runs.
+//!
+//! Keyed off the particle's tree so that BEP never has to overwrite
+//! settings::super_n_generation, which the driver and the adjoint
+//! super-history both read. Every gate that bounds a chain -- fission-site
+//! creation in sample_neutron_reaction() and revival in
+//! event_check_limit_and_revive() -- must use THIS, or shadow trees silently
+//! stop growing and every tau beyond depth 0 comes out zero.
+inline int generation_limit(int bep_tree_value)
+{
+  return (bep_tree_value != BEP_TRUNK) ? settings::bep_n_generation + 1
+                                       : settings::super_n_generation;
 }
 
 //! Read perturbations.xml if present. Optional, like tallies.xml.

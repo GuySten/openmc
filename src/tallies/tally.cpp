@@ -272,12 +272,6 @@ Tally::Tally(pugi::xml_node node)
                     "pulse-height score.");
       }
     }
-    if (settings::bep_on) {
-      fatal_error("<local_perturbation> and adjoint (super-history) tallies "
-                  "both drive the revival loop, with different generation "
-                  "counts and different global-contribution rules. Run them "
-                  "separately.");
-    }
   }
 
   if (adjoint_) {

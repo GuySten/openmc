@@ -145,6 +145,7 @@ class StatePoint:
         self._meshes_read = False
         self._filters_read = False
         self._tallies_read = False
+        self._perturbations = None
         self._summary = None
         self._global_tallies = None
         self._sparse = False
@@ -477,6 +478,71 @@ class StatePoint:
             self._tallies_read = True
 
         return self._tallies
+
+    @property
+    def perturbations(self):
+        """Local perturbation worths, or None if none were computed.
+
+        Returns a :class:`openmc.Perturbations` collection whose members carry
+        their reactivity worth in :attr:`~openmc.LocalPerturbation.rho` (pcm)
+        and its uncertainty in
+        :attr:`~openmc.LocalPerturbation.std_dev`. Use
+        :meth:`~openmc.Perturbations.difference` rather than combining the
+        uncertainties by hand: perturbations sharing branch sites are strongly
+        correlated, and the covariance is what makes a difference between two
+        of them precise.
+
+        .. versionadded:: 0.16.0
+
+        """
+        if self._perturbations is None and 'local_perturbation' in self._f:
+            group = self._f['local_perturbation']
+            n_gen = int(group['n_generation'][()])
+            ids = [int(i) for i in np.asarray(group['ids'][()])]
+            n = len(ids)
+
+            sum_rho = np.asarray(group['sum_rho'][()], dtype=float)
+            sum_cross = np.asarray(
+                group['sum_cross'][()], dtype=float).reshape(n, n)
+            n_pair = np.asarray(
+                group['n_pair'][()], dtype=float).reshape(n, n)
+
+            n_diag = np.diag(n_pair).copy()
+            if (n_diag < 2).any():
+                bad = [ids[i] for i in np.nonzero(n_diag < 2)[0]]
+                raise openmc.DataError(
+                    f'Perturbations {bad} have fewer than two usable '
+                    'generations: no branch site reached full shadow-tree '
+                    'depth. Increase the particles per generation or enlarge '
+                    'the perturbed region.')
+            mean = sum_rho / n_diag
+
+            # Covariance of the mean. n_pair is per pair so that a starved
+            # perturbation cannot invalidate the others; a pair with no common
+            # usable generation is left at zero covariance.
+            n_eff = np.where(n_pair > 1, n_pair, np.nan)
+            cov = (sum_cross / n_eff - np.outer(mean, mean)) / (n_eff - 1)
+
+            perturbations = openmc.Perturbations(n_generation=n_gen)
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', openmc.IDWarning)
+                for i, pid in enumerate(ids):
+                    pgroup = group[f'perturbation {pid}']
+                    cells = np.asarray(pgroup['cells'][()])
+                    materials = np.asarray(pgroup['materials'][()])
+                    p = openmc.LocalPerturbation(
+                        dict(zip(map(int, cells), map(int, materials))),
+                        perturbation_id=pid)
+                    p.rho = 1.0e5 * float(mean[i])
+                    p.std_dev = 1.0e5 * float(
+                        np.sqrt(max(np.nan_to_num(cov[i, i]), 0.0)))
+                    p.depth_curve = np.asarray(
+                        pgroup['sum_l'][()], dtype=float) / n_diag[i]
+                    perturbations.append(p)
+            perturbations.covariance = 1.0e10 * np.nan_to_num(cov)
+            self._perturbations = perturbations
+
+        return self._perturbations
 
     @property
     def tallies_present(self):

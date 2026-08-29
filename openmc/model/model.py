@@ -98,6 +98,7 @@ class Model:
         tallies: openmc.Tallies | None = None,
         plots: openmc.Plots | None = None,
         description: str = '',
+        perturbations: openmc.Perturbations | None = None,
     ):
         self.geometry = openmc.Geometry() if geometry is None else geometry
         self.materials = openmc.Materials() if materials is None else materials
@@ -105,6 +106,8 @@ class Model:
         self.tallies = openmc.Tallies() if tallies is None else tallies
         self.plots = openmc.Plots() if plots is None else plots
         self.description = description
+        self.perturbations = (openmc.Perturbations() if perturbations is None
+                              else perturbations)
 
     @property
     def geometry(self) -> openmc.Geometry:
@@ -171,6 +174,21 @@ class Model:
             del self._plots[:]
             for plot in plots:
                 self._plots.append(plot)
+
+    @property
+    def perturbations(self) -> openmc.Perturbations:
+        return self._perturbations
+
+    @perturbations.setter
+    def perturbations(self, perturbations):
+        check_type('perturbations', perturbations, Iterable,
+                   openmc.LocalPerturbation)
+        if isinstance(perturbations, openmc.Perturbations):
+            self._perturbations = perturbations
+        else:
+            del self._perturbations[:]
+            for perturbation in perturbations:
+                self._perturbations.append(perturbation)
 
     @property
     def description(self) -> str:
@@ -339,6 +357,7 @@ class Model:
         settings: PathLike = "settings.xml",
         tallies: PathLike = "tallies.xml",
         plots: PathLike = "plots.xml",
+        perturbations: PathLike = "perturbations.xml",
     ) -> Model:
         """Create model from existing XML files
 
@@ -371,7 +390,10 @@ class Model:
         tallies = openmc.Tallies.from_xml(
             tallies) if Path(tallies).exists() else None
         plots = openmc.Plots.from_xml(plots) if Path(plots).exists() else None
-        return cls(geometry, materials, settings, tallies, plots)
+        perturbations = openmc.Perturbations.from_xml(perturbations) \
+            if Path(perturbations).exists() else None
+        return cls(geometry, materials, settings, tallies, plots,
+                   perturbations=perturbations)
 
     @classmethod
     def from_model_xml(cls, path: PathLike = "model.xml") -> Model:
@@ -409,6 +431,10 @@ class Model:
 
             if root.find('plots') is not None:
                 model.plots = openmc.Plots.from_xml_element(root.find('plots'))
+
+            if root.find('perturbations') is not None:
+                model.perturbations = openmc.Perturbations.from_xml_element(
+                    root.find('perturbations'))
 
         return model
 
@@ -664,6 +690,8 @@ class Model:
 
         if self.tallies:
             self.tallies.export_to_xml(d)
+        if self.perturbations:
+            self.perturbations.export_to_xml(d)
         if self.plots:
             self.plots.export_to_xml(d)
 
@@ -748,8 +776,16 @@ class Model:
             if self.tallies:
                 tallies_element = self.tallies.to_xml_element(mesh_memo)
                 xml.clean_indentation(
-                    tallies_element, level=1, trailing_indent=self.plots)
+                    tallies_element, level=1,
+                    trailing_indent=self.plots or self.perturbations)
                 fh.write(ET.tostring(tallies_element, encoding="unicode"))
+            if self.perturbations:
+                perturbations_element = self.perturbations.to_xml_element()
+                xml.clean_indentation(
+                    perturbations_element, level=1,
+                    trailing_indent=self.plots)
+                fh.write(ET.tostring(perturbations_element,
+                                     encoding="unicode"))
             if self.plots:
                 plots_element = self.plots.to_xml_element()
                 xml.clean_indentation(

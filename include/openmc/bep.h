@@ -84,6 +84,8 @@
 
 #include <cstdint>
 
+#include <pugixml.hpp>
+
 #include "openmc/hdf5_interface.h"
 #include "openmc/position.h"
 #include "openmc/vector.h"
@@ -190,6 +192,12 @@ inline int32_t substitute(int pert, int32_t cell_index)
   }
   return -1;
 }
+
+//! Read perturbations.xml if present. Optional, like tallies.xml.
+void read_perturbations_xml();
+
+//! Read a <perturbations> element, from perturbations.xml or from model.xml.
+void read_perturbations_xml(pugi::xml_node root);
 
 void init();
 void reset_generation();

@@ -10,7 +10,6 @@
 #include <omp.h>
 #endif
 
-#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
 #include "openmc/constants.h"
@@ -591,40 +590,6 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
-      // Branched Exact Perturbation. Repeatable; L is shared by all of them.
-      // Indices, grouping and super_n_generation are resolved in bep::init(),
-      // which runs after geometry and materials are read.
-      if (check_for_node(root, "local_perturbation_n_generation")) {
-        bep_n_generation = std::stoi(
-          get_node_value(root, "local_perturbation_n_generation"));
-      }
-      int32_t next_lp_id = 1;
-      for (pugi::xml_node node_lp : root.children("local_perturbation")) {
-        bep_on = true;
-        bep::Perturbation lp;
-        lp.id = check_for_node(node_lp, "id")
-                  ? std::stoi(get_node_value(node_lp, "id"))
-                  : next_lp_id;
-        next_lp_id = lp.id + 1;
-
-        // A perturbation is a SET of substitutions applied together, which is
-        // what lets a displacement be expressed as the trailing sliver
-        // reverting and the leading sliver taking the sample. The single
-        // <cell>/<material> pair is kept as shorthand for the one-cell case.
-        for (pugi::xml_node node_s : node_lp.children("substitution")) {
-          bep::Substitution s;
-          s.cell_id = std::stoi(get_node_value(node_s, "cell"));
-          s.mat_id = std::stoi(get_node_value(node_s, "material"));
-          lp.subs.push_back(s);
-        }
-        if (check_for_node(node_lp, "cell")) {
-          bep::Substitution s;
-          s.cell_id = std::stoi(get_node_value(node_lp, "cell"));
-          s.mat_id = std::stoi(get_node_value(node_lp, "material"));
-          lp.subs.push_back(s);
-        }
-        bep::perturbations.push_back(lp);
-      }
     }
   }
 

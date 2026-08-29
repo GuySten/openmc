@@ -11,6 +11,7 @@
 #endif
 #include <fmt/core.h>
 
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/chain.h"
 #include "openmc/constants.h"
@@ -468,7 +469,7 @@ bool read_model_xml()
   // If other XML files are present, display warning
   // that they will be ignored
   auto other_inputs = {"materials.xml", "geometry.xml", "settings.xml",
-    "tallies.xml", "plots.xml"};
+    "tallies.xml", "plots.xml", "perturbations.xml"};
   for (const auto& input : other_inputs) {
     if (file_exists(settings::path_input + input)) {
       warning((fmt::format("Other XML file input(s) are present. These files "
@@ -508,6 +509,9 @@ bool read_model_xml()
 
   if (check_for_node(root, "tallies"))
     read_tallies_xml(root.child("tallies"));
+
+  if (check_for_node(root, "perturbations"))
+    bep::read_perturbations_xml(root.child("perturbations"));
 
   check_pulse_height_compatibility();
 
@@ -555,6 +559,8 @@ void read_separate_xml_files()
   finalize_cell_densities();
 
   read_tallies_xml();
+
+  bep::read_perturbations_xml();
 
   check_pulse_height_compatibility();
 

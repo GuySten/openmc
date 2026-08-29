@@ -12,12 +12,14 @@
 #include "openmc/cell.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
+#include "openmc/file_utils.h"
 #include "openmc/material.h"
 #include "openmc/message_passing.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
+#include "openmc/xml_interface.h"
 #include "openmc/simulation.h"
 
 namespace openmc {
@@ -98,6 +100,59 @@ void run_one_tree(const BranchSite& site, int tree, uint64_t seed)
 }
 
 } // namespace
+
+//==============================================================================
+// Input
+//==============================================================================
+
+void read_perturbations_xml()
+{
+  // Optional, like tallies.xml.
+  std::string filename = settings::path_input + "perturbations.xml";
+  if (!file_exists(filename))
+    return;
+
+  write_message("Reading perturbations XML file...", 5);
+
+  pugi::xml_document doc;
+  doc.load_file(filename.c_str());
+  read_perturbations_xml(doc.document_element());
+}
+
+void read_perturbations_xml(pugi::xml_node root)
+{
+  if (check_for_node(root, "n_generation")) {
+    settings::bep_n_generation =
+      std::stoi(get_node_value(root, "n_generation"));
+  }
+
+  int32_t next_id = 1;
+  for (pugi::xml_node node : root.children("local_perturbation")) {
+    settings::bep_on = true;
+    Perturbation p;
+    p.id = check_for_node(node, "id") ? std::stoi(get_node_value(node, "id"))
+                                      : next_id;
+    next_id = p.id + 1;
+
+    // A perturbation is a SET of substitutions applied together, which is what
+    // lets a displacement be expressed as the trailing sliver reverting and
+    // the leading sliver taking the sample. The bare <cell>/<material> pair is
+    // kept as shorthand for the one-cell case.
+    for (pugi::xml_node node_s : node.children("substitution")) {
+      Substitution s;
+      s.cell_id = std::stoi(get_node_value(node_s, "cell"));
+      s.mat_id = std::stoi(get_node_value(node_s, "material"));
+      p.subs.push_back(s);
+    }
+    if (check_for_node(node, "cell")) {
+      Substitution s;
+      s.cell_id = std::stoi(get_node_value(node, "cell"));
+      s.mat_id = std::stoi(get_node_value(node, "material"));
+      p.subs.push_back(s);
+    }
+    perturbations.push_back(p);
+  }
+}
 
 //==============================================================================
 // Setup

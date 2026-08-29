@@ -1,6 +1,7 @@
 #include "openmc/physics.h"
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
 #include "openmc/constants.h"
@@ -326,6 +327,13 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       local_site.wgt_ww_born = p.wgt_ww_born();
       local_site.n_split = p.n_split();
       local_site.super_gen = p.super_gen() + 1;
+      local_site.bep_tree = p.bep_tree();
+      if (local_site.bep_tree != BEP_TRUNK) {
+        // Record this shadow tree's depth-d descendant weight as it is
+        // produced; nothing needs measuring afterwards.
+        bep::score_site(
+          local_site.bep_tree, local_site.super_gen, local_site.wgt);
+      }
       if (p.super_gen() == 0) {
         // A neutron generation 0 just emitted: give it its own id and
         // record where it came from, so its realized terminal weight can

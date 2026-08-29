@@ -75,6 +75,10 @@ struct SourceSite {
   // the chi_p/chi_d spectral difference that beta_eff consists of.
   // -1 for ordinary (non-superhistory) sites.
   int adjoint_id {-1};
+  // Which BEP shadow tree this site belongs to, or BEP_TRUNK (-1) for the
+  // driver. Inherited unchanged by every descendant: once a history has
+  // branched it stays in its own tree forever.
+  int bep_tree {-1};
 };
 
 struct CollisionTrackSite {
@@ -663,6 +667,10 @@ private:
 
   int super_gen_ {-1};
 
+  // Which BEP shadow tree this particle belongs to; BEP_TRUNK (-1) for an
+  // ordinary driver particle. See bep.h.
+  int bep_tree_ {-1};
+
   // Counter assigning a fresh id to each of generation 0's OWN fission
   // events (incremented only when super_gen_==0 fissions).
   int next_fission_event_id_ {0};
@@ -824,6 +832,10 @@ public:
   // Superhistory index of particle
   int& super_gen() { return super_gen_; }
   const int& super_gen() const { return super_gen_; }
+
+  // Which BEP shadow tree this particle belongs to (BEP_TRUNK if none)
+  int& bep_tree() { return bep_tree_; }
+  int bep_tree() const { return bep_tree_; }
 
   // whether this track is to be written
   bool& write_track() { return write_track_; }

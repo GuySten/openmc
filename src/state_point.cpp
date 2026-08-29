@@ -8,6 +8,7 @@
 #include <fmt/core.h>
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/bank_io.h"
 #include "openmc/capi.h"
 #include "openmc/constants.h"
@@ -126,6 +127,9 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
     // Write out information for eigenvalue run
     if (settings::run_mode == RunMode::EIGENVALUE)
       write_eigenvalue_hdf5(file_id);
+
+    // Write out Branched Exact Perturbation results
+    bep::write_results(file_id);
 
     hid_t tallies_group = create_group(file_id, "tallies");
 

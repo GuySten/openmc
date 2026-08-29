@@ -6,6 +6,7 @@
 #include <fmt/core.h>
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/collision_track.h"
@@ -199,6 +200,7 @@ void Particle::from_source(const SourceSite* src)
     }
   }
   super_gen() = src->super_gen;
+  bep_tree() = src->bep_tree;
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
@@ -260,6 +262,27 @@ void Particle::event_calculate_xs()
 
   if (settings::check_overlaps)
     check_cell_overlap(*this);
+
+  if (settings::bep_on) {
+    int32_t i_cell = lowest_coord().cell();
+    if (bep::ref_tree_of_cell(i_cell) >= 0) {
+      if (bep_tree() == BEP_TRUNK) {
+        bep::maybe_branch(*this, i_cell);
+      } else {
+        // The geometry holds the REFERENCE material. A shadow applies only
+        // ITS OWN perturbation's substitutions, so a tree owned by A passing
+        // through a cell only B touches correctly sees the reference
+        // material there. find_cell() has already set material_last(), so
+        // the cross-section cache invalidates on entry.
+        int i_pert = bep::trees[bep_tree()].pert;
+        if (i_pert >= 0) {
+          int32_t m = bep::substitute(i_pert, i_cell);
+          if (m >= 0)
+            material() = m;
+        }
+      }
+    }
+  }
 
   // Calculate microscopic and macroscopic cross sections
   if (material() != MATERIAL_VOID) {

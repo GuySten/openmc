@@ -1,6 +1,7 @@
 #include "openmc/tallies/tally.h"
 
 #include "openmc/array.h"
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/constants.h"
@@ -270,6 +271,12 @@ Tally::Tally(pugi::xml_node node)
         fatal_error("Cannot combine superhistory adjoint weighting with "
                     "pulse-height score.");
       }
+    }
+    if (settings::bep_on) {
+      fatal_error("<local_perturbation> and adjoint (super-history) tallies "
+                  "both drive the revival loop, with different generation "
+                  "counts and different global-contribution rules. Run them "
+                  "separately.");
     }
   }
 
@@ -1314,6 +1321,12 @@ void setup_active_tallies()
       break;
     }
   }
+
+  // BEP shadow trees ride the same revival loop and the same local secondary
+  // bank, so the machinery has to be on even with no adjoint tally. Drivers
+  // are kept out of it by the super_gen guard in initialize_particle_track().
+  if (settings::bep_on)
+    simulation::superhistory_on = true;
 
   model::active_tallies.clear();
   model::active_analog_tallies.clear();

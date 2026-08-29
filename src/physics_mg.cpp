@@ -6,6 +6,7 @@
 #include <fmt/core.h>
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/constants.h"
 #include "openmc/eigenvalue.h"
 #include "openmc/error.h"
@@ -231,6 +232,11 @@ void create_fission_sites(Particle& p)
       local_site.wgt_ww_born = p.wgt_ww_born();
       local_site.n_split = p.n_split();
       local_site.super_gen = p.super_gen() + 1;
+      local_site.bep_tree = p.bep_tree();
+      if (local_site.bep_tree != BEP_TRUNK) {
+        bep::score_site(
+          local_site.bep_tree, local_site.super_gen, local_site.wgt);
+      }
       if (p.super_gen() == 0) {
         // See the identical block in physics.cpp's create_fission_sites().
         // site.delayed_group was set above (MG stores it as dg + 1, so

@@ -3,6 +3,7 @@
 #include <unordered_map>
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
 #include "openmc/container_util.h"
@@ -120,6 +121,9 @@ int openmc_simulation_init()
   for (auto& mat : model::materials) {
     mat->init_nuclide_index();
   }
+
+  // Resolve BEP perturbations now that geometry and materials are available
+  bep::init();
 
   // Reset global variables -- this is done before loading state point (as that
   // will potentially populate k_generation and entropy)
@@ -628,6 +632,8 @@ void finalize_batch()
 
 void initialize_generation()
 {
+  bep::reset_generation();
+
   if (settings::run_mode == RunMode::EIGENVALUE) {
     // Clear out the fission bank
     simulation::fission_bank.resize(0);
@@ -644,6 +650,12 @@ void initialize_generation()
 
 void finalize_generation()
 {
+  // Propagate this generation's branch sites through the reference tree and
+  // every perturbed tree, then fold the per-depth weights into the
+  // accumulators. Must run before sort_bank()/synchronize_bank() below.
+  bep::run_shadow_pass();
+  bep::accumulate_generation();
+
   auto& gt = simulation::global_tallies;
 
   // Update global tallies with the accumulation variables
@@ -746,7 +758,11 @@ void initialize_particle_track(
   // no longer a separate "virtual" state (see the transport_history_based()
   // restructuring): the whole chain of generations 0..L is one continuous,
   // real simulation.
-  p.super_gen() = simulation::superhistory_on ? 0 : -1;
+  // BEP switches superhistory_on on for the shadow trees only; drivers must
+  // stay ordinary particles with super_gen == -1 so they are never revived.
+  p.super_gen() =
+    (simulation::superhistory_on && !settings::bep_on) ? 0 : -1;
+  p.bep_tree() = BEP_TRUNK;
 
   // Fresh staging for this new super-history's adjoint-tally contributions
   // (only relevant for a new top-level particle, not secondaries created

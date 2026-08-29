@@ -374,6 +374,7 @@ endif()
 list(APPEND libopenmc_SOURCES
   src/atomic_mass.cpp
   src/bank.cpp
+  src/bep.cpp
   src/boundary_condition.cpp
   src/bremsstrahlung.cpp
   src/cell.cpp

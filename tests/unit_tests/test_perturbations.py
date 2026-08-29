@@ -1051,6 +1051,81 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
             f'difference {by_diff:.3f} (residual {residual:.3f})')
 
 
+def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
+    """BEP must work in multigroup mode, not just continuous energy.
+
+    SourceSite.E carries a GROUP INDEX in multigroup mode -- from_source()
+    does ``g() = int(src->E)`` there, while create_secondary() and split()
+    both write ``run_CE ? E() : g()``. Recording a shadow root's energy
+    without that distinction fed an energy in as a group index, which runs
+    off the end of every group-indexed array.
+
+    The null test catches it because a shadow root launched at a nonsense
+    group does not reproduce the reference tree.
+    """
+    groups = openmc.mgxs.EnergyGroups([0.0, 1.0e5, 20.0e6])
+
+    def xsdata(name, absorption):
+        x = openmc.XSdata(name, groups)
+        x.order = 0
+        x.set_total([1.0, 2.0])
+        x.set_absorption(absorption)
+        x.set_scatter_matrix(np.array([[[0.7], [0.0]], [[0.2], [1.5]]]))
+        x.set_fission([0.4, 0.5])
+        x.set_nu_fission([1.0, 1.2])
+        x.set_chi([1.0, 0.0])
+        return x
+
+    library = openmc.MGXSLibrary(groups)
+    library.add_xsdatas([xsdata('fuel', [0.3, 0.5]),
+                         xsdata('sample', [0.3, 0.5]),
+                         xsdata('absorber', [0.9, 2.0])])
+    library.export_to_hdf5('mgxs.h5')
+
+    def macro(name):
+        m = openmc.Material(name=name)
+        m.set_density('macro', 1.0)
+        m.add_macroscopic(name)
+        return m
+
+    fuel, sample, absorber = macro('fuel'), macro('sample'), macro('absorber')
+    inner = openmc.Sphere(r=2.0)
+    outer = openmc.Sphere(r=10.0, boundary_type='reflective')
+
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([
+        openmc.Cell(cell_id=10, fill=sample, region=-inner),
+        openmc.Cell(cell_id=11, fill=fuel, region=+inner & -outer),
+    ])
+    model.materials = openmc.Materials([fuel, sample, absorber])
+    model.materials.cross_sections = 'mgxs.h5'
+    model.settings.energy_mode = 'multi-group'
+    model.settings.particles = 2000
+    model.settings.batches = 25
+    model.settings.inactive = 5
+    model.settings.seed = 1
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point())
+
+    cell = model.geometry.get_all_cells()[10]
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
+        openmc.LocalPerturbation({cell: sample}, perturbation_id=2,
+                                 name='null'),
+    ], n_generation=6)
+
+    sp_path = model.run()
+    with openmc.StatePoint(sp_path) as sp:
+        ps = sp.perturbations
+        assert abs(ps.by_id(2).nominal_value) < 1.0e-6, \
+            'multigroup null perturbation is not zero'
+        assert ps.by_id(2).std_dev < 1.0e-6
+        # and the real perturbation has to produce something finite
+        worth = ps.by_id(1).rho
+        assert np.isfinite(worth.nominal_value)
+        assert worth.std_dev > 0.0
+
+
 def test_rejects_non_material_cell(run_in_tmpdir, model):
     """The swap replaces a material, so a lattice fill must fail.
 

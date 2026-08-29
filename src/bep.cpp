@@ -385,7 +385,11 @@ void maybe_branch(Particle& p, int32_t cell_index)
   BranchSite site;
   site.r = p.r();
   site.u = p.u();
-  site.E = p.E();
+  // SourceSite::E carries a GROUP INDEX in multigroup mode, not an energy:
+  // from_source() does g() = int(src->E) there. Storing p.E() unconditionally
+  // fed an energy in as a group index, which runs off the end of every
+  // group-indexed array. Same idiom as create_secondary() and split().
+  site.E = settings::run_CE ? p.E() : p.g();
   site.wgt = p.wgt();
   site.time = p.time();
   site.cell = cell_index;

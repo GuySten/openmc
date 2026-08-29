@@ -41,7 +41,7 @@ def model():
     # worth itself grows faster than that, so a pinhead sample needs an
     # impractical number of histories before its sign is even resolved. A
     # 1.5 cm sample makes these assertions decidable in seconds.
-    sample_surf = openmc.Sphere(x0=4.0, r=1.5)
+    sample_surf = openmc.Sphere(x0=4.0, r=2.5)
     outer = openmc.Sphere(r=10.0, boundary_type='reflective')
 
     sample = openmc.Cell(cell_id=10, fill=water, region=-sample_surf)
@@ -168,6 +168,10 @@ def test_absorber_worth_is_negative(run_in_tmpdir, model):
     nothing. Loose tolerance: this pins the sign, not the value.
     """
     _, absorber = _materials(model)
+    # Precision on a worth scales as 1/sqrt(branch sites). The fixture's
+    # sample is already large; this buys the rest of the margin needed to
+    # resolve the sign well clear of 3 sigma.
+    model.settings.particles = 10000
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({_sample_cell(model): absorber},
                                  perturbation_id=1, name='B10'),
@@ -226,10 +230,16 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir, model):
     difference would carry a needlessly large error bar.
     """
     water, absorber = _materials(model)
+    fuel = model.materials[0]
     cell = _sample_cell(model)
+    # No null perturbation here. A null has exactly zero worth AND exactly
+    # zero variance, so its row and column of the covariance are zero and its
+    # correlation with itself is 0/0 -- correct, but it makes a
+    # correlation-matrix assertion meaningless. Three genuinely different
+    # substitutions instead: absorber and void are negative, fuel positive.
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
-        openmc.LocalPerturbation({cell: water}, perturbation_id=2),
+        openmc.LocalPerturbation({cell: fuel}, perturbation_id=2),
         openmc.LocalPerturbation({cell: None}, perturbation_id=3),
     ], n_generation=6)
 
@@ -245,9 +255,11 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir, model):
         assert np.allclose(np.diag(corr), 1.0)
         assert np.all(np.abs(corr) <= 1.0 + 1e-9)
 
-        # The absorber and void perturbations act on the same cell through the
-        # same branch sites, so they must be positively correlated.
+        # Absorber and void act on the same cell through the same branch
+        # sites, so they must be positively correlated.
         assert corr[0, 2] > 0.1
+        assert (np.diag(cov) > 0.0).all(), \
+            'a perturbation has zero variance; is one of them a null?'
 
         # And the difference must be tighter than independent propagation
         _, sigma = ps.difference(3, 1)

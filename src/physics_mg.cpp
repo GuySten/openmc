@@ -161,6 +161,7 @@ void create_fission_sites(Particle& p)
     site.particle = ParticleType::neutron();
     site.time = p.time();
     site.wgt = 1. / weight;
+    site.bep_tree = p.bep_tree();
 
     // Sample the cosine of the angle, assuming fission neutrons are emitted
     // isotropically

@@ -274,6 +274,7 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
     site.time = p.time();
     site.wgt = 1. / weight;
     site.surf_id = 0;
+    site.bep_tree = p.bep_tree();
 
     // Sample delayed group and angle/energy for fission reaction
     sample_fission_neutron(i_nuclide, rx, &site, p);

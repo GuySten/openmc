@@ -77,7 +77,11 @@ struct SourceSite {
   int adjoint_id {-1};
   // Which BEP shadow tree this site belongs to, or BEP_TRUNK (-1) for the
   // driver. Inherited unchanged by every descendant: once a history has
-  // branched it stays in its own tree forever.
+  // branched it stays in its own tree forever. EVERY path that banks a site
+  // must copy it from the parent -- create_fission_sites(), and also
+  // Particle::create_secondary() and Particle::split(). A site that silently
+  // defaults to BEP_TRUNK becomes a fake driver particle and corrupts
+  // progeny_per_particle.
   int bep_tree {-1};
 };
 

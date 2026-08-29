@@ -112,6 +112,12 @@ bool Particle::create_secondary(
   }
   bank.super_gen = super_gen();
   bank.adjoint_id = adjoint_id();
+  // An (n,2n) neutron born inside a BEP shadow tree belongs to that tree.
+  // Leaving this at its default would tag it BEP_TRUNK, and a "driver"
+  // particle writes progeny_per_particle[current_work()] in event_death() --
+  // which for a shadow particle is the unowned slot 0. That corrupts
+  // sort_bank()'s scan and moves the real fission source.
+  bank.bep_tree = bep_tree();
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
@@ -140,6 +146,7 @@ void Particle::split(double wgt)
 
   bank.super_gen = super_gen();
   bank.adjoint_id = adjoint_id();
+  bank.bep_tree = bep_tree(); // see create_secondary()
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();

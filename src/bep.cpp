@@ -41,11 +41,7 @@ vector<vector<int>> cell_perts;
 bool branching {false};
 vector<BranchSite> branch_sites;
 vector<double> tau;
-vector<double> sum_l;
-vector<double> sum_tau;
-vector<double> sum_rho;
-vector<double> sum_cross;
-vector<int64_t> n_pair;
+vector<double> tau_history;
 int64_t n_generations {0};
 int64_t n_branch_total {0};
 double w_branch_total {0.0};
@@ -56,18 +52,22 @@ double w_branch_total {0.0};
 // down.
 namespace {
 
-//! Lower end of the finite difference used for rho_gen.
-int d_half()
-{
-  return settings::bep_n_generation / 2;
-}
-
 //! Transport one shadow tree rooted at `site` in tree `tree`.
 //!
 //! Depth bookkeeping rides on the existing super-history fields:
 //! create_fission_sites() stamps super_gen on each site it makes and calls
 //! score_site() with it, so nothing has to be measured after the fact.
-void run_one_tree(const BranchSite& site, int tree, uint64_t seed)
+//!
+//! `seed_id` is shared by every tree spawned at one branch site, which is
+//! what makes the trees common-random-number correlated. ALL streams must be
+//! initialised from it, not just STREAM_TRACKING: ParticleData's constructor
+//! leaves seeds_ uninitialised and from_source() does not touch it, so a
+//! partially seeded particle picks up stack garbage for the other streams.
+//! STREAM_URR_PTABLE in particular is advanced on every energy change in
+//! sample_neutron_reaction(), so leaving it unseeded silently decorrelates
+//! the trees wherever a nuclide has unresolved resonances -- and a null
+//! perturbation then returns noise instead of zero.
+void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
 {
   Particle p;
 
@@ -89,7 +89,8 @@ void run_one_tree(const BranchSite& site, int tree, uint64_t seed)
   p.n_split() = 0;
   p.ww_factor() = 0.0;
   p.wgt_born() = p.wgt();
-  p.seeds(0) = seed; // common random numbers across the whole tree family
+  p.id() = seed_id;
+  init_particle_seeds(seed_id, p.seeds());
   p.stream() = STREAM_TRACKING;
 
   score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
@@ -173,6 +174,12 @@ void init()
   }
   if (perturbations.empty())
     fatal_error("<local_perturbation> given with no perturbations defined.");
+  if (settings::ifp_on) {
+    // ifp() indexes simulation::ifp_source_* by current_work(), which a
+    // shadow particle does not own.
+    fatal_error("<local_perturbation> cannot be combined with IFP kinetics "
+                "parameters. Run them separately.");
+  }
 
   std::unordered_set<int32_t> seen_ids;
   for (const auto& p : perturbations) {
@@ -262,20 +269,29 @@ void init()
     trees.push_back({static_cast<int>(ip)});
   }
 
-  // Shadow roots start at super_gen == 1 so that all existing
-  // `super_gen() <= 0` gates exclude them. Relative depth d = super_gen - 1,
-  // so the revival loop needs one extra generation to reach d = L.
-  settings::super_n_generation = settings::bep_n_generation + 1;
+  // NOTE: settings::super_n_generation is deliberately NOT touched here.
+  // The driver reads it in event_check_limit_and_revive(), so changing it
+  // would alter driver behaviour -- and BEP must leave the driver
+  // bit-identical to a stock run. Shadow particles get their own revival
+  // limit from bep_n_generation, keyed off bep_tree(). Same reasoning for
+  // simulation::superhistory_on, which BEP no longer forces on:
+  // create_fission_sites() tests settings::bep_on directly instead.
 
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
   tau.assign(trees.size() * nd, 0.0);
-  sum_tau.assign(trees.size() * nd, 0.0);
-  sum_l.assign(np * nd, 0.0);
-  sum_rho.assign(np, 0.0);
-  sum_cross.assign(np * np, 0.0);
-  n_pair.assign(np * np, 0);
+  tau_history.clear();
   branch_sites.clear();
+
+  // One row per active generation. Warn rather than surprise the user with a
+  // large allocation late in the run.
+  double mb = 8.0 * settings::n_max_batches * settings::gen_per_batch *
+              trees.size() * nd / (1024.0 * 1024.0);
+  if (mb > 256.0) {
+    warning(fmt::format("<local_perturbation> will record about {:.0f} MB of "
+                        "per-generation data ({} trees, L = {}).",
+      mb, trees.size(), settings::bep_n_generation));
+  }
 
   size_t n_cells_touched = trees.size() - np;
   write_message(
@@ -366,20 +382,20 @@ void run_shadow_pass()
   for (int64_t i = 0; i < n; ++i) {
     const BranchSite& site = branch_sites[i];
 
-    // One seed per branch site, shared by the reference tree and every
+    // One seed id per branch site, shared by the reference tree and every
     // perturbed tree spawned here, so all of them draw the same numbers
-    // wherever they are doing the same physics. That is what makes the null
-    // test exactly zero and what correlates perturbations with each other.
-    uint64_t seed =
-      init_seed(simulation::total_gen * 1000000007LL + i, STREAM_TRACKING);
+    // wherever they are doing the same physics. That is what collapses the
+    // variance of a difference, and what makes a null perturbation return
+    // zero rather than noise.
+    int64_t seed_id = simulation::total_gen * 1000000007LL + i;
 
-    run_one_tree(site, cell_ref_tree[site.cell], seed);
+    run_one_tree(site, cell_ref_tree[site.cell], seed_id);
 
     // Only the perturbations that touch THIS cell spawn a tree here. A
     // perturbation whose other cells the history later reaches is picked up
     // by a separate branch there, since the driver stays untagged.
     for (int ip : cell_perts[site.cell]) {
-      run_one_tree(site, perturbations[ip].tree, seed);
+      run_one_tree(site, perturbations[ip].tree, seed_id);
     }
   }
 }
@@ -391,8 +407,8 @@ void accumulate_generation()
 
 #ifdef OPENMC_MPI
   if (mpi::n_procs > 1) {
-    // Sum tau across ranks before forming any ratio: the estimator is a ratio
-    // of sums, not the mean of per-rank ratios.
+    // Sum tau across ranks before recording: the estimator is a ratio of sums
+    // over every progenitor, not a mean of per-rank ratios.
     vector<double> reduced(tau.size(), 0.0);
     MPI_Allreduce(tau.data(), reduced.data(), static_cast<int>(tau.size()),
       MPI_DOUBLE, MPI_SUM, mpi::intracomm);
@@ -400,65 +416,15 @@ void accumulate_generation()
   }
 #endif
 
-  int L = settings::bep_n_generation;
-  int nd = L + 1;
-  int dh = d_half();
-  auto np = static_cast<int>(perturbations.size());
-
-  for (size_t i = 0; i < tau.size(); ++i)
-    sum_tau[i] += tau[i];
-
-  vector<double> rho(np, 0.0);
-  vector<char> usable(np, 0);
-
-  for (int ip = 0; ip < np; ++ip) {
-    const Perturbation& p = perturbations[ip];
-
-    double l_L = 0.0, l_h = 0.0;
-    bool ok = true;
-    for (int d = 0; d <= L; ++d) {
-      // Matched reference: the sum of the reference trees over exactly the
-      // cells this perturbation touches, i.e. over exactly the branch sites
-      // where it spawned a tree.
-      double R = 0.0;
-      for (int32_t ci : p.cells)
-        R += tau[tau_index(cell_ref_tree[ci], d)];
-      if (R <= 0.0) {
-        ok = false; // no branch site reached this depth this generation
-        break;
-      }
-      // log1p of the correlated difference: forming the difference first
-      // preserves the cancellation, and the log makes the importance-ratio
-      // constant drop out of the slope exactly.
-      double l = std::log1p((tau[tau_index(p.tree, d)] - R) / R);
-      sum_l[ip * nd + d] += l;
-      if (d == L)
-        l_L = l;
-      if (d == dh)
-        l_h = l;
-    }
-    if (!ok)
-      continue;
-
-    rho[ip] = (l_L - l_h) / static_cast<double>(L - dh);
-    usable[ip] = 1;
-    sum_rho[ip] += rho[ip];
-  }
-
-  // Full cross-product matrix so Python can give an exact uncertainty to any
-  // linear combination -- a difference between two sample positions, a
-  // finite-difference derivative, a fitted traverse. Counts are per pair
-  // because a starved perturbation must not invalidate the others.
-  for (int i = 0; i < np; ++i) {
-    if (!usable[i])
-      continue;
-    for (int j = 0; j < np; ++j) {
-      if (!usable[j])
-        continue;
-      sum_cross[i * np + j] += rho[i] * rho[j];
-      ++n_pair[i * np + j];
-    }
-  }
+  // Record and nothing else. Deliberately no ratio, no logarithm and no
+  // per-generation realisation: a shadow tree is a branching process that
+  // can go extinct, so tau for a whole generation can be zero over a small
+  // number of branch sites, and log(0) is -inf. Ordinary IFP estimators are
+  // robust to this precisely because they sum over every progenitor before
+  // dividing, and BEP now does the same. Dropping degenerate generations
+  // would bias the worth, since extinction correlates with the strength of
+  // the perturbation.
+  tau_history.insert(tau_history.end(), tau.begin(), tau.end());
   ++n_generations;
 }
 
@@ -476,50 +442,44 @@ void write_results(hid_t file_id)
   hid_t group = create_group(file_id, "local_perturbation");
 
   write_dataset(group, "n_generation", settings::bep_n_generation);
-  write_dataset(group, "d_half", d_half());
-  write_dataset(group, "n_generations", n_generations);
+  write_dataset(group, "n_generations_recorded", n_generations);
+  write_dataset(group, "n_trees", static_cast<int>(trees.size()));
   write_dataset(group, "n_branch", n_branch_total);
   write_dataset(group, "w_branch", w_branch_total);
   write_dataset(group, "n_perturbations", np);
-
-  // Raw sums, not means: normalisation, the linearity check and the fit
-  // belong in Python so the analysis can change without a rebuild.
-  write_dataset(group, "sum_rho", sum_rho);
-  write_dataset(group, "sum_cross", sum_cross);
-  vector<int64_t> npair(n_pair.begin(), n_pair.end());
-  write_dataset(group, "n_pair", npair);
 
   vector<int32_t> ids;
   for (const auto& p : perturbations)
     ids.push_back(p.id);
   write_dataset(group, "ids", ids);
 
+  // Flat [generation][tree][depth]; Python reshapes with n_trees and
+  // n_generation. Raw, because forming the ratio, fitting the slope and
+  // blocking for an uncertainty all belong where they can be changed without
+  // a rebuild.
+  write_dataset(group, "tau", tau_history);
+
   for (int ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
     hid_t pg = create_group(group, fmt::format("perturbation {}", p.id));
     write_dataset(pg, "index", ip);
+    write_dataset(pg, "tree", p.tree);
+
+    // Which reference trees make up this perturbation's matched denominator:
+    // exactly the cells it touches, i.e. exactly the branch sites where it
+    // spawned a tree.
+    vector<int32_t> ref_trees;
+    for (int32_t ci : p.cells)
+      ref_trees.push_back(cell_ref_tree[ci]);
+    write_dataset(pg, "ref_trees", ref_trees);
 
     vector<int32_t> cids, mids;
-    for (const auto& s : p.subs) {
-      cids.push_back(s.cell_id);
-      mids.push_back(s.mat_id);
+    for (const auto& sub : p.subs) {
+      cids.push_back(sub.cell_id);
+      mids.push_back(sub.mat_id);
     }
     write_dataset(pg, "cells", cids);
     write_dataset(pg, "materials", mids);
-
-    vector<double> l(sum_l.begin() + ip * nd, sum_l.begin() + (ip + 1) * nd);
-    write_dataset(pg, "sum_l", l);
-
-    vector<double> tp(sum_tau.begin() + p.tree * nd,
-      sum_tau.begin() + (p.tree + 1) * nd);
-    vector<double> tr(nd, 0.0);
-    for (int32_t ci : p.cells) {
-      int rt = cell_ref_tree[ci];
-      for (int d = 0; d < nd; ++d)
-        tr[d] += sum_tau[rt * nd + d];
-    }
-    write_dataset(pg, "sum_tau", tp);
-    write_dataset(pg, "sum_tau_ref", tr);
 
     close_group(pg);
   }

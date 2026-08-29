@@ -8,6 +8,7 @@ import numpy as np
 
 import openmc
 import openmc.checkvalue as cv
+from openmc.exceptions import DataError
 from ._xml import clean_indentation, get_text
 from .mixin import IDManagerMixin
 
@@ -238,6 +239,101 @@ class Perturbations(cv.CheckedList):
         return super().__getitem__(self.ids.index(perturbation_id))
 
     # ------------------------------------------------------------- results
+    def _set_results(self, numerators, denominators, n_blocks=None):
+        """Derive worths and their covariance from recorded shadow weights.
+
+        Parameters
+        ----------
+        numerators : numpy.ndarray
+            ``tau_p(d)`` per generation, shape (n_perturbations, n_gen, L+1).
+        denominators : numpy.ndarray
+            The matched reference ``R_p(d)``, same shape.
+        n_blocks : int, optional
+            Number of groups the generations are split into for the
+            delete-one-block jackknife.
+
+        The worth is the slope of ``l_p(d) = ln[tau_p(d) / R_p(d)]``. The
+        ratio is formed from sums over MANY generations, never one at a time:
+        a shadow tree is a branching process that can go extinct, so a single
+        generation's ``tau`` may be zero and ``log(0)`` is ``-inf``. Ordinary
+        IFP estimators are robust to exactly this because they sum over every
+        progenitor before dividing.
+        """
+        n_pert, n_gen, nd = numerators.shape
+        L = nd - 1
+        d_min = L // 2
+        d = np.arange(nd)
+        fit = d >= d_min
+        if fit.sum() < 2:
+            raise ValueError('n_generation is too small to fit a slope')
+
+        def slope(num, den):
+            """Least-squares slope of ln(num/den) over the fitted depths."""
+            x = d[fit] - d[fit].mean()
+            with np.errstate(divide='ignore', invalid='ignore'):
+                ell = np.log(num[..., fit] / den[..., fit])
+                return (ell * x).sum(-1) / (x**2).sum()
+
+        # Point estimate from the whole run: the largest possible sums, so
+        # extinction of individual trees is irrelevant.
+        total = slope(numerators.sum(1), denominators.sum(1))
+
+        # Uncertainty and covariance by delete-one-block jackknife. The
+        # estimator is a slope of a log of a ratio, so it is nonlinear in the
+        # accumulated sums and the spread of independent per-block estimates
+        # is the wrong thing to average. Each jackknife replicate instead uses
+        # all but one block, so it is as well-conditioned as the full estimate
+        # -- extinction inside a single block cannot make a replicate
+        # degenerate, which plain blocking could not promise.
+        if n_blocks is None:
+            n_blocks = min(20, n_gen)
+        n_blocks = max(2, min(n_blocks, n_gen))
+        edges = np.linspace(0, n_gen, n_blocks + 1).astype(int)
+
+        num_all, den_all = numerators.sum(1), denominators.sum(1)
+        num_drop = np.array([num_all - numerators[:, a:b].sum(1)
+                             for a, b in zip(edges[:-1], edges[1:])])
+        den_drop = np.array([den_all - denominators[:, a:b].sum(1)
+                             for a, b in zip(edges[:-1], edges[1:])])
+        if not ((num_drop > 0).all() and (den_drop > 0).all()):
+            raise DataError(
+                'A jackknife replicate has a shadow tree that is extinct at '
+                'every depth, so no uncertainty can be formed. Increase the '
+                'particles per generation so more branch sites are recorded, '
+                'enlarge the perturbed region, or reduce n_generation.')
+
+        replicates = slope(num_drop, den_drop)        # (n_blocks, n_pert)
+        centred = replicates - replicates.mean(0)
+        cov = (n_blocks - 1) / n_blocks * (centred.T @ centred)
+        cov = np.atleast_2d(cov)
+
+        self._n_blocks = n_blocks
+        self.covariance = 1.0e10 * cov
+        for i, p in enumerate(self):
+            p.rho = 1.0e5 * float(total[i])
+            p.std_dev = 1.0e5 * float(np.sqrt(max(cov[i, i], 0.0)))
+            with np.errstate(divide='ignore', invalid='ignore'):
+                p.depth_curve = np.log(numerators[i].sum(0) /
+                                       denominators[i].sum(0))
+
+    def value(self, perturbation_id):
+        """(rho, sigma) in pcm for one perturbation."""
+        i = self.ids.index(perturbation_id)
+        if self.covariance is None:
+            raise ValueError('No results present; read from a statepoint.')
+        return (float(self[i].rho),
+                float(np.sqrt(max(self.covariance[i, i], 0.0))))
+
+    @property
+    def n_blocks(self):
+        """Jackknife groups the generations were split into.
+
+        The jackknife treats blocks as independent. Generations share a
+        fission source, so uncertainties are somewhat optimistic; vary this
+        and check the error bar is stable before relying on it.
+        """
+        return getattr(self, '_n_blocks', None)
+
     def _weights(self, weights):
         w = np.zeros(len(self))
         for key, value in weights.items():
@@ -266,7 +362,8 @@ class Perturbations(cv.CheckedList):
             raise ValueError('No results present; read from a statepoint.')
         w = self._weights(weights)
         rho = np.array([p.rho for p in self])
-        return float(w @ rho), float(np.sqrt(max(w @ self.covariance @ w, 0.0)))
+        return (float(w @ rho),
+                float(np.sqrt(max(w @ self.covariance @ w, 0.0))))
 
     def difference(self, id_a, id_b):
         """``rho(a) - rho(b)`` with the correlation carried through."""

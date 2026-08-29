@@ -1322,15 +1322,11 @@ void setup_active_tallies()
     }
   }
 
-  // BEP shadow trees ride the same revival loop and the same local secondary
-  // bank, so the machinery has to be on even with no adjoint tally. Gate it
-  // on the active batches exactly as the adjoint-tally test above does via
-  // t->active_: BEP records nothing during inactive batches, so leaving the
-  // superhistory path switched on there would be needless machinery.
-  // Drivers are kept out of it regardless by the super_gen guard in
-  // initialize_particle_track().
-  if (settings::bep_on && simulation::current_batch > settings::n_inactive)
-    simulation::superhistory_on = true;
+  // BEP deliberately does NOT force simulation::superhistory_on on. The
+  // driver reads that flag in transport_history_based(), so flipping it
+  // changes driver behaviour, and BEP must leave the driver bit-identical to
+  // a stock run. create_fission_sites() tests settings::bep_on directly to
+  // give shadow trees their local bank.
 
   model::active_tallies.clear();
   model::active_analog_tallies.clear();

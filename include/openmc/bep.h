@@ -61,26 +61,42 @@
 //! the local importance. l is formed as log1p(r) with r built from the
 //! correlated difference, so the cancellation survives the log.
 //!
-//! The per-generation realisation accumulated is the finite difference over
-//! the upper half of the depth range,
+//! CRITICALLY, the ratio is formed ONCE, from sums accumulated over the whole
+//! run -- never per generation. A shadow tree is a branching process and can
+//! go extinct: with mean offspring k the extinction probability of a single
+//! tree is the root of q = exp(k(q-1)), about 0.16 even at k = 2.2. Over a
+//! handful of branch sites the whole population can die, and log(0) is -inf.
+//! Summing over every progenitor first is what makes ordinary IFP estimators
+//! robust to this -- a dead tree simply contributes zero -- and BEP does the
+//! same. Dropping degenerate generations instead would have been worse than
+//! noisy: extinction correlates with the perturbation's strength, so the
+//! selection biases the worth.
 //!
-//!     rho_gen = [l_p(L) - l_p(L/2)] / (L - L/2)
-//!
-//! Cross products rho_gen(i) * rho_gen(j) are accumulated for every pair, so
-//! any linear combination of perturbations -- a difference between two sample
-//! positions, a finite-difference derivative, a fitted traverse -- gets an
-//! exact uncertainty. Perturbations sharing branch sites and seeds are
-//! strongly correlated, so those combinations are far better determined than
-//! the individual worths. That is the point of running them together.
+//! So this file records only tau_t(d) per generation. Forming l_p(d), fitting
+//! the slope, and blocking the generations for an uncertainty all happen in
+//! Python, where the block size can be adapted to the branch rate without a
+//! rebuild. Blocks are also what give the covariance between perturbations,
+//! and hence exact uncertainties on any linear combination -- a difference
+//! between two sample positions, a finite-difference derivative, a fitted
+//! traverse.
 //!
 //! Sign: rho < 0 for an added absorber.
 //!
-//! DEPTH ENCODING
-//! --------------
+//! DEPTH ENCODING, AND DRIVER ISOLATION
+//! ------------------------------------
 //! Shadow roots launch at super_gen == 1, not 0, so every existing
 //! `super_gen() <= 0` gate in the tree excludes shadow particles
-//! automatically. Relative depth is d = super_gen - 1, and
-//! settings::super_n_generation is set to L + 1.
+//! automatically. Relative depth is d = super_gen - 1.
+//!
+//! BEP mutates NO global that the driver reads. It does not set
+//! settings::super_n_generation (event_check_limit_and_revive() derives a
+//! shadow tree's limit from bep_n_generation via bep_tree() instead) and it
+//! does not force simulation::superhistory_on on (create_fission_sites()
+//! tests settings::bep_on directly for the local bank). Shadow particles also
+//! own no slot in any per-source array, so event_death() skips the
+//! progeny_per_particle write for them. Between them these keep the driver
+//! bit-identical to a stock run, which the fission source in
+//! test_driver_is_unperturbed asserts exactly.
 
 #include <cstdint>
 
@@ -156,12 +172,12 @@ struct BranchSite {
 extern bool branching;
 
 extern vector<BranchSite> branch_sites;
-extern vector<double> tau;     //!< [tree * (L + 1) + depth], this generation
-extern vector<double> sum_l;   //!< [pert * (L + 1) + depth], diagnostics
-extern vector<double> sum_tau; //!< [tree * (L + 1) + depth], diagnostics
-extern vector<double> sum_rho;
-extern vector<double> sum_cross; //!< [i * n_pert + j]
-extern vector<int64_t> n_pair;   //!< [i * n_pert + j]
+extern vector<double> tau; //!< [tree * (L + 1) + depth], this generation
+
+//! Per-generation record of `tau`, appended once per active generation and
+//! laid out as [generation][tree][depth]. Everything downstream is derived
+//! from this in Python. Costs n_generations * n_trees * (L + 1) doubles.
+extern vector<double> tau_history;
 extern int64_t n_generations;
 extern int64_t n_branch_total;
 extern double w_branch_total;

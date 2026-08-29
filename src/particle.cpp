@@ -606,10 +606,16 @@ void Particle::event_check_limit_and_revive()
   if (!alive() && (!settings::use_shared_secondary_bank || super_gen() >= 0) &&
       !local_secondary_bank().empty()) {
     auto& bank = local_secondary_bank();
+    // BEP shadow trees run to their own depth. Keying the limit off the
+    // particle rather than overwriting settings::super_n_generation keeps the
+    // driver's own revival behaviour exactly as it is in a stock run.
+    const int gen_limit = (bep_tree() != BEP_TRUNK)
+                            ? settings::bep_n_generation + 1
+                            : settings::super_n_generation;
     // Iterate from the back (top of stack) to the front
     for (auto it = bank.rbegin(); it != bank.rend(); ++it) {
       // If the site's super_gen is smaller than the threshold, revive from it
-      if (it->super_gen < settings::super_n_generation) {
+      if (it->super_gen < gen_limit) {
         SourceSite& site = *it;
         event_revive_from_secondary(site);
 
@@ -669,8 +675,16 @@ void Particle::event_death()
 
   // Record the number of progeny created by this particle.
   // This data will be used to efficiently sort the fission bank.
-  if (settings::run_mode == RunMode::EIGENVALUE ||
-      settings::use_shared_secondary_bank) {
+  //
+  // BEP shadow particles are constructed outside the source loop and own no
+  // slot in progeny_per_particle: their current_work() is the default 0, so
+  // writing here would clobber the first real particle's entry. That silently
+  // corrupts the exclusive scan in sort_bank(), reorders the fission bank and
+  // moves k from the following generation onwards -- with no error and no
+  // out-of-range access to give it away.
+  if ((settings::run_mode == RunMode::EIGENVALUE ||
+        settings::use_shared_secondary_bank) &&
+      bep_tree() == BEP_TRUNK) {
     simulation::progeny_per_particle[current_work()] = n_progeny();
   }
 

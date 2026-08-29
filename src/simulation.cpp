@@ -758,10 +758,7 @@ void initialize_particle_track(
   // no longer a separate "virtual" state (see the transport_history_based()
   // restructuring): the whole chain of generations 0..L is one continuous,
   // real simulation.
-  // BEP switches superhistory_on on for the shadow trees only; drivers must
-  // stay ordinary particles with super_gen == -1 so they are never revived.
-  p.super_gen() =
-    (simulation::superhistory_on && !settings::bep_on) ? 0 : -1;
+  p.super_gen() = simulation::superhistory_on ? 0 : -1;
   p.bep_tree() = BEP_TRUNK;
 
   // Fresh staging for this new super-history's adjoint-tally contributions

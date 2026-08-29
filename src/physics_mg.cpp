@@ -143,7 +143,11 @@ void create_fission_sites(Particle& p)
   // mutually exclusive for generation 0.
   bool use_fission_bank =
     (settings::run_mode == RunMode::EIGENVALUE && p.super_gen() <= 0);
-  bool use_local_bank = simulation::superhistory_on && p.super_gen() >= 0;
+  // BEP shadow trees need the local bank too, but must not switch
+  // superhistory_on on: the driver reads that flag (see
+  // transport_history_based()), and BEP has to leave the driver untouched.
+  bool use_local_bank =
+    (simulation::superhistory_on || settings::bep_on) && p.super_gen() >= 0;
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank

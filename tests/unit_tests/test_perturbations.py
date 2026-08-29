@@ -7,6 +7,7 @@ import pytest
 
 import openmc
 from openmc.exceptions import DataError
+from uncertainties import UFloat, correlated_values
 
 
 @pytest.fixture(autouse=True)
@@ -99,9 +100,12 @@ def test_name():
 
 def test_repr_without_results_omits_worth():
     p = openmc.LocalPerturbation({71: 92}, name='steel')
+    assert p.rho is None and p.std_dev is None
     assert 'Worth' not in repr(p)
-    p.rho, p.std_dev = -40.0, 2.0
+    p.rho, = correlated_values([-40.0], [[4.0]])
     assert 'Worth' in repr(p)
+    assert p.std_dev == pytest.approx(2.0)
+    assert p.nominal_value == pytest.approx(-40.0)
 
 
 # ----------------------------------------------------------------------------
@@ -213,54 +217,68 @@ def results():
         openmc.LocalPerturbation({71: 92}, perturbation_id=1),
         openmc.LocalPerturbation({71: 93}, perturbation_id=2),
     ], n_generation=10)
-    ps[0].rho, ps[0].std_dev = -40.0, 2.0
-    ps[1].rho, ps[1].std_dev = -40.5, 2.0
-    ps.covariance = np.array([[4.0, 3.96], [3.96, 4.0]])
+    cov = np.array([[4.0, 3.96], [3.96, 4.0]])
+    for p, rho in zip(ps, correlated_values([-40.0, -40.5], cov)):
+        p.rho = rho
     return ps
 
 
-def test_combine_matches_hand_algebra(results):
-    value, std_dev = results.combine({1: 0.25, 2: 0.75})
+def test_rho_is_a_correlated_ufloat(results):
+    for p in results:
+        assert isinstance(p.rho, UFloat)
+    assert results.by_id(1).rho.nominal_value == pytest.approx(-40.0)
+    assert results.by_id(1).rho.std_dev == pytest.approx(2.0)
+    assert results.by_id(1).std_dev == pytest.approx(2.0)
+
+
+def test_arbitrary_combination_matches_hand_algebra(results):
+    a, b = results.by_id(1).rho, results.by_id(2).rho
+    combined = 0.25 * a + 0.75 * b
     w = np.array([0.25, 0.75])
     rho = np.array([-40.0, -40.5])
-    assert value == pytest.approx(float(w @ rho))
-    assert std_dev == pytest.approx(float(np.sqrt(w @ results.covariance @ w)))
+    assert combined.nominal_value == pytest.approx(float(w @ rho))
+    assert combined.std_dev == pytest.approx(
+        float(np.sqrt(w @ results.covariance @ w)))
 
 
 def test_difference_beats_independent_propagation(results):
     """The whole point of running perturbations together.
 
     Treating two co-located worths as independent gives sqrt(2)*sigma for
-    their difference. Carrying the covariance must do far better, or the
-    covariance is not being read.
+    their difference. Because rho carries its correlations, plain subtraction
+    must do far better -- if it does not, correlated_values was handed the
+    wrong matrix.
     """
-    value, std_dev = results.difference(2, 1)
-    assert value == pytest.approx(-0.5)
-    independent = np.hypot(2.0, 2.0)
-    assert std_dev == pytest.approx(np.sqrt(2 * (4.0 - 3.96)))
-    assert std_dev < independent / 5
+    diff = results.by_id(2).rho - results.by_id(1).rho
+    assert diff.nominal_value == pytest.approx(-0.5)
+    assert diff.std_dev == pytest.approx(np.sqrt(2 * (4.0 - 3.96)))
+    assert diff.std_dev < np.hypot(2.0, 2.0) / 5
 
 
 def test_derivative_scales_by_dz(results):
-    value, std_dev = results.difference(2, 1)
-    dvalue, dstd = results.derivative(2, 1, 0.5)
-    assert dvalue == pytest.approx(value / 0.5)
-    assert dstd == pytest.approx(std_dev / 0.5)
-    # A negative step must not flip the sign of the uncertainty
-    assert results.derivative(2, 1, -0.5)[1] > 0
+    diff = results.by_id(2).rho - results.by_id(1).rho
+    for dz in (0.5, -0.5):
+        deriv = diff / dz
+        assert deriv.nominal_value == pytest.approx(diff.nominal_value / dz)
+        # A negative step must not flip the sign of the uncertainty
+        assert deriv.std_dev == pytest.approx(diff.std_dev / abs(dz))
 
 
-def test_correlation_matrix(results):
+def test_covariance_round_trips(results):
+    """The reported covariance must agree with what the rho arithmetic does."""
+    assert np.allclose(results.covariance,
+                       np.array([[4.0, 3.96], [3.96, 4.0]]))
     corr = results.correlation()
     assert np.allclose(np.diag(corr), 1.0)
     assert corr[0, 1] == pytest.approx(3.96 / 4.0)
 
 
-def test_results_methods_raise_without_results():
+def test_results_accessors_without_results():
     ps = openmc.Perturbations([openmc.LocalPerturbation({71: 92},
                                                         perturbation_id=1)])
-    with pytest.raises(ValueError):
-        ps.combine({1: 1.0})
+    assert ps.by_id(1).rho is None
+    assert ps.by_id(1).std_dev is None
+    assert ps.covariance is None
     with pytest.raises(ValueError):
         ps.correlation()
     with pytest.raises(ValueError):
@@ -439,11 +457,10 @@ def test_statepoint_parsing(run_in_tmpdir):
         assert ps.n_generation == L
         assert ps.n_blocks >= 2
 
-        value, std_dev = ps.value(1)
-        assert np.isfinite(value) and std_dev > 0.0
-        assert abs(value - 1e5 * rho) < 4.0 * std_dev, \
-            f'recovered {value:.1f} +/- {std_dev:.1f} pcm, expected ' \
-            f'{1e5 * rho:.1f}'
+        got = ps.by_id(1).rho
+        assert np.isfinite(got.nominal_value) and got.std_dev > 0.0
+        assert abs(got.nominal_value - 1e5 * rho) < 4.0 * got.std_dev, \
+            f'recovered {got:.1f} pcm, expected {1e5 * rho:.1f}'
 
         assert ps.by_id(1).substitutions == {71: 92}
         assert len(ps.by_id(1).depth_curve) == L + 1
@@ -470,18 +487,46 @@ def test_statepoint_survives_extinct_generations(run_in_tmpdir):
 
     with openmc.StatePoint('sp.h5', autolink=False) as sp:
         ps = sp.perturbations
-        value, std_dev = ps.value(1)
-        assert np.isfinite(value), 'extinct generations produced a nan worth'
-        assert np.isfinite(std_dev)
+        got = ps.by_id(1).rho
+        assert np.isfinite(got.nominal_value), \
+            'extinct generations produced a nan worth'
+        assert np.isfinite(got.std_dev)
         assert np.isfinite(ps.covariance).all()
 
 
-def test_statepoint_all_extinct_raises(run_in_tmpdir):
-    """If no blocking gives usable sums, fail loudly rather than return nan."""
+def test_statepoint_zero_depth_raises(run_in_tmpdir):
+    """No weight past depth 0 is a build fault, and must be named as one.
+
+    It means no shadow tree ever produced a fission site -- the symptom of a
+    chain-bounding gate reading settings::super_n_generation instead of
+    bep::generation_limit(). Reporting it as thin statistics would send
+    someone off adding particles for no reason.
+    """
     L, n_gen = 8, 40
     ref = np.ones((n_gen, L + 1))
     pert = np.zeros((n_gen, L + 1))
-    pert[:, 0] = 1.0                     # roots survive, nothing else does
+    pert[:, 0] = 1.0                     # roots exist, nothing descends
+    tau = np.stack([ref, pert], axis=1)
+    _write_statepoint('sp.h5', tau, [1], L)
+
+    with openmc.StatePoint('sp.h5', autolink=False) as sp:
+        with pytest.raises(DataError, match='fission site'):
+            sp.perturbations
+
+
+def test_statepoint_degenerate_jackknife_raises(run_in_tmpdir):
+    """If a leave-one-out replicate has nothing left, fail loudly.
+
+    Weight past depth 0 exists, so this is not the build fault above, but it
+    is concentrated in a single generation: drop that block and the replicate
+    has no surviving tree at any depth. Returning nan there would be worse
+    than an error.
+    """
+    L, n_gen = 8, 40
+    ref = np.ones((n_gen, L + 1))
+    pert = np.zeros((n_gen, L + 1))
+    pert[:, 0] = 1.0
+    pert[0, :] = 1.0                     # only the first generation survives
     tau = np.stack([ref, pert], axis=1)
     _write_statepoint('sp.h5', tau, [1], L)
 
@@ -505,7 +550,8 @@ def test_statepoint_covariance_is_symmetric(run_in_tmpdir):
         assert np.allclose(cov, cov.T)
         assert (np.diag(cov) > 0).all()
         assert np.all(np.abs(ps.correlation()) <= 1.0 + 1e-9)
-        assert np.isfinite(ps.difference(2, 1)).all()
+        diff = ps.by_id(2).rho - ps.by_id(1).rho
+        assert np.isfinite([diff.nominal_value, diff.std_dev]).all()
 
 
 def test_statepoint_absent_group_returns_none(run_in_tmpdir):

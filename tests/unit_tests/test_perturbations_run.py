@@ -99,7 +99,10 @@ def test_null_perturbation_is_exactly_zero(run_in_tmpdir, model):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         p = sp.perturbations.by_id(1)
-        assert abs(p.rho) < 1.0e-6, \
+        # rho is an uncertainties value; compare its parts, not the object.
+        # Ordering and abs() on AffineScalarFunc are deprecated, and numpy
+        # ufuncs reject it outright.
+        assert abs(p.nominal_value) < 1.0e-6, \
             f'null perturbation gave {p.rho} pcm; common random numbers are ' \
             'not holding between the reference and perturbed trees'
         assert p.std_dev < 1.0e-6
@@ -180,13 +183,13 @@ def test_absorber_worth_is_negative(run_in_tmpdir, model):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         p = sp.perturbations.by_id(1)
-        assert np.isfinite(p.rho), \
+        assert np.isfinite(p.nominal_value), \
             'non-finite worth: a shadow tree went extinct and log1p(-1) ' \
             'leaked into the accumulator'
         assert np.isfinite(p.std_dev)
         assert p.std_dev > 0.0
-        assert p.rho < -3.0 * p.std_dev, (
-            f'B10 sample worth {p.rho:.0f} +/- {p.std_dev:.0f} pcm is not '
+        assert p.nominal_value < -3.0 * p.std_dev, (
+            f'B10 sample worth {p.rho:.0f} pcm is not '
             'resolvably negative. If the sign is right but the error bar is '
             'too large, this is statistics, not correctness: precision scales '
             'as 1/sqrt(branch sites), so raise particles or enlarge the '
@@ -261,10 +264,11 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir, model):
         assert (np.diag(cov) > 0.0).all(), \
             'a perturbation has zero variance; is one of them a null?'
 
-        # And the difference must be tighter than independent propagation
-        _, sigma = ps.difference(3, 1)
+        # Subtracting the correlated rho values must beat treating them as
+        # independent -- that is what correlated_values buys.
+        diff = ps.by_id(3).rho - ps.by_id(1).rho
         independent = np.hypot(ps.by_id(1).std_dev, ps.by_id(3).std_dev)
-        assert sigma < independent
+        assert diff.std_dev < independent
 
 
 def test_displacement_matches_difference_of_positions(run_in_tmpdir):
@@ -334,14 +338,15 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         ps = sp.perturbations
-        by_diff, sigma_diff = ps.difference(2, 1)
+        by_diff = ps.by_id(2).rho - ps.by_id(1).rho
         by_displacement = ps.by_id(3).rho
-        sigma_displacement = ps.by_id(3).std_dev
 
-        combined = np.hypot(sigma_diff, sigma_displacement)
-        assert abs(by_displacement - by_diff) < 4.0 * combined, (
-            f'displacement {by_displacement:.3f} +/- {sigma_displacement:.3f} '
-            f'disagrees with difference {by_diff:.3f} +/- {sigma_diff:.3f}')
+        # Both routes share the same run, so subtract them as correlated
+        # quantities too: the residual carries the right uncertainty.
+        residual = by_displacement - by_diff
+        assert abs(residual.nominal_value) < 4.0 * residual.std_dev, (
+            f'displacement {by_displacement:.3f} disagrees with difference '
+            f'{by_diff:.3f} (residual {residual:.3f})')
 
 
 def test_rejects_non_material_cell(run_in_tmpdir, model):

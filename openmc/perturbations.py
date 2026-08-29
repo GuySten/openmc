@@ -6,6 +6,9 @@ from pathlib import Path
 import lxml.etree as ET
 import numpy as np
 
+import uncertainties
+from uncertainties import correlated_values
+
 import openmc
 import openmc.checkvalue as cv
 from openmc.exceptions import DataError
@@ -48,14 +51,24 @@ class LocalPerturbation(IDManagerMixin):
         Name of the perturbation
     substitutions : dict
         Mapping of cell ID to material ID
-    rho : float
-        Reactivity worth in pcm. Only present when read from a statepoint.
+    rho : uncertainties.UFloat
+        Reactivity worth in pcm, or None until read from a statepoint.
+
+        This is a correlated quantity, built with
+        :func:`uncertainties.correlated_values` from the full covariance of
+        the run, so arithmetic between perturbations propagates correctly with
+        no further bookkeeping::
+
+            a, b = sp.perturbations
+            b.rho - a.rho          # difference, correlation carried through
+            (b.rho - a.rho) / dz   # derivative, pcm per unit dz
+            0.5 * (a.rho + b.rho)  # any combination you like
+
+        Perturbations sharing branch sites are strongly correlated, so a
+        difference formed this way has a far smaller uncertainty than the
+        quadrature sum of the two individual ones.
     std_dev : float
-        One standard deviation of :attr:`rho`, in pcm. Only present when read
-        from a statepoint. Use :meth:`Perturbations.difference` rather than
-        combining these by hand: perturbations sharing branch sites are
-        strongly correlated, and treating them as independent badly overstates
-        the error on a difference.
+        Shorthand for ``rho.std_dev``, in pcm.
     depth_curve : numpy.ndarray
         ``l(d)``, the log importance ratio against shadow-tree depth, whose
         slope is :attr:`rho`. Only present when read from a statepoint.
@@ -72,7 +85,6 @@ class LocalPerturbation(IDManagerMixin):
 
         # Populated only when read from a statepoint
         self.rho = None
-        self.std_dev = None
         self.depth_curve = None
 
     def __repr__(self):
@@ -81,9 +93,18 @@ class LocalPerturbation(IDManagerMixin):
             parts.append(f'{"":<12}Name={self.name}')
         parts.append(f'{"":<12}Substitutions={self.substitutions}')
         if self.rho is not None:
-            parts.append(f'{"":<12}Worth={self.rho:.4g} +/- '
-                         f'{self.std_dev:.4g} pcm')
+            parts.append(f'{"":<12}Worth={self.rho:.4g} pcm')
         return '\n'.join(parts) + '\n'
+
+    @property
+    def std_dev(self):
+        """One standard deviation of :attr:`rho`, in pcm."""
+        return None if self.rho is None else self.rho.std_dev
+
+    @property
+    def nominal_value(self):
+        """Central value of :attr:`rho`, in pcm."""
+        return None if self.rho is None else self.rho.nominal_value
 
     @property
     def name(self):
@@ -184,7 +205,12 @@ class Perturbations(cv.CheckedList):
     All perturbations are computed in one eigenvalue run. Those sharing a cell
     share branch sites and random seeds, so their worths come out strongly
     correlated and differences between them are far better determined than the
-    individual values -- see :meth:`difference` and :meth:`combine`.
+    individual values. Each :attr:`LocalPerturbation.rho` is a correlated
+    :mod:`uncertainties` value, so that is automatic::
+
+        a, b = sp.perturbations
+        b.rho - a.rho            # correlation carried through
+        (b.rho - a.rho) / dz     # pcm per unit dz
 
     .. versionadded:: 0.16.0
 
@@ -198,18 +224,11 @@ class Perturbations(cv.CheckedList):
         the usual starting point. Check :meth:`linearity` rather than
         assuming.
 
-    Attributes
-    ----------
-    covariance : numpy.ndarray
-        Covariance of the worths in pcm^2, ordered as the collection. Only
-        present when read from a statepoint.
-
     """
 
     def __init__(self, perturbations=None, n_generation=10):
         super().__init__(LocalPerturbation, 'collection of perturbations')
         self.n_generation = n_generation
-        self.covariance = None
         if perturbations is not None:
             self += perturbations
 
@@ -318,21 +337,18 @@ class Perturbations(cv.CheckedList):
         cov = np.atleast_2d(cov)
 
         self._n_blocks = n_blocks
-        self.covariance = 1.0e10 * cov
+
+        # Hand the whole covariance to uncertainties rather than storing a
+        # scalar sigma per perturbation. Every rho then carries its
+        # correlations with the others, so a difference, a derivative or any
+        # weighted combination propagates correctly with no bookkeeping here
+        # and none in user code.
+        rho = correlated_values(1.0e5 * total, 1.0e10 * cov)
         for i, p in enumerate(self):
-            p.rho = 1.0e5 * float(total[i])
-            p.std_dev = 1.0e5 * float(np.sqrt(max(cov[i, i], 0.0)))
+            p.rho = rho[i]
             with np.errstate(divide='ignore', invalid='ignore'):
                 p.depth_curve = np.log(numerators[i].sum(0) /
                                        denominators[i].sum(0))
-
-    def value(self, perturbation_id):
-        """(rho, sigma) in pcm for one perturbation."""
-        i = self.ids.index(perturbation_id)
-        if self.covariance is None:
-            raise ValueError('No results present; read from a statepoint.')
-        return (float(self[i].rho),
-                float(np.sqrt(max(self.covariance[i, i], 0.0))))
 
     @property
     def n_blocks(self):
@@ -344,52 +360,37 @@ class Perturbations(cv.CheckedList):
         """
         return getattr(self, '_n_blocks', None)
 
-    def _weights(self, weights):
-        w = np.zeros(len(self))
-        for key, value in weights.items():
-            w[self.ids.index(key)] = value
-        return w
+    @property
+    def covariance(self):
+        """Covariance of the worths in pcm^2, ordered as the collection.
 
-    def combine(self, weights):
-        """Value and uncertainty of a weighted sum of worths.
-
-        Uses the full covariance, so a combination of strongly correlated
-        perturbations gets the small uncertainty it deserves rather than the
-        quadrature sum of the individual ones.
-
-        Parameters
-        ----------
-        weights : dict
-            Mapping of perturbation ID to weight
-
-        Returns
-        -------
-        2-tuple of float
-            Value and one standard deviation, in pcm
-
+        Recovered from the correlated :attr:`LocalPerturbation.rho` values, so
+        it always agrees with what their arithmetic produces. None until read
+        from a statepoint.
         """
-        if self.covariance is None:
-            raise ValueError('No results present; read from a statepoint.')
-        w = self._weights(weights)
-        rho = np.array([p.rho for p in self])
-        return (float(w @ rho),
-                float(np.sqrt(max(w @ self.covariance @ w, 0.0))))
-
-    def difference(self, id_a, id_b):
-        """``rho(a) - rho(b)`` with the correlation carried through."""
-        return self.combine({id_a: 1.0, id_b: -1.0})
-
-    def derivative(self, id_a, id_b, dz):
-        """``[rho(a) - rho(b)] / dz``, in pcm per unit of ``dz``."""
-        value, std_dev = self.difference(id_a, id_b)
-        return value / dz, std_dev / abs(dz)
+        if len(self) == 0 or any(p.rho is None for p in self):
+            return None
+        return np.array(uncertainties.covariance_matrix([p.rho for p in self]))
 
     def correlation(self):
-        """Correlation matrix of the worths."""
-        if self.covariance is None:
+        """Correlation matrix of the worths.
+
+        A perturbation with zero variance has no correlation with anything --
+        a null perturbation is exactly that, being identically zero by
+        construction -- so its row and column come back ``nan`` rather than
+        the zero that would falsely read as "uncorrelated".
+
+        Computed from :attr:`covariance` rather than delegating to
+        :func:`uncertainties.correlation_matrix`, which divides by the
+        standard deviations unguarded and so raises a ``RuntimeWarning`` on
+        the same input.
+        """
+        cov = self.covariance
+        if cov is None:
             raise ValueError('No results present; read from a statepoint.')
-        d = np.sqrt(np.clip(np.diag(self.covariance), 1e-300, None))
-        return self.covariance / np.outer(d, d)
+        std_dev = np.sqrt(np.diag(cov))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return cov / np.outer(std_dev, std_dev)
 
     def linearity(self, perturbation_id, d_min=None):
         """Reduced chi-square of a straight-line fit to the depth curve.

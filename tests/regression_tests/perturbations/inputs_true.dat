@@ -1,0 +1,102 @@
+<?xml version='1.0' encoding='utf-8'?>
+<model>
+  <materials>
+    <material id="1" name="fuel" depletable="true">
+      <density value="10.0" units="g/cm3"/>
+      <nuclide name="U235" ao="1.0"/>
+      <nuclide name="O16" ao="2.0"/>
+    </material>
+    <material id="2" name="water">
+      <density value="1.0" units="g/cm3"/>
+      <nuclide name="H1" ao="2.0"/>
+      <nuclide name="O16" ao="1.0"/>
+    </material>
+    <material id="3" name="absorber">
+      <density value="2.5" units="g/cm3"/>
+      <nuclide name="B10" ao="1.0"/>
+    </material>
+  </materials>
+  <geometry>
+    <cell id="100" name="slice 0" material="2" region="-2 3 -4" universe="1"/>
+    <cell id="101" name="slice 1" material="2" region="-2 4 -5" universe="1"/>
+    <cell id="102" name="slice 2" material="2" region="-2 5 -6" universe="1"/>
+    <cell id="200" name="bulk" material="1" region="-1 (2 | -3 | 4) (2 | -4 | 5) (2 | -5 | 6)" universe="1"/>
+    <surface id="1" type="sphere" boundary="reflective" coeffs="0.0 0.0 0.0 10.0"/>
+    <surface id="2" type="z-cylinder" coeffs="4.0 0.0 1.2"/>
+    <surface id="3" type="z-plane" coeffs="-3.0"/>
+    <surface id="4" type="z-plane" coeffs="-1.0"/>
+    <surface id="5" type="z-plane" coeffs="1.0"/>
+    <surface id="6" type="z-plane" coeffs="3.0"/>
+  </geometry>
+  <settings>
+    <run_mode>eigenvalue</run_mode>
+    <particles>5000</particles>
+    <batches>60</batches>
+    <inactive>10</inactive>
+    <source type="independent" strength="1.0" particle="neutron">
+      <space type="point">
+        <parameters>0.0 0.0 0.0</parameters>
+      </space>
+    </source>
+    <seed>1</seed>
+  </settings>
+  <perturbations>
+    <n_generation>10</n_generation>
+    <local_perturbation id="1" name="absorber swap">
+      <substitution>
+        <cell>101</cell>
+        <material>3</material>
+      </substitution>
+    </local_perturbation>
+    <local_perturbation id="2" name="void">
+      <substitution>
+        <cell>101</cell>
+        <material>0</material>
+      </substitution>
+    </local_perturbation>
+    <local_perturbation id="3" name="null">
+      <substitution>
+        <cell>101</cell>
+        <material>2</material>
+      </substitution>
+    </local_perturbation>
+    <local_perturbation id="4" name="at slice 0">
+      <substitution>
+        <cell>100</cell>
+        <material>3</material>
+      </substitution>
+      <substitution>
+        <cell>101</cell>
+        <material>2</material>
+      </substitution>
+      <substitution>
+        <cell>102</cell>
+        <material>2</material>
+      </substitution>
+    </local_perturbation>
+    <local_perturbation id="5" name="at slice 1">
+      <substitution>
+        <cell>100</cell>
+        <material>2</material>
+      </substitution>
+      <substitution>
+        <cell>101</cell>
+        <material>3</material>
+      </substitution>
+      <substitution>
+        <cell>102</cell>
+        <material>2</material>
+      </substitution>
+    </local_perturbation>
+    <local_perturbation id="6" name="displacement 0-&gt;1">
+      <substitution>
+        <cell>100</cell>
+        <material>2</material>
+      </substitution>
+      <substitution>
+        <cell>101</cell>
+        <material>3</material>
+      </substitution>
+    </local_perturbation>
+  </perturbations>
+</model>

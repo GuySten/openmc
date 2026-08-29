@@ -36,6 +36,7 @@ vector<Perturbation> perturbations;
 vector<Tree> trees;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
+bool branching {false};
 vector<BranchSite> branch_sites;
 vector<double> tau;
 vector<double> sum_l;
@@ -47,17 +48,53 @@ int64_t n_generations {0};
 int64_t n_branch_total {0};
 double w_branch_total {0.0};
 
+// Internal linkage. `inline` would be redundant inside an unnamed namespace,
+// so it is omitted; forward declarations let run_one_tree() live here with
+// the rest of the file-local helpers rather than in a second block further
+// down.
 namespace {
 
-inline bool active_generation()
-{
-  return simulation::current_batch > settings::n_inactive;
-}
-
 //! Lower end of the finite difference used for rho_gen.
-inline int d_half()
+int d_half()
 {
   return settings::bep_n_generation / 2;
+}
+
+//! Transport one shadow tree rooted at `site` in tree `tree`.
+//!
+//! Depth bookkeeping rides on the existing super-history fields:
+//! create_fission_sites() stamps super_gen on each site it makes and calls
+//! score_site() with it, so nothing has to be measured after the fact.
+void run_one_tree(const BranchSite& site, int tree, uint64_t seed)
+{
+  Particle p;
+
+  SourceSite root;
+  root.r = site.r;
+  root.u = site.u;
+  root.E = site.E;
+  root.wgt = site.wgt;
+  root.time = site.time;
+  root.particle = ParticleType::neutron();
+  root.super_gen = 1; // see the depth-encoding note in bep.h
+  root.adjoint_id = -1;
+  root.bep_tree = tree;
+
+  p.from_source(&root);
+  p.n_progeny() = 0;
+  p.n_event() = 0;
+  p.n_tracks() = 1;
+  p.n_split() = 0;
+  p.ww_factor() = 0.0;
+  p.wgt_born() = p.wgt();
+  p.seeds(0) = seed; // common random numbers across the whole tree family
+  p.stream() = STREAM_TRACKING;
+
+  score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
+
+  transport_history_based_single_particle(p);
+
+  p.local_secondary_bank().clear();
 }
 
 } // namespace
@@ -195,7 +232,14 @@ void init()
 
 void reset_generation()
 {
-  if (!settings::bep_on)
+  // Decide once per generation whether BEP does anything at all. Shadow trees
+  // are pure overhead before the fission source has converged, and leaving
+  // the flag clear keeps the branch test out of the transport hot path
+  // entirely during inactive batches rather than testing and discarding on
+  // every event.
+  branching =
+    settings::bep_on && simulation::current_batch > settings::n_inactive;
+  if (!branching)
     return;
   std::fill(tau.begin(), tau.end(), 0.0);
   branch_sites.clear();
@@ -207,14 +251,12 @@ void reset_generation()
 
 void maybe_branch(Particle& p, int32_t cell_index)
 {
-  // Caller has established bep_on, that p is a trunk particle, and that
-  // cell_index is touched by at least one perturbation.
+  // Caller has established that branching is on, that p is a trunk particle,
+  // and that cell_index is touched by at least one perturbation.
   if (!p.type().is_neutron())
     return;
   if (p.wgt() == 0.0)
     return;
-  if (!active_generation())
-    return; // shadow trees are pure overhead before source convergence
 
   BranchSite site;
   site.r = p.r();
@@ -258,45 +300,9 @@ void score_site(int tree, int super_gen, double wgt)
 // Shadow pass
 //==============================================================================
 
-namespace {
-
-void run_one_tree(const BranchSite& site, int tree, uint64_t seed)
-{
-  Particle p;
-
-  SourceSite root;
-  root.r = site.r;
-  root.u = site.u;
-  root.E = site.E;
-  root.wgt = site.wgt;
-  root.time = site.time;
-  root.particle = ParticleType::neutron();
-  root.super_gen = 1; // see the depth-encoding note in bep.h
-  root.adjoint_id = -1;
-  root.bep_tree = tree;
-
-  p.from_source(&root);
-  p.n_progeny() = 0;
-  p.n_event() = 0;
-  p.n_tracks() = 1;
-  p.n_split() = 0;
-  p.ww_factor() = 0.0;
-  p.wgt_born() = p.wgt();
-  p.seeds(0) = seed; // common random numbers across the whole tree family
-  p.stream() = STREAM_TRACKING;
-
-  score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
-
-  transport_history_based_single_particle(p);
-
-  p.local_secondary_bank().clear();
-}
-
-} // namespace
-
 void run_shadow_pass()
 {
-  if (!settings::bep_on || branch_sites.empty())
+  if (!branching || branch_sites.empty())
     return;
 
   auto n = static_cast<int64_t>(branch_sites.size());
@@ -325,7 +331,7 @@ void run_shadow_pass()
 
 void accumulate_generation()
 {
-  if (!settings::bep_on || !active_generation())
+  if (!branching)
     return;
 
 #ifdef OPENMC_MPI

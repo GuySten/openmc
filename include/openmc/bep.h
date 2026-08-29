@@ -146,6 +146,13 @@ struct BranchSite {
   int32_t cell;
 };
 
+//! True only while a generation that BEP acts on is being processed: set at
+//! the start of each generation and left set through the shadow pass in
+//! finalize_generation(). Every BEP hot-path test reads this rather than
+//! settings::bep_on, so the feature is genuinely inert during inactive
+//! batches instead of merely declining to record.
+extern bool branching;
+
 extern vector<BranchSite> branch_sites;
 extern vector<double> tau;     //!< [tree * (L + 1) + depth], this generation
 extern vector<double> sum_l;   //!< [pert * (L + 1) + depth], diagnostics

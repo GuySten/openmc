@@ -263,7 +263,7 @@ void Particle::event_calculate_xs()
   if (settings::check_overlaps)
     check_cell_overlap(*this);
 
-  if (settings::bep_on) {
+  if (bep::branching) {
     int32_t i_cell = lowest_coord().cell();
     if (bep::ref_tree_of_cell(i_cell) >= 0) {
       if (bep_tree() == BEP_TRUNK) {

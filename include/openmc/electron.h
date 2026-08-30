@@ -40,9 +40,10 @@ public:
   void bremsstrahlung(Particle& p) const;
 
   // Data members
-  std::string name_; //!< Name of element, e.g. "Zr"
-  int Z_;            //!< Atomic number
-  int64_t index_;    //!< Index in global elements vector
+  std::string name_;      //!< Name of element, e.g. "Zr"
+  int Z_;                 //!< Atomic number
+  int64_t index_;         //!< Index in data::electroatomic
+  int64_t i_photoatomic_; //!< Index in data::photoatomic for this element
 
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
@@ -62,8 +63,13 @@ public:
 
 namespace data {
 
-//! Photon interaction data for each element
+//! Maps element name to index in data::photoatomic. Owned by photon.cpp;
+//! electron data must not write to it.
 extern std::unordered_map<std::string, int> element_map;
+
+//! Maps element name to index in data::electroatomic
+extern std::unordered_map<std::string, int> electron_map;
+
 extern vector<unique_ptr<ElectronInteraction>> electroatomic;
 
 } // namespace data

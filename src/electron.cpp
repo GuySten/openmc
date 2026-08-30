@@ -32,6 +32,7 @@ namespace openmc {
 
 namespace data {
 
+std::unordered_map<std::string, int> electron_map;
 vector<unique_ptr<ElectronInteraction>> electroatomic;
 
 } // namespace data
@@ -47,7 +48,19 @@ ElectronInteraction::ElectronInteraction(hid_t group)
 
   // Get name of nuclide from group, removing leading '/'
   name_ = object_name(group).substr(1);
-  data::element_map[name_] = index_;
+  data::electron_map[name_] = index_;
+
+  // Resolve the index of this element in data::photoatomic, which is needed
+  // for subshell binding energies and atomic relaxation. The photoatomic data
+  // for an element is always loaded immediately before its electron data, so
+  // the entry exists by now. Do not assume the two indices coincide.
+  auto it = data::element_map.find(name_);
+  if (it == data::element_map.end()) {
+    fatal_error(fmt::format("Photoatomic data for element {} must be loaded "
+                            "before its electron data.",
+      name_));
+  }
+  i_photoatomic_ = it->second;
 
   // Get atomic number
   read_attribute(group, "Z", Z_);
@@ -160,8 +173,21 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
 {
   double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
-  const auto& element {*data::photoatomic[index_]};
+  const auto& element {*data::photoatomic[i_photoatomic_]};
   double e_b = element.binding_energy_[i_shell];
+
+  // The scattered primary must be left with positive energy. A sampled
+  // knock-on energy that violates this would give a negative energy electron
+  // and a negative argument in the scattering cosine below.
+  if (E_knock + e_b >= p.E()) {
+    p.write_restart();
+    fatal_error(fmt::format(
+      "Electroionization of {} shell {} at {} eV sampled a knock-on energy of "
+      "{} eV which, with a binding energy of {} eV, exceeds the energy of the "
+      "incident electron.",
+      name_, i_shell, p.E(), E_knock, e_b));
+  }
+
   double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
                               (1.0 + 2.0 * MASS_ELECTRON_EV / E_knock));
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
@@ -215,6 +241,7 @@ void ElectronInteraction::bremsstrahlung(Particle& p) const
 void free_memory_electron()
 {
   data::electroatomic.clear();
+  data::electron_map.clear();
 }
 
 } // namespace openmc

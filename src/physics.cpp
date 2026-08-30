@@ -556,9 +556,10 @@ void sample_electron_reaction(Particle& p)
     element.ionization(p, i_shell);
 
     // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data
+    // data. i_element indexes data::electroatomic, so the photoatomic index
+    // must be taken from the element rather than reused directly.
     if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[i_element];
+      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
       if (photoatomic.has_atomic_relaxation_) {
         photoatomic.atomic_relaxation(i_shell, p);
       }
@@ -638,9 +639,10 @@ void sample_positron_reaction(Particle& p)
     element.ionization(p, i_shell);
 
     // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data
+    // data. i_element indexes data::electroatomic, so the photoatomic index
+    // must be taken from the element rather than reused directly.
     if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[i_element];
+      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
       if (photoatomic.has_atomic_relaxation_) {
         photoatomic.atomic_relaxation(i_shell, p);
       }

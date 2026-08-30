@@ -281,7 +281,7 @@ void Particle::event_calculate_xs()
         // through a cell only B touches correctly sees the reference
         // material there. find_cell() has already set material_last(), so
         // the cross-section cache invalidates on entry.
-        int i_pert = bep::trees[bep_tree()].pert;
+        int i_pert = bep::tree_pert[bep_tree()];
         int32_t m;
         if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m)) {
           material() = m;

@@ -34,7 +34,7 @@ void transport_history_based_single_particle(Particle& p);
 namespace bep {
 
 vector<Perturbation> perturbations;
-vector<Tree> trees;
+vector<int> tree_pert;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
 vector<vector<BranchSite>> thread_branch_sites;
@@ -219,7 +219,7 @@ void init()
 
   cell_ref_tree.assign(model::cells.size(), -1);
   cell_perts.assign(model::cells.size(), {});
-  trees.clear();
+  tree_pert.clear();
 
   // Pass 1: resolve every substitution and create one reference tree per
   // distinct touched cell.
@@ -272,8 +272,8 @@ void init()
       }
 
       if (cell_ref_tree[s.cell_index] < 0) {
-        cell_ref_tree[s.cell_index] = static_cast<int>(trees.size());
-        trees.push_back({-1});
+        cell_ref_tree[s.cell_index] = static_cast<int>(tree_pert.size());
+        tree_pert.push_back(BEP_NO_PERT);
       }
       cell_perts[s.cell_index].push_back(static_cast<int>(ip));
       p.cells.push_back(s.cell_index);
@@ -323,8 +323,8 @@ void init()
 
   // Pass 2: one tree per perturbation, after all reference trees exist.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
-    perturbations[ip].tree = static_cast<int>(trees.size());
-    trees.push_back({static_cast<int>(ip)});
+    perturbations[ip].tree = static_cast<int>(tree_pert.size());
+    tree_pert.push_back(static_cast<int>(ip));
   }
 
   // NOTE: settings::super_n_generation is deliberately NOT touched here.
@@ -337,7 +337,7 @@ void init()
 
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
-  tau.assign(trees.size() * nd, 0.0);
+  tau.assign(tree_pert.size() * nd, 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_branch_sites.assign(num_threads(), {});
   tau_history.clear();
@@ -346,18 +346,18 @@ void init()
   // One row per active generation. Warn rather than surprise the user with a
   // large allocation late in the run.
   double mb = 8.0 * settings::n_max_batches * settings::gen_per_batch *
-              trees.size() * nd / (1024.0 * 1024.0);
+              tree_pert.size() * nd / (1024.0 * 1024.0);
   if (mb > 256.0) {
     warning(fmt::format("<local_perturbation> will record about {:.0f} MB of "
                         "per-generation data ({} trees, L = {}).",
-      mb, trees.size(), settings::bep_n_generation));
+      mb, tree_pert.size(), settings::bep_n_generation));
   }
 
-  size_t n_cells_touched = trees.size() - np;
+  size_t n_cells_touched = tree_pert.size() - np;
   write_message(
     fmt::format("BEP: {} perturbation(s) over {} cell(s), {} shadow trees, "
                 "L = {}.",
-      np, n_cells_touched, trees.size(), settings::bep_n_generation),
+      np, n_cells_touched, tree_pert.size(), settings::bep_n_generation),
     5);
 }
 
@@ -638,7 +638,7 @@ void write_results(hid_t file_id)
 
   write_dataset(group, "n_generation", settings::bep_n_generation);
   write_dataset(group, "n_generations_recorded", n_generations);
-  write_dataset(group, "n_trees", static_cast<int>(trees.size()));
+  write_dataset(group, "n_trees", static_cast<int>(tree_pert.size()));
   write_dataset(group, "n_branch", n_branch_total);
   write_dataset(group, "w_branch", w_branch_total);
   write_dataset(group, "n_perturbations", np);

@@ -148,14 +148,17 @@ struct Perturbation {
   int tree {-1};
 };
 
-//! A shadow population. `pert` is an index into `perturbations`, or -1 for a
-//! reference tree.
-struct Tree {
-  int pert;
-};
+//! Value in `tree_pert` for a reference tree, which belongs to no
+//! perturbation. Named because the bare -1 was previously written three
+//! different ways in three unrelated sentinels.
+constexpr int BEP_NO_PERT {-1};
 
 extern vector<Perturbation> perturbations;
-extern vector<Tree> trees;
+
+//! Shadow tree index -> index into `perturbations`, or BEP_NO_PERT for a
+//! reference tree. One entry per tree, so `tree_pert.size()` is the number
+//! of shadow populations and the first dimension of `tau`.
+extern vector<int> tree_pert;
 
 //! cell index -> reference tree index, or -1 if untouched. Sized to
 //! model::cells so the hot-path test is one indexed load.
@@ -221,7 +224,7 @@ inline int tau_index(int tree, int depth)
 //! Number of doubles in one thread's slab.
 inline int tau_stride()
 {
-  return static_cast<int>(trees.size()) * (settings::bep_n_generation + 1);
+  return static_cast<int>(tree_pert.size()) * (settings::bep_n_generation + 1);
 }
 
 //! Reference tree owning `cell_index`, or -1 if no perturbation touches it.

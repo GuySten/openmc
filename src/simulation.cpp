@@ -919,6 +919,26 @@ void initialize_data()
         }
       }
 
+      // Photofission neutrons are placed in the secondary bank, and
+      // photofission contributes to none of the k-eigenvalue estimators, which
+      // accumulate nu-fission from neutron cross sections only. Banking them
+      // would therefore produce a fission source inconsistent with the keff
+      // they are normalized against, and the fission heating would miss the
+      // keff re-weighting applied to neutron-induced fission. Refuse the
+      // combination rather than return a subtly wrong eigenvalue.
+      if (settings::run_mode == RunMode::EIGENVALUE) {
+        for (const auto& pn_nuc : data::photonuclears) {
+          if (pn_nuc->fissionable_) {
+            fatal_error(fmt::format(
+              "Photonuclear data for {} includes photofission, which is not "
+              "supported in k-eigenvalue mode: photofission neutrons do not "
+              "contribute to any k-eigenvalue estimator. Use fixed source "
+              "mode, or use photonuclear data without fission channels.",
+              pn_nuc->name_));
+          }
+        }
+      }
+
       // Photoneutrons from high-energy photons can land above the top of the
       // neutron transport data. Work out where that starts and say which
       // nuclide and reaction is responsible, since the usual cause is a single

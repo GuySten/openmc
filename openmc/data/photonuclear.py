@@ -804,6 +804,25 @@ class IncidentPhotonuclear(EqualityMixin):
             rx_group = rxs_group.create_group(f'reaction_{rx.mt:03}')
             rx.to_hdf5(rx_group)
         
+        # Write total photofission neutron yield when it differs from the
+        # prompt yield stored on the fission reaction product. Without this the
+        # transport code cannot reconstruct the delayed fraction.
+        for mt in FISSION_MTS:
+            rx = self.reactions.get(mt)
+            if rx is None:
+                continue
+            has_delayed = any(
+                p.particle == 'neutron' and p.emission_mode == 'delayed'
+                for p in rx.products)
+            if has_delayed:
+                total = sum(
+                    p.yield_ for p in rx.products
+                    if p.particle == 'neutron'
+                    and p.emission_mode in ('prompt', 'delayed'))
+                nu_group = g.create_group('total_nu')
+                total.to_hdf5(nu_group, 'yield')
+            break
+
         # Write fission energy release data
         if self.fission_energy is not None:
             fer_group = g.create_group('fission_energy_release')

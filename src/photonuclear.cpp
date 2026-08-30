@@ -4,6 +4,7 @@
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
+#include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
@@ -192,6 +193,63 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
     }
   }
   close_group(rxs_group);
+
+  // Identify the photofission reaction and its delayed precursor groups. The
+  // ENDF convention is that products_[0] carries the prompt (or, when no
+  // delayed data exists, the total) yield and products_[1..n] are the delayed
+  // precursor groups.
+  for (const auto& rx : reactions_) {
+    if (rx->mt_ == N_FISSION || rx->mt_ == N_F || rx->mt_ == N_NF ||
+        rx->mt_ == N_2NF || rx->mt_ == N_3NF) {
+      if (rx->mt_ == N_FISSION || fission_rx_ == nullptr) {
+        fission_rx_ = rx.get();
+      }
+      fissionable_ = true;
+    }
+  }
+  if (fissionable_ && fission_rx_ != nullptr) {
+    for (const auto& product : fission_rx_->products_) {
+      if (product.particle_.is_neutron() &&
+          product.emission_mode_ == ReactionProduct::EmissionMode::delayed) {
+        ++n_precursor_;
+      }
+    }
+
+    // The photonuclear ACE format carries no delayed neutron blocks, so data
+    // processed through that route yields prompt emission only. The total
+    // neutron count is still correct, but every neutron is born at the time of
+    // the collision. Only time-dependent results are affected.
+    if (n_precursor_ == 0 && settings::create_delayed_neutrons) {
+      warning(fmt::format(
+        "Photofission data for {} contains no delayed neutron precursor "
+        "groups, so all photofission neutrons are emitted promptly. Results "
+        "that depend on neutron emission time will be incorrect.",
+        name_));
+    }
+  }
+
+  // Total photofission neutron yield, when given separately from the prompt
+  // yield
+  if (object_exists(group, "total_nu")) {
+    hid_t nu_group = open_group(group, "total_nu");
+    total_nu_ = read_function(nu_group, "yield");
+    close_group(nu_group);
+  }
+
+  // Recoverable fission energy release. This excludes the neutrino energy,
+  // which escapes the system entirely, and is therefore the correct quantity
+  // to use in place of the raw MT=18 Q value when scoring heating.
+  if (object_exists(group, "fission_energy_release")) {
+    hid_t fer_group = open_group(group, "fission_energy_release");
+    fission_q_recov_ = read_function(fer_group, "q_recoverable");
+
+    // Needed to scale the prompt photofission photon yield so that delayed
+    // photons are accounted for
+    prompt_photons_ = read_function(fer_group, "prompt_photons");
+    delayed_photons_ = read_function(fer_group, "delayed_photons");
+    close_group(fer_group);
+  }
+
   this->create_derived();
 }
 
@@ -236,6 +294,60 @@ void PhotonuclearInteraction::create_derived()
 PhotonuclearInteraction::~PhotonuclearInteraction()
 {
   data::photonuclear_map.erase(name_);
+}
+
+double PhotonuclearInteraction::nu(double E, EmissionMode mode, int group) const
+{
+  if (!fissionable_ || fission_rx_ == nullptr)
+    return 0.0;
+
+  switch (mode) {
+  case EmissionMode::prompt:
+    return (*fission_rx_->products_[0].yield_)(E);
+  case EmissionMode::delayed:
+    if (n_precursor_ > 0 && settings::create_delayed_neutrons) {
+      if (group >= 1 && group < fission_rx_->products_.size()) {
+        return (*fission_rx_->products_[group].yield_)(E);
+      }
+      double nu {0.0};
+      for (int i = 1; i < fission_rx_->products_.size(); ++i) {
+        const auto& product = fission_rx_->products_[i];
+        if (!product.particle_.is_neutron())
+          continue;
+        if (product.emission_mode_ == ReactionProduct::EmissionMode::delayed) {
+          nu += (*product.yield_)(E);
+        }
+      }
+      return nu;
+    }
+    return 0.0;
+  case EmissionMode::total:
+    if (total_nu_ && settings::create_delayed_neutrons) {
+      return (*total_nu_)(E);
+    }
+    return (*fission_rx_->products_[0].yield_)(E);
+  }
+  UNREACHABLE();
+}
+
+double PhotonuclearInteraction::fission_q_recoverable(double E) const
+{
+  return fission_q_recov_ ? (*fission_q_recov_)(E) : 0.0;
+}
+
+double PhotonuclearInteraction::delayed_photon_factor(double E) const
+{
+  if (!settings::delayed_photon_scaling)
+    return 1.0;
+  if (!prompt_photons_ || !delayed_photons_)
+    return 1.0;
+
+  double energy_prompt = (*prompt_photons_)(E);
+  if (energy_prompt <= 0.0)
+    return 1.0;
+
+  double energy_delayed = (*delayed_photons_)(E);
+  return (energy_prompt + energy_delayed) / energy_prompt;
 }
 
 void PhotonuclearInteraction::calculate_xs(Particle& p) const

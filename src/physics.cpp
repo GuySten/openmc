@@ -1401,28 +1401,58 @@ void photonuclear_collision(Particle& p)
   p.event() = TallyEvent::ABSORB;
   p.event_mt() = rx->mt_;
 
-  // The reaction binding energy is not deposited locally -- it goes into the
-  // mass of the residual nucleus. The photon heating estimator computes the
-  // deposition as the incident energy less the banked secondary energy, so the
-  // (negative) Q value is folded in here rather than being carried separately
-  // on the particle. Compare the pair production treatment in
-  // sample_photon_reaction(), which uses the same field for the same purpose.
-  p.bank_second_E() -= rx->q_value_;
+  bool is_fission_rx = nuc->fissionable_ && rx == nuc->fission_rx_;
 
-  for (const auto& product : rx->products_) {
+  // The energy that does not appear as kinetic energy of the products is not
+  // deposited locally. The photon heating estimator computes the deposition as
+  // the incident energy less the banked secondary energy, so the correction is
+  // folded into bank_second_E() rather than carried separately on the
+  // particle. Compare the pair production treatment in
+  // sample_photon_reaction(), which uses the same field for the same purpose.
+  //
+  // For non-fission channels this is the (negative) reaction Q value, i.e. the
+  // binding energy going into the mass of the residual nucleus. For fission
+  // the tabulated MT=18 Q value is the total energy release, which includes
+  // neutrino energy that escapes the system, so the recoverable energy release
+  // is used instead when the evaluation provides it.
+  if (is_fission_rx && nuc->fission_q_recov_) {
+    p.bank_second_E() -= nuc->fission_q_recoverable(p.E());
+  } else {
+    p.bank_second_E() -= rx->q_value_;
+  }
+
+  for (int i = 0; i < rx->products_.size(); ++i) {
+    const auto& product = rx->products_[i];
     double yield = (*product.yield_)(p.E());
     if (yield <= 0.0)
       continue;
 
+    bool is_neutron = product.particle_ == ParticleType::neutron();
+
+    // Photofission photon yields are prompt only. Scale them up so that the
+    // delayed photons, which are not otherwise emitted, are represented. The
+    // recoverable fission energy release used above already accounts for the
+    // delayed photon energy, so the scaled photons are correctly subtracted
+    // from the local deposition rather than double counted.
+    if (!is_neutron && is_fission_rx)
+      yield *= nuc->delayed_photon_factor(p.E());
+
     // Neutrons are emitted here only in analog mode. With biasing on they were
     // already emitted, at expected weight, for this and every other collision.
-    bool is_neutron = product.particle_ == ParticleType::neutron();
     if (is_neutron && settings::photoneutron_biasing)
       continue;
 
-    // Photon products are always sampled analog. Their yields are often large,
-    // so collapsing them onto a single weighted photon would badly distort the
-    // emitted gamma spectrum.
+    // For photofission the neutron multiplicity is handled as a whole, since
+    // the prompt and delayed products are alternatives rather than independent
+    // emissions: products_[0] carries the prompt (or total) yield and the
+    // remaining neutron products are delayed precursor groups. Emitting each
+    // in turn would double count the delayed fraction.
+    if (is_neutron && is_fission_rx)
+      continue;
+
+    // Photon products are always sampled analog. There is no variance to be
+    // gained by biasing them, since photons are not the rare species in a
+    // photon transport problem.
     if (!is_neutron && product.particle_ != ParticleType::photon())
       continue;
     if (!is_neutron && !settings::photon_transport)
@@ -1431,8 +1461,17 @@ void photonuclear_collision(Particle& p)
     int n_emit = static_cast<int>(yield);
     if (prn(p.current_seed()) < yield - n_emit)
       ++n_emit;
-    for (int i = 0; i < n_emit; ++i)
+    for (int j = 0; j < n_emit; ++j)
       emit_photonuclear_product(p, *nuc, *rx, product, wgt);
+  }
+
+  if (is_fission_rx && !settings::photoneutron_biasing) {
+    double nu_t = nuc->nu(p.E(), PhotonuclearInteraction::EmissionMode::total);
+    int n_emit = static_cast<int>(nu_t);
+    if (prn(p.current_seed()) < nu_t - n_emit)
+      ++n_emit;
+    for (int j = 0; j < n_emit; ++j)
+      (void)emit_photofission_neutron(p, *nuc, *rx, wgt);
   }
 
   // The photon is absorbed
@@ -1473,7 +1512,14 @@ void emit_forced_photoneutron(Particle& p)
     }
   }
 
-  double E = emit_photonuclear_product(p, *nuc, *rx, product, w);
+  // Photofission neutrons must go through the prompt/delayed split, which also
+  // sets the emission time for delayed precursors.
+  double E;
+  if (nuc->fissionable_ && rx.get() == nuc->fission_rx_) {
+    E = emit_photofission_neutron(p, *nuc, *rx, w);
+  } else {
+    E = emit_photonuclear_product(p, *nuc, *rx, product, w);
+  }
 
   // create_secondary() banked the full outgoing energy, but only a fraction
   // "factor" of a neutron is actually emitted per collision. The heating
@@ -1481,6 +1527,50 @@ void emit_forced_photoneutron(Particle& p)
   // energy to the expected energy carried away. Without this, heating tallies
   // would be wrong whenever biasing is enabled.
   p.bank_second_E() += (factor - 1.0) * E;
+}
+
+double emit_photofission_neutron(Particle& p,
+  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
+  double wgt)
+{
+  const double E_in = p.E();
+  uint64_t* seed = p.current_seed();
+
+  // Choose prompt or delayed emission, and with it the product to sample from.
+  // products_[0] holds the prompt (or total) distribution and products_[g] the
+  // distribution for delayed group g, matching the neutron-induced convention.
+  int group = 0;
+  double nu_t = nuc.nu(E_in, PhotonuclearInteraction::EmissionMode::total);
+  double nu_d = nuc.nu(E_in, PhotonuclearInteraction::EmissionMode::delayed);
+
+  if (nu_t > 0.0 && prn(seed) < nu_d / nu_t) {
+    double xi = prn(seed) * nu_d;
+    double prob = 0.0;
+    for (group = 1; group < nuc.n_precursor_; ++group) {
+      prob +=
+        nuc.nu(E_in, PhotonuclearInteraction::EmissionMode::delayed, group);
+      if (xi < prob)
+        break;
+    }
+    group = std::min(group, nuc.n_precursor_);
+  }
+
+  if (group >= rx.products_.size())
+    group = 0;
+
+  // Delayed neutrons are emitted after the precursor decays. create_secondary()
+  // takes the particle's current time, so it is advanced across the call.
+  double time_saved = p.time();
+  if (group > 0) {
+    double decay_rate = rx.products_[group].decay_rate_;
+    if (decay_rate > 0.0)
+      p.time() -= std::log(prn(seed)) / decay_rate;
+  }
+
+  double E = emit_photonuclear_product(p, nuc, rx, rx.products_[group], wgt);
+
+  p.time() = time_saved;
+  return E;
 }
 
 double emit_photonuclear_product(Particle& p,

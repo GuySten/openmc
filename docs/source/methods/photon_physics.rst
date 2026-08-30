@@ -753,6 +753,49 @@ photonuclear cross section is a small fraction of the total, at the cost of
 losing the correlation between neutrons emitted in the same event. It is
 therefore unsuitable for multiplicity or coincidence-counting applications.
 
+Photofission
+------------
+
+Photofission channels are treated as a whole rather than product by product.
+The ENDF convention stores the prompt (or, where no delayed data exists, the
+total) neutron yield on the first product of the fission reaction and the
+delayed precursor groups on the remaining neutron products; these are
+alternatives rather than independent emissions. The number of neutrons is
+therefore sampled once from the total yield :math:`\bar{\nu}(E)`, and each
+neutron is then assigned to prompt or delayed emission with probability
+:math:`\bar{\nu}_d / \bar{\nu}_t`. Delayed neutrons have their emission time
+advanced by a value sampled from the decay constant of the sampled precursor
+group.
+
+Photofission photon yields are prompt only. When
+:attr:`Settings.delayed_photon_scaling` is enabled, the prompt yield is scaled
+by :math:`(E_{\gamma,p} + E_{\gamma,d}) / E_{\gamma,p}` so that the delayed
+photons, which are not otherwise emitted, are represented. This mirrors the
+treatment of neutron-induced fission.
+
+Heating uses the recoverable fission energy release rather than the tabulated
+MT=18 Q value. The latter is the total energy release and includes neutrino
+energy, which escapes the system and must not be deposited. Fission fragments
+and beta energy remain in the local deposition; transported neutrons and photons
+are subtracted from it in the usual way. The two treatments of delayed photons
+are consistent with this: with scaling enabled the emitted photons carry the
+delayed photon energy away and it is subtracted, and with scaling disabled it
+is left in the local deposition.
+
+.. note::
+   The photonuclear ACE format carries no delayed neutron data, so libraries
+   processed through that route produce prompt emission only. The total neutron
+   count is unaffected, but any result depending on emission time will be
+   incorrect. A warning naming the nuclide is issued at load time.
+
+.. note::
+   Photofission is not supported in k-eigenvalue mode. Photofission neutrons do
+   not contribute to any of the k-eigenvalue estimators, which accumulate
+   nu-fission from neutron cross sections only, so a fission source built from
+   them would be inconsistent with the eigenvalue it is normalized against.
+   OpenMC reports an error at initialization if photonuclear data containing
+   fission channels is used in an eigenvalue calculation.
+
 Reference Frames
 ----------------
 

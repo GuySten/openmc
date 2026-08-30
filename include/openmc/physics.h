@@ -116,6 +116,12 @@ void photonuclear_collision(Particle& p);
 //! photon collision when settings::photoneutron_biasing is on.
 void emit_forced_photoneutron(Particle& p);
 
+//! Emit a single photofission neutron, choosing prompt or delayed emission and
+//! advancing the emission time for delayed precursors.
+double emit_photofission_neutron(Particle& p,
+  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
+  double wgt);
+
 //! Sample the energy and direction of a single photonuclear reaction product
 //! and bank it. Returns the sampled outgoing energy in [eV].
 double emit_photonuclear_product(Particle& p,

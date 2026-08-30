@@ -702,6 +702,14 @@ can be compared directly. Because biasing emits a single neutron in place of the
 true multiplicity, it should not be used for multiplicity or coincidence
 counting.
 
+.. note::
+   Photofission is supported in fixed source calculations only. Photofission
+   neutrons do not contribute to the k-eigenvalue estimators, so OpenMC reports
+   an error if photonuclear data containing fission channels is used in an
+   eigenvalue calculation. Note also that the photonuclear ACE format carries
+   no delayed neutron data, so all photofission neutrons from such libraries
+   are emitted promptly.
+
 .. warning::
    Photonuclear libraries frequently extend to 130 MeV or beyond, while
    general-purpose neutron libraries usually stop at 20 MeV. Where a photon

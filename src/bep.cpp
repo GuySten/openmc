@@ -52,16 +52,6 @@ double w_branch_total {0.0};
 // down.
 namespace {
 
-//! 64-bit mix (the splitmix64 finalizer), so that small, correlated inputs
-//! give well-separated seeds.
-uint64_t mix(uint64_t x)
-{
-  x += 0x9e3779b97f4a7c15ULL;
-  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
-  return x ^ (x >> 31);
-}
-
 //! Seed for the shadow trees spawned at one branch point.
 //!
 //! Keyed on the branch itself -- the generation and the driver particle's
@@ -71,10 +61,10 @@ uint64_t mix(uint64_t x)
 //! the same input.
 int64_t branch_seed(int64_t particle_id, int64_t n_tracks, int n_event)
 {
-  uint64_t h = mix(static_cast<uint64_t>(simulation::total_gen));
-  h = mix(h ^ static_cast<uint64_t>(particle_id));
-  h = mix(h ^ (static_cast<uint64_t>(n_tracks) << 32 |
-                static_cast<uint64_t>(n_event)));
+  uint64_t h = mix_seed(static_cast<uint64_t>(simulation::total_gen));
+  h = mix_seed(h ^ static_cast<uint64_t>(particle_id));
+  h = mix_seed(h ^ (static_cast<uint64_t>(n_tracks) << 32 |
+                    static_cast<uint64_t>(n_event)));
   return static_cast<int64_t>(h >> 1);
 }
 

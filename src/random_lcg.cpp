@@ -96,6 +96,14 @@ double future_prn(int64_t n, uint64_t seed)
 // INIT_SEED
 //==============================================================================
 
+uint64_t mix_seed(uint64_t x)
+{
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+
 uint64_t init_seed(int64_t id, int offset)
 {
   return future_seed(

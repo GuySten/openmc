@@ -47,6 +47,24 @@ double future_prn(int64_t n, uint64_t seed);
 //! @return The initialized seed value
 //==============================================================================
 
+//! Scramble a structured integer into one with no correlation to its
+//! neighbours.
+//!
+//! init_seed() and init_particle_seeds() separate streams by multiplying the
+//! id by prn_stride; they assume the ids they are handed are already
+//! distinct and unstructured. An id built by packing several small counters
+//! together is neither, so mix it first.
+//!
+//! This is the splitmix64 finalizer. Boost's hash_combine (in
+//! random_ray/source_region.h) is NOT a substitute: it is built for hash
+//! buckets, and its avalanche is weak enough that neighbouring inputs give
+//! neighbouring outputs -- which is precisely the correlation a seed must
+//! not have.
+//!
+//! \param x value to scramble
+//! \return well-separated 64-bit value
+uint64_t mix_seed(uint64_t x);
+
 uint64_t init_seed(int64_t id, int offset);
 
 //==============================================================================

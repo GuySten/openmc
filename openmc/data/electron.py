@@ -14,6 +14,28 @@ from .function import Tabulated1D
 from .photon import _SUBSHELLS
 from .uncorrelated import UncorrelatedAngleEnergy
 
+def _tabular_from_cdf(x, c, name):
+    """Build a histogram Tabular from a tabulated cumulative distribution.
+
+    ACE stores these distributions as abscissae plus cumulative probabilities.
+    Converting to the histogram probabilities that :class:`Tabular` expects
+    requires dividing by the bin widths, so a repeated abscissa would yield inf
+    or nan and propagate silently into the exported library.
+
+    """
+    dx = np.diff(x)
+    if np.any(dx <= 0.0):
+        bad = int(np.argmax(dx <= 0.0))
+        raise ValueError(
+            f'Non-increasing abscissa in {name}: value {x[bad]} at index {bad} '
+            f'is followed by {x[bad + 1]}. The cumulative distribution cannot '
+            'be differentiated.')
+    p = np.append(np.diff(c) / dx, 0.0)
+    dist = Tabular(x, p, interpolation='histogram')
+    dist.c = c
+    return dist
+
+
 class IncidentElectron:
     """Continuous-energy incident electron interaction data parsed from ACE."""
 
@@ -28,6 +50,7 @@ class IncidentElectron:
         self.excitation_energy_loss = None        
         self.ionization_xs = {}  # Keyed by subshell index
         self.ionization_dist = {} # Keyed by subshell index
+        self.shells = []
 
     def __repr__(self):
         return f"<IncidentElectron: {self.name}>"
@@ -72,31 +95,60 @@ class IncidentElectron:
         Z = get_metadata(int(ace.zaid))[2]
         data = cls(Z)
 
+        # Check the format flag. NXS(6) == 1 is EPRDATA12; 3 is EPRDATA14 and
+        # later. Nothing read below moved between those versions, but a future
+        # format could shift these blocks and misparse silently.
+        format_flag = ace.nxs[6]
+        if format_flag not in (1, 3):
+            raise ValueError(
+                f'Unrecognized electron-photon-relaxation format flag '
+                f'NXS(6)={format_flag} in table {ace.name}. Supported values '
+                'are 1 (EPRDATA12) and 3 (EPRDATA14 and later).')
+
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
         n_xl = ace.nxs[9]
         n_subshells = ace.nxs[7]
         
 
-        j_energy = ace.jxs[19]
-        j_elastic = ace.jxs[21]
-        j_ionization = ace.jxs[23]
-        j_brem = ace.jxs[24]
-        j_excitation = ace.jxs[5]
-        j_excitation_loss = ace.jxs[20]
-        j_shell = ace.jxs[11]
+        j_shell = ace.jxs[11]           # SUBSH: subshell designators
+        j_energy = ace.jxs[19]          # ESZE: electron energy grid + cross sections
+        j_excitation = ace.jxs[20]      # EXCIT: excitation energy-loss table
+        j_elastic = ace.jxs[21]         # ELASI: elastic angular table info
+        j_elastic_tab = ace.jxs[22]     # ELAS: elastic angular tables
+        j_ionization = ace.jxs[23]      # EION: electroionization table info
+        j_brem = ace.jxs[24]            # BREMI: bremsstrahlung table info
+        j_brem_tab = ace.jxs[25]        # BREME: bremsstrahlung spectrum tables
         
         data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
         data.energy_grid = ace.xss[j_energy : j_energy + n_energy]*EV_PER_MEV
         
         j_xs = j_energy + n_energy
 
-        # Read Cross Sections
+        # Read cross sections from the ESZE block. The layout is, in order:
+        # energy grid, total, elastic, bremsstrahlung, excitation, total
+        # electroionization, then one block per subshell. The total and the
+        # total electroionization are deliberately skipped: the total is
+        # recomputed by the transport code from the partials, and the
+        # subshell cross sections are read individually below.
+        #
+        # Note that the elastic cross section here is the LARGE-ANGLE elastic
+        # cross section, which is the quantity consistent with the ELAS
+        # angular tables used for single-event transport. The transport-
+        # corrected and total elastic cross sections added at JXS(27) in
+        # EPRDATA14 must NOT be substituted here -- pairing either of those
+        # with these angular tables would double count the small-angle
+        # treatment.
         data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
         data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
         data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
-        data.excitation_energy_loss = Tabulated1D(ace.xss[j_excitation : j_excitation + n_xl],ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl])
-        
+
+        # Average excitation energy loss, from the EXCIT block at JXS(20).
+        # This is NOT at JXS(5), which locates the photon heating numbers.
+        data.excitation_energy_loss = Tabulated1D(
+            ace.xss[j_excitation : j_excitation + n_xl],
+            ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl])
+
         j_subshell_xs = j_xs + 5 * n_energy
         for s, shell in enumerate(data.shells):
             start_idx = j_subshell_xs + s * n_energy
@@ -111,43 +163,39 @@ class IncidentElectron:
             ls = ace.xss[locinfo[s]+ni[s]:locinfo[s]+2*ni[s]].astype(int)
             offsets = ace.xss[locinfo[s]+2*ni[s]:locinfo[s]+3*ni[s]].astype(int)
             energy_out = []
-            for t in range(ni[s]):
-                e = ace.xss[loctab[s]+offsets[t]:loctab[s]+offsets[t]+ls[t]]*EV_PER_MEV
-                c = ace.xss[loctab[s]+offsets[t]+ls[t]:loctab[s]+offsets[t]+2*ls[t]]
-                p = np.append(np.diff(c)/np.diff(e), 0.0)
-                t = Tabular(e, p, interpolation='histogram')
-                t.c = c
-                energy_out.append(t)
+            for i in range(ni[s]):
+                start = loctab[s] + offsets[i]
+                e = ace.xss[start:start + ls[i]]*EV_PER_MEV
+                c = ace.xss[start + ls[i]:start + 2*ls[i]]
+                energy_out.append(_tabular_from_cdf(
+                    e, c, f'electroionization table {i} of subshell {shell}'))
             data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
             
         
         data.bremsstrahlung_dist = UncorrelatedAngleEnergy()
         nb = ace.nxs[11]
-        energy = ace.xss[ace.jxs[24]:ace.jxs[24]+nb]*EV_PER_MEV
-        lb = ace.xss[ace.jxs[24]+nb:ace.jxs[24]+2*nb].astype(int)
-        offsets = ace.xss[ace.jxs[24]+2*nb:ace.jxs[24]+3*nb].astype(int)
+        energy = ace.xss[j_brem:j_brem+nb]*EV_PER_MEV
+        lb = ace.xss[j_brem+nb:j_brem+2*nb].astype(int)
+        offsets = ace.xss[j_brem+2*nb:j_brem+3*nb].astype(int)
         energy_out = []
-        for t in range(nb):
-            e = ace.xss[ace.jxs[25]+offsets[t]:ace.jxs[25]+offsets[t]+lb[t]]*EV_PER_MEV
-            c = ace.xss[ace.jxs[25]+offsets[t]+lb[t]:ace.jxs[25]+offsets[t]+2*lb[t]]
-            p = np.append(np.diff(c)/np.diff(e), 0.0)
-            t = Tabular(e, p, interpolation='histogram')
-            t.c = c
-            energy_out.append(t)
+        for i in range(nb):
+            start = j_brem_tab + offsets[i]
+            e = ace.xss[start:start + lb[i]]*EV_PER_MEV
+            c = ace.xss[start + lb[i]:start + 2*lb[i]]
+            energy_out.append(_tabular_from_cdf(
+                e, c, f'bremsstrahlung table {i}'))
         data.bremsstrahlung_dist.energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
             
-        ne = ace.nxs[10]
-        energy = ace.xss[ace.jxs[21] : ace.jxs[21] + ne]*EV_PER_MEV
-        le = ace.xss[ace.jxs[21] + ne : ace.jxs[21] + 2 * ne].astype(int)
-        offsets = ace.xss[ace.jxs[21] + 2 * ne : ace.jxs[21] + 3 * ne].astype(int)
-        mu = []        
-        for t in range(ne):
-            cos = ace.xss[ace.jxs[22]+offsets[t]:ace.jxs[22]+offsets[t]+le[t]]
-            c = ace.xss[ace.jxs[22]+offsets[t]+le[t]:ace.jxs[22]+offsets[t]+2*le[t]]
-            p = np.append(np.diff(c)/np.diff(cos), 0.0)
-            t = Tabular(cos, p, interpolation='histogram')
-            t.c = c
-            mu.append(t)
+        na = ace.nxs[10]
+        energy = ace.xss[j_elastic : j_elastic + na]*EV_PER_MEV
+        le = ace.xss[j_elastic + na : j_elastic + 2 * na].astype(int)
+        offsets = ace.xss[j_elastic + 2 * na : j_elastic + 3 * na].astype(int)
+        mu = []
+        for i in range(na):
+            start = j_elastic_tab + offsets[i]
+            cos = ace.xss[start:start + le[i]]
+            c = ace.xss[start + le[i]:start + 2*le[i]]
+            mu.append(_tabular_from_cdf(cos, c, f'elastic angular table {i}'))
         
         data.elastic_dist = AngleDistribution(energy, mu)
 

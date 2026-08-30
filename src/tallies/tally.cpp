@@ -1319,7 +1319,7 @@ void setup_active_tallies()
   // BEP deliberately does NOT force simulation::superhistory_on on. The
   // driver reads that flag in transport_history_based(), so flipping it
   // changes driver behaviour, and BEP must leave the driver bit-identical to
-  // a stock run. create_fission_sites() tests settings::bep_on directly to
+  // a stock run. create_fission_sites() tests simulation::bep_on directly to
   // give shadow trees their local bank.
 
   model::active_tallies.clear();

@@ -260,7 +260,8 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
   // superhistory_on on: the driver reads that flag (see
   // transport_history_based()), and BEP has to leave the driver untouched.
   bool use_local_bank =
-    (simulation::superhistory_on || settings::bep_on) && p.super_gen() >= 0;
+    (simulation::superhistory_on || simulation::bep_on) &&
+    p.super_gen() >= 0;
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank

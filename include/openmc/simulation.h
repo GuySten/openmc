@@ -39,6 +39,10 @@ extern "C" bool need_depletion_rx; //!< need to calculate depletion rx?
 extern "C" int restart_batch;      //!< batch at which a restart job resumed
 extern "C" bool satisfy_triggers;  //!< have tally triggers been satisfied?
 extern "C" bool superhistory_on;   //!< Run the lookahead THIS batch?
+extern bool bep_on;                //!< Grow perturbation shadow trees THIS
+                                   //!< batch? Set by bep::reset_generation()
+                                   //!< exactly as superhistory_on is set by
+                                   //!< setup_active_tallies().
 extern int ssw_current_file;       //!< current surface source file
 extern "C" int total_gen;          //!< total number of generations simulated
 extern double total_weight;        //!< Total source weight in a batch

@@ -22,15 +22,11 @@
 #include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
+#include "openmc/simulation.h"
 #include "openmc/tallies/tally.h"
 #include "openmc/xml_interface.h"
-#include "openmc/simulation.h"
 
 namespace openmc {
-
-namespace settings {
-bool bep_on {false};
-} // namespace settings
 
 // Declared in simulation.h; repeated to avoid a circular include.
 void transport_history_based_single_particle(Particle& p);
@@ -41,7 +37,6 @@ vector<Perturbation> perturbations;
 vector<Tree> trees;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
-bool branching {false};
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
@@ -155,7 +150,6 @@ void read_perturbations_xml(pugi::xml_node root)
 {
   int32_t next_id = 1;
   for (pugi::xml_node node : root.children("local_perturbation")) {
-    settings::bep_on = true;
     Perturbation p;
     p.id = check_for_node(node, "id") ? std::stoi(get_node_value(node, "id"))
                                       : next_id;
@@ -187,7 +181,7 @@ void read_perturbations_xml(pugi::xml_node root)
 
 void init()
 {
-  if (!settings::bep_on)
+  if (perturbations.empty())
     return;
 
   if (settings::run_mode != RunMode::EIGENVALUE)
@@ -195,12 +189,10 @@ void init()
   if (settings::event_based)
     fatal_error("<local_perturbation> requires history-based transport.");
 
-  if (perturbations.empty())
-    fatal_error("<local_perturbation> given with no perturbations defined.");
   for (const auto& t : model::tallies) {
     if (t->adjoint_) {
       // Checked here, not in the Tally constructor: tallies.xml is read
-      // before perturbations.xml, so settings::bep_on is still false while
+      // before perturbations.xml, so BEP is not yet known to be on while
       // tallies are being built and the guard there can never fire.
       fatal_error("<local_perturbation> cannot be combined with adjoint "
                   "(super-history) tallies: both drive the revival loop, with "
@@ -341,7 +333,7 @@ void init()
   // bit-identical to a stock run. Shadow particles get their own revival
   // limit from bep_n_generation, keyed off bep_tree(). Same reasoning for
   // simulation::superhistory_on, which BEP no longer forces on:
-  // create_fission_sites() tests settings::bep_on directly instead.
+  // create_fission_sites() tests simulation::bep_on directly instead.
 
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
@@ -376,9 +368,15 @@ void reset_generation()
   // the flag clear keeps the branch test out of the transport hot path
   // entirely during inactive batches rather than testing and discarding on
   // every event.
-  branching =
-    settings::bep_on && simulation::current_batch > settings::n_inactive;
-  if (!branching)
+  // Decide once per generation whether BEP does anything at all, exactly as
+  // setup_active_tallies() decides superhistory_on. Shadow trees are pure
+  // overhead before the fission source has converged, and leaving the flag
+  // clear keeps the branch test out of the transport hot path entirely
+  // during inactive batches rather than testing and discarding on every
+  // event.
+  simulation::bep_on =
+    !perturbations.empty() && simulation::current_batch > settings::n_inactive;
+  if (!simulation::bep_on)
     return;
   std::fill(tau.begin(), tau.end(), 0.0);
   std::fill(thread_tau.begin(), thread_tau.end(), 0.0);
@@ -393,7 +391,7 @@ void reset_generation()
 
 void add_substitution_temperatures(vector<vector<double>>& kTs)
 {
-  if (!settings::bep_on)
+  if (perturbations.empty())
     return;
 
   // Resolve the ids here rather than reading Substitution::mat_index.
@@ -428,7 +426,7 @@ void add_substitution_temperatures(vector<vector<double>>& kTs)
 
 void add_substitution_nuclide_temperatures(vector<vector<double>>& nuc_temps)
 {
-  if (!settings::bep_on)
+  if (perturbations.empty())
     return;
 
   for (const auto& pert : perturbations) {
@@ -456,7 +454,7 @@ void add_substitution_nuclide_temperatures(vector<vector<double>>& nuc_temps)
 
 void maybe_branch(Particle& p, int32_t cell_index)
 {
-  // Caller has established that branching is on, that p is a trunk particle,
+  // Caller has established that BEP is on this batch, that p is a trunk
   // and that cell_index is touched by at least one perturbation.
   if (!p.type().is_neutron())
     return;
@@ -518,7 +516,7 @@ void score_site(int tree, int super_gen, double wgt)
 
 void run_shadow_pass()
 {
-  if (!branching)
+  if (!simulation::bep_on)
     return;
 
   // Merge the per-thread vectors and put them in a deterministic order. The
@@ -572,7 +570,7 @@ void run_shadow_pass()
 
 void accumulate_generation()
 {
-  if (!branching)
+  if (!simulation::bep_on)
     return;
 
   // Sum the per-thread slabs, in thread order.
@@ -587,10 +585,22 @@ void accumulate_generation()
   if (mpi::n_procs > 1) {
     // Sum tau across ranks before recording: the estimator is a ratio of sums
     // over every progenitor, not a mean of per-rank ratios.
-    vector<double> reduced(tau.size(), 0.0);
-    MPI_Allreduce(tau.data(), reduced.data(), static_cast<int>(tau.size()),
-      MPI_DOUBLE, MPI_SUM, mpi::intracomm);
-    tau = reduced;
+    //
+    // mpi::reduce rather than a raw MPI call: it splits counts that would
+    // overflow the int accepted by legacy MPI_Reduce, and it is how tally
+    // results are reduced (see write_tally_results), so there is one place
+    // to fix if that ever changes.
+    //
+    // Reduce to the master rather than allreduce -- only the master writes
+    // the statepoint, so no other rank reads tau again.
+    if (mpi::master) {
+      mpi::reduce<double>(
+        MPI_IN_PLACE, tau.data(), tau.size(), MPI_SUM, 0, mpi::intracomm);
+    } else {
+      // Receive buffer not significant off the master.
+      mpi::reduce<double>(
+        tau.data(), nullptr, tau.size(), MPI_SUM, 0, mpi::intracomm);
+    }
   }
 #endif
 
@@ -602,9 +612,16 @@ void accumulate_generation()
   // dividing, and BEP now does the same. Dropping degenerate generations
   // would bias the worth, since extinction correlates with the strength of
   // the perturbation.
-  tau_history.insert(tau_history.end(), tau.begin(), tau.end());
+  //
+  // Only the master holds the global sum after the reduction, so only the
+  // master keeps the record. n_generations counts on every rank so the two
+  // stay in step if a later change ever wants the history elsewhere.
+  if (mpi::master) {
+    tau_history.insert(tau_history.end(), tau.begin(), tau.end());
+  }
   ++n_generations;
 }
+
 
 //==============================================================================
 // Output
@@ -612,7 +629,7 @@ void accumulate_generation()
 
 void write_results(hid_t file_id)
 {
-  if (!settings::bep_on || n_generations == 0)
+  if (perturbations.empty() || n_generations == 0)
     return;
 
   int nd = settings::bep_n_generation + 1;

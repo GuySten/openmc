@@ -96,7 +96,7 @@
 //! settings::super_n_generation (event_check_limit_and_revive() derives a
 //! shadow tree's limit from bep_n_generation via bep_tree() instead) and it
 //! does not force simulation::superhistory_on on (create_fission_sites()
-//! tests settings::bep_on directly for the local bank). Shadow particles also
+//! tests simulation::bep_on directly for the local bank). Shadow particles
 //! own no slot in any per-source array, so event_death() skips the
 //! progeny_per_particle write for them. Between them these keep the driver
 //! bit-identical to a stock run, which the fission source in
@@ -108,6 +108,11 @@
 
 #include "openmc/hdf5_interface.h"
 #include "openmc/position.h"
+// For settings::bep_n_generation and settings::super_n_generation, both used
+// by the inline functions below. Re-declaring them here instead would be two
+// declarations of one variable to keep in sync by hand, and a type that
+// drifted between them is an ODR violation the linker does not diagnose.
+#include "openmc/settings.h"
 #include "openmc/vector.h"
 
 namespace openmc {
@@ -116,16 +121,12 @@ class Particle;
 
 constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 
-namespace settings {
-
-extern bool bep_on;
-//! Both declared in settings.h and parsed from settings.xml -- L is a
-//! property of the run, not of any one perturbation, so it belongs with
-//! superhistory_n_generation rather than in perturbations.xml.
-extern int bep_n_generation;
-extern int super_n_generation;
-
-} // namespace settings
+// Whether BEP is configured at all is `!bep::perturbations.empty()`. There
+// is no separate flag: two representations of one fact have to be kept in
+// step, and the vector is the one that carries the information.
+//
+// Whether BEP is running THIS batch is simulation::bep_on, declared in
+// simulation.h beside superhistory_on and set by reset_generation().
 
 namespace bep {
 
@@ -180,13 +181,6 @@ struct BranchSite {
   //! on every run, and BEP results were not reproducible.
   int64_t seed_id;
 };
-
-//! True only while a generation that BEP acts on is being processed: set at
-//! the start of each generation and left set through the shadow pass in
-//! finalize_generation(). Every BEP hot-path test reads this rather than
-//! settings::bep_on, so the feature is genuinely inert during inactive
-//! batches instead of merely declining to record.
-extern bool branching;
 
 //! Branch sites collected during the current generation, one vector per
 //! thread. Per-thread rather than shared because the alternative is an omp

@@ -1,0 +1,161 @@
+#ifndef OPENMC_PHOTONUCLEAR_H
+#define OPENMC_PHOTONUCLEAR_H
+
+#include "openmc/endf.h"
+#include "openmc/memory.h" // for unique_ptr
+#include "openmc/particle.h"
+#include "openmc/reaction.h"
+#include "openmc/reaction_product.h"
+#include "openmc/vector.h"
+
+#include "openmc/tensor.h"
+#include <hdf5.h>
+
+#include <string>
+#include <unordered_map>
+#include <utility> // for pair
+
+namespace openmc {
+
+class PhotonuclearReaction {
+public:
+  //! Construct reaction from HDF5 data
+  //! \param[in] group HDF5 group containing reaction data
+  //! \param[in] name Name of the nuclide
+  explicit PhotonuclearReaction(hid_t group, std::string name);
+
+  //! Calculate cross section given grid index, interpolation factor
+  //
+  //! \param[in] i_grid Energy grid index
+  //! \param[in] interp_factor Interpolation factor between grid points
+  double xs(int64_t i_grid, double interp_factor) const;
+
+  //! Calculate cross section
+  //
+  //! \param[in] micro Microscopic cross section cache
+  double xs(const PhotonuclearMicroXS& micro) const;
+
+  //! \brief Calculate reaction rate based on group-wise flux distribution
+  //
+  //! \param[in] energy Energy group boundaries in [eV]
+  //! \param[in] flux Flux in each energy group (not normalized per eV)
+  //! \param[in] grid Nuclide energy grid
+  //! \return Reaction rate
+  double collapse_rate(span<const double> energy, span<const double> flux,
+    const vector<double>& grid) const;
+
+  //! Cross section at a single temperature
+  struct TemperatureXS {
+    int threshold;
+    vector<double> value;
+  };
+
+  int mt_;                           //!< ENDF MT value
+  double q_value_;                   //!< Reaction Q value in [eV]
+  bool scatter_in_cm_;               //!< scattering system in center-of-mass?
+  bool redundant_;                   //!< redundant reaction?
+  TemperatureXS xs_;                 //!< Cross section
+  vector<ReactionProduct> products_; //!< Reaction products
+};
+
+//==============================================================================
+//! Photonuclear interaction data for a single isotope
+//==============================================================================
+
+class PhotonuclearInteraction {
+public:
+  //! Emission mode for photofission neutrons
+  enum class EmissionMode {
+    prompt,  //!< Prompt neutrons only
+    delayed, //!< Delayed neutrons only
+    total    //!< Prompt and delayed neutrons
+  };
+
+  // Constructors/destructor
+  PhotonuclearInteraction(hid_t group);
+  ~PhotonuclearInteraction();
+
+  // Methods
+  void calculate_xs(Particle& p) const;
+
+  //! Photofission neutron yield
+  //! \param[in] E Incident photon energy in [eV]
+  //! \param[in] mode Prompt, delayed, or total
+  //! \param[in] group Delayed group, or 0 for all groups
+  //! \return Neutron yield
+  double nu(double E, EmissionMode mode, int group = 0) const;
+
+  //! Recoverable energy released by photofission, excluding neutrinos
+  //! \param[in] E Incident photon energy in [eV]
+  //! \return Recoverable energy release in [eV], or zero if unavailable
+  double fission_q_recoverable(double E) const;
+
+  //! Factor by which the prompt photofission photon yield is scaled to account
+  //! for delayed photons, which are not otherwise emitted
+  //! \param[in] E Incident photon energy in [eV]
+  //! \return Scaling factor, or unity when scaling does not apply
+  double delayed_photon_factor(double E) const;
+
+  // Data members
+  std::string name_; //!< Name of nuclide, e.g. "U235"
+  int Z_;            //!< Atomic number
+  int A_;            //!< Mass number
+  int metastable_;   //!< Metastable state
+  double awr_;       //!< Atomic weight ratio
+  int64_t index_;    //!< Index in the photonuclears array
+
+  // Microscopic cross sections
+  tensor::Tensor<double> energy_;
+  tensor::Tensor<double> xs_; //!< Cross sections
+
+  vector<unique_ptr<PhotonuclearReaction>> reactions_; //!< Reactions
+
+  bool fissionable_ {false}; //!< Whether photofission is present
+  int n_precursor_ {0};      //!< Number of delayed neutron precursor groups
+  PhotonuclearReaction* fission_rx_ {nullptr}; //!< Photofission reaction
+  unique_ptr<Function1D> total_nu_;        //!< Total photofission neutron yield
+  unique_ptr<Function1D> fission_q_recov_; //!< Recoverable fission energy
+  unique_ptr<Function1D> prompt_photons_;  //!< Prompt photon energy release
+  unique_ptr<Function1D> delayed_photons_; //!< Delayed photon energy release
+private:
+  void create_derived();
+
+  static int XS_TOTAL;
+  static int XS_HEATING;
+  static int XS_NEUTRON_PROD;
+};
+
+//==============================================================================
+// Non-member functions
+//==============================================================================
+
+void free_memory_photonuclear();
+
+//! Determine the highest incident photon energy for which every photoneutron
+//! this library can produce still falls within the neutron transport data
+//! range, and report the nuclide and reaction that set the limit.
+//!
+//! \param[in] E_max_neutron Maximum neutron energy in the transport data [eV]
+//! \param[out] limiting_nuclide Name of the nuclide that sets the limit
+//! \param[out] limiting_mt ENDF MT of the reaction that sets the limit
+//! \return Maximum safe incident photon energy in [eV]
+double max_safe_photon_energy(
+  double E_max_neutron, std::string& limiting_nuclide, int& limiting_mt);
+
+//==============================================================================
+// Global variables
+//==============================================================================
+
+namespace data {
+
+//! Photonuclear interaction data for each isotope
+extern std::unordered_map<std::string, int> photonuclear_map;
+extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
+extern double photonuclear_energy_min;
+extern double photonuclear_energy_max;
+
+} // namespace data
+
+} // namespace openmc
+
+#endif // OPENMC_PHOTONUCLEAR_H

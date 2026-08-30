@@ -22,6 +22,13 @@ namespace openmc {
 class EnergyDistribution {
 public:
   virtual double sample(double E, uint64_t* seed) const = 0;
+
+  //! Upper bound on the energy that sample() can return, in the frame the
+  //! distribution is tabulated in.
+  //! \param[in] E Incident particle energy in [eV]
+  //! \return Maximum outgoing energy in [eV]
+  virtual double max_energy(double E) const = 0;
+
   virtual ~EnergyDistribution() = default;
 };
 
@@ -38,6 +45,9 @@ public:
   //! \param[inout] seed Pseudorandom number seed pointer
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
 
 private:
   int primary_flag_; //!< Indicator of whether the photon is a primary or
@@ -60,9 +70,14 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
+
 private:
-  double threshold_;  //!< Energy threshold in lab, (A + 1)/A * |Q|
-  double mass_ratio_; //!< (A/(A+1))^2
+  //! The scattering law is E_out = a*(E_in-b-c*E_in*E_in)
+  double a_; //!< a coefficient of the scattering law
+  double b_; //!< b coefficient of the scattering law
+  double c_; //!< c coefficient of the scattering law
 };
 
 //===============================================================================
@@ -80,6 +95,9 @@ public:
   //! \param[inout] seed Pseudorandom number seed pointer
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
 
 private:
   //! Outgoing energy for a single incoming energy
@@ -112,6 +130,9 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
+
 private:
   Tabulated1D theta_; //!< Incoming energy dependent parameter
   double u_;          //!< Restriction energy
@@ -132,6 +153,9 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
+
 private:
   Tabulated1D theta_; //!< Incoming energy dependent parameter
   double u_;          //!< Restriction energy
@@ -151,6 +175,9 @@ public:
   //! \param[inout] seed Pseudorandom number seed pointer
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy for this distribution
+  double max_energy(double E) const override;
 
 private:
   Tabulated1D a_; //!< Energy-dependent 'a' parameter

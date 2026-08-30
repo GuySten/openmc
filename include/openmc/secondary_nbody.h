@@ -43,6 +43,11 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy, in the frame the distribution is tabulated in
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \return Maximum outgoing energy in [eV]
+  double max_energy(double E_in) const override;
+
 private:
   int n_bodies_;      //!< Number of particles distributed
   double mass_ratio_; //!< Total mass of particles [neutron mass]

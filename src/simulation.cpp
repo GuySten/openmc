@@ -16,6 +16,7 @@
 #include "openmc/output.h"
 #include "openmc/particle.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/random_lcg.h"
 #include "openmc/random_ray/flat_source_domain.h"
 #include "openmc/settings.h"
@@ -838,6 +839,7 @@ void initialize_data()
   // Determine minimum/maximum energy for incident neutron/photon data
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
+  data::photonuclear_energy_min = INFTY;
 
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
@@ -860,7 +862,6 @@ void initialize_data()
           std::min(data::energy_max[photon], std::exp(elem->energy_(n - 1)));
       }
     }
-
     if (settings::electron_treatment == ElectronTreatment::TTB) {
       // Determine if minimum/maximum energy for bremsstrahlung is greater/less
       // than the current minimum/maximum
@@ -881,6 +882,111 @@ void initialize_data()
 
         data::energy_max[photon] =
           std::min(data::energy_max[photon], data::energy_max[electron]);
+      }
+    }
+
+    if (settings::photonuclear_physics) {
+      // Determine the lowest energy at which any photonuclear data exists, and
+      // remember which nuclide it came from. If a nuclide is present in a
+      // material that's not used in the model, its grid has not been allocated.
+      const PhotonuclearInteraction* min_nuc = nullptr;
+      for (const auto& pn_nuc : data::photonuclears) {
+        if (pn_nuc->energy_.size() > 0 &&
+            pn_nuc->energy_[0] < data::photonuclear_energy_min) {
+          data::photonuclear_energy_min = pn_nuc->energy_[0];
+          min_nuc = pn_nuc.get();
+        }
+      }
+
+      // Without this, photonuclear_energy_min stays at INFTY and the energy
+      // check in Material::calculate_photon_xs would silently disable
+      // photonuclear physics everywhere.
+      if (min_nuc == nullptr) {
+        fatal_error("Photonuclear physics is enabled but no photonuclear data "
+                    "was loaded for any nuclide in the model.");
+      }
+
+      write_message(7, "Minimum photonuclear physics energy: {} eV for {}",
+        data::photonuclear_energy_min, min_nuc->name_);
+
+      // Highest energy covered by the photonuclear library
+      data::photonuclear_energy_max = 0.0;
+      for (const auto& pn_nuc : data::photonuclears) {
+        int n = pn_nuc->energy_.size();
+        if (n > 0) {
+          data::photonuclear_energy_max =
+            std::max(data::photonuclear_energy_max, pn_nuc->energy_[n - 1]);
+        }
+      }
+
+      // Photofission neutrons are placed in the secondary bank, and
+      // photofission contributes to none of the k-eigenvalue estimators, which
+      // accumulate nu-fission from neutron cross sections only. Banking them
+      // would therefore produce a fission source inconsistent with the keff
+      // they are normalized against, and the fission heating would miss the
+      // keff re-weighting applied to neutron-induced fission. Refuse the
+      // combination rather than return a subtly wrong eigenvalue.
+      if (settings::run_mode == RunMode::EIGENVALUE) {
+        for (const auto& pn_nuc : data::photonuclears) {
+          if (pn_nuc->fissionable_) {
+            fatal_error(fmt::format(
+              "Photonuclear data for {} includes photofission, which is not "
+              "supported in k-eigenvalue mode: photofission neutrons do not "
+              "contribute to any k-eigenvalue estimator. Use fixed source "
+              "mode, or use photonuclear data without fission channels.",
+              pn_nuc->name_));
+          }
+        }
+      }
+
+      // Photoneutrons from high-energy photons can land above the top of the
+      // neutron transport data. Work out where that starts and say which
+      // nuclide and reaction is responsible, since the usual cause is a single
+      // nuclide with a short library rather than anything about the model.
+      int neutron = ParticleType::neutron().transport_index();
+      int photon = ParticleType::photon().transport_index();
+      std::string limiting_nuclide;
+      int limiting_mt;
+      double E_safe = max_safe_photon_energy(
+        data::energy_max[neutron], limiting_nuclide, limiting_mt);
+
+      if (E_safe < data::energy_max[photon]) {
+        // Cap the photon transport ceiling so that no photon capable of
+        // producing an untransportable neutron can exist in the first place.
+        // Source sampling already enforces data::energy_max, so this makes the
+        // situation a configuration error caught up front rather than a silent
+        // loss of photoneutrons during transport.
+        warning(fmt::format(
+          "Photonuclear data extends to {:.4g} eV, but photons above {:.4g} eV "
+          "can produce neutrons beyond the {:.4g} eV upper limit of the "
+          "neutron transport data; the limit is set by MT={} of {}. The "
+          "maximum photon energy is therefore reduced from {:.4g} eV to "
+          "{:.4g} eV, and the maximum electron and positron energy is limited "
+          "to the same value when thick-target bremsstrahlung is enabled. "
+          "Sources above this energy will be rejected. To model higher "
+          "energies, use neutron data covering the photonuclear energy range.",
+          data::photonuclear_energy_max, E_safe, data::energy_max[neutron],
+          limiting_mt, limiting_nuclide, data::energy_max[photon], E_safe));
+
+        data::energy_max[photon] = E_safe;
+
+        // Bremsstrahlung photons are created up to the energy of the electron
+        // that produced them, and are not checked against the photon ceiling
+        // on creation, so an electron above E_safe can still generate a photon
+        // able to produce an untransportable neutron. Lower the charged
+        // particle ceilings to match. Note this must not be a comparison
+        // against data::energy_max[electron]: that is the bremsstrahlung grid
+        // limit from the photon library, which is far above any realistic beam
+        // energy, so comparing to it would reject every TTB calculation.
+        // Source sampling enforces data::energy_max, so a monoenergetic beam
+        // above the limit is reported as an error before transport begins.
+        if (settings::electron_treatment == ElectronTreatment::TTB) {
+          int electron = ParticleType::electron().transport_index();
+          int positron = ParticleType::positron().transport_index();
+          for (int t : {electron, positron}) {
+            data::energy_max[t] = std::min(data::energy_max[t], E_safe);
+          }
+        }
       }
     }
   }

@@ -336,7 +336,10 @@ class PhotonuclearReaction(EqualityMixin):
                         
                 # Determine reference frame        
                 ty = int(ace.xss[int(ace.xss[loc+6])+i_mtr])
-                rx.center_of_mass = (ty < 0)
+                
+                # Decide center of mass according to neutron product
+                if particle.name == 'neutron':
+                    rx.center_of_mass = (ty < 0)
                 
                 # Determine multiplicity
                 idx = int(ace.xss[loc+8])+int(ace.xss[int(ace.xss[loc+7])+i_mtr])-1

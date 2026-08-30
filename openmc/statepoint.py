@@ -506,7 +506,11 @@ class StatePoint:
             tau = np.asarray(group['tau'][()], dtype=float).reshape(
                 n_rec, n_trees, n_gen + 1)
 
-            perturbations = openmc.Perturbations(n_generation=n_gen)
+            # n_generation is an OUTPUT here: it describes the run the
+            # results came from. Setting it is done via
+            # Settings.perturbation_n_generation.
+            perturbations = openmc.Perturbations()
+            perturbations._n_generation = n_gen
             numerators, denominators = [], []
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', openmc.IDWarning)

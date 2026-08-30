@@ -28,7 +28,6 @@ namespace openmc {
 
 namespace settings {
 bool bep_on {false};
-int bep_n_generation {10};
 } // namespace settings
 
 // Declared in simulation.h; repeated to avoid a circular include.
@@ -152,11 +151,6 @@ void read_perturbations_xml()
 
 void read_perturbations_xml(pugi::xml_node root)
 {
-  if (check_for_node(root, "n_generation")) {
-    settings::bep_n_generation =
-      std::stoi(get_node_value(root, "n_generation"));
-  }
-
   int32_t next_id = 1;
   for (pugi::xml_node node : root.children("local_perturbation")) {
     settings::bep_on = true;
@@ -198,10 +192,6 @@ void init()
     fatal_error("<local_perturbation> requires an eigenvalue calculation.");
   if (settings::event_based)
     fatal_error("<local_perturbation> requires history-based transport.");
-  if (settings::bep_n_generation < 2) {
-    fatal_error("'local_perturbation_n_generation' must be at least 2: the "
-                "estimator is a finite difference in depth.");
-  }
   if (perturbations.empty())
     fatal_error("<local_perturbation> given with no perturbations defined.");
   for (const auto& t : model::tallies) {

@@ -140,6 +140,7 @@ int64_t ssw_max_files;
 int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
+int bep_n_generation {10};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -587,6 +588,21 @@ void read_settings_xml(pugi::xml_node root)
           std::stoi(get_node_value(root, "superhistory_n_generation"));
         if (super_n_generation <= 0) {
           fatal_error("'superhistory_n_generation' must be greater than 0.");
+        }
+      }
+
+      // Shadow tree depth for local perturbations. A single scalar for the
+      // whole run, like the two above -- it is not a property of any one
+      // perturbation, since every tree is compared against the same
+      // reference trees at the same depths. Parsed here rather than from
+      // perturbations.xml so that it is available before tallies.xml and
+      // perturbations.xml are read.
+      if (check_for_node(root, "perturbation_n_generation")) {
+        bep_n_generation =
+          std::stoi(get_node_value(root, "perturbation_n_generation"));
+        if (bep_n_generation < 2) {
+          fatal_error("'perturbation_n_generation' must be at least 2: the "
+                      "estimator is a finite difference in depth.");
         }
       }
 

@@ -119,8 +119,11 @@ constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 namespace settings {
 
 extern bool bep_on;
-extern int bep_n_generation;   //!< L, shared by all perturbations
-extern int super_n_generation; //!< declared in settings.h; used above
+//! Both declared in settings.h and parsed from settings.xml -- L is a
+//! property of the run, not of any one perturbation, so it belongs with
+//! superhistory_n_generation rather than in perturbations.xml.
+extern int bep_n_generation;
+extern int super_n_generation;
 
 } // namespace settings
 

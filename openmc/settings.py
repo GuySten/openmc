@@ -117,6 +117,12 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
+    perturbation_n_generation : int
+        Shadow tree depth for local perturbation worths. One scalar for the
+        whole run: every shadow tree is compared against the same reference
+        trees at the same depths, so it is a property of the run rather than
+        of any individual :class:`openmc.LocalPerturbation`. Must be at least
+        2, since the estimator is a finite difference in depth.
     max_lost_particles : int
         Maximum number of lost particles
 
@@ -445,6 +451,7 @@ class Settings:
 
         # Iterated Fission Probability
         self._ifp_n_generation = None
+        self._perturbation_n_generation = None
 
         # Collision track feature
         self._collision_track = {}
@@ -1038,6 +1045,20 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
+
+    @property
+    def perturbation_n_generation(self) -> int:
+        return self._perturbation_n_generation
+
+    @perturbation_n_generation.setter
+    def perturbation_n_generation(self, n: int):
+        if n is not None:
+            cv.check_type("number of generations", n, Integral)
+            # At least 2: the estimator is a finite difference in depth, so
+            # one generation gives nothing to take a slope over.
+            cv.check_greater_than("number of generations", n, 2,
+                                  equality=True)
+        self._perturbation_n_generation = n
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1798,6 +1819,11 @@ class Settings:
             element = ET.SubElement(root, "ifp_n_generation")
             element.text = str(self._ifp_n_generation)
 
+    def _create_perturbation_n_generation_subelement(self, root):
+        if self._perturbation_n_generation is not None:
+            element = ET.SubElement(root, "perturbation_n_generation")
+            element.text = str(self._perturbation_n_generation)
+
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
             element = ET.SubElement(root, "tabular_legendre")
@@ -2323,6 +2349,11 @@ class Settings:
         if text is not None:
             self.verbosity = int(text)
 
+    def _perturbation_n_generation_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_n_generation')
+        if text is not None:
+            self.perturbation_n_generation = int(text)
+
     def _ifp_n_generation_from_xml_element(self, root):
         text = get_text(root, 'ifp_n_generation')
         if text is not None:
@@ -2607,6 +2638,7 @@ class Settings:
         self._create_no_reduce_subelement(element)
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
+        self._create_perturbation_n_generation_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2726,6 +2758,7 @@ class Settings:
         settings._no_reduce_from_xml_element(elem)
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
+        settings._perturbation_n_generation_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

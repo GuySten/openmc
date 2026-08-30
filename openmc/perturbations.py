@@ -218,29 +218,29 @@ class Perturbations(cv.CheckedList):
     ----------
     perturbations : Iterable of openmc.LocalPerturbation
         Perturbations to add to the collection
+
+    Attributes
+    ----------
     n_generation : int
-        Number of shadow-tree generations, L. The worth is the slope of the
-        log importance ratio over depth, so this must be at least 2; 10-12 is
-        the usual starting point. Check :meth:`linearity` rather than
-        assuming.
+        Shadow tree depth, L. Read-only here, and only meaningful on a
+        collection read back from a statepoint, where it says how many
+        depths the recorded curves span. To CHOOSE it, set
+        :attr:`openmc.Settings.perturbation_n_generation` -- it applies to
+        the whole run, not to one perturbation, since every shadow tree is
+        compared against the same reference trees at the same depths.
 
     """
 
-    def __init__(self, perturbations=None, n_generation=10):
+    def __init__(self, perturbations=None):
         super().__init__(LocalPerturbation, 'collection of perturbations')
-        self.n_generation = n_generation
+        self._n_generation = None
         if perturbations is not None:
             self += perturbations
 
     @property
     def n_generation(self):
+        """Shadow tree depth of the run these results came from."""
         return self._n_generation
-
-    @n_generation.setter
-    def n_generation(self, n):
-        cv.check_type('n_generation', n, Integral)
-        cv.check_greater_than('n_generation', n, 2, equality=True)
-        self._n_generation = n
 
     @property
     def ids(self):
@@ -296,6 +296,10 @@ class Perturbations(cv.CheckedList):
         """
         n_pert, n_gen, nd = numerators.shape
         L = nd - 1
+        # The results describe their own depth, so a collection read back
+        # from a statepoint is self-contained even if the caller never sees
+        # the Settings that produced it.
+        self._n_generation = L
         d_min = L // 2
         d = np.arange(nd)
         fit = d >= d_min
@@ -506,8 +510,9 @@ class Perturbations(cv.CheckedList):
     # ----------------------------------------------------------------- XML
     def to_xml_element(self):
         """Create a 'perturbations' element to be written to an XML file."""
+        # No n_generation here: it lives in settings.xml, parsed before this
+        # file is read, so anything that needs it early can see it.
         element = ET.Element('perturbations')
-        ET.SubElement(element, 'n_generation').text = str(self.n_generation)
         for perturbation in self:
             element.append(perturbation.to_xml_element())
         clean_indentation(element)
@@ -531,8 +536,7 @@ class Perturbations(cv.CheckedList):
     @classmethod
     def from_xml_element(cls, elem):
         """Generate perturbations from an XML element."""
-        n_gen = elem.find('n_generation')
-        obj = cls(n_generation=10 if n_gen is None else int(n_gen.text))
+        obj = cls()
         for sub in elem.findall('local_perturbation'):
             obj.append(LocalPerturbation.from_xml_element(sub))
         return obj

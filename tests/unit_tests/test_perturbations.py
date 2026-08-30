@@ -156,7 +156,7 @@ def test_collection_xml_roundtrip():
     ps = openmc.Perturbations([
         openmc.LocalPerturbation({71: 92}, perturbation_id=1, name='steel'),
         openmc.LocalPerturbation({71: 91, 72: 92}, perturbation_id=2),
-    ], n_generation=13)
+    ])
 
     qs = openmc.Perturbations.from_xml_element(ps.to_xml_element())
     assert qs.n_generation == 13
@@ -168,7 +168,7 @@ def test_collection_xml_roundtrip():
 def test_collection_file_roundtrip(run_in_tmpdir):
     ps = openmc.Perturbations([
         openmc.LocalPerturbation({71: 92}, perturbation_id=1),
-    ], n_generation=11)
+    ])
     ps.export_to_xml()
     assert Path('perturbations.xml').is_file()
 
@@ -182,7 +182,7 @@ def test_xml_element_name_matches_cpp_reader():
     # <n_generation> and <local_perturbation> children. If these tags drift the
     # C++ silently reads nothing, so pin them down.
     elem = openmc.Perturbations(
-        [openmc.LocalPerturbation({71: 92})], n_generation=9).to_xml_element()
+        [openmc.LocalPerturbation({71: 92})]).to_xml_element()
     assert elem.tag == 'perturbations'
     assert elem.find('n_generation').text == '9'
     assert len(elem.findall('local_perturbation')) == 1
@@ -201,13 +201,33 @@ def test_collection_type_checking():
         ps.append('not a perturbation')
 
 
-def test_n_generation_validation():
+def test_n_generation_lives_on_settings():
+    """L is a property of the RUN, not of a perturbation.
+
+    Every shadow tree is compared against the same reference trees at the
+    same depths, so one scalar governs the whole run -- the same reasoning
+    that puts superhistory_n_generation and ifp_n_generation on Settings.
+    Perturbations.n_generation is output only: it says what depth a set of
+    RESULTS came from.
+    """
+    settings = openmc.Settings()
     # The estimator is a finite difference in depth, so L < 2 is meaningless.
     with pytest.raises(ValueError):
-        openmc.Perturbations(n_generation=1)
+        settings.perturbation_n_generation = 1
     with pytest.raises(TypeError):
-        openmc.Perturbations(n_generation=10.5)
-    assert openmc.Perturbations(n_generation=2).n_generation == 2
+        settings.perturbation_n_generation = 10.5
+    settings.perturbation_n_generation = 2
+    assert settings.perturbation_n_generation == 2
+
+    # and it round trips through settings.xml, not perturbations.xml
+    settings.perturbation_n_generation = 7
+    assert openmc.Settings.from_xml_element(
+        settings.to_xml_element()).perturbation_n_generation == 7
+
+    # a fresh collection has no depth: nothing has been run yet
+    assert openmc.Perturbations().n_generation is None
+    with pytest.raises(AttributeError):
+        openmc.Perturbations().n_generation = 8
 
 
 def test_indexing_by_position_and_id():
@@ -230,7 +250,7 @@ def results():
     ps = openmc.Perturbations([
         openmc.LocalPerturbation({71: 92}, perturbation_id=1),
         openmc.LocalPerturbation({71: 93}, perturbation_id=2),
-    ], n_generation=10)
+    ])
     cov = np.array([[4.0, 3.96], [3.96, 4.0]])
     for p, rho in zip(ps, correlated_values([-40.0, -40.5], cov)):
         p.rho = rho
@@ -317,8 +337,7 @@ def _transient_tau(amplitude, dominance_ratio, slope=-300e-5, n_gen=400,
 
 def _fitted(amplitude, dominance_ratio, k_ref=1.38):
     ps = openmc.Perturbations(
-        [openmc.LocalPerturbation({71: 92}, perturbation_id=1)],
-        n_generation=10)
+        [openmc.LocalPerturbation({71: 92}, perturbation_id=1)])
     ps._set_results(*_transient_tau(amplitude, dominance_ratio), k_ref=k_ref)
     return ps
 
@@ -375,10 +394,9 @@ def test_model_accepts_list_and_collection():
     model.perturbations = [p]
     assert list(model.perturbations) == [p]
 
-    ps = openmc.Perturbations([p], n_generation=12)
+    ps = openmc.Perturbations([p])
     model.perturbations = ps
     assert model.perturbations is ps
-    assert model.perturbations.n_generation == 12
 
     with pytest.raises(TypeError):
         model.perturbations = ['not a perturbation']
@@ -396,7 +414,8 @@ def test_model_export_and_reimport(run_in_tmpdir, cells_and_materials):
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({sample: steel}, perturbation_id=1,
                                  name='steel'),
-    ], n_generation=12)
+    ])
+    model.settings.perturbation_n_generation = 12
 
     model.export_to_xml()
     assert Path('perturbations.xml').is_file()
@@ -421,7 +440,8 @@ def test_model_xml_single_file_roundtrip(run_in_tmpdir, cells_and_materials):
         openmc.LocalPerturbation({sample: steel}, perturbation_id=1),
         openmc.LocalPerturbation({sample: water, other: steel},
                                  perturbation_id=2),
-    ], n_generation=8)
+    ])
+    model.settings.perturbation_n_generation = 12
 
     model.export_to_model_xml()
     root = ET.parse('model.xml').getroot()
@@ -551,8 +571,7 @@ def test_slope_is_converted_to_a_reactivity(run_in_tmpdir):
 
     def worth(k_ref):
         ps = openmc.Perturbations(
-            [openmc.LocalPerturbation({71: 92}, perturbation_id=1)],
-            n_generation=L)
+            [openmc.LocalPerturbation({71: 92}, perturbation_id=1)])
         ps._set_results(np.array([pert]), np.array([ref]), k_ref=k_ref)
         return ps.by_id(1).rho
 
@@ -790,7 +809,8 @@ def test_null_perturbation_is_exactly_zero(run_in_tmpdir, model):
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({_sample_cell(model): water},
                                  perturbation_id=1, name='null'),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -840,7 +860,8 @@ def test_driver_is_unperturbed(run_in_tmpdir, model):
                                  perturbation_id=1),
         openmc.LocalPerturbation({_sample_cell(model): water},
                                  perturbation_id=2),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
 
     sp_perturbed = model.run(cwd='perturbed')
     with openmc.StatePoint(sp_perturbed) as sp:
@@ -874,7 +895,8 @@ def test_absorber_worth_is_negative(run_in_tmpdir, model):
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({_sample_cell(model): absorber},
                                  perturbation_id=1, name='B10'),
-    ], n_generation=8)
+    ])
+    model.settings.perturbation_n_generation = 8
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -905,7 +927,8 @@ def test_depth_curve_is_linear_not_flat(run_in_tmpdir, model):
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({_sample_cell(model): absorber},
                                  perturbation_id=1),
-    ], n_generation=10)
+    ])
+    model.settings.perturbation_n_generation = 10
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -941,7 +964,8 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
         openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
         openmc.LocalPerturbation({cell: fuel}, perturbation_id=2),
         openmc.LocalPerturbation({cell: None}, perturbation_id=3),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -1035,7 +1059,8 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
                                  name='at slice 2'),
         openmc.LocalPerturbation(moved, perturbation_id=3,
                                  name='moved 1->2'),
-    ], n_generation=8)
+    ])
+    model.settings.perturbation_n_generation = 8
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -1112,7 +1137,8 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
         openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
         openmc.LocalPerturbation({cell: sample}, perturbation_id=2,
                                  name='null'),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
@@ -1140,7 +1166,8 @@ def test_rejects_non_material_cell(run_in_tmpdir, model):
 
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
 
     with pytest.raises(RuntimeError, match='filled with a material'):
         model.run()
@@ -1160,7 +1187,8 @@ def test_rejects_adjoint_tally_combination(run_in_tmpdir, model):
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({_sample_cell(model): absorber},
                                  perturbation_id=1),
-    ], n_generation=6)
+    ])
+    model.settings.perturbation_n_generation = 6
     model.export_to_xml()
 
     tree = ET.parse('tallies.xml')

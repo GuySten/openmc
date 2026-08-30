@@ -186,6 +186,8 @@ extern int64_t ssw_cell_id;       //!< Cell id for the surface source
 extern SSWCellType ssw_cell_type; //!< Type of option for the cell
                                   //!< argument of surface source write
 extern int super_n_generation;    //!< Number of superhistory generations
+extern int bep_n_generation;      //!< Shadow tree depth for local
+                                  //!< perturbations, shared by all of them
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

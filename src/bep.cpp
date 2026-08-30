@@ -128,52 +128,6 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
 
 } // namespace
 
-//==============================================================================
-// Input
-//==============================================================================
-
-void read_perturbations_xml()
-{
-  // Optional, like tallies.xml.
-  std::string filename = settings::path_input + "perturbations.xml";
-  if (!file_exists(filename))
-    return;
-
-  write_message("Reading perturbations XML file...", 5);
-
-  pugi::xml_document doc;
-  doc.load_file(filename.c_str());
-  read_perturbations_xml(doc.document_element());
-}
-
-void read_perturbations_xml(pugi::xml_node root)
-{
-  int32_t next_id = 1;
-  for (pugi::xml_node node : root.children("local_perturbation")) {
-    Perturbation p;
-    p.id = check_for_node(node, "id") ? std::stoi(get_node_value(node, "id"))
-                                      : next_id;
-    next_id = p.id + 1;
-
-    // A perturbation is a SET of substitutions applied together, which is what
-    // lets a displacement be expressed as the trailing sliver reverting and
-    // the leading sliver taking the sample. The bare <cell>/<material> pair is
-    // kept as shorthand for the one-cell case.
-    for (pugi::xml_node node_s : node.children("substitution")) {
-      Substitution s;
-      s.cell_id = std::stoi(get_node_value(node_s, "cell"));
-      s.mat_id = std::stoi(get_node_value(node_s, "material"));
-      p.subs.push_back(s);
-    }
-    if (check_for_node(node, "cell")) {
-      Substitution s;
-      s.cell_id = std::stoi(get_node_value(node, "cell"));
-      s.mat_id = std::stoi(get_node_value(node, "material"));
-      p.subs.push_back(s);
-    }
-    perturbations.push_back(p);
-  }
-}
 
 //==============================================================================
 // Setup
@@ -682,4 +636,51 @@ void write_results(hid_t file_id)
 }
 
 } // namespace bep
+
+//==============================================================================
+// Input
+//==============================================================================
+
+void read_perturbations_xml()
+{
+  // Optional, like tallies.xml.
+  std::string filename = settings::path_input + "perturbations.xml";
+  if (!file_exists(filename))
+    return;
+
+  write_message("Reading perturbations XML file...", 5);
+
+  pugi::xml_document doc;
+  doc.load_file(filename.c_str());
+  read_perturbations_xml(doc.document_element());
+}
+
+void read_perturbations_xml(pugi::xml_node root)
+{
+  int32_t next_id = 1;
+  for (pugi::xml_node node : root.children("local_perturbation")) {
+    bep::Perturbation p;
+    p.id = check_for_node(node, "id") ? std::stoi(get_node_value(node, "id"))
+                                      : next_id;
+    next_id = p.id + 1;
+
+    // A perturbation is a SET of substitutions applied together, which is what
+    // lets a displacement be expressed as the trailing sliver reverting and
+    // the leading sliver taking the sample. The bare <cell>/<material> pair is
+    // kept as shorthand for the one-cell case.
+    for (pugi::xml_node node_s : node.children("substitution")) {
+      bep::Substitution s;
+      s.cell_id = std::stoi(get_node_value(node_s, "cell"));
+      s.mat_id = std::stoi(get_node_value(node_s, "material"));
+      p.subs.push_back(s);
+    }
+    if (check_for_node(node, "cell")) {
+      bep::Substitution s;
+      s.cell_id = std::stoi(get_node_value(node, "cell"));
+      s.mat_id = std::stoi(get_node_value(node, "material"));
+      p.subs.push_back(s);
+    }
+    bep::perturbations.push_back(p);
+  }
+}
 } // namespace openmc

@@ -506,7 +506,7 @@ bool read_model_xml()
   // them here lets get_mat_kTs() give those materials the temperatures of
   // the cells they can be substituted into.
   if (check_for_node(root, "perturbations"))
-    bep::read_perturbations_xml(root.child("perturbations"));
+    read_perturbations_xml(root.child("perturbations"));
 
   // Finalize cross sections having assigned temperatures
   finalize_cross_sections();
@@ -558,7 +558,7 @@ void read_separate_xml_files()
 
   // Before the cross sections are finalized -- see the note in
   // read_model_xml().
-  bep::read_perturbations_xml();
+  read_perturbations_xml();
 
   // Finalize cross sections having assigned temperatures
   finalize_cross_sections();

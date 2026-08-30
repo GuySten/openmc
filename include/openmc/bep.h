@@ -266,12 +266,6 @@ inline int generation_limit(int bep_tree_value)
                                        : settings::super_n_generation;
 }
 
-//! Read perturbations.xml if present. Optional, like tallies.xml.
-void read_perturbations_xml();
-
-//! Read a <perturbations> element, from perturbations.xml or from model.xml.
-void read_perturbations_xml(pugi::xml_node root);
-
 //! Give every substitution target the temperatures of the cells it can be
 //! substituted into.
 //!
@@ -308,6 +302,22 @@ void accumulate_generation();
 void write_results(hid_t file_id);
 
 } // namespace bep
+
+//==============================================================================
+// Functions
+//==============================================================================
+
+// In namespace openmc, not bep: every other input reader is
+// (read_settings_xml, read_materials_xml, read_geometry_xml ...), including
+// read_settings_xml, whose data lives in namespace settings exactly as this
+// reader's data lives in namespace bep. The namespace is for the data, not
+// for the function that fills it.
+
+//! Read perturbations.xml if present. Optional, like tallies.xml.
+void read_perturbations_xml();
+
+//! Read a <perturbations> element, from perturbations.xml or from model.xml.
+void read_perturbations_xml(pugi::xml_node root);
 } // namespace openmc
 
 #endif // OPENMC_BEP_H

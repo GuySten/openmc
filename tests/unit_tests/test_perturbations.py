@@ -114,12 +114,12 @@ def test_name():
 
 def test_repr_without_results_omits_worth():
     p = openmc.LocalPerturbation({71: 92}, name='steel')
-    assert p.rho is None and p.std_dev is None
+    assert p.rho is None
     assert 'Worth' not in repr(p)
     p.rho, = correlated_values([-40.0], [[4.0]])
     assert 'Worth' in repr(p)
-    assert p.std_dev == pytest.approx(2.0)
-    assert p.nominal_value == pytest.approx(-40.0)
+    assert p.rho.std_dev == pytest.approx(2.0)
+    assert p.rho.nominal_value == pytest.approx(-40.0)
 
 
 # ----------------------------------------------------------------------------
@@ -265,7 +265,6 @@ def test_rho_is_a_correlated_ufloat(results):
         assert isinstance(p.rho, UFloat)
     assert results.by_id(1).rho.nominal_value == pytest.approx(-40.0)
     assert results.by_id(1).rho.std_dev == pytest.approx(2.0)
-    assert results.by_id(1).std_dev == pytest.approx(2.0)
 
 
 def test_arbitrary_combination_matches_hand_algebra(results):
@@ -314,7 +313,6 @@ def test_results_accessors_without_results():
     ps = openmc.Perturbations([openmc.LocalPerturbation({71: 92},
                                                         perturbation_id=1)])
     assert ps.by_id(1).rho is None
-    assert ps.by_id(1).std_dev is None
     assert ps.covariance is None
     with pytest.raises(ValueError):
         ps.correlation()
@@ -821,10 +819,10 @@ def test_null_perturbation_is_exactly_zero(run_in_tmpdir, model):
         # rho is an uncertainties value; compare its parts, not the object.
         # Ordering and abs() on AffineScalarFunc are deprecated, and numpy
         # ufuncs reject it outright.
-        assert abs(p.nominal_value) < 1.0e-6, \
+        assert abs(p.rho.nominal_value) < 1.0e-6, \
             f'null perturbation gave {p.rho} pcm; common random ' \
             'numbers are not holding between the trees'
-        assert p.std_dev < 1.0e-6
+        assert p.rho.std_dev < 1.0e-6
         assert np.allclose(p.depth_curve, 0.0, atol=1.0e-12)
 
 
@@ -904,12 +902,12 @@ def test_absorber_worth_is_negative(run_in_tmpdir, model):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         p = sp.perturbations.by_id(1)
-        assert np.isfinite(p.nominal_value), \
+        assert np.isfinite(p.rho.nominal_value), \
             'non-finite worth: a shadow tree went extinct and log1p(-1) ' \
             'leaked into the accumulator'
-        assert np.isfinite(p.std_dev)
-        assert p.std_dev > 0.0
-        assert p.nominal_value < -3.0 * p.std_dev, (
+        assert np.isfinite(p.rho.std_dev)
+        assert p.rho.std_dev > 0.0
+        assert p.rho.nominal_value < -3.0 * p.rho.std_dev, (
             f'B10 sample worth {p.rho:.0f} pcm is not '
             'resolvably negative. If the sign is right but the error '
             'bar is too large, this is statistics, not correctness: '
@@ -991,7 +989,8 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
         # Subtracting the correlated rho values must beat treating them as
         # independent -- that is what correlated_values buys.
         diff = ps.by_id(3).rho - ps.by_id(1).rho
-        independent = np.hypot(ps.by_id(1).std_dev, ps.by_id(3).std_dev)
+        independent = np.hypot(ps.by_id(1).rho.std_dev,
+                               ps.by_id(3).rho.std_dev)
         assert diff.std_dev < independent
 
 
@@ -1161,9 +1160,9 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         ps = sp.perturbations
-        assert abs(ps.by_id(2).nominal_value) < 1.0e-6, \
+        assert abs(ps.by_id(2).rho.nominal_value) < 1.0e-6, \
             'multigroup null perturbation is not zero'
-        assert ps.by_id(2).std_dev < 1.0e-6
+        assert ps.by_id(2).rho.std_dev < 1.0e-6
         # and the real perturbation has to produce something finite
         worth = ps.by_id(1).rho
         assert np.isfinite(worth.nominal_value)

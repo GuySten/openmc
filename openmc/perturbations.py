@@ -67,8 +67,6 @@ class LocalPerturbation(IDManagerMixin):
         Perturbations sharing branch sites are strongly correlated, so a
         difference formed this way has a far smaller uncertainty than the
         quadrature sum of the two individual ones.
-    std_dev : float
-        Shorthand for ``rho.std_dev``, in pcm.
     depth_curve : numpy.ndarray
         ``l(d)``, the log importance ratio against shadow-tree depth, whose
         slope is :attr:`rho`. Only present when read from a statepoint.
@@ -95,16 +93,6 @@ class LocalPerturbation(IDManagerMixin):
         if self.rho is not None:
             parts.append(f'{"":<12}Worth={self.rho:.4g} pcm')
         return '\n'.join(parts) + '\n'
-
-    @property
-    def std_dev(self):
-        """One standard deviation of :attr:`rho`, in pcm."""
-        return None if self.rho is None else self.rho.std_dev
-
-    @property
-    def nominal_value(self):
-        """Central value of :attr:`rho`, in pcm."""
-        return None if self.rho is None else self.rho.nominal_value
 
     @property
     def name(self):

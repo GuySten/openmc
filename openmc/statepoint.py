@@ -485,12 +485,12 @@ class StatePoint:
         """Local perturbation worths, or None if none were computed.
 
         Returns a :class:`openmc.Perturbations` collection whose members carry
-        their reactivity worth in :attr:`~openmc.LocalPerturbation.rho` (pcm)
-        and its uncertainty in :attr:`~openmc.LocalPerturbation.std_dev`. Use
-        :meth:`~openmc.Perturbations.difference` rather than combining the
-        uncertainties by hand: perturbations sharing branch sites are strongly
-        correlated, and the covariance is what makes a difference between two
-        of them precise.
+        their reactivity worth in :attr:`~openmc.LocalPerturbation.rho`, a
+        ufloat in pcm carrying its own uncertainty. Subtract worths directly
+        rather than combining uncertainties by hand: they are built from the
+        full covariance of the run, so ``b.rho - a.rho`` propagates the
+        correlation, and perturbations sharing branch sites are correlated
+        strongly enough that this matters.
 
         .. versionadded:: 0.16.0
 

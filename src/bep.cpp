@@ -52,22 +52,6 @@ double w_branch_total {0.0};
 // down.
 namespace {
 
-//! Seed for the shadow trees spawned at one branch point.
-//!
-//! Keyed on the branch itself -- the generation and the driver particle's
-//! identity -- so it does not depend on the order branch sites happen to be
-//! recorded in, which is thread-timing dependent. Getting this wrong does
-//! not corrupt anything, it just makes every run give different worths from
-//! the same input.
-int64_t branch_seed(int64_t particle_id, int64_t n_tracks, int n_event)
-{
-  uint64_t h = mix_seed(static_cast<uint64_t>(simulation::total_gen));
-  h = mix_seed(h ^ static_cast<uint64_t>(particle_id));
-  h = mix_seed(h ^ (static_cast<uint64_t>(n_tracks) << 32 |
-                    static_cast<uint64_t>(n_event)));
-  return static_cast<int64_t>(h >> 1);
-}
-
 //! Transport one shadow tree rooted at `site` in tree `tree`.
 //!
 //! Depth bookkeeping rides on the existing super-history fields:
@@ -416,10 +400,13 @@ void maybe_branch(Particle& p, int32_t cell_index)
   site.wgt = p.wgt();
   site.time = p.time();
   site.cell = cell_index;
-  // Identity of the branch, not its arrival order. (id, n_tracks, n_event)
-  // is unique for a driver particle within a generation -- n_event alone is
-  // not, because event_revive_from_secondary() resets it.
-  site.seed_id = branch_seed(p.id(), p.n_tracks(), p.n_event());
+  // Seeded on the identity of the branch, not its arrival order, so the
+  // shadow trees do not depend on which thread got here first. (id,
+  // n_tracks, n_event) is unique for a driver particle within a generation
+  // -- n_event alone is not, because event_revive_from_secondary() resets
+  // it -- and total_gen distinguishes generations.
+  site.seed_id = combine_ids(
+    {simulation::total_gen, p.id(), p.n_tracks(), p.n_event()});
 
   // No synchronisation: this runs in the transport loop, and an omp critical
   // here serialises every thread on a push_back. The vectors are merged in

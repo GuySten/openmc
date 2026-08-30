@@ -96,12 +96,28 @@ double future_prn(int64_t n, uint64_t seed)
 // INIT_SEED
 //==============================================================================
 
+namespace {
+
+//! splitmix64 finalizer.
 uint64_t mix_seed(uint64_t x)
 {
   x += 0x9e3779b97f4a7c15ULL;
   x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
   x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
   return x ^ (x >> 31);
+}
+
+} // namespace
+
+int64_t combine_ids(std::initializer_list<int64_t> components)
+{
+  uint64_t h = 0;
+  for (int64_t c : components) {
+    h = mix_seed(h ^ static_cast<uint64_t>(c));
+  }
+  // Shift rather than mask: the result is handed to functions taking a
+  // signed id, and a negative one would be multiplied by prn_stride.
+  return static_cast<int64_t>(h >> 1);
 }
 
 uint64_t init_seed(int64_t id, int offset)

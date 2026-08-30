@@ -2,6 +2,7 @@
 #define OPENMC_RANDOM_LCG_H
 
 #include <cstdint>
+#include <initializer_list>
 
 namespace openmc {
 
@@ -47,23 +48,23 @@ double future_prn(int64_t n, uint64_t seed);
 //! @return The initialized seed value
 //==============================================================================
 
-//! Scramble a structured integer into one with no correlation to its
-//! neighbours.
+//! Fold several small counters into one id fit for init_particle_seeds().
 //!
 //! init_seed() and init_particle_seeds() separate streams by multiplying the
-//! id by prn_stride; they assume the ids they are handed are already
-//! distinct and unstructured. An id built by packing several small counters
-//! together is neither, so mix it first.
+//! id by prn_stride; they do no mixing and assume the id they are handed is
+//! already distinct and unstructured. An id assembled from a generation
+//! number, a particle id and an event counter is neither -- consecutive
+//! callers differ in one low bit -- so it has to be scrambled first.
 //!
-//! This is the splitmix64 finalizer. Boost's hash_combine (in
-//! random_ray/source_region.h) is NOT a substitute: it is built for hash
-//! buckets, and its avalanche is weak enough that neighbouring inputs give
-//! neighbouring outputs -- which is precisely the correlation a seed must
-//! not have.
+//! Uses the splitmix64 finalizer on each component in turn. Boost's
+//! hash_combine (in random_ray/source_region.h) is NOT a substitute: it is
+//! built for hash buckets, and consecutive inputs flip about 18 of 64 bits
+//! against splitmix64's 32. Neighbouring seeds give correlated random
+//! sequences, which is the one thing a seed must not do.
 //!
-//! \param x value to scramble
-//! \return well-separated 64-bit value
-uint64_t mix_seed(uint64_t x);
+//! \param components identity of the thing being seeded, in any fixed order
+//! \return non-negative id, well separated for nearby components
+int64_t combine_ids(std::initializer_list<int64_t> components);
 
 uint64_t init_seed(int64_t id, int offset);
 

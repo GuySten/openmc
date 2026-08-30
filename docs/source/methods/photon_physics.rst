@@ -686,24 +686,192 @@ and uniformly on :math:`[0, 2\pi)`.
 Photonuclear Interactions
 -------------------------
 
-Photonuclear reactions occur when a nucleus absorbs a high-energy photon (gamma-ray), leading to a change in the nucleus. 
-The absorption of the photon excites the nucleus, and the energy provided by the photon can result in the emission of particles 
-like neutrons, protons, or other light nuclei. Because photonuclear interactions are determined by nuclear rather than atomic properties, 
-their data libraries must be specific to each isotope.
+Photonuclear reactions occur when a nucleus absorbs a high-energy photon
+(gamma-ray), leading to a change in the nucleus. The absorption of the photon
+excites the nucleus, and the energy provided by the photon can result in the
+emission of particles like neutrons, protons, or other light nuclei. Because
+photonuclear interactions are determined by nuclear rather than atomic
+properties, their data libraries must be specific to each isotope.
+
+Photonuclear physics is enabled with the :attr:`Settings.photonuclear_physics`
+attribute and requires photon transport to be enabled as well.
+
+Sampling a Photonuclear Collision
+---------------------------------
+
+The photonuclear cross section is added to the total photon cross section, and
+the collision itself is sampled analog: with probability :math:`\Sigma_{pn} /
+\Sigma_t` the photon is absorbed and a photonuclear reaction takes place, and
+otherwise the photon proceeds to the photoatomic treatment described above,
+where the reaction is sampled against :math:`\Sigma_t - \Sigma_{pn}`.
+
+The interacting nuclide is sampled in proportion to its total photonuclear cross
+section, and the reaction channel in proportion to its cross section among the
+non-redundant channels of that nuclide. Channels with no transported products
+are included; they simply absorb the photon and deposit its energy locally.
+
+Keeping the collision analog, rather than reducing the photon weight by
+:math:`1 - \Sigma_{pn}/\Sigma_t`, is what allows the standard photon heating
+estimator to remain valid. That estimator is scored against the pre-collision
+weight and has no term for a photon that survives at reduced weight.
+
+Secondary Particles
+-------------------
+
+Neutron and photon products are transported. Charged-particle products are not;
+their energy remains in the local energy deposition, which is the correct
+treatment as long as they are not banked.
+
+Emitted photons are always sampled analog: an integer number is drawn from the
+generally non-integral yield, each carrying the weight of the incident photon.
+Photonuclear photon yields are frequently large, so collapsing them onto a
+single weighted photon would distort the emitted gamma spectrum.
+
+Neutron emission depends on :attr:`Settings.photoneutron_biasing`:
+
+**Analog (default)**
+  Neutrons are emitted only when a photonuclear absorption actually occurs. An
+  integer number is drawn from the yield, each at the weight of the incident
+  photon.
+
+**Biased**
+  Every photon collision emits exactly one neutron, carrying the expected weight
+
+  .. math::
+
+      w_n = w \, \frac{\Sigma_{n,prod}}{\Sigma_t} \, y(E)
+
+  where :math:`\Sigma_{n,prod}` is the macroscopic neutron production cross
+  section and :math:`y(E)` the yield of the sampled product. This is a
+  production bias only: the absorption of the photon remains analog, and no
+  neutrons are emitted from the absorption path while biasing is active.
+
+Both treatments give the same expected neutron production and the same expected
+energy deposition, so results should agree within statistics. The biased
+treatment substantially reduces the variance of photoneutron tallies when the
+photonuclear cross section is a small fraction of the total, at the cost of
+losing the correlation between neutrons emitted in the same event. It is
+therefore unsuitable for multiplicity or coincidence-counting applications.
+
+Photofission
+------------
+
+Photofission channels are treated as a whole rather than product by product.
+The ENDF convention stores the prompt (or, where no delayed data exists, the
+total) neutron yield on the first product of the fission reaction and the
+delayed precursor groups on the remaining neutron products; these are
+alternatives rather than independent emissions. The number of neutrons is
+therefore sampled once from the total yield :math:`\bar{\nu}(E)`, and each
+neutron is then assigned to prompt or delayed emission with probability
+:math:`\bar{\nu}_d / \bar{\nu}_t`. Delayed neutrons have their emission time
+advanced by a value sampled from the decay constant of the sampled precursor
+group.
+
+Photofission photon yields are prompt only. When
+:attr:`Settings.delayed_photon_scaling` is enabled, the prompt yield is scaled
+by :math:`(E_{\gamma,p} + E_{\gamma,d}) / E_{\gamma,p}` so that the delayed
+photons, which are not otherwise emitted, are represented. This mirrors the
+treatment of neutron-induced fission.
+
+Heating uses the recoverable fission energy release rather than the tabulated
+MT=18 Q value. The latter is the total energy release and includes neutrino
+energy, which escapes the system and must not be deposited. Fission fragments
+and beta energy remain in the local deposition; transported neutrons and photons
+are subtracted from it in the usual way. The two treatments of delayed photons
+are consistent with this: with scaling enabled the emitted photons carry the
+delayed photon energy away and it is subtracted, and with scaling disabled it
+is left in the local deposition.
+
+.. note::
+   The photonuclear ACE format carries no delayed neutron data, so libraries
+   processed through that route produce prompt emission only. The total neutron
+   count is unaffected, but any result depending on emission time will be
+   incorrect. A warning naming the nuclide is issued at load time.
+
+.. note::
+   Photofission is not supported in k-eigenvalue mode. Photofission neutrons do
+   not contribute to any of the k-eigenvalue estimators, which accumulate
+   nu-fission from neutron cross sections only, so a fission source built from
+   them would be inconsistent with the eigenvalue it is normalized against.
+   OpenMC reports an error at initialization if photonuclear data containing
+   fission channels is used in an eigenvalue calculation.
+
+Reference Frames
+----------------
+
+Secondary distributions may be tabulated in either the laboratory or the
+center-of-mass frame. The frame is taken from the neutron product of the
+reaction; emitted photons are treated as laboratory-frame in all cases.
+
+Because the incident photon is massless, the center-of-mass velocity is
+:math:`E / (A m_n c)` rather than the expression that applies to a massive
+projectile. The outgoing neutron energy and cosine in the laboratory frame are
+
+.. math::
+    :label: photonuclear-cm-to-lab
+
+    E' = E'_{cm} + \frac{E}{A} \sqrt{\frac{2 E'_{cm}}{m_n}} \mu_{cm}
+         + \frac{E^2}{2 m_n A^2}
+
+.. math::
+    :label: photonuclear-cm-to-lab-mu
+
+    \mu = \mu_{cm} \sqrt{\frac{E'_{cm}}{E'}} + \frac{E}{A \sqrt{2 m_n E'}}
+
+where :math:`E` is the incident photon energy, :math:`A` is the mass of the
+target nucleus in neutron masses and :math:`m_n` is the neutron mass in eV.
 
 Inelastic Level Scattering
 --------------------------
 
-It can be shown (see Wattenberg_) that in inelastic level scattering, the outgoing
+It can be shown (see Petit_) that in inelastic level scattering, the outgoing
 energy of the neutron :math:`E'` can be related to the Q-value of the reaction
 and the incoming energy of the photon:
 
 .. math::
     :label: photonuclear-level-scattering
 
-    E' = \left ( \frac{A-1}{A} \right ) \left ( E - |Q| - \frac{E^2}{2 m_n \left (A-1 \right )} \right )
+    E' = \left ( \frac{A-1}{A} \right ) \left ( E - |Q| - \frac{E^2}{2 m_n A} \right )
 
-where :math:`A` is the mass of the target nucleus measured in neutron masses, math:`m_n` is the neutron mass in eV.
+where :math:`A` is the mass of the target nucleus measured in neutron masses and
+:math:`m_n` is the neutron mass in eV.
+
+Energy Deposition
+-----------------
+
+Photon heating is scored as the incident energy plus the reaction Q value, less
+the energy of every secondary banked in the collision. For a photonuclear
+absorption this leaves the recoil and charged-particle energy, since the photon
+is killed and the transported neutrons and photons are subtracted. The Q value
+is included so that the binding energy, which goes into the mass of the residual
+nucleus, is not deposited locally.
+
+Under biasing, a single neutron is banked in place of an expected :math:`f = y
+\Sigma_{n,prod} / \Sigma_t` neutrons. The banked secondary energy is scaled by
+:math:`f` to match the expected energy carried away, so heating tallies agree
+between the two treatments.
+
+Maximum Photon Energy
+---------------------
+
+A photon can produce a neutron with more energy than the neutron transport data
+covers. Photonuclear libraries commonly extend to 130 MeV or beyond, while
+general-purpose neutron libraries usually stop at 20 MeV.
+
+At initialization, OpenMC determines the highest photon energy for which every
+photoneutron the library can produce still falls within the neutron data range.
+The bound is evaluated from the maximum outgoing energy of each secondary
+distribution, transformed to the laboratory frame at :math:`\mu_{cm} = 1` for
+center-of-mass reactions. If it lies below the current maximum photon energy,
+that limit is lowered to match and a warning is issued naming the nuclide and
+reaction responsible. When thick-target bremsstrahlung is enabled, the electron
+and positron limits are lowered to the same value, since bremsstrahlung photons
+are produced up to the energy of the electron that created them.
+
+Source particles above these limits are rejected, so an unsupported
+configuration is reported before transport begins rather than silently losing
+photoneutrons. Modelling higher photon energies requires neutron data covering
+the photonuclear energy range.
 
 -------------------
 Secondary Processes
@@ -842,4 +1010,4 @@ emitted photon.
 
 .. _Salvat: https://doi.org/10.1787/32da5043-en
 
-.. _Wattenberg: https://doi.org/10.1103/PhysRev.71.497
+.. _Petit: https://doi.org/10.15669/pnst.2.798

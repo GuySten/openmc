@@ -103,7 +103,6 @@ def test_kalbach_slope():
     energy_projectile = 10.2  # [eV]
     energy_emitted = 5.4  # [eV]
 
-
     kalbach_slope(
         energy_projectile=energy_projectile,
         energy_emitted=energy_emitted,

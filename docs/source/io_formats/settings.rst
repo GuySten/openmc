@@ -552,12 +552,33 @@ either "false" or "true".
   *Default*: false
 
 ----------------------------------
+``<photoneutron_biasing>`` Element
+----------------------------------
+
+The ``<photoneutron_biasing>`` element determines whether photoneutron
+production is biased. When "false", neutrons are emitted only when a
+photonuclear absorption occurs, with an integer multiplicity sampled from the
+yield. When "true", every photon collision emits a single neutron carrying the
+expected weight, which reduces the variance of photoneutron tallies but removes
+the correlation between neutrons emitted in the same event. This element has no
+attributes or sub-elements and can be set to either "false" or "true".
+
+Photonuclear physics must be enabled when this element is set to "true".
+
+  *Default*: false
+
+----------------------------------
 ``<photonuclear_physics>`` Element
 ----------------------------------
 
 The ``<photonuclear_physics>`` element determines whether photonuclear physics is
 enabled. This element has no attributes or sub-elements and can be set to
-either "false" or "true".
+either "false" or "true". Photon transport must be enabled as well.
+
+Enabling photonuclear physics may lower the maximum photon energy of the
+problem, and with thick-target bremsstrahlung the maximum electron and positron
+energy as well, so that photoneutrons cannot be produced above the range of the
+neutron transport data. See :ref:`methods_photon_physics` for details.
 
   *Default*: false
 

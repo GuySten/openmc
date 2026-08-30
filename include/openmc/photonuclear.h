@@ -64,12 +64,37 @@ public:
 
 class PhotonuclearInteraction {
 public:
+  //! Emission mode for photofission neutrons
+  enum class EmissionMode {
+    prompt,  //!< Prompt neutrons only
+    delayed, //!< Delayed neutrons only
+    total    //!< Prompt and delayed neutrons
+  };
+
   // Constructors/destructor
   PhotonuclearInteraction(hid_t group);
   ~PhotonuclearInteraction();
 
   // Methods
   void calculate_xs(Particle& p) const;
+
+  //! Photofission neutron yield
+  //! \param[in] E Incident photon energy in [eV]
+  //! \param[in] mode Prompt, delayed, or total
+  //! \param[in] group Delayed group, or 0 for all groups
+  //! \return Neutron yield
+  double nu(double E, EmissionMode mode, int group = 0) const;
+
+  //! Recoverable energy released by photofission, excluding neutrinos
+  //! \param[in] E Incident photon energy in [eV]
+  //! \return Recoverable energy release in [eV], or zero if unavailable
+  double fission_q_recoverable(double E) const;
+
+  //! Factor by which the prompt photofission photon yield is scaled to account
+  //! for delayed photons, which are not otherwise emitted
+  //! \param[in] E Incident photon energy in [eV]
+  //! \return Scaling factor, or unity when scaling does not apply
+  double delayed_photon_factor(double E) const;
 
   // Data members
   std::string name_; //!< Name of nuclide, e.g. "U235"
@@ -84,6 +109,14 @@ public:
   tensor::Tensor<double> xs_; //!< Cross sections
 
   vector<unique_ptr<PhotonuclearReaction>> reactions_; //!< Reactions
+
+  bool fissionable_ {false}; //!< Whether photofission is present
+  int n_precursor_ {0};      //!< Number of delayed neutron precursor groups
+  PhotonuclearReaction* fission_rx_ {nullptr}; //!< Photofission reaction
+  unique_ptr<Function1D> total_nu_;        //!< Total photofission neutron yield
+  unique_ptr<Function1D> fission_q_recov_; //!< Recoverable fission energy
+  unique_ptr<Function1D> prompt_photons_;  //!< Prompt photon energy release
+  unique_ptr<Function1D> delayed_photons_; //!< Delayed photon energy release
 private:
   void create_derived();
 
@@ -98,6 +131,17 @@ private:
 
 void free_memory_photonuclear();
 
+//! Determine the highest incident photon energy for which every photoneutron
+//! this library can produce still falls within the neutron transport data
+//! range, and report the nuclide and reaction that set the limit.
+//!
+//! \param[in] E_max_neutron Maximum neutron energy in the transport data [eV]
+//! \param[out] limiting_nuclide Name of the nuclide that sets the limit
+//! \param[out] limiting_mt ENDF MT of the reaction that sets the limit
+//! \return Maximum safe incident photon energy in [eV]
+double max_safe_photon_energy(
+  double E_max_neutron, std::string& limiting_nuclide, int& limiting_mt);
+
 //==============================================================================
 // Global variables
 //==============================================================================
@@ -108,6 +152,7 @@ namespace data {
 extern std::unordered_map<std::string, int> photonuclear_map;
 extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 extern double photonuclear_energy_min;
+extern double photonuclear_energy_max;
 
 } // namespace data
 

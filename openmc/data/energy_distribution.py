@@ -957,7 +957,7 @@ class LevelInelastic(EnergyDistribution):
         if self.particle == 'neutron':
             return (A+1.0)/A*abs(Q)
         else:
-            b = NEUTRON_MASS_EV*(A-1)
+            b = NEUTRON_MASS_EV*A
             return sqrt(b)*(sqrt(b)-sqrt(b-2*abs(Q)))
 
     def to_hdf5(self, group):
@@ -1023,7 +1023,7 @@ class LevelInelastic(EnergyDistribution):
         particle = {'u':'photon', 'c': 'neutron'}[ace.data_type.value]
         threshold = ace.xss[idx]*EV_PER_MEV
         mass_ratio = ace.xss[idx + 1]
-        mass = 1.0/(1.0/sqrt(mass_ratio)-1.0) if particle == 'neutron' else 1.0-1.0/mass_ratio
+        mass = 1.0/(1.0/sqrt(mass_ratio)-1.0) if particle == 'neutron' else 1.0/(1.0-mass_ratio)
         if not isclose(ace.atomic_weight_ratio, mass):
             warn("Level inelastic distribution mass parameter does not match ace table mass.")
             mass = ace.atomic_weight_ratio

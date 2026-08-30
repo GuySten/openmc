@@ -37,6 +37,37 @@ REACTION_NAME = {50 : '(gamma,n0)'}
 REACTION_NAME.update({key:value.replace("(n,","(gamma,") for key,value in _REACTION_NAME.items()})
 
 class PhotonuclearReaction(EqualityMixin):
+    """A photonuclear reaction for a specific target nuclide.
+
+    .. versionadded:: 0.16.1
+
+    Parameters
+    ----------
+    mt : int
+        The ENDF MT number of the reaction.
+
+    Attributes
+    ----------
+    center_of_mass : bool
+        Whether the secondary distributions are given in the center-of-mass
+        frame. Taken from the neutron product of the reaction; emitted photons
+        are always treated as laboratory-frame.
+    redundant : bool
+        Whether the reaction is redundant, i.e. its cross section is already
+        accounted for by other reactions and it must be excluded from the total.
+    q_value : float
+        The Q value of the reaction in [eV].
+    products : list of openmc.data.Product
+        Secondary products of the reaction.
+    derived_products : list of openmc.data.Product
+        Derived products of the reaction.
+    xs : openmc.data.Function1D
+        Cross section as a function of incident photon energy.
+    mt : int
+        The ENDF MT number of the reaction.
+
+    """
+
     def __init__(self, mt):
         self._center_of_mass = True
         self._redundant = False
@@ -336,7 +367,10 @@ class PhotonuclearReaction(EqualityMixin):
                         
                 # Determine reference frame        
                 ty = int(ace.xss[int(ace.xss[loc+6])+i_mtr])
-                rx.center_of_mass = (ty < 0)
+                
+                # Decide center of mass according to neutron product
+                if particle.particle == 'neutron':
+                    rx.center_of_mass = (ty < 0)
                 
                 # Determine multiplicity
                 idx = int(ace.xss[loc+8])+int(ace.xss[int(ace.xss[loc+7])+i_mtr])-1
@@ -394,6 +428,8 @@ class PhotonuclearReaction(EqualityMixin):
 
 class IncidentPhotonuclear(EqualityMixin):
     """photo-nuclear interaction data.
+
+    .. versionadded:: 0.16.1
 
     This class stores data derived from an ENDF-6 format photo-nuclear interaction
     sublibrary. Instances of this class are not normally instantiated by the
@@ -739,7 +775,15 @@ class IncidentPhotonuclear(EqualityMixin):
           if tuple(rx.xs.interpolation) != (2,):
               raise NotImplementedError('Only linear-linear interpolable reactions are supported.')
               
-          threshold_idx, = np.flatnonzero(union_grid == rx.xs.x[0])
+          # Locate the threshold on the union grid. Exact float equality is
+          # unreliable here because the union grid can contain repeated
+          # energies at reaction thresholds.
+          idx = np.searchsorted(union_grid, rx.xs.x[0], side='left')
+          if idx >= union_grid.size or not np.isclose(union_grid[idx], rx.xs.x[0]):
+              raise ValueError(
+                  f'Threshold energy {rx.xs.x[0]} eV for MT={rx.mt} was not '
+                  'found on the union energy grid.')
+          threshold_idx = int(idx)
           xs = rx.xs(union_grid[threshold_idx:]) 
           tab1d = Tabulated1D(union_grid[threshold_idx:], xs)
           tab1d._threshold_idx = threshold_idx
@@ -760,6 +804,25 @@ class IncidentPhotonuclear(EqualityMixin):
             rx_group = rxs_group.create_group(f'reaction_{rx.mt:03}')
             rx.to_hdf5(rx_group)
         
+        # Write total photofission neutron yield when it differs from the
+        # prompt yield stored on the fission reaction product. Without this the
+        # transport code cannot reconstruct the delayed fraction.
+        for mt in FISSION_MTS:
+            rx = self.reactions.get(mt)
+            if rx is None:
+                continue
+            has_delayed = any(
+                p.particle == 'neutron' and p.emission_mode == 'delayed'
+                for p in rx.products)
+            if has_delayed:
+                total = sum(
+                    p.yield_ for p in rx.products
+                    if p.particle == 'neutron'
+                    and p.emission_mode in ('prompt', 'delayed'))
+                nu_group = g.create_group('total_nu')
+                total.to_hdf5(nu_group, 'yield')
+            break
+
         # Write fission energy release data
         if self.fission_energy is not None:
             fer_group = g.create_group('fission_energy_release')

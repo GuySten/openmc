@@ -9,6 +9,7 @@
 
 #include "openmc/hdf5_interface.h"
 #include "openmc/math_functions.h"
+#include "openmc/particle_type.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
@@ -22,13 +23,15 @@ namespace openmc {
 
 KalbachMann::KalbachMann(hid_t group)
 {
+  is_photon_ = false;
   // Check if projectile is a photon
-  if (attribute_exists(group, "is_photon")) {
-    read_attribute(group, "is_photon", is_photon_);
-  } else {
-    is_photon_ = false;
+  if (attribute_exists(group, "particle")) {
+    std::string temp;
+    read_attribute(group, "particle", temp);
+    auto type = ParticleType(temp);
+    if (type.is_photon())
+      is_photon_ = true;
   }
-
   // Open incoming energy dataset
   hid_t dset = open_dataset(group, "energy");
 
@@ -233,10 +236,10 @@ void KalbachMann::sample(
   // Sampled correlated angle from Kalbach-Mann parameters
   if (is_photon_) {
     if (prn(seed) > km_r) {
+      mu = uniform_distribution(-1., 1., seed);
+    } else {
       double T = uniform_distribution(-1., 1., seed);
       mu = std::log(std::cosh(km_a) + T * std::sinh(km_a)) / km_a;
-    } else {
-      mu = uniform_distribution(-1., 1., seed);
     }
   } else {
     if (prn(seed) > km_r) {
@@ -257,6 +260,46 @@ double KalbachMann::sample_energy_and_pdf(
   // https://docs.openmc.org/en/latest/methods/neutron_physics.html#equation-KM-pdf-angle
   return km_a / (2 * std::sinh(km_a)) *
          (std::cosh(km_a * mu) + km_r * std::sinh(km_a * mu));
+}
+
+double KalbachMann::max_energy(double E_in) const
+{
+  // A single tabulated incident energy leaves no bin to interpolate across,
+  // and distribution_[i + 1] below would be out of bounds.
+  auto n_energy_in = energy_.size();
+  if (n_energy_in < 2) {
+    const auto& d = distribution_[0];
+    return d.e_out[d.e_out.size() - 1];
+  }
+
+  // Find energy bin and interpolation factor exactly as sample() does
+  int i;
+  double r;
+  if (E_in < energy_[0]) {
+    i = 0;
+    r = 0.0;
+  } else if (E_in > energy_[n_energy_in - 1]) {
+    i = n_energy_in - 2;
+    r = 1.0;
+  } else {
+    i = lower_bound_index(energy_.begin(), energy_.end(), E_in);
+    r = (E_in - energy_[i]) / (energy_[i + 1] - energy_[i]);
+  }
+
+  // The continuous portion is scaled onto [E_1, E_K]; E_K is the attainable
+  // maximum. Discrete lines are returned unscaled and bounded separately.
+  const auto& d_i = distribution_[i];
+  const auto& d_i1 = distribution_[i + 1];
+  double E_i_K = d_i.e_out[d_i.e_out.size() - 1];
+  double E_i1_K = d_i1.e_out[d_i1.e_out.size() - 1];
+  double result = E_i_K + r * (E_i1_K - E_i_K);
+
+  for (const auto* d : {&d_i, &d_i1}) {
+    for (int j = 0; j < d->n_discrete; ++j) {
+      result = std::max(result, d->e_out[j]);
+    }
+  }
+  return result;
 }
 
 } // namespace openmc

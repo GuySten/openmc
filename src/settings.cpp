@@ -64,6 +64,7 @@ bool output_tallies {true};
 bool particle_restart_run {false};
 bool photon_transport {false};
 bool photonuclear_physics {false};
+bool photoneutron_biasing {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
 bool res_scat_on {false};
@@ -627,6 +628,16 @@ void read_settings_xml(pugi::xml_node root)
     if (!photon_transport && photonuclear_physics) {
       fatal_error("Photon transport must be enabled when photonuclear physics "
                   "is enabled");
+    }
+  }
+
+  // Check for photoneutron biasing
+  if (check_for_node(root, "photoneutron_biasing")) {
+    photoneutron_biasing = get_node_value_bool(root, "photoneutron_biasing");
+
+    if (photoneutron_biasing && !photonuclear_physics) {
+      fatal_error("Photonuclear physics must be enabled when photoneutron "
+                  "biasing is enabled");
     }
   }
 

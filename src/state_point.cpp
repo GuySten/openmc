@@ -116,6 +116,8 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
     write_attribute(file_id, "photon_transport", settings::photon_transport);
     write_attribute(
       file_id, "photonuclear_physics", settings::photonuclear_physics);
+    write_attribute(
+      file_id, "photoneutron_biasing", settings::photoneutron_biasing);
     write_dataset(file_id, "n_particles", settings::n_particles);
     write_dataset(file_id, "n_batches", settings::n_batches);
 
@@ -443,8 +445,16 @@ extern "C" int openmc_statepoint_load(const char* filename)
     settings::run_mode = RunMode::EIGENVALUE;
   }
   read_attribute(file_id, "photon_transport", settings::photon_transport);
-  read_attribute(
-    file_id, "photonuclear_physics", settings::photonuclear_physics);
+  // These attributes were added when photonuclear physics was introduced;
+  // guard them so that statepoints written by earlier versions still load.
+  if (attribute_exists(file_id, "photonuclear_physics")) {
+    read_attribute(
+      file_id, "photonuclear_physics", settings::photonuclear_physics);
+  }
+  if (attribute_exists(file_id, "photoneutron_biasing")) {
+    read_attribute(
+      file_id, "photoneutron_biasing", settings::photoneutron_biasing);
+  }
   read_dataset(file_id, "n_particles", settings::n_particles);
   int temp;
   read_dataset(file_id, "n_batches", temp);

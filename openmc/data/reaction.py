@@ -178,15 +178,15 @@ def _get_products(ev, mt):
 
                 zat = ev.target["atomic_number"] * 1000 + ev.target["mass_number"]
                 if ev.projectile['mass'] == 0.0:
-                    projectile_za = 0
+                    za_projectile = 0
                 elif np.isclose(ev.projectile['mass'], 1.0, atol=1.0e-12, rtol=0.):
-                    projectile_za = 1
+                    za_projectile = 1
                 else:
                     raise NotImplementedError('Unknown projectile')
                 p.distribution = [KalbachMann.from_endf(file_obj,
                                                         za,
                                                         zat,
-                                                        projectile_za)]
+                                                        za_projectile)]
 
         elif law == 2:
             # Discrete two-body scattering
@@ -1220,12 +1220,7 @@ class Reaction(EqualityMixin):
                 # since it can be calculated analytically. Here we determine the
                 # necessary parameters to create a LevelInelastic object
                 dist = UncorrelatedAngleEnergy()
-
-                A = ev.target['mass']
-                threshold = (A + 1.)/A*abs(rx.q_value)
-                mass_ratio = (A/(A + 1.))**2
-                dist.energy = LevelInelastic(threshold, mass_ratio)
-
+                dist.energy = LevelInelastic(rx.q_value, ev.target['mass'])
                 neutron.distribution.append(dist)
 
             if (4, mt) in ev.section:

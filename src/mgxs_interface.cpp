@@ -284,6 +284,10 @@ void set_mg_interface_nuclides_and_temps()
   vector<vector<double>> dummy;
   get_temperatures(nuc_temps, dummy);
 
+  // Substitution targets appear in no cell, so get_temperatures() gives
+  // their nuclides nothing to read.
+  bep::add_substitution_nuclide_temperatures(nuc_temps);
+
   // Build vector of nuclide names which are to be read
   vector<std::string> nuclide_names(data::nuclide_map.size());
   for (const auto& kv : data::nuclide_map) {

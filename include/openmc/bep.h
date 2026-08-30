@@ -289,6 +289,19 @@ void read_perturbations_xml(pugi::xml_node root);
 //! the cross sections are finalized.
 void add_substitution_temperatures(vector<vector<double>>& kTs);
 
+//! The same, one level down: the NUCLIDE temperatures to read.
+//!
+//! get_temperatures() also walks cells only, so a substitution target's
+//! nuclides are read with an empty temperature list and the macroscopic
+//! build then has nothing to interpolate. Both hooks are needed -- giving
+//! the material a temperature without giving its nuclides one just moves
+//! the crash from Mgxs::calculate_xs() into the Mgxs constructor.
+//!
+//! NOTE the units differ from add_substitution_temperatures(): this list
+//! holds temperature in K, that one holds kT in eV.
+void add_substitution_nuclide_temperatures(
+  vector<vector<double>>& nuc_temps);
+
 void init();
 void reset_generation();
 void maybe_branch(Particle& p, int32_t cell_index);

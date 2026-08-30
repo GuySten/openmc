@@ -195,26 +195,6 @@ void init()
   if (settings::event_based)
     fatal_error("<local_perturbation> requires history-based transport.");
 
-  // Multigroup only builds macroscopic data for materials used in a cell.
-  // add_substitution_temperatures() is supposed to have covered the targets;
-  // if anything slipped through, say so rather than reading off the end of
-  // an empty temperature vector inside Mgxs::calculate_xs().
-  if (!settings::run_CE) {
-    for (const auto& pert : perturbations) {
-      for (const auto& sub : pert.subs) {
-        if (sub.mat_index < 0)
-          continue;
-        if (!data::mg.macro_xs_[sub.mat_index].exists_in_model) {
-          fatal_error(fmt::format(
-            "<local_perturbation> {} substitutes material {}, which has no "
-            "multigroup data. Materials only get data if they appear in a "
-            "cell or in a perturbation read before the cross sections are "
-            "finalized.",
-            pert.id, sub.mat_id));
-        }
-      }
-    }
-  }
   if (perturbations.empty())
     fatal_error("<local_perturbation> given with no perturbations defined.");
   for (const auto& t : model::tallies) {
@@ -324,6 +304,31 @@ void init()
     }
   }
 
+  // Multigroup only builds macroscopic data for materials used in a cell.
+  // add_substitution_temperatures() is supposed to have covered every
+  // substitution target; if one slipped through, say so here rather than
+  // reading a null tensor inside Mgxs::calculate_xs().
+  //
+  // AFTER pass 1, not before: pass 1 is what fills in mat_index. Checking
+  // earlier sees -1 everywhere and silently passes.
+  if (!settings::run_CE) {
+    for (const auto& pert : perturbations) {
+      for (const auto& sub : pert.subs) {
+        if (sub.mat_index == MATERIAL_VOID || sub.mat_index < 0)
+          continue;
+        if (!data::mg.macro_xs_[sub.mat_index].exists_in_model) {
+          fatal_error(fmt::format(
+            "<local_perturbation> {} substitutes material {}, which has no "
+            "multigroup data. Multigroup builds data only for materials "
+            "appearing in a cell, plus perturbation targets collected by "
+            "bep::add_substitution_temperatures() before the cross sections "
+            "are finalized.",
+            pert.id, sub.mat_id));
+        }
+      }
+    }
+  }
+
   // Pass 2: one tree per perturbation, after all reference trees exist.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     perturbations[ip].tree = static_cast<int>(trees.size());
@@ -391,17 +396,59 @@ void add_substitution_temperatures(vector<vector<double>>& kTs)
   if (!settings::bep_on)
     return;
 
+  // Resolve the ids here rather than reading Substitution::mat_index.
+  // init() is what fills those in, and it does not run until simulation
+  // setup -- long after the cross sections are finalized. Reading them at
+  // this point would silently see -1 for every substitution and add no
+  // temperatures at all, which is exactly the bug this function exists to
+  // prevent. model::cell_map and model::material_map are both populated by
+  // now, so look up by id.
   for (const auto& pert : perturbations) {
     for (const auto& sub : pert.subs) {
-      if (sub.mat_index < 0 || sub.cell_index < 0)
-        continue; // void substitution, or a target that failed to resolve
-      const Cell& c = *model::cells[sub.cell_index];
+      if (sub.mat_id == 0)
+        continue; // void: nothing to build data for
+
+      auto m = model::material_map.find(sub.mat_id);
+      auto c = model::cell_map.find(sub.cell_id);
+      // Bad ids are not diagnosed here -- init() reports them properly, with
+      // the perturbation id attached. Just skip.
+      if (m == model::material_map.end() || c == model::cell_map.end())
+        continue;
+
       // The substituted material is evaluated at the HOST cell's
       // temperature, so those are exactly the temperatures it needs.
-      for (double sqrtkT : c.sqrtkT_) {
+      for (double sqrtkT : model::cells[c->second]->sqrtkT_) {
         double kT = sqrtkT * sqrtkT;
-        if (!contains(kTs[sub.mat_index], kT))
-          kTs[sub.mat_index].push_back(kT);
+        if (!contains(kTs[m->second], kT))
+          kTs[m->second].push_back(kT);
+      }
+    }
+  }
+}
+
+void add_substitution_nuclide_temperatures(vector<vector<double>>& nuc_temps)
+{
+  if (!settings::bep_on)
+    return;
+
+  for (const auto& pert : perturbations) {
+    for (const auto& sub : pert.subs) {
+      if (sub.mat_id == 0)
+        continue;
+
+      auto m = model::material_map.find(sub.mat_id);
+      auto c = model::cell_map.find(sub.cell_id);
+      if (m == model::material_map.end() || c == model::cell_map.end())
+        continue;
+
+      const auto& mat = model::materials[m->second];
+      for (double sqrtkT : model::cells[c->second]->sqrtkT_) {
+        // Kelvin here, unlike add_substitution_temperatures().
+        double temperature = sqrtkT * sqrtkT / K_BOLTZMANN;
+        for (int i_nuc : mat->nuclide_) {
+          if (!contains(nuc_temps[i_nuc], temperature))
+            nuc_temps[i_nuc].push_back(temperature);
+        }
       }
     }
   }

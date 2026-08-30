@@ -5,6 +5,7 @@
 
 #include <fmt/format.h>
 
+#include "openmc/bep.h"
 #include "openmc/cell.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
@@ -119,6 +120,10 @@ void MgxsInterface::create_macro_xs()
 {
   // Get temperatures to read for each material
   auto kTs = get_mat_kTs();
+
+  // A perturbation's substitution targets need data too, and they normally
+  // appear in no cell at all.
+  bep::add_substitution_temperatures(kTs);
 
   // Force all nuclides in a material to be the same representation.
   // Therefore type(nuclides[mat->nuclide_[0]]) dictates type(macroxs).

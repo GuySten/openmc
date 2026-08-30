@@ -500,6 +500,14 @@ bool read_model_xml()
   // Final geometry setup and assign temperatures
   finalize_geometry();
 
+  // Before the cross sections are finalized: multigroup builds macroscopic
+  // data only for materials that appear in a CELL, and a perturbation's
+  // substitution targets need not appear anywhere in the geometry. Reading
+  // them here lets get_mat_kTs() give those materials the temperatures of
+  // the cells they can be substituted into.
+  if (check_for_node(root, "perturbations"))
+    bep::read_perturbations_xml(root.child("perturbations"));
+
   // Finalize cross sections having assigned temperatures
   finalize_cross_sections();
 
@@ -509,9 +517,6 @@ bool read_model_xml()
 
   if (check_for_node(root, "tallies"))
     read_tallies_xml(root.child("tallies"));
-
-  if (check_for_node(root, "perturbations"))
-    bep::read_perturbations_xml(root.child("perturbations"));
 
   check_pulse_height_compatibility();
 
@@ -551,6 +556,10 @@ void read_separate_xml_files()
   // Final geometry setup and assign temperatures
   finalize_geometry();
 
+  // Before the cross sections are finalized -- see the note in
+  // read_model_xml().
+  bep::read_perturbations_xml();
+
   // Finalize cross sections having assigned temperatures
   finalize_cross_sections();
 
@@ -559,8 +568,6 @@ void read_separate_xml_files()
   finalize_cell_densities();
 
   read_tallies_xml();
-
-  bep::read_perturbations_xml();
 
   check_pulse_height_compatibility();
 

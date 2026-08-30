@@ -275,6 +275,20 @@ void read_perturbations_xml();
 //! Read a <perturbations> element, from perturbations.xml or from model.xml.
 void read_perturbations_xml(pugi::xml_node root);
 
+//! Give every substitution target the temperatures of the cells it can be
+//! substituted into.
+//!
+//! Multigroup builds macroscopic data only for materials that appear in a
+//! CELL (see MgxsInterface::get_mat_kTs), and a perturbation's target need
+//! not appear anywhere in the geometry -- that is the normal case, since it
+//! is the material being swapped IN. Without this the target gets a blank
+//! Mgxs and the first shadow particle to reach it indexes an empty
+//! temperature vector, which segfaults rather than erroring.
+//!
+//! Called from get_mat_kTs(), which is why perturbations.xml is read before
+//! the cross sections are finalized.
+void add_substitution_temperatures(vector<vector<double>>& kTs);
+
 void init();
 void reset_generation();
 void maybe_branch(Particle& p, int32_t cell_index);

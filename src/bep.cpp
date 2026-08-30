@@ -11,11 +11,13 @@
 
 #include "openmc/cell.h"
 #include "openmc/constants.h"
+#include "openmc/container_util.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/material.h"
 #include "openmc/message_passing.h"
 #include "openmc/openmp_interface.h"
+#include "openmc/mgxs_interface.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
@@ -192,6 +194,27 @@ void init()
     fatal_error("<local_perturbation> requires an eigenvalue calculation.");
   if (settings::event_based)
     fatal_error("<local_perturbation> requires history-based transport.");
+
+  // Multigroup only builds macroscopic data for materials used in a cell.
+  // add_substitution_temperatures() is supposed to have covered the targets;
+  // if anything slipped through, say so rather than reading off the end of
+  // an empty temperature vector inside Mgxs::calculate_xs().
+  if (!settings::run_CE) {
+    for (const auto& pert : perturbations) {
+      for (const auto& sub : pert.subs) {
+        if (sub.mat_index < 0)
+          continue;
+        if (!data::mg.macro_xs_[sub.mat_index].exists_in_model) {
+          fatal_error(fmt::format(
+            "<local_perturbation> {} substitutes material {}, which has no "
+            "multigroup data. Materials only get data if they appear in a "
+            "cell or in a perturbation read before the cross sections are "
+            "finalized.",
+            pert.id, sub.mat_id));
+        }
+      }
+    }
+  }
   if (perturbations.empty())
     fatal_error("<local_perturbation> given with no perturbations defined.");
   for (const auto& t : model::tallies) {
@@ -362,6 +385,27 @@ void reset_generation()
 //==============================================================================
 // Branch detection (driver side)
 //==============================================================================
+
+void add_substitution_temperatures(vector<vector<double>>& kTs)
+{
+  if (!settings::bep_on)
+    return;
+
+  for (const auto& pert : perturbations) {
+    for (const auto& sub : pert.subs) {
+      if (sub.mat_index < 0 || sub.cell_index < 0)
+        continue; // void substitution, or a target that failed to resolve
+      const Cell& c = *model::cells[sub.cell_index];
+      // The substituted material is evaluated at the HOST cell's
+      // temperature, so those are exactly the temperatures it needs.
+      for (double sqrtkT : c.sqrtkT_) {
+        double kT = sqrtkT * sqrtkT;
+        if (!contains(kTs[sub.mat_index], kT))
+          kTs[sub.mat_index].push_back(kT);
+      }
+    }
+  }
+}
 
 void maybe_branch(Particle& p, int32_t cell_index)
 {

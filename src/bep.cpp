@@ -586,21 +586,20 @@ void accumulate_generation()
     // Sum tau across ranks before recording: the estimator is a ratio of sums
     // over every progenitor, not a mean of per-rank ratios.
     //
-    // mpi::reduce rather than a raw MPI call: it splits counts that would
-    // overflow the int accepted by legacy MPI_Reduce, and it is how tally
-    // results are reduced (see write_tally_results), so there is one place
-    // to fix if that ever changes.
+    // One unconditional call with a separate receive buffer, as everywhere
+    // else in the code -- MPI_Reduce ignores recvbuf off the root, so there
+    // is nothing to branch on. tau is a few kB, and the MPI_IN_PLACE form
+    // that avoids the temporary is only worth its extra branch where a
+    // master-only block already exists for other reasons (see the tally
+    // write in state_point.cpp).
     //
-    // Reduce to the master rather than allreduce -- only the master writes
-    // the statepoint, so no other rank reads tau again.
-    if (mpi::master) {
-      mpi::reduce<double>(
-        MPI_IN_PLACE, tau.data(), tau.size(), MPI_SUM, 0, mpi::intracomm);
-    } else {
-      // Receive buffer not significant off the master.
-      mpi::reduce<double>(
-        tau.data(), nullptr, tau.size(), MPI_SUM, 0, mpi::intracomm);
-    }
+    // Reduce rather than allreduce: only the master writes the statepoint,
+    // so no other rank reads tau again.
+    vector<double> reduced(tau.size(), 0.0);
+    mpi::reduce<double>(
+      tau.data(), reduced.data(), tau.size(), MPI_SUM, 0, mpi::intracomm);
+    if (mpi::master)
+      tau.swap(reduced);
   }
 #endif
 

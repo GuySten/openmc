@@ -561,7 +561,7 @@ void sample_electron_reaction(Particle& p)
     if (settings::atomic_relaxation && i_shell >= 0) {
       const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
       if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(i_shell, p);
+        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
       }
     }
     return;
@@ -644,7 +644,7 @@ void sample_positron_reaction(Particle& p)
     if (settings::atomic_relaxation && i_shell >= 0) {
       const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
       if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(i_shell, p);
+        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
       }
     }
     return;

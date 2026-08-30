@@ -45,6 +45,12 @@ public:
   int64_t index_;         //!< Index in data::electroatomic
   int64_t i_photoatomic_; //!< Index in data::photoatomic for this element
 
+  //! For each electroionization subshell, the index of the matching subshell in
+  //! the photoatomic PhotonInteraction::shells_ vector. The two lists are not
+  //! guaranteed to have the same length or ordering, so they are matched by
+  //! ENDF designator rather than by position.
+  vector<int> shell_map_;
+
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
   tensor::Tensor<double> elastic_;

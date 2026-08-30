@@ -159,7 +159,6 @@ def test_collection_xml_roundtrip():
     ])
 
     qs = openmc.Perturbations.from_xml_element(ps.to_xml_element())
-    assert qs.n_generation == 13
     assert qs.ids == [1, 2]
     assert qs.by_id(1).name == 'steel'
     assert qs.by_id(2).substitutions == {71: 91, 72: 92}
@@ -173,18 +172,22 @@ def test_collection_file_roundtrip(run_in_tmpdir):
     assert Path('perturbations.xml').is_file()
 
     qs = openmc.Perturbations.from_xml('perturbations.xml')
-    assert qs.n_generation == 11
     assert qs.by_id(1).substitutions == {71: 92}
 
 
 def test_xml_element_name_matches_cpp_reader():
-    # bep::read_perturbations_xml() looks for <perturbations> with
-    # <n_generation> and <local_perturbation> children. If these tags drift the
-    # C++ silently reads nothing, so pin them down.
+    """Tag names the C++ reader depends on.
+
+    bep::read_perturbations_xml() looks for <perturbations> with
+    <local_perturbation> children. If these drift the C++ silently reads
+    nothing, so pin them down.
+    """
     elem = openmc.Perturbations(
         [openmc.LocalPerturbation({71: 92})]).to_xml_element()
     assert elem.tag == 'perturbations'
-    assert elem.find('n_generation').text == '9'
+    # The depth is parsed from settings.xml, not from here -- settings.xml is
+    # read first, so anything needing it early can see it.
+    assert elem.find('n_generation') is None
     assert len(elem.findall('local_perturbation')) == 1
     sub = elem.find('local_perturbation').find('substitution')
     assert sub.find('cell').text == '71'
@@ -421,7 +424,7 @@ def test_model_export_and_reimport(run_in_tmpdir, cells_and_materials):
     assert Path('perturbations.xml').is_file()
 
     reloaded = openmc.Model.from_xml()
-    assert reloaded.perturbations.n_generation == 12
+    assert reloaded.settings.perturbation_n_generation == 12
     assert reloaded.perturbations.by_id(1).substitutions == \
         {sample.id: steel.id}
     assert reloaded.perturbations.by_id(1).name == 'steel'
@@ -448,7 +451,7 @@ def test_model_xml_single_file_roundtrip(run_in_tmpdir, cells_and_materials):
     assert root.find('perturbations') is not None
 
     reloaded = openmc.Model.from_model_xml()
-    assert reloaded.perturbations.n_generation == 8
+    assert reloaded.settings.perturbation_n_generation == 12
     assert reloaded.perturbations.ids == [1, 2]
     assert reloaded.perturbations.by_id(2).substitutions == \
         {sample.id: water.id, other.id: steel.id}
@@ -1090,21 +1093,36 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
     """
     groups = openmc.mgxs.EnergyGroups([0.0, 1.0e5, 20.0e6])
 
-    def xsdata(name, absorption):
+    def xsdata(name, absorption, scatter, fissile):
+        """Two-group data that balances against the totals.
+
+        For the fissile ones nu_fission is set EQUAL to absorption in both
+        groups, so k_inf = sum(nu_f phi) / sum(abs phi) = 1 for ANY
+        spectrum. The test cannot drift supercritical however the flux
+        settles, which matters because shadow trees grow as k**L: an earlier
+        version of this data gave k = 3.3 and the trees ran away.
+        """
         x = openmc.XSdata(name, groups)
         x.order = 0
         x.set_total([1.0, 2.0])
         x.set_absorption(absorption)
-        x.set_scatter_matrix(np.array([[[0.7], [0.0]], [[0.2], [1.5]]]))
-        x.set_fission([0.4, 0.5])
-        x.set_nu_fission([1.0, 1.2])
+        x.set_scatter_matrix(scatter)
+        fission = list(np.array(absorption) * 0.4) if fissile else [0.0, 0.0]
+        x.set_fission(fission)
+        x.set_nu_fission(absorption if fissile else [0.0, 0.0])
         x.set_chi([1.0, 0.0])
         return x
 
+    # absorption + total scatter out == total, group by group
+    fuel_scatter = np.array([[[0.60], [0.38]], [[0.00], [1.80]]])
+    abs_scatter = np.array([[[0.57], [0.38]], [[0.00], [1.00]]])
+
     library = openmc.MGXSLibrary(groups)
-    library.add_xsdatas([xsdata('fuel', [0.3, 0.5]),
-                         xsdata('sample', [0.3, 0.5]),
-                         xsdata('absorber', [0.9, 2.0])])
+    library.add_xsdatas([
+        xsdata('fuel', [0.02, 0.20], fuel_scatter, True),
+        xsdata('sample', [0.02, 0.20], fuel_scatter, True),
+        xsdata('absorber', [0.05, 1.00], abs_scatter, False),
+    ])
     library.export_to_hdf5('mgxs.h5')
 
     def macro(name):

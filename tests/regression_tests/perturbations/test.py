@@ -84,7 +84,8 @@ def model():
         openmc.LocalPerturbation(
             {ids[0]: water, ids[1]: absorber},
             perturbation_id=6, name='displacement 0->1'),
-    ], n_generation=10)
+    ])
+    model.settings.perturbation_n_generation = 10
 
     return model
 

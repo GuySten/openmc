@@ -39,9 +39,9 @@
       </space>
     </source>
     <seed>1</seed>
+    <perturbation_n_generation>10</perturbation_n_generation>
   </settings>
   <perturbations>
-    <n_generation>10</n_generation>
     <local_perturbation id="1" name="absorber swap">
       <substitution>
         <cell>101</cell>

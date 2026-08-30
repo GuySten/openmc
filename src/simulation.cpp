@@ -863,29 +863,6 @@ void initialize_data()
           std::min(data::energy_max[photon], std::exp(elem->energy_(n - 1)));
       }
     }
-    if (settings::photonuclear_physics) {
-      for (const auto& nuc : data::photonuclears) {
-        if (nuc->energy_.size() > 0) {
-          double min_E = nuc->energy_[0];
-          data::photonuclear_energy_min =
-            std::min(data::photonuclear_energy_min, min_E);
-        }
-      }
-      // Show which nuclide results in lowest energy for photonuclear physics
-      for (const auto& nuc : data::photonuclears) {
-        // If a nuclide is present in a material that's not used in the model,
-        // its grid has not been allocated
-        if (nuc->energy_.size() > 0) {
-          double min_E = nuc->energy_[0];
-          if (min_E == data::photonuclear_energy_min) {
-            write_message(7,
-              "Minimum photonuclear physics energy: {} eV for {}", min_E,
-              nuc->name_);
-            break;
-          }
-        }
-      }
-    }
 
     if (settings::electron_treatment != ElectronTreatment::LED) {
       // Determine if minimum/maximum energy for bremsstrahlung is greater/less

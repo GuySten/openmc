@@ -98,6 +98,41 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   }
   close_group(rgroup);
 
+  // Map each electroionization subshell onto the corresponding subshell of the
+  // photoatomic data, which holds the binding energies and relaxation
+  // transitions. Matching is by ENDF designator: the electroionization list
+  // (NXS(7) subshells) and the photoatomic list need not agree in length or
+  // order, and in particular neither corresponds to the Compton Doppler
+  // broadening shell list (NXS(5) shells).
+  const auto& photoatomic {*data::photoatomic[i_photoatomic_]};
+  shell_map_.resize(designators.size(), -1);
+  for (int i = 0; i < designators.size(); ++i) {
+    int endf_index = 0;
+    int j = 1;
+    for (const auto& subshell : SUBSHELLS) {
+      if (designators[i] == subshell) {
+        endf_index = j;
+        break;
+      }
+      ++j;
+    }
+
+    for (int k = 0; k < photoatomic.shells_.size(); ++k) {
+      if (photoatomic.shells_[k].index_subshell == endf_index) {
+        shell_map_[i] = k;
+        break;
+      }
+    }
+
+    if (shell_map_[i] < 0) {
+      fatal_error(fmt::format(
+        "Electroionization subshell {} of element {} has no counterpart in the "
+        "photoatomic data, so its binding energy and relaxation transitions "
+        "are unavailable. The electron and photon libraries are inconsistent.",
+        designators[i], name_));
+    }
+  }
+
   // Read bremsstrahlung
   rgroup = open_group(group, "bremsstrahlung");
   read_dataset(rgroup, "xs", bremsstrahlung_);
@@ -173,8 +208,11 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
 {
   double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+  // Binding energies live on the photoatomic subshell list. Note this is NOT
+  // PhotonInteraction::binding_energy_, which belongs to the shorter Compton
+  // Doppler broadening shell list and would be indexed out of bounds here.
   const auto& element {*data::photoatomic[i_photoatomic_]};
-  double e_b = element.binding_energy_[i_shell];
+  double e_b = element.shells_[shell_map_[i_shell]].binding_energy;
 
   // The scattered primary must be left with positive energy. A sampled
   // knock-on energy that violates this would give a negative energy electron

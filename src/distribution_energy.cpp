@@ -385,4 +385,84 @@ double WattEnergy::sample(double E, uint64_t* seed) const
   }
 }
 
+//==============================================================================
+// max_energy implementations
+//==============================================================================
+
+double DiscretePhoton::max_energy(double E) const
+{
+  return primary_flag_ == 2 ? energy_ + A_ / (A_ + 1) * E : energy_;
+}
+
+double LevelInelastic::max_energy(double E) const
+{
+  // Deterministic: sample() has no random component
+  return a_ * (E - b_ - c_ * (E * E));
+}
+
+double ContinuousTabular::max_energy(double E) const
+{
+  bool histogram_interp =
+    (n_region_ == 1) && (interpolation_[0] == Interpolation::histogram);
+
+  // A single tabulated incident energy leaves no bin to interpolate across,
+  // and distribution_[i + 1] below would be out of bounds.
+  auto n_energy_in = energy_.size();
+  if (n_energy_in < 2) {
+    const auto& d = distribution_[0];
+    return d.e_out[d.e_out.size() - 1];
+  }
+
+  // Find energy bin and interpolation factor exactly as sample() does
+  int i;
+  double r;
+  if (E < energy_[0]) {
+    i = 0;
+    r = 0.0;
+  } else if (E > energy_[n_energy_in - 1]) {
+    i = n_energy_in - 2;
+    r = 1.0;
+  } else {
+    i = lower_bound_index(energy_.begin(), energy_.end(), E);
+    r = (E - energy_[i]) / (energy_[i + 1] - energy_[i]);
+  }
+
+  if (histogram_interp) {
+    const auto& d = distribution_[i];
+    return d.e_out[d.e_out.size() - 1];
+  }
+
+  // Continuous portion is scaled onto [E_1, E_K]; E_K is the attainable
+  // maximum. Discrete lines are returned unscaled, so they are bounded
+  // separately.
+  const auto& d_i = distribution_[i];
+  const auto& d_i1 = distribution_[i + 1];
+  double E_i_K = d_i.e_out[d_i.e_out.size() - 1];
+  double E_i1_K = d_i1.e_out[d_i1.e_out.size() - 1];
+  double result = E_i_K + r * (E_i1_K - E_i_K);
+
+  for (const auto* d : {&d_i, &d_i1}) {
+    for (int j = 0; j < d->n_discrete; ++j) {
+      result = std::max(result, d->e_out[j]);
+    }
+  }
+  return result;
+}
+
+double Evaporation::max_energy(double E) const
+{
+  // sample() rejects until x <= y = (E - u_)/theta, so E_out <= E - u_
+  return E - u_;
+}
+
+double MaxwellEnergy::max_energy(double E) const
+{
+  return E - u_;
+}
+
+double WattEnergy::max_energy(double E) const
+{
+  return E - u_;
+}
+
 } // namespace openmc

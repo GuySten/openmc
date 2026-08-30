@@ -742,7 +742,15 @@ class IncidentPhotonuclear(EqualityMixin):
           if tuple(rx.xs.interpolation) != (2,):
               raise NotImplementedError('Only linear-linear interpolable reactions are supported.')
               
-          threshold_idx, = np.flatnonzero(union_grid == rx.xs.x[0])
+          # Locate the threshold on the union grid. Exact float equality is
+          # unreliable here because the union grid can contain repeated
+          # energies at reaction thresholds.
+          idx = np.searchsorted(union_grid, rx.xs.x[0], side='left')
+          if idx >= union_grid.size or not np.isclose(union_grid[idx], rx.xs.x[0]):
+              raise ValueError(
+                  f'Threshold energy {rx.xs.x[0]} eV for MT={rx.mt} was not '
+                  'found on the union energy grid.')
+          threshold_idx = int(idx)
           xs = rx.xs(union_grid[threshold_idx:]) 
           tab1d = Tabulated1D(union_grid[threshold_idx:], xs)
           tab1d._threshold_idx = threshold_idx

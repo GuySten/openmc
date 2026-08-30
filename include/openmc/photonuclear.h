@@ -98,6 +98,17 @@ private:
 
 void free_memory_photonuclear();
 
+//! Determine the highest incident photon energy for which every photoneutron
+//! this library can produce still falls within the neutron transport data
+//! range, and report the nuclide and reaction that set the limit.
+//!
+//! \param[in] E_max_neutron Maximum neutron energy in the transport data [eV]
+//! \param[out] limiting_nuclide Name of the nuclide that sets the limit
+//! \param[out] limiting_mt ENDF MT of the reaction that sets the limit
+//! \return Maximum safe incident photon energy in [eV]
+double max_safe_photon_energy(
+  double E_max_neutron, std::string& limiting_nuclide, int& limiting_mt);
+
 //==============================================================================
 // Global variables
 //==============================================================================
@@ -108,6 +119,7 @@ namespace data {
 extern std::unordered_map<std::string, int> photonuclear_map;
 extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 extern double photonuclear_energy_min;
+extern double photonuclear_energy_max;
 
 } // namespace data
 

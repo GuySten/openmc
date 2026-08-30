@@ -1194,6 +1194,8 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
           hid_t group = open_group(file_id, name);
           data::photonuclears.push_back(
             make_unique<PhotonuclearInteraction>(group));
+          close_group(group);
+          file_close(file_id);
         }
       }
     }

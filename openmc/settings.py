@@ -183,6 +183,14 @@ class Settings:
         Number of particles per generation
     photon_transport : bool
         Whether to use photon transport.
+    photoneutron_biasing : bool
+        Whether photoneutron production is biased. If False (default),
+        photonuclear collisions are treated analog: the photon is absorbed and
+        an integer number of neutrons is emitted at the photon's weight. If
+        True, a single neutron carrying the expected weight is emitted and the
+        photon survives at reduced weight.
+
+        .. versionadded:: 0.15.3
     photonuclear_physics : bool
         Whether to use photonuclear physics.    
     plot_seed : int
@@ -424,6 +432,7 @@ class Settings:
         self._electron_treatment = None
         self._photon_transport = None
         self._photonuclear_physics = None
+        self._photoneutron_biasing = None
         self._atomic_relaxation = None
         self._plot_seed = None
         self._ptables = None
@@ -722,7 +731,16 @@ class Settings:
     @photonuclear_physics.setter
     def photonuclear_physics(self, photonuclear_physics: bool):
         cv.check_type('photonuclear physics', photonuclear_physics, bool)
-        self._photonuclear_physics = photonuclear_physics    
+        self._photonuclear_physics = photonuclear_physics
+
+    @property
+    def photoneutron_biasing(self) -> bool:
+        return self._photoneutron_biasing
+
+    @photoneutron_biasing.setter
+    def photoneutron_biasing(self, photoneutron_biasing: bool):
+        cv.check_type('photoneutron biasing', photoneutron_biasing, bool)
+        self._photoneutron_biasing = photoneutron_biasing
 
     @property
     def uniform_source_sampling(self) -> bool:
@@ -1718,6 +1736,11 @@ class Settings:
             element = ET.SubElement(root, "photonuclear_physics")
             element.text = str(self._photonuclear_physics).lower()
 
+    def _create_photoneutron_biasing_subelement(self, root):
+        if self._photoneutron_biasing is not None:
+            element = ET.SubElement(root, "photoneutron_biasing")
+            element.text = str(self._photoneutron_biasing).lower()
+
     def _create_plot_seed_subelement(self, root):
         if self._plot_seed is not None:
             element = ET.SubElement(root, "plot_seed")
@@ -2255,6 +2278,11 @@ class Settings:
         if text is not None:
             self.photon_transport = text in ('true', '1')
             
+    def _photoneutron_biasing_from_xml_element(self, root):
+        text = get_text(root, 'photoneutron_biasing')
+        if text is not None:
+            self.photoneutron_biasing = text in ('true', '1')
+
     def _photonuclear_physics_from_xml_element(self, root):
         text = get_text(root, 'photonuclear_physics')
         if text is not None:
@@ -2615,7 +2643,8 @@ class Settings:
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
         self._create_photon_transport_subelement(element)
-        self._create_photonuclear_physics_subelement(element)        
+        self._create_photonuclear_physics_subelement(element)
+        self._create_photoneutron_biasing_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2735,7 +2764,8 @@ class Settings:
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
-        settings._photonuclear_physics_from_xml_element(elem)        
+        settings._photonuclear_physics_from_xml_element(elem)
+        settings._photoneutron_biasing_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)

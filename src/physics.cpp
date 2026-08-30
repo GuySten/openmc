@@ -305,15 +305,21 @@ void sample_photon_reaction(Particle& p)
     return;
   }
 
-  if (settings::photonuclear_physics) {
-    if (p.macro_xs().neutron_prod > 0.0) {
-      // Sample nuclide for photonuclear interaction
-      int i_nuclide = sample_photonuclear_nuclide(p);
-      sample_secondary_photoneutrons(p, i_nuclide);
+  if (settings::photonuclear_physics && p.macro_xs().photonuclear > 0.0) {
+    // With biasing on, every photon collision emits one photoneutron carrying
+    // the expected weight, whether or not the photon is actually absorbed
+    // photonuclearly. This is a production bias only.
+    if (settings::photoneutron_biasing && p.macro_xs().neutron_prod > 0.0)
+      emit_forced_photoneutron(p);
+
+    // The absorption of the photon itself is always analog. Reducing the
+    // photon weight instead would invalidate the photon heating estimator,
+    // which is scored against the pre-collision weight.
+    if (prn(p.current_seed()) * p.macro_xs().total <
+        p.macro_xs().photonuclear) {
+      photonuclear_collision(p);
+      return;
     }
-    // Adjust weight of photon according to probability that photonuclear
-    // interaction did not happen
-    p.wgt() *= 1.0 - p.macro_xs().photonuclear / p.macro_xs().total;
   }
 
   // Sample element within material
@@ -596,38 +602,46 @@ int sample_element(Particle& p)
   fatal_error("Did not sample any element during collision.");
 }
 
-int sample_photonuclear_nuclide(Particle& p)
+int sample_photonuclear_nuclide(Particle& p, bool biased)
 {
-  // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().neutron_prod;
+  // For the analog absorption the nuclide is sampled proportional to its total
+  // photonuclear cross section; for the forced photoneutron it is sampled
+  // proportional to its neutron production cross section.
+  double macro_total =
+    biased ? p.macro_xs().neutron_prod : p.macro_xs().photonuclear;
+  double cutoff = prn(p.current_seed()) * macro_total;
 
-  // Get pointers to elements, densities
+  // Get pointers to nuclides, densities
   const auto& mat {model::materials[p.material()]};
 
   int n = mat->nuclide_.size();
 
   double prob = 0.0;
   for (int i = 0; i < n; ++i) {
-    // Get atom density
-    auto& name = data::nuclides[mat->nuclide_[i]]->name_;
+    // Get nuclide name
+    const auto& name = data::nuclides[mat->nuclide_[i]]->name_;
 
-    // Skip nuclides without photonuclear data
-    if (data::photonuclear_map.find(name) == data::photonuclear_map.end())
+    // Skip nuclides without photonuclear data. Note that the iterator from
+    // find() is reused below rather than calling the non-const operator[] on
+    // a map that is shared between threads.
+    auto it = data::photonuclear_map.find(name);
+    if (it == data::photonuclear_map.end())
       continue;
 
-    int i_nuclide = data::photonuclear_map[name];
+    int i_nuclide = it->second;
+    const auto& micro {p.photonuclear_xs(i_nuclide)};
     double atom_density = mat->atom_density_[i];
 
     // Increment probability to compare to cutoff
-    prob += atom_density * p.photonuclear_xs(i_nuclide).neutron_prod;
+    prob += atom_density * (biased ? micro.neutron_prod : micro.total);
     if (prob >= cutoff)
       return i_nuclide;
   }
 
   // If we reach here, no nuclide was sampled
   p.write_restart();
-  throw std::runtime_error {
-    "Did not sample any nuclide for photoneutron production."};
+  fatal_error("Did not sample any nuclide for photonuclear interaction.");
+  return -1;
 }
 
 Reaction& sample_fission(int i_nuclide, Particle& p)
@@ -714,45 +728,6 @@ void sample_photon_product(
       }
     }
   }
-}
-
-void sample_photoneutron_product(
-  int i_nuclide, Particle& p, int* i_rx, int* i_product)
-{
-  // Get grid index and interpolation factor and sample neutron production cdf
-  const auto& micro = p.photonuclear_xs(i_nuclide);
-  double cutoff = prn(p.current_seed()) * micro.neutron_prod;
-  double prob = 0.0;
-
-  // Loop through each reaction type
-  const auto& nuc {data::photonuclears[i_nuclide]};
-  for (int i = 0; i < nuc->reactions_.size(); ++i) {
-    // Evaluate photonuclear cross section
-    const auto& rx = nuc->reactions_[i];
-    double xs = rx->xs(micro);
-
-    // if cross section is zero for this reaction, skip it
-    if (xs == 0.0)
-      continue;
-
-    for (int j = 0; j < rx->products_.size(); ++j) {
-      if (rx->products_[j].particle_ == ParticleType::neutron()) {
-
-        // add to cumulative probability
-        if ((*rx->products_[j].yield_)(p.E()) <= 0.0)
-          continue;
-
-        prob += xs;
-        *i_rx = i;
-        *i_product = j;
-        if (prob >= cutoff)
-          return;
-      }
-    }
-  }
-  // If we made it here, no product was sampled
-  p.write_restart();
-  fatal_error("Did not sample any photoneutron product.");
 }
 
 void absorption(Particle& p, int i_nuclide)
@@ -1353,74 +1328,225 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
   }
 }
 
-void sample_secondary_photoneutrons(Particle& p, int i_nuclide)
+void sample_photoneutron_product(
+  int i_nuclide, Particle& p, int* i_rx, int* i_product)
 {
-  double wgt = p.wgt();
-  wgt *= p.macro_xs().neutron_prod / p.macro_xs().total;
+  // Get grid index and interpolation factor and sample neutron production cdf
+  const auto& micro = p.photonuclear_xs(i_nuclide);
+  double cutoff = prn(p.current_seed()) * micro.neutron_prod;
+  double prob = 0.0;
 
-  // Sample the reaction and product
+  // Loop through each reaction type
+  const auto& nuc {data::photonuclears[i_nuclide]};
+  for (int i = 0; i < nuc->reactions_.size(); ++i) {
+    // Evaluate photonuclear cross section
+    const auto& rx = nuc->reactions_[i];
+    double xs = rx->xs(micro);
+
+    // if cross section is zero for this reaction, skip it
+    if (xs == 0.0)
+      continue;
+
+    for (int j = 0; j < rx->products_.size(); ++j) {
+      if (rx->products_[j].particle_ == ParticleType::neutron()) {
+
+        // add to cumulative probability
+        if ((*rx->products_[j].yield_)(p.E()) <= 0.0)
+          continue;
+
+        prob += xs;
+        *i_rx = i;
+        *i_product = j;
+        if (prob >= cutoff)
+          return;
+      }
+    }
+  }
+  // If we made it here, no product was sampled
+  p.write_restart();
+  fatal_error("Did not sample any photoneutron product.");
+}
+
+void photonuclear_collision(Particle& p)
+{
+  // Weight is preserved across the collision; the photon is absorbed below.
+  const double wgt = p.wgt();
+
+  int i_nuclide = sample_photonuclear_nuclide(p, false);
+  const auto& nuc {data::photonuclears[i_nuclide]};
+  const auto& micro {p.photonuclear_xs(i_nuclide)};
+
+  // Sample which reaction occurred, over all non-redundant channels. Channels
+  // with no transported products are sampled too -- they simply absorb the
+  // photon and deposit its energy locally.
+  double cutoff = prn(p.current_seed()) * micro.total;
+  double prob = 0.0;
+  const PhotonuclearReaction* rx = nullptr;
+  for (const auto& r : nuc->reactions_) {
+    if (r->redundant_)
+      continue;
+    prob += r->xs(micro);
+    if (prob >= cutoff) {
+      rx = r.get();
+      break;
+    }
+  }
+
+  if (rx == nullptr) {
+    p.write_restart();
+    fatal_error(fmt::format(
+      "Did not sample a photonuclear reaction for nuclide {}.", nuc->name_));
+  }
+
+  p.event() = TallyEvent::ABSORB;
+  p.event_mt() = rx->mt_;
+
+  // The reaction binding energy is not deposited locally -- it goes into the
+  // mass of the residual nucleus. The photon heating estimator computes the
+  // deposition as the incident energy less the banked secondary energy, so the
+  // (negative) Q value is folded in here rather than being carried separately
+  // on the particle. Compare the pair production treatment in
+  // sample_photon_reaction(), which uses the same field for the same purpose.
+  p.bank_second_E() -= rx->q_value_;
+
+  for (const auto& product : rx->products_) {
+    double yield = (*product.yield_)(p.E());
+    if (yield <= 0.0)
+      continue;
+
+    // Neutrons are emitted here only in analog mode. With biasing on they were
+    // already emitted, at expected weight, for this and every other collision.
+    bool is_neutron = product.particle_ == ParticleType::neutron();
+    if (is_neutron && settings::photoneutron_biasing)
+      continue;
+
+    // Photon products are always sampled analog. Their yields are often large,
+    // so collapsing them onto a single weighted photon would badly distort the
+    // emitted gamma spectrum.
+    if (!is_neutron && product.particle_ != ParticleType::photon())
+      continue;
+    if (!is_neutron && !settings::photon_transport)
+      continue;
+
+    int n_emit = static_cast<int>(yield);
+    if (prn(p.current_seed()) < yield - n_emit)
+      ++n_emit;
+    for (int i = 0; i < n_emit; ++i)
+      emit_photonuclear_product(p, *nuc, *rx, product, wgt);
+  }
+
+  // The photon is absorbed
+  p.wgt() = 0.0;
+  p.E() = 0.0;
+}
+
+void emit_forced_photoneutron(Particle& p)
+{
+  const double wgt = p.wgt();
+
+  int i_nuclide = sample_photonuclear_nuclide(p, true);
+
   int i_rx;
   int i_product;
   sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
 
-  const auto& rx = data::photonuclears[i_nuclide]->reactions_[i_rx];
-  const auto& product = rx->products_[i_product];
+  const auto& nuc {data::photonuclears[i_nuclide]};
+  const auto& rx {nuc->reactions_[i_rx]};
+  const auto& product {rx->products_[i_product]};
 
-  wgt *= (*product.yield_)(p.E());
+  // Expected number of photoneutrons produced per photon collision
+  double factor =
+    (p.macro_xs().neutron_prod / p.macro_xs().total) * (*product.yield_)(p.E());
+  double w = wgt * factor;
 
   // Play russian roulette if survival biasing is turned on
   // and survival normalization is turned off
   if (settings::survival_biasing && !settings::survival_normalization &&
-      wgt < settings::weight_cutoff) {
-    if (settings::weight_survive * prn(p.current_seed()) < wgt) {
-      wgt = settings::weight_survive;
+      w < settings::weight_cutoff) {
+    if (settings::weight_survive * prn(p.current_seed()) < w) {
+      // Rouletting changes the emitted weight, so the energy bookkeeping below
+      // would no longer correspond to the expected energy removal.
+      factor = settings::weight_survive / wgt;
+      w = settings::weight_survive;
     } else {
       return;
     }
   }
 
+  double E = emit_photonuclear_product(p, *nuc, *rx, product, w);
+
+  // create_secondary() banked the full outgoing energy, but only a fraction
+  // "factor" of a neutron is actually emitted per collision. The heating
+  // estimator scores against the pre-collision weight, so scale the banked
+  // energy to the expected energy carried away. Without this, heating tallies
+  // would be wrong whenever biasing is enabled.
+  p.bank_second_E() += (factor - 1.0) * E;
+}
+
+double emit_photonuclear_product(Particle& p,
+  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
+  const ReactionProduct& product, double wgt)
+{
+  const bool is_neutron = product.particle_ == ParticleType::neutron();
   const double E_in = p.E();
-  const int neutron = ParticleType::neutron().transport_index();
-  const double E_max = data::energy_max[neutron];
+  const int i_type = product.particle_.transport_index();
+  const double E_max = data::energy_max[i_type];
   double E;
   double mu;
 
-  for (int n_sample = 0; n_sample < MAX_SAMPLE; ++n_sample) {
+  // Sample once. Resampling until the energy falls below E_max would truncate
+  // the high-energy tail and redistribute it downward -- negligible for
+  // fission, but a real distortion for photoneutrons from high-energy photons.
+  product.sample(E_in, E, mu, p.current_seed());
 
-    // Sample the outgoing energy and angle
-    product.sample(E_in, E, mu, p.current_seed());
+  // If the scattering system is in center-of-mass, transfer cosine of
+  // scattering angle and outgoing energy from CM to LAB. Note that the
+  // incident photon is massless, so the center-of-mass velocity is
+  // E_in / (A * m_n * c) rather than the usual expression for a massive
+  // projectile. The frame flag is taken from the neutron product, so it is
+  // applied only to neutrons; emitted photons are always in the laboratory
+  // system.
+  if (rx.scatter_in_cm_ && is_neutron) {
+    double E_cm = E;
+    double mu_cm = mu;
 
-    // if scattering system is in center-of-mass, transfer cosine of scattering
-    // angle and outgoing energy from CM to LAB
-    if (rx->scatter_in_cm_) {
-      auto& nuc = data::photonuclears[i_nuclide];
-      double E_cm = E;
-      double mu_cm = mu;
+    // determine outgoing energy in lab
+    double A = nuc.awr_;
+    E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
+        (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
 
-      // determine outgoing energy in lab
-      double A = nuc->awr_;
-      E = E_cm + 1 / A * std::sqrt(2 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
-          (E_in * E_in) / (2 * MASS_NEUTRON_EV * A * A);
+    // determine outgoing angle in lab
+    mu = mu_cm * std::sqrt(E_cm / E) +
+         E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
 
-      // determine outgoing angle in lab
-      mu = mu_cm * std::sqrt(E_cm / E) +
-           E_in / (A * std::sqrt(2 * MASS_NEUTRON_EV * E));
-
-      // Because of floating-point roundoff, it may be possible for mu to be
-      // outside of the range [-1,1). In these cases, we just set mu to exactly
-      // -1 or 1
-      mu = std::clamp(mu, -1.0, 1.0);
-    }
-
-    // resample if energy is greater than maximum neutron energy
-    if (E < E_max)
-      break;
+    // Because of floating-point roundoff, it may be possible for mu to be
+    // outside of the range [-1,1). In these cases, we just set mu to exactly
+    // -1 or 1
+    mu = std::clamp(mu, -1.0, 1.0);
   }
+
+  if (E > E_max) {
+    // Unreachable by construction: initialize_data() lowers the maximum photon
+    // energy so that no photon able to produce a product above E_max can be
+    // transported, and source sampling enforces that ceiling. Reaching here
+    // means max_safe_photon_energy() computed a bound that some distribution
+    // can exceed, which would silently corrupt results if ignored.
+    p.write_restart();
+    fatal_error(fmt::format(
+      "Photonuclear product of {:.6g} eV from nuclide {} exceeds the maximum "
+      "transport energy of {:.6g} eV for that particle type. This indicates "
+      "the photon energy ceiling computed at initialization is not a valid "
+      "bound for this reaction's secondary distribution.",
+      E, nuc.name_, E_max));
+  }
+
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
 
-  // Create the secondary neutron
-  p.create_secondary(wgt, u, E, ParticleType::neutron());
+  // Create the secondary particle
+  p.create_secondary(wgt, u, E, product.particle_);
+
+  return E;
 }
 
 } // namespace openmc

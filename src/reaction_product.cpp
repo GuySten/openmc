@@ -1,5 +1,6 @@
 #include "openmc/reaction_product.h"
 
+#include <algorithm> // for max
 #include <cassert>
 #include <string> // for string
 
@@ -138,6 +139,25 @@ double ReactionProduct::sample_energy_and_pdf(
   double E_in, double mu, double& E_out, uint64_t* seed) const
 {
   return sample_dist(E_in, seed).sample_energy_and_pdf(E_in, mu, E_out, seed);
+}
+
+double ReactionProduct::max_energy(double E_in) const
+{
+  // sample_dist() picks among distributions using applicability_, so only
+  // distributions that can actually be selected at this energy are considered.
+  double result = 0.0;
+  if (applicability_.empty()) {
+    for (const auto& d : distribution_) {
+      result = std::max(result, d->max_energy(E_in));
+    }
+  } else {
+    for (int i = 0; i < distribution_.size(); ++i) {
+      if (i < applicability_.size() && applicability_[i](E_in) <= 0.0)
+        continue;
+      result = std::max(result, distribution_[i]->max_energy(E_in));
+    }
+  }
+  return result;
 }
 
 } // namespace openmc

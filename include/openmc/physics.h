@@ -4,6 +4,7 @@
 #include "openmc/bank.h"
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
+#include "openmc/photonuclear.h"
 #include "openmc/position.h"
 #include "openmc/reaction.h"
 #include "openmc/vector.h"
@@ -54,8 +55,14 @@ int sample_nuclide(Particle& p);
 //! cross sections and densities within the current material
 //!
 //! \param[in] p Particle
-//! \return Index in the data::nuclides vector
-int sample_photonuclear_nuclide(Particle& p);
+//! \param[in] biased If true, sample proportional to the neutron production
+//!   cross section (for the forced photoneutron); otherwise proportional to
+//!   the total photonuclear cross section (for the analog absorption)
+//! \return Index in the data::photonuclears vector
+int sample_photonuclear_nuclide(Particle& p, bool biased);
+
+void sample_photoneutron_product(
+  int i_nuclide, Particle& p, int* i_rx, int* i_product);
 
 //! Determine the average total, prompt, and delayed neutrons produced from
 //! fission and creates appropriate bank sites.
@@ -66,9 +73,6 @@ int sample_element(Particle& p);
 Reaction& sample_fission(int i_nuclide, Particle& p);
 
 void sample_photon_product(
-  int i_nuclide, Particle& p, int* i_rx, int* i_product);
-
-void sample_photonuclear_product(
   int i_nuclide, Particle& p, int* i_rx, int* i_product);
 
 void absorption(Particle& p, int i_nuclide);
@@ -103,7 +107,20 @@ void inelastic_scatter(const Nuclide& nuc, const Reaction& rx, Particle& p);
 
 void sample_secondary_photons(Particle& p, int i_nuclide);
 
-void sample_secondary_photoneutrons(Particle& p, int i_nuclide);
+//! Handle an analog photonuclear absorption. The photon is absorbed and its
+//! secondary products are banked. Photoneutrons are emitted here only when
+//! settings::photoneutron_biasing is off.
+void photonuclear_collision(Particle& p);
+
+//! Emit a single photoneutron carrying the expected weight. Called at every
+//! photon collision when settings::photoneutron_biasing is on.
+void emit_forced_photoneutron(Particle& p);
+
+//! Sample the energy and direction of a single photonuclear reaction product
+//! and bank it. Returns the sampled outgoing energy in [eV].
+double emit_photonuclear_product(Particle& p,
+  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
+  const ReactionProduct& product, double wgt);
 
 //! Split or Roulette particles based their weight and the lower weight window
 //! bound.

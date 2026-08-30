@@ -941,8 +941,16 @@ def test_depth_curve_is_linear_not_flat(run_in_tmpdir, model):
         # perturbation never reached the shadow trees at all.
         assert abs(curve[-1] - curve[ps.n_generation // 2]) > 0.0
 
-        # And be describable by a straight line over the fitted range
-        assert ps.linearity(1) < 0.5
+        # And be describable by a straight line over the fitted range.
+        #
+        # linearity is a reduced chi-square, so the scale is 1, not 0 -- an
+        # earlier version of this assertion used 0.5, left over from when
+        # the metric divided residuals by the curve's own magnitude and read
+        # ~0 for anything with a linear trend. With L=10 the fit has 4
+        # degrees of freedom, so the spread is 1.00 +/- 0.71 and a tight bar
+        # would be flaky at these statistics. 5 catches gross curvature at a
+        # false-failure rate of 5e-4.
+        assert ps.linearity(1) < 5.0
 
 
 def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
@@ -980,14 +988,22 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
         assert np.allclose(np.diag(corr), 1.0)
         assert np.all(np.abs(corr) <= 1.0 + 1e-9)
 
-        # Absorber and void act on the same cell through the same branch
-        # sites, so they must be positively correlated.
-        assert corr[0, 2] > 0.1
         assert (np.diag(cov) > 0.0).all(), \
             'a perturbation has zero variance; is one of them a null?'
 
-        # Subtracting the correlated rho values must beat treating them as
-        # independent -- that is what correlated_values buys.
+        # No threshold on a raw correlation here. It is estimated from
+        # n_blocks jackknife replicates, so it carries about 1/sqrt(20) =
+        # 0.22 of its own noise -- an assertion like corr > 0.1 cannot
+        # distinguish a correlation of 0 from one of 0.5 and fails at
+        # random. The check below tests the same property and is robust,
+        # because it compares two numbers from the same covariance rather
+        # than one against an absolute bar.
+
+        # Absorber and void act on the same cell through the same branch
+        # sites and are compared against the same reference tree, so their
+        # estimator noise is shared and subtracting them must beat treating
+        # them as independent. That is what correlated_values buys, and a
+        # broken shared-seed path would show up here as equality.
         diff = ps.by_id(3).rho - ps.by_id(1).rho
         independent = np.hypot(ps.by_id(1).rho.std_dev,
                                ps.by_id(3).rho.std_dev)

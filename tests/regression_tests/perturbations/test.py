@@ -104,9 +104,9 @@ class PerturbationTestHarness(PyAPITestHarness):
         # plus branching at the entry point make its two shadow trees the
         # same tree, history for history.
         null = perturbations.by_id(3)
-        assert null.nominal_value == 0.0, \
+        assert null.rho.nominal_value == 0.0, \
             f'null perturbation gave {null.rho} pcm, not exactly zero'
-        assert null.std_dev == 0.0
+        assert null.rho.std_dev == 0.0
 
         # No sign assertions here, deliberately. This model's worths sit
         # below 1.5 sigma, so any sign check is a coin flip -- and the sign
@@ -156,7 +156,7 @@ class PerturbationTestHarness(PyAPITestHarness):
             outstr += 'perturbations:\n'
             for p in perturbations:
                 outstr += '{} {} {:12.6E} {:12.6E}\n'.format(
-                    p.id, p.name, p.nominal_value, p.std_dev)
+                    p.id, p.name, p.rho.nominal_value, p.rho.std_dev)
 
             # The covariance is the reason these run together, so regress it
             # rather than only the diagonal.

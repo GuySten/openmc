@@ -145,9 +145,10 @@ class IncidentElectron:
 
         # Average excitation energy loss, from the EXCIT block at JXS(20).
         # This is NOT at JXS(5), which locates the photon heating numbers.
+        # Both the abscissa and the tabulated loss are stored in MeV.
         data.excitation_energy_loss = Tabulated1D(
-            ace.xss[j_excitation : j_excitation + n_xl],
-            ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl])
+            ace.xss[j_excitation : j_excitation + n_xl]*EV_PER_MEV,
+            ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl]*EV_PER_MEV)
 
         j_subshell_xs = j_xs + 5 * n_energy
         for s, shell in enumerate(data.shells):

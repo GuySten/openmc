@@ -183,7 +183,7 @@ extern tensor::Tensor<double>
 
 //! Photon interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
-extern vector<unique_ptr<PhotonInteraction>> elements;
+extern vector<unique_ptr<PhotonInteraction>> photoatomic;
 
 } // namespace data
 

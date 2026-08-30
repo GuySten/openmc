@@ -54,7 +54,9 @@ int sample_nuclide(Particle& p);
 //! fission and creates appropriate bank sites.
 void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx);
 
-int sample_element(Particle& p);
+int sample_photon_element(Particle& p);
+
+int sample_electron_element(Particle& p);
 
 Reaction& sample_fission(int i_nuclide, Particle& p);
 

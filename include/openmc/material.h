@@ -223,6 +223,7 @@ private:
 
   void calculate_neutron_xs(Particle& p) const;
   void calculate_photon_xs(Particle& p) const;
+  void calculate_electron_xs(Particle& p) const;
 
   //----------------------------------------------------------------------------
   // Private data members

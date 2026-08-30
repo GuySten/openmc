@@ -94,6 +94,8 @@ class Settings:
         release of delayed photons.
 
         .. versionadded:: 0.12
+    electron_transport : bool
+        Whether to use electron transport.        
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -420,6 +422,7 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
+        self._electron_transport = None
         self._photon_transport = None
         self._atomic_relaxation = None
         self._plot_seed = None
@@ -674,6 +677,15 @@ class Settings:
     def confidence_intervals(self, confidence_intervals: bool):
         cv.check_type('confidence interval', confidence_intervals, bool)
         self._confidence_intervals = confidence_intervals
+
+    @property
+    def electron_transport(self) -> bool:
+        return self._electron_transport
+
+    @electron_transport.setter
+    def electron_transport(self, electron_transport: bool):
+        cv.check_type('electron transport', electron_transport, bool)
+        self._electron_transport = electron_transport
 
     @property
     def electron_treatment(self) -> str:
@@ -1686,6 +1698,11 @@ class Settings:
             element = ET.SubElement(root, "confidence_intervals")
             element.text = str(self._confidence_intervals).lower()
 
+    def _create_electron_transport_subelement(self, root):
+        if self._electron_transport is not None:
+            element = ET.SubElement(root, "electron_transport")
+            element.text = str(self._electron_transport).lower()            
+
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2233,6 +2250,11 @@ class Settings:
         if text is not None:
             self.max_order = int(text)
 
+    def _electron_transport_from_xml_element(self, root):
+        text = get_text(root, 'electron_transport')
+        if text is not None:
+            self.electron_transport = text in ('true', '1')            
+
     def _photon_transport_from_xml_element(self, root):
         text = get_text(root, 'photon_transport')
         if text is not None:
@@ -2592,6 +2614,7 @@ class Settings:
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
+        self._create_electron_transport_subelement(element)
         self._create_photon_transport_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
@@ -2711,6 +2734,7 @@ class Settings:
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
+        settings._electron_transport_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)

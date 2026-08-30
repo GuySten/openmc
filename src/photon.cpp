@@ -35,7 +35,7 @@ namespace data {
 tensor::Tensor<double> compton_profile_pz;
 
 std::unordered_map<std::string, int> element_map;
-vector<unique_ptr<PhotonInteraction>> elements;
+vector<unique_ptr<PhotonInteraction>> photoatomic;
 
 } // namespace data
 
@@ -46,7 +46,7 @@ vector<unique_ptr<PhotonInteraction>> elements;
 PhotonInteraction::PhotonInteraction(hid_t group)
 {
   // Set index of element in global vector
-  index_ = data::elements.size();
+  index_ = data::photoatomic.size();
 
   // Get name of nuclide from group, removing leading '/'
   name_ = object_name(group).substr(1);
@@ -1115,7 +1115,7 @@ std::pair<double, double> klein_nishina(double alpha, uint64_t* seed)
 
 void free_memory_photon()
 {
-  data::elements.clear();
+  data::photoatomic.clear();
   data::compton_profile_pz.resize({0});
   data::ttb_e_grid.resize({0});
   data::ttb_k_grid.resize({0});

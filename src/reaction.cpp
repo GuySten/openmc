@@ -107,7 +107,7 @@ double Reaction::xs(int64_t i_temp, int64_t i_grid, double interp_factor) const
                interp_factor * x.value[i_grid - x.threshold + 1];
 }
 
-double Reaction::xs(const NuclideMicroXS& micro) const
+double Reaction::xs(const NeutronMicroXS& micro) const
 {
   return this->xs(micro.index_temp, micro.index_grid, micro.interp_factor);
 }

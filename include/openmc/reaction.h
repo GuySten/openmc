@@ -40,7 +40,7 @@ public:
   //! Calculate cross section
   //
   //! \param[in] micro Microscopic cross section cache
-  double xs(const NuclideMicroXS& micro) const;
+  double xs(const NeutronMicroXS& micro) const;
 
   //! \brief Calculate reaction rate based on group-wise flux distribution
   //

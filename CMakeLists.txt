@@ -388,6 +388,7 @@ list(APPEND libopenmc_SOURCES
   src/distribution_multi.cpp
   src/distribution_spatial.cpp
   src/eigenvalue.cpp
+  src/electron.cpp
   src/endf.cpp
   src/error.cpp
   src/event.cpp

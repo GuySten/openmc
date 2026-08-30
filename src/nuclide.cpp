@@ -3,6 +3,7 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
+#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
@@ -1143,7 +1144,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
     if (settings::photon_transport) {
       auto element = to_element(name);
       if (data::element_map.find(element) == data::element_map.end() ||
-          data::element_map.at(element) >= data::elements.size()) {
+          data::element_map.at(element) >= data::photoatomic.size()) {
         // Read photon interaction data from HDF5 photon library
         LibraryKey key {Library::Type::photon, element};
         const auto& it = data::library_map.find(key);
@@ -1163,10 +1164,35 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         // Read element data from HDF5
         hid_t group = open_group(file_id, element.c_str());
-        data::elements.push_back(make_unique<PhotonInteraction>(group));
+        data::photoatomic.push_back(make_unique<PhotonInteraction>(group));
 
         close_group(group);
         file_close(file_id);
+        if (settings::electron_transport) {
+          LibraryKey key {Library::Type::electron, element};
+          const auto& it = data::library_map.find(key);
+          if (it == data::library_map.end()) {
+            set_errmsg("Element '" + std::string {element} +
+                       "' is not present in library.");
+            return OPENMC_E_DATA;
+          }
+
+          int idx = it->second;
+          const auto& filename = data::libraries[idx].path_;
+          write_message(6, "Reading {} from {} ", element, filename);
+
+          // Open file and make sure version is sufficient
+          hid_t file_id = file_open(filename, 'r');
+          check_data_version(file_id);
+
+          // Read element data from HDF5
+          hid_t group = open_group(file_id, element.c_str());
+          data::electroatomic.push_back(
+            make_unique<ElectronInteraction>(group));
+
+          close_group(group);
+          file_close(file_id);
+        }
       }
     }
   }

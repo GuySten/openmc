@@ -55,6 +55,20 @@ struct SourceSite {
   int64_t parent_id {0};
   int64_t progeny_id {0};
   int super_gen {-1};
+  // Which BEP shadow tree this site belongs to, or BEP_TRUNK (-1)
+  // for the driver. Inherited unchanged by every descendant: once
+  // a history has branched it stays in its own tree forever. EVERY
+  // path that banks a site must copy it from the parent --
+  // create_fission_sites(), Particle::create_secondary() and
+  // Particle::split(). A site that silently defaults to BEP_TRUNK
+  // becomes a fake driver particle and corrupts
+  // progeny_per_particle.
+  //
+  // Placed here deliberately: super_gen leaves four bytes of
+  // padding, so this field costs nothing. Moved elsewhere it grows
+  // SourceSite from 144 to 152 bytes, and the fission bank holds
+  // millions of them.
+  int bep_tree {-1};
   double wgt_born {1.0};
   double wgt_ww_born {-1.0};
   int64_t n_split {0};
@@ -75,14 +89,6 @@ struct SourceSite {
   // the chi_p/chi_d spectral difference that beta_eff consists of.
   // -1 for ordinary (non-superhistory) sites.
   int adjoint_id {-1};
-  // Which BEP shadow tree this site belongs to, or BEP_TRUNK (-1) for the
-  // driver. Inherited unchanged by every descendant: once a history has
-  // branched it stays in its own tree forever. EVERY path that banks a site
-  // must copy it from the parent -- create_fission_sites(), and also
-  // Particle::create_secondary() and Particle::split(). A site that silently
-  // defaults to BEP_TRUNK becomes a fake driver particle and corrupts
-  // progeny_per_particle.
-  int bep_tree {-1};
 };
 
 struct CollisionTrackSite {

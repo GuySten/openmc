@@ -37,6 +37,37 @@ REACTION_NAME = {50 : '(gamma,n0)'}
 REACTION_NAME.update({key:value.replace("(n,","(gamma,") for key,value in _REACTION_NAME.items()})
 
 class PhotonuclearReaction(EqualityMixin):
+    """A photonuclear reaction for a specific target nuclide.
+
+    .. versionadded:: 0.16.1
+
+    Parameters
+    ----------
+    mt : int
+        The ENDF MT number of the reaction.
+
+    Attributes
+    ----------
+    center_of_mass : bool
+        Whether the secondary distributions are given in the center-of-mass
+        frame. Taken from the neutron product of the reaction; emitted photons
+        are always treated as laboratory-frame.
+    redundant : bool
+        Whether the reaction is redundant, i.e. its cross section is already
+        accounted for by other reactions and it must be excluded from the total.
+    q_value : float
+        The Q value of the reaction in [eV].
+    products : list of openmc.data.Product
+        Secondary products of the reaction.
+    derived_products : list of openmc.data.Product
+        Derived products of the reaction.
+    xs : openmc.data.Function1D
+        Cross section as a function of incident photon energy.
+    mt : int
+        The ENDF MT number of the reaction.
+
+    """
+
     def __init__(self, mt):
         self._center_of_mass = True
         self._redundant = False
@@ -397,6 +428,8 @@ class PhotonuclearReaction(EqualityMixin):
 
 class IncidentPhotonuclear(EqualityMixin):
     """photo-nuclear interaction data.
+
+    .. versionadded:: 0.16.1
 
     This class stores data derived from an ENDF-6 format photo-nuclear interaction
     sublibrary. Instances of this class are not normally instantiated by the

@@ -184,15 +184,23 @@ class Settings:
     photon_transport : bool
         Whether to use photon transport.
     photoneutron_biasing : bool
-        Whether photoneutron production is biased. If False (default),
-        photonuclear collisions are treated analog: the photon is absorbed and
-        an integer number of neutrons is emitted at the photon's weight. If
-        True, a single neutron carrying the expected weight is emitted and the
-        photon survives at reduced weight.
+        Whether photoneutron production is biased. If False (default), neutrons
+        are emitted only when a photonuclear absorption occurs, with an integer
+        multiplicity sampled from the yield and each neutron carrying the weight
+        of the incident photon. If True, every photon collision emits a single
+        neutron carrying the expected weight, which reduces the variance of
+        photoneutron tallies but removes the correlation between neutrons
+        emitted in the same event. Requires `photonuclear_physics` to be True.
 
-        .. versionadded:: 0.15.3
+        .. versionadded:: 0.16.1
     photonuclear_physics : bool
-        Whether to use photonuclear physics.    
+        Whether to use photonuclear physics. Requires `photon_transport` to be
+        True. Enabling this may lower the maximum photon energy of the problem,
+        and the maximum electron and positron energy when thick-target
+        bremsstrahlung is used, so that photoneutrons cannot be produced above
+        the range of the neutron transport data.
+
+        .. versionadded:: 0.16.1
     plot_seed : int
        Initial seed for randomly generated plot colors.
     ptables : bool

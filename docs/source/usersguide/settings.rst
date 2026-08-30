@@ -671,12 +671,48 @@ can be selected::
   settings.electron_treatment = 'led'
 
 .. note::
-   Some features related to photon transport are not currently implemented,
-   including:
+   Generating a photon source from a neutron calculation that can be used for a
+   later fixed source photon calculation is not currently implemented.
 
-     * Generating a photon source from a neutron calculation that can be used
-       for a later fixed source photon calculation.
-     * Photoneutron reactions.
+Photonuclear Physics
+--------------------
+
+Photons above roughly 8 MeV can be absorbed by a nucleus and produce neutrons,
+photons and charged particles. This is enabled with the
+:attr:`Settings.photonuclear_physics` attribute and requires photon transport::
+
+  settings.photon_transport = True
+  settings.photonuclear_physics = True
+
+Photonuclear data is per-nuclide rather than per-element and must be present in
+``cross_sections.xml`` for the nuclides of interest; see
+:ref:`io_cross_sections`. Nuclides without photonuclear data simply do not
+undergo photonuclear reactions.
+
+Photoneutron production is a rare event compared with photoatomic interaction,
+so photoneutron tallies can converge slowly. The
+:attr:`Settings.photoneutron_biasing` attribute emits one neutron of reduced
+weight at every photon collision instead of an integer number of full-weight
+neutrons at the rare absorptions::
+
+  settings.photoneutron_biasing = True
+
+Both give the same expected neutron production and energy deposition, so the two
+can be compared directly. Because biasing emits a single neutron in place of the
+true multiplicity, it should not be used for multiplicity or coincidence
+counting.
+
+.. warning::
+   Photonuclear libraries frequently extend to 130 MeV or beyond, while
+   general-purpose neutron libraries usually stop at 20 MeV. Where a photon
+   could produce a neutron above the neutron data range, OpenMC lowers the
+   maximum photon energy of the problem to prevent it, and lowers the maximum
+   electron and positron energy as well when thick-target bremsstrahlung is in
+   use. A warning at startup names the nuclide and reaction responsible.
+   Source particles above the resulting limit are rejected, so a bremsstrahlung
+   calculation whose beam energy is too high for the available neutron data
+   will fail immediately rather than under-report photoneutrons. Modelling such
+   a case requires neutron data covering the photonuclear energy range.
 
 --------------------------
 Generation of Output Files

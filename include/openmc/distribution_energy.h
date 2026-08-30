@@ -83,6 +83,17 @@ public:
 
 private:
   //! Outgoing energy for a single incoming energy
+  struct CTTable;
+
+  //! Invert the cumulative distribution of a single table
+  //!
+  //! \param[in] l Index of the table
+  //! \param[in] r1 Cumulative probability in [0,1)
+  //! \param[out] discrete Whether the sample fell on a discrete line
+  //! \return Outgoing energy in the table's own scale, in [eV]
+  double sample_table(int l, double r1, bool& discrete) const;
+
+  //! Outgoing energy for a single incoming energy
   struct CTTable {
     Interpolation interpolation;  //!< Interpolation law
     int n_discrete;               //!< Number of of discrete energies

@@ -170,7 +170,12 @@ class IncidentElectron:
                 c = ace.xss[start + ls[i]:start + 2*ls[i]]
                 energy_out.append(_tabular_from_cdf(
                     e, c, f'electroionization table {i} of subshell {shell}'))
-            data.ionization_dist[shell].energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
+            # Interpolation code 5 (log-log) between the tabulated incident
+            # energies. The EEDL-derived grids these tables sit on span many
+            # decades in very few points, and EPICS releases before 2017 were
+            # tabulated for logarithmic interpolation rather than linearized.
+            data.ionization_dist[shell].energy = ContinuousTabular(
+                [len(energy)], [5], energy, energy_out)
             
         
         data.bremsstrahlung_dist = UncorrelatedAngleEnergy()
@@ -185,7 +190,10 @@ class IncidentElectron:
             c = ace.xss[start + lb[i]:start + 2*lb[i]]
             energy_out.append(_tabular_from_cdf(
                 e, c, f'bremsstrahlung table {i}'))
-        data.bremsstrahlung_dist.energy = ContinuousTabular([len(energy)],[2], energy, energy_out)
+        # Log-log between incident energies; see the note on the
+        # electroionization tables above.
+        data.bremsstrahlung_dist.energy = ContinuousTabular(
+            [len(energy)], [5], energy, energy_out)
             
         na = ace.nxs[10]
         energy = ace.xss[j_elastic : j_elastic + na]*EV_PER_MEV

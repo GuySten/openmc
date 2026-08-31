@@ -170,12 +170,15 @@ class IncidentElectron:
                 c = ace.xss[start + ls[i]:start + 2*ls[i]]
                 energy_out.append(_tabular_from_cdf(
                     e, c, f'electroionization table {i} of subshell {shell}'))
-            # Interpolation code 5 (log-log) between the tabulated incident
-            # energies. The EEDL-derived grids these tables sit on span many
-            # decades in very few points, and EPICS releases before 2017 were
-            # tabulated for logarithmic interpolation rather than linearized.
+            # Linear interpolation between the tabulated incident energies.
+            # A logarithmic weight would put far more of the upper table into
+            # the mix, and because the knock-on spectrum's upper endpoint
+            # scales with the incident energy while its lower end does not,
+            # that badly overestimates the mean energy transfer. The transport
+            # code additionally samples these tables without unit-base scaling;
+            # see the ContinuousTabular constructor.
             data.ionization_dist[shell].energy = ContinuousTabular(
-                [len(energy)], [5], energy, energy_out)
+                [len(energy)], [2], energy, energy_out)
             
         
         data.bremsstrahlung_dist = UncorrelatedAngleEnergy()

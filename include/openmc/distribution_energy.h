@@ -73,7 +73,18 @@ private:
 
 class ContinuousTabular : public EnergyDistribution {
 public:
-  explicit ContinuousTabular(hid_t group);
+  //! \param[in] group HDF5 group to read from
+  //! \param[in] unit_base Whether to remap the sampled outgoing energy onto
+  //!   the interpolated [E_1, E_K] range of the bracketing tables. Correct
+  //!   when the whole distribution scales with the incident energy, as for
+  //!   fission and bremsstrahlung spectra. Must be false for distributions
+  //!   anchored at a fixed lower limit -- notably electroionization, whose
+  //!   knock-on spectrum is pinned at the subshell binding energy and falls as
+  //!   1/T^2, so that only the upper endpoint scales. Stretching such a
+  //!   distribution inflates the mean energy transfer by the ratio of the
+  //!   endpoints, which across the sparse EEDL incident-energy grid can be a
+  //!   factor of tens.
+  explicit ContinuousTabular(hid_t group, bool unit_base = true);
 
   //! Sample energy distribution
   //! \param[in] E Incident particle energy in [eV]
@@ -82,6 +93,8 @@ public:
   double sample(double E, uint64_t* seed) const override;
 
 private:
+  bool unit_base_; //!< Remap onto the interpolated [E_1, E_K] range?
+
   //! Outgoing energy for a single incoming energy
   struct CTTable;
 

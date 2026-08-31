@@ -79,7 +79,8 @@ double LevelInelastic::sample(double E, uint64_t* seed) const
 // ContinuousTabular implementation
 //==============================================================================
 
-ContinuousTabular::ContinuousTabular(hid_t group)
+ContinuousTabular::ContinuousTabular(hid_t group, bool unit_base)
+  : unit_base_(unit_base)
 {
   // Open incoming energy dataset
   hid_t dset = open_dataset(group, "energy");
@@ -281,6 +282,27 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   if (histogram_interp) {
     bool discrete;
     return this->sample_table(i, r1, discrete);
+  }
+
+  // A single tabulated incident energy leaves no bin to interpolate across,
+  // and the bracketing table accessed below would be out of bounds.
+  if (n_energy_in < 2) {
+    bool discrete;
+    return this->sample_table(0, r1, discrete);
+  }
+
+  // Without unit-base scaling the two tables are interpolated directly at
+  // matched cumulative probability. The outgoing energy is not remapped, so a
+  // distribution anchored at a fixed lower limit keeps its shape near that
+  // limit and only its upper end moves with the incident energy.
+  if (!unit_base_) {
+    bool discrete_i, discrete_i1;
+    double E_out_i = this->sample_table(i, r1, discrete_i);
+    double E_out_i1 = this->sample_table(i + 1, r1, discrete_i1);
+    if (discrete_i || discrete_i1) {
+      return (r > prn(seed)) ? E_out_i1 : E_out_i;
+    }
+    return E_out_i + r * (E_out_i1 - E_out_i);
   }
 
   // Bounds of the scaled outgoing energy range for each bracketing table

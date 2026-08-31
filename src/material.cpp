@@ -401,8 +401,7 @@ void Material::finalize()
     }
 
     // Generate material bremsstrahlung data for electrons and positrons
-    if (settings::photon_transport &&
-        settings::electron_treatment == ElectronTreatment::TTB) {
+    if (settings::use_ttb()) {
       this->init_bremsstrahlung();
     }
 
@@ -1109,8 +1108,7 @@ void Material::set_densities(
   this->set_density(sum_density, "atom/b-cm");
 
   // Generate material bremsstrahlung data for electrons and positrons
-  if (settings::photon_transport &&
-      settings::electron_treatment == ElectronTreatment::TTB) {
+  if (settings::use_ttb()) {
     this->init_bremsstrahlung();
   }
 

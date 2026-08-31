@@ -621,6 +621,20 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
+  // Check for electron transport. This has to be read before the settings
+  // that require photon transport, since enabling it implies photon transport.
+  if (check_for_node(root, "electron_transport")) {
+    electron_transport = get_node_value_bool(root, "electron_transport");
+
+    if (!run_CE && electron_transport) {
+      fatal_error("Electron transport is not currently supported in "
+                  "multigroup mode");
+    }
+
+    if (electron_transport)
+      photon_transport = true;
+  }
+
   // Check for photonuclear physics
   if (check_for_node(root, "photonuclear_physics")) {
     photonuclear_physics = get_node_value_bool(root, "photonuclear_physics");
@@ -639,19 +653,6 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Photonuclear physics must be enabled when photoneutron "
                   "biasing is enabled");
     }
-  }
-
-  // Check for electron transport
-  if (check_for_node(root, "electron_transport")) {
-    electron_transport = get_node_value_bool(root, "electron_transport");
-
-    if (!run_CE && electron_transport) {
-      fatal_error("Electron transport is not currently supported in "
-                  "multigroup mode");
-    }
-
-    if (electron_transport)
-      photon_transport = true;
   }
 
   // Check for atomic relaxation

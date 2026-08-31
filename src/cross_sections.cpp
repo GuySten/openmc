@@ -254,8 +254,7 @@ void read_ce_cross_sections(const vector<vector<double>>& nuc_temps,
     mat->finalize();
   } // materials
 
-  if (settings::photon_transport &&
-      settings::electron_treatment == ElectronTreatment::TTB) {
+  if (settings::use_ttb()) {
     // Take logarithm of energies since they are log-log interpolated
     data::ttb_e_grid = tensor::log(data::ttb_e_grid);
   }

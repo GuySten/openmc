@@ -498,7 +498,7 @@ void process_charged_secondary(
     return;
   }
 
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
+  if (settings::use_ttb()) {
     thick_target_bremsstrahlung(p, type, u, E);
   }
 
@@ -519,7 +519,7 @@ void process_charged_secondary(
 void sample_electron_reaction(Particle& p)
 {
   if (!settings::electron_transport) {
-    if (settings::electron_treatment == ElectronTreatment::TTB) {
+    if (settings::use_ttb()) {
       thick_target_bremsstrahlung(p);
     }
     p.E() = 0.0;
@@ -596,7 +596,7 @@ void sample_electron_reaction(Particle& p)
 void sample_positron_reaction(Particle& p)
 {
   if (!settings::electron_transport) {
-    if (settings::electron_treatment == ElectronTreatment::TTB) {
+    if (settings::use_ttb()) {
       thick_target_bremsstrahlung(p);
     }
   }
@@ -775,7 +775,6 @@ int sample_photonuclear_nuclide(Particle& p, bool biased)
   fatal_error("Did not sample any nuclide for photonuclear interaction.");
   return -1;
 }
-
 
 int sample_electron_element(Particle& p)
 {

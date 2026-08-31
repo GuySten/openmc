@@ -208,6 +208,53 @@ extern "C" int verbosity;          //!< How verbose to make output
 extern double weight_cutoff;       //!< Weight cutoff for Russian roulette
 extern double weight_survive;      //!< Survival weight after Russian roulette
 
+//==============================================================================
+// Charged particle treatment
+//==============================================================================
+
+//! How electrons and positrons are handled. The four cases are mutually
+//! exclusive and are derived from photon_transport, electron_transport and
+//! electron_treatment rather than being set directly.
+enum class ChargedMode {
+  none,     //!< No photon transport, so charged particles are never created
+  led,      //!< Killed where they are created; energy deposited locally
+  ttb,      //!< Not transported; radiate through the thick-target approximation
+  transport //!< Transported explicitly using electro-atomic data
+};
+
+//! Determine how electrons and positrons are handled.
+//
+// Explicit electron transport supersedes the electron_treatment setting:
+// process_charged_secondary() banks the charged particle instead of calling
+// thick_target_bremsstrahlung(), and sample_electron_reaction() samples
+// bremsstrahlung from the electro-atomic data. The TTB tables are therefore
+// unused when electron_transport is on, even though electron_treatment
+// defaults to TTB.
+inline ChargedMode charged_mode()
+{
+  if (!photon_transport)
+    return ChargedMode::none;
+  if (electron_transport)
+    return ChargedMode::transport;
+  return electron_treatment == ElectronTreatment::TTB ? ChargedMode::ttb
+                                                      : ChargedMode::led;
+}
+
+//! Whether the thick-target bremsstrahlung tables are used, and therefore
+//! whether they need to be read and precomputed per material.
+inline bool use_ttb()
+{
+  return charged_mode() == ChargedMode::ttb;
+}
+
+//! Whether charged particles can emit bremsstrahlung photons. This is what
+//! ties the charged particle energy ceiling to the photon energy ceiling.
+inline bool charged_particles_radiate()
+{
+  auto mode = charged_mode();
+  return mode == ChargedMode::ttb || mode == ChargedMode::transport;
+}
+
 } // namespace settings
 
 //==============================================================================

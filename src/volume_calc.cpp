@@ -1,5 +1,7 @@
 #include "openmc/volume_calc.h"
 
+#include "openmc/volume_octree.h"
+
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/constants.h"
@@ -58,7 +60,36 @@ VolumeCalculation::VolumeCalculation(pugi::xml_node node)
   domain_ids_ = get_node_array<int>(node, "domain_ids");
   lower_left_ = get_node_array<double>(node, "lower_left");
   upper_right_ = get_node_array<double>(node, "upper_right");
-  n_samples_ = std::stoull(get_node_value(node, "samples"));
+  if (check_for_node(node, "samples")) {
+    n_samples_ = std::stoull(get_node_value(node, "samples"));
+  }
+
+  // Method selection. The deterministic path takes a tolerance and a depth
+  // guard instead of a sample count.
+  if (check_for_node(node, "method")) {
+    std::string method = get_node_value(node, "method", true, true);
+    if (method == "stochastic") {
+      method_ = Method::STOCHASTIC;
+    } else if (method == "octree") {
+      method_ = Method::OCTREE;
+    } else {
+      fatal_error(
+        fmt::format("Unrecognized volume calculation method '{}'.", method));
+    }
+  }
+  if (method_ == Method::STOCHASTIC && n_samples_ == 0) {
+    fatal_error("A stochastic volume calculation requires <samples>.");
+  }
+  if (check_for_node(node, "tolerance")) {
+    tolerance_ = std::stod(get_node_value(node, "tolerance"));
+    if (tolerance_ <= 0.0) {
+      fatal_error(fmt::format(
+        "Invalid tolerance {} provided for a volume calculation.", tolerance_));
+    }
+  }
+  if (check_for_node(node, "max_depth")) {
+    max_depth_ = std::stoi(get_node_value(node, "max_depth"));
+  }
 
   if (check_for_node(node, "threshold")) {
     pugi::xml_node threshold_node = node.child("threshold");
@@ -94,6 +125,10 @@ VolumeCalculation::VolumeCalculation(pugi::xml_node node)
 
 vector<VolumeCalculation::Result> VolumeCalculation::execute() const
 {
+  if (method_ == Method::OCTREE) {
+    return this->execute_octree();
+  }
+
   // Check to make sure domain IDs are valid
   for (auto uid : domain_ids_) {
     switch (domain_type_) {
@@ -382,6 +417,54 @@ vector<VolumeCalculation::Result> VolumeCalculation::execute() const
   } // end while
 }
 
+vector<VolumeCalculation::Result> VolumeCalculation::execute_octree() const
+{
+  // Check to make sure domain IDs are valid
+  for (auto uid : domain_ids_) {
+    if (domain_type_ == TallyDomain::CELL) {
+      if (model::cell_map.find(uid) == model::cell_map.end()) {
+        fatal_error(fmt::format("Cell {} does not exist.", uid));
+      }
+    } else if (domain_type_ == TallyDomain::MATERIAL) {
+      if (model::material_map.find(uid) == model::material_map.end()) {
+        fatal_error(fmt::format("Material {} does not exist.", uid));
+      }
+    } else {
+      if (model::universe_map.find(uid) == model::universe_map.end()) {
+        fatal_error(fmt::format("Universe {} does not exist.", uid));
+      }
+    }
+  }
+
+  using DT = OctreeVolumeCalculation::DomainType;
+  DT domain = domain_type_ == TallyDomain::CELL       ? DT::CELL
+              : domain_type_ == TallyDomain::MATERIAL ? DT::MATERIAL
+                                                      : DT::UNIVERSE;
+
+  OctreeVolumeCalculation calc(domain, domain_ids_, lower_left_, upper_right_);
+  calc.tolerance_ = tolerance_;
+  calc.max_depth_ = max_depth_;
+  calc.run();
+
+  if (calc.worst_half_width() > tolerance_) {
+    warning(fmt::format(
+      "Octree volume calculation reached depth {} without meeting the "
+      "requested tolerance of {} cm^3; the widest bracket is {} cm^3. The "
+      "reported bounds are still valid.",
+      calc.depth_reached(), tolerance_, calc.worst_half_width()));
+  }
+
+  vector<Result> results(domain_ids_.size());
+  for (size_t i = 0; i < domain_ids_.size(); ++i) {
+    const auto& bracket = calc.results()[i];
+    results[i].volume = {bracket.midpoint(), bracket.half_width()};
+    results[i].iterations = calc.depth_reached();
+    calc.fill_nuclides(static_cast<int>(i), results[i].nuclides,
+      results[i].atoms, results[i].uncertainty);
+  }
+  return results;
+}
+
 void VolumeCalculation::to_hdf5(
   const std::string& filename, const vector<Result>& results) const
 {
@@ -403,6 +486,17 @@ void VolumeCalculation::to_hdf5(
   write_attribute(file_id, "samples", n_samples_);
   write_attribute(file_id, "lower_left", lower_left_);
   write_attribute(file_id, "upper_right", upper_right_);
+  // The method has to survive the round trip: without it a reloaded
+  // calculation reverts to stochastic and the second entry of each result
+  // silently changes meaning from a bound to a standard deviation.
+  write_attribute(file_id, "method",
+    method_ == Method::OCTREE ? std::string("octree")
+                              : std::string("stochastic"));
+  if (method_ == Method::OCTREE) {
+    write_attribute(file_id, "tolerance", tolerance_);
+    write_attribute(file_id, "max_depth", max_depth_);
+    write_attribute(file_id, "depth_reached", results[0].iterations);
+  }
   // Write trigger info
   if (trigger_type_ != TriggerMetric::not_active) {
     write_attribute(file_id, "iterations", results[0].iterations);

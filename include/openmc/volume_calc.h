@@ -60,10 +60,19 @@ public:
   // Tally filter and map types
   enum class TallyDomain { UNIVERSE, MATERIAL, CELL };
 
+  //! How the volumes are obtained
+  enum class Method {
+    STOCHASTIC, //!< uniform point sampling with a binomial estimator
+    OCTREE      //!< deterministic octree bracketing (volume_octree.cpp)
+  };
+
   // Data members
   TallyDomain domain_type_; //!< Type of domain (cell, material, etc.)
-  size_t n_samples_;        //!< Number of samples to use
-  double threshold_ {-1.0}; //!< Error threshold for domain volumes
+  size_t n_samples_ {0};    //!< Number of samples to use (stochastic only)
+  Method method_ {Method::STOCHASTIC}; //!< Volume calculation method
+  double tolerance_ {1.0e-3}; //!< Absolute half-width target, cm^3 (octree)
+  int max_depth_ {30};        //!< Octree depth guard
+  double threshold_ {-1.0};   //!< Error threshold for domain volumes
   TriggerMetric trigger_type_ {
     TriggerMetric::not_active}; //!< Trigger metric for the volume calculation
   Position lower_left_;         //!< Lower-left position of bounding box
@@ -79,6 +88,17 @@ private:
   //! \param[in,out] hits Number of hits corresponding to each material
   void check_hit(
     int i_material, vector<uint64_t>& indices, vector<uint64_t>& hits) const;
+
+  //! \brief Deterministically bracket the volume of each domain
+  //
+  //! Dispatched from execute() when method_ is OCTREE. The bracket midpoint is
+  //! reported as the volume and the half-width in the standard-deviation slot,
+  //! so that add_volume_information() and everything downstream of it keeps
+  //! working; note that for this method the second entry is a hard bound
+  //! rather than a 1-sigma estimate.
+  //
+  //! \return Vector of results for each user-specified domain
+  vector<Result> execute_octree() const;
 };
 
 //==============================================================================

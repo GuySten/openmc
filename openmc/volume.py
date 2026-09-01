@@ -68,12 +68,22 @@ class VolumeCalculation:
         .. versionadded:: 0.12
 
     """
-    def __init__(self, domains, samples, lower_left=None, upper_right=None):
+    def __init__(self, domains, samples=None, lower_left=None,
+                 upper_right=None, method='stochastic', tolerance=1.0e-3,
+                 max_depth=30):
         self._atoms = {}
         self._volumes = {}
         self._threshold = None
         self._trigger_type = None
         self._iterations = None
+        self._samples = None
+
+        cv.check_value('method', method, ('stochastic', 'octree'))
+        self._method = method
+        self._tolerance = tolerance
+        self._max_depth = max_depth
+        if method == 'stochastic' and samples is None:
+            raise ValueError("The stochastic method requires 'samples'.")
 
         cv.check_type('domains', domains, Iterable,
                       (openmc.Cell, openmc.Material, openmc.Universe))
@@ -85,7 +95,8 @@ class VolumeCalculation:
             self._domain_type = 'universe'
         self.ids = [d.id for d in domains]
 
-        self.samples = samples
+        if samples is not None:
+            self.samples = samples
 
         if lower_left is not None:
             if upper_right is None:
@@ -143,6 +154,25 @@ class VolumeCalculation:
         cv.check_type('number of samples', samples, Integral)
         cv.check_greater_than('number of samples', samples, 0)
         self._samples = samples
+
+    @property
+    def method(self):
+        """{'stochastic', 'octree'}: how the volumes were obtained.
+
+        For 'octree' the standard deviation reported alongside each volume is a
+        hard bound on the bracket, not a 1-sigma estimate.
+        """
+        return self._method
+
+    @property
+    def tolerance(self):
+        """float: absolute half-width target in cm^3, for the octree method."""
+        return self._tolerance
+
+    @property
+    def max_depth(self):
+        """int: octree depth guard, for the octree method."""
+        return self._max_depth
 
     @property
     def lower_left(self):
@@ -265,6 +295,11 @@ class VolumeCalculation:
 
             domain_type = f.attrs['domain_type'].decode()
             samples = f.attrs['samples']
+            method = f.attrs.get('method', b'stochastic')
+            if isinstance(method, bytes):
+                method = method.decode()
+            tolerance = float(f.attrs.get('tolerance', 1.0e-3))
+            max_depth = int(f.attrs.get('max_depth', 30))
             lower_left = f.attrs['lower_left']
             upper_right = f.attrs['upper_right']
 
@@ -301,7 +336,8 @@ class VolumeCalculation:
                 domains = [openmc.Universe(uid) for uid in ids]
 
         # Instantiate the class and assign results
-        vol = cls(domains, samples, lower_left, upper_right)
+        vol = cls(domains, samples, lower_left, upper_right, method=method,
+                  tolerance=tolerance, max_depth=max_depth)
 
         if trigger_type is not None:
             vol.set_trigger(threshold, trigger_type.decode())
@@ -345,8 +381,13 @@ class VolumeCalculation:
         dt_elem.text = self.domain_type
         id_elem = ET.SubElement(element, "domain_ids")
         id_elem.text = ' '.join(str(uid) for uid in self.ids)
-        samples_elem = ET.SubElement(element, "samples")
-        samples_elem.text = str(self.samples)
+        if self.method == 'stochastic':
+            samples_elem = ET.SubElement(element, "samples")
+            samples_elem.text = str(self.samples)
+        else:
+            ET.SubElement(element, "method").text = self.method
+            ET.SubElement(element, "tolerance").text = str(self.tolerance)
+            ET.SubElement(element, "max_depth").text = str(self.max_depth)
         ll_elem = ET.SubElement(element, "lower_left")
         ll_elem.text = ' '.join(str(x) for x in self.lower_left)
         ur_elem = ET.SubElement(element, "upper_right")
@@ -376,7 +417,11 @@ class VolumeCalculation:
         """
         domain_type = get_text(elem, "domain_type")
         ids = get_elem_list(elem, "domain_ids", int)
-        samples = int(get_text(elem, "samples"))
+        samples_text = get_text(elem, "samples")
+        samples = int(samples_text) if samples_text is not None else None
+        method = get_text(elem, "method", 'stochastic')
+        tolerance = float(get_text(elem, "tolerance", 1.0e-3))
+        max_depth = int(get_text(elem, "max_depth", 30))
         lower_left = tuple(get_elem_list(elem, "lower_left", float))
         upper_right = tuple(get_elem_list(elem, "upper_right", float))
 

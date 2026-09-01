@@ -99,6 +99,17 @@ public:
   //! Get Boolean of if the cell is simple or not
   bool is_simple() const { return simple_; }
 
+  //! Raw region tokens, in infix notation. For a simple region this is just
+  //! the list of intersected half-spaces.
+  const vector<int32_t>& expression() const { return expression_; }
+
+  //! The region expression in postfix (RPN) notation. Rebuilt on every call,
+  //! so cache it if you need it more than once.
+  vector<int32_t> postfix(int32_t cell_id) const
+  {
+    return generate_postfix(cell_id);
+  }
+
 private:
   //----------------------------------------------------------------------------
   // Private Methods
@@ -447,6 +458,9 @@ public:
   void to_hdf5_inner(hid_t group_id) const override;
 
   bool is_simple() const override { return region_.is_simple(); }
+
+  //! Access the region definition.
+  const Region& region() const { return region_; }
 
   virtual GeometryType geom_type() const override { return GeometryType::CSG; }
 

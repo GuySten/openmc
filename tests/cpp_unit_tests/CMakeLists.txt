@@ -11,6 +11,13 @@ set(TEST_NAMES
   test_region
   test_tensor
   test_geometry
+  test_volume_octree_geometry
+  test_volume_octree_integrators
+  test_volume_octree_kernels
+  test_volume_octree_math
+  test_volume_octree_nested
+  test_volume_octree_shapes
+  test_volume_octree_slices  
   # Add additional unit test files here
 )
 

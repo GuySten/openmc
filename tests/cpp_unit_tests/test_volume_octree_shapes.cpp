@@ -12,6 +12,8 @@
 
 #include "openmc/volume_octree_math.h"
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <cstdio>
 #include <random>
 
@@ -47,7 +49,7 @@ static void check(const char* name, QuadricForm q, OctBox b, double exact)
     ok ? "brackets" : "*** VIOLATION ***");
   CK(ok, "%s", name);
 }
-int main()
+static int run_all()
 {
 
   // (1) On a rectangle, circle_poly_area must reproduce circle_rect_area, which
@@ -238,4 +240,12 @@ int main()
   }
   printf(fails ? "\n%d FAILURES\n" : "\nall shape checks passed\n", fails);
   return fails ? 1 : 0;
+}
+
+TEST_CASE("volume_octree: cross-section kernels and diagonal quadrics",
+  "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

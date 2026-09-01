@@ -12,6 +12,8 @@
 
 #include "openmc/volume_octree_math.h"
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <cstdio>
 #include <random>
 
@@ -19,7 +21,7 @@ using namespace openmc;
 
 static int failures = 0;
 
-#define CHECK(cond, ...)                                                       \
+#define OCT_CHECK(cond, ...)                                                   \
   do {                                                                         \
     if (!(cond)) {                                                             \
       std::printf("FAIL %s:%d  ", __FILE__, __LINE__);                         \
@@ -110,9 +112,9 @@ static void test_form_range_soundness()
     }
 
     double tol = 1e-9 * (1.0 + std::abs(smin) + std::abs(smax));
-    CHECK(
+    OCT_CHECK(
       lo <= smin + tol, "form_range lower bound too high: %g > %g", lo, smin);
-    CHECK(
+    OCT_CHECK(
       hi >= smax - tol, "form_range upper bound too low: %g < %g", hi, smax);
 
     // Separable + unrotated is claimed EXACT, so compare against an
@@ -139,9 +141,9 @@ static void test_form_range_soundness()
         exact_hi += khi;
       }
       double scale = 1.0 + std::abs(exact_lo) + std::abs(exact_hi);
-      CHECK(std::abs(lo - exact_lo) < 1e-6 * scale,
+      OCT_CHECK(std::abs(lo - exact_lo) < 1e-6 * scale,
         "separable lower bound not exact: %.12g vs %.12g", lo, exact_lo);
-      CHECK(std::abs(hi - exact_hi) < 1e-6 * scale,
+      OCT_CHECK(std::abs(hi - exact_hi) < 1e-6 * scale,
         "separable upper bound not exact: %.12g vs %.12g", hi, exact_hi);
     }
 
@@ -195,7 +197,7 @@ static void test_cross_term_convergence()
     double excess = (hi - lo) - (smax - smin);
     if (prev > 0.0) {
       // Halving h should shrink the excess by roughly 4x (it is O(h^2)).
-      CHECK(excess < prev * 0.45,
+      OCT_CHECK(excess < prev * 0.45,
         "cross-term excess not converging: %g then %g", prev, excess);
     }
     prev = excess;
@@ -237,8 +239,10 @@ static void test_torus_range()
       smax = std::max(smax, v);
     }
 
-    CHECK(lo <= smin + 1e-9, "torus lower bound too high: %g > %g", lo, smin);
-    CHECK(hi >= smax - 1e-9, "torus upper bound too low: %g < %g", hi, smax);
+    OCT_CHECK(
+      lo <= smin + 1e-9, "torus lower bound too high: %g > %g", lo, smin);
+    OCT_CHECK(
+      hi >= smax - 1e-9, "torus upper bound too low: %g < %g", hi, smax);
 
     // Claimed exact. Same argument as above: build the exact range from dense
     // scans of the two independent terms instead of from 3-D sampling.
@@ -279,9 +283,9 @@ static void test_torus_range()
 
       double exact_lo = a_lo + t_lo - 1.0, exact_hi = a_hi + t_hi - 1.0;
       double scale = 1.0 + std::abs(exact_lo) + std::abs(exact_hi);
-      CHECK(std::abs(lo - exact_lo) < 1e-4 * scale,
+      OCT_CHECK(std::abs(lo - exact_lo) < 1e-4 * scale,
         "torus lower bound not exact: %.12g vs %.12g", lo, exact_lo);
-      CHECK(std::abs(hi - exact_hi) < 1e-4 * scale,
+      OCT_CHECK(std::abs(hi - exact_hi) < 1e-4 * scale,
         "torus upper bound not exact: %.12g vs %.12g", hi, exact_hi);
     }
   }
@@ -299,7 +303,7 @@ static void test_box_geometry()
     double child_sum = 0.0;
     for (int i = 0; i < 8; ++i)
       child_sum += b.child(i).volume();
-    CHECK(std::abs(child_sum - b.volume()) < 1e-12 * b.volume(),
+    OCT_CHECK(std::abs(child_sum - b.volume()) < 1e-12 * b.volume(),
       "children do not tile: %g vs %g", child_sum, b.volume());
 
     // Children must be disjoint and inside the parent: check each child's
@@ -309,7 +313,7 @@ static void test_box_geometry()
       Position d = cc - b.center;
       for (int k = 0; k < 3; ++k) {
         double proj = d.dot(b.axis[k]);
-        CHECK(std::abs(proj) <= b.half[k] + 1e-12,
+        OCT_CHECK(std::abs(proj) <= b.half[k] + 1e-12,
           "child centre outside parent along axis %d", k);
       }
     }
@@ -322,13 +326,13 @@ static void test_box_geometry()
       rot.axis[1].x, rot.axis[1].y, rot.axis[1].z, rot.axis[2].x, rot.axis[2].y,
       rot.axis[2].z};
     OctBox t = b.transformed(Position {1., -2., 3.}, R);
-    CHECK(std::abs(t.volume() - b.volume()) < 1e-12 * b.volume(),
+    OCT_CHECK(std::abs(t.volume() - b.volume()) < 1e-12 * b.volume(),
       "transform changed volume");
     for (int k = 0; k < 3; ++k) {
-      CHECK(std::abs(t.axis[k].dot(t.axis[k]) - 1.0) < 1e-12,
+      OCT_CHECK(std::abs(t.axis[k].dot(t.axis[k]) - 1.0) < 1e-12,
         "transformed axis %d not unit", k);
       for (int l = k + 1; l < 3; ++l)
-        CHECK(std::abs(t.axis[k].dot(t.axis[l])) < 1e-12,
+        OCT_CHECK(std::abs(t.axis[k].dot(t.axis[l])) < 1e-12,
           "transformed axes %d,%d not orthogonal", k, l);
     }
 
@@ -339,7 +343,7 @@ static void test_box_geometry()
     for (int i = 0; i < 8; ++i) {
       Position expect = (b.corner(i) - Position {1., -2., 3.}).rotate(R);
       Position got = t.corner(i);
-      CHECK((expect - got).dot(expect - got) < 1e-18,
+      OCT_CHECK((expect - got).dot(expect - got) < 1e-18,
         "corner %d mismatch after transform", i);
     }
   }
@@ -450,15 +454,15 @@ static void test_tri_logic()
     }
 
     if (t == Tri::kTrue)
-      CHECK(!saw_false, "TRUE but a consistent assignment is false");
+      OCT_CHECK(!saw_false, "TRUE but a consistent assignment is false");
     if (t == Tri::kFalse)
-      CHECK(!saw_true, "FALSE but a consistent assignment is true");
+      OCT_CHECK(!saw_true, "FALSE but a consistent assignment is true");
   }
 }
 
 //==============================================================================
 
-int main()
+static int run_all()
 {
   std::printf("volume_octree_math checks\n");
   test_form_range_soundness();
@@ -478,4 +482,12 @@ int main()
   }
   std::printf("\n%d FAILURES\n", failures);
   return 1;
+}
+
+TEST_CASE(
+  "volume_octree: range bounds and three-valued logic", "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

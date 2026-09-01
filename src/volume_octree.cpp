@@ -97,24 +97,21 @@ bool surface_quadric_form(const Surface& surf, QuadricForm& q)
     q.A[0] = -s->radius_sq_;
     q.A[1] = q.A[2] = 1.0;
     q.b = {2. * s->radius_sq_ * s->x0_, -2. * s->y0_, -2. * s->z0_};
-    q.c = s->y0_ * s->y0_ + s->z0_ * s->z0_ -
-          s->radius_sq_ * s->x0_ * s->x0_;
+    q.c = s->y0_ * s->y0_ + s->z0_ * s->z0_ - s->radius_sq_ * s->x0_ * s->x0_;
     return true;
   }
   if (auto s = dynamic_cast<const SurfaceYCone*>(&surf)) {
     q.A[1] = -s->radius_sq_;
     q.A[0] = q.A[2] = 1.0;
     q.b = {-2. * s->x0_, 2. * s->radius_sq_ * s->y0_, -2. * s->z0_};
-    q.c = s->x0_ * s->x0_ + s->z0_ * s->z0_ -
-          s->radius_sq_ * s->y0_ * s->y0_;
+    q.c = s->x0_ * s->x0_ + s->z0_ * s->z0_ - s->radius_sq_ * s->y0_ * s->y0_;
     return true;
   }
   if (auto s = dynamic_cast<const SurfaceZCone*>(&surf)) {
     q.A[2] = -s->radius_sq_;
     q.A[0] = q.A[1] = 1.0;
     q.b = {-2. * s->x0_, -2. * s->y0_, 2. * s->radius_sq_ * s->z0_};
-    q.c = s->x0_ * s->x0_ + s->y0_ * s->y0_ -
-          s->radius_sq_ * s->z0_ * s->z0_;
+    q.c = s->x0_ * s->x0_ + s->y0_ * s->y0_ - s->radius_sq_ * s->z0_ * s->z0_;
     return true;
   }
 
@@ -152,11 +149,23 @@ BoxSense classify_box(const Surface& surf, const OctBox& box)
     Position tc;
     double A = 0., B = 0., C = 0.;
     if (auto s = dynamic_cast<const SurfaceXTorus*>(&surf)) {
-      ax = 0; tc = {s->x0_, s->y0_, s->z0_}; A = s->A_; B = s->B_; C = s->C_;
+      ax = 0;
+      tc = {s->x0_, s->y0_, s->z0_};
+      A = s->A_;
+      B = s->B_;
+      C = s->C_;
     } else if (auto s = dynamic_cast<const SurfaceYTorus*>(&surf)) {
-      ax = 1; tc = {s->x0_, s->y0_, s->z0_}; A = s->A_; B = s->B_; C = s->C_;
+      ax = 1;
+      tc = {s->x0_, s->y0_, s->z0_};
+      A = s->A_;
+      B = s->B_;
+      C = s->C_;
     } else if (auto s = dynamic_cast<const SurfaceZTorus*>(&surf)) {
-      ax = 2; tc = {s->x0_, s->y0_, s->z0_}; A = s->A_; B = s->B_; C = s->C_;
+      ax = 2;
+      tc = {s->x0_, s->y0_, s->z0_};
+      A = s->A_;
+      B = s->B_;
+      C = s->C_;
     }
     if (ax >= 0) {
       double lo, hi;
@@ -208,16 +217,25 @@ OctreeVolumeCalculation::OctreeVolumeCalculation(DomainType type,
     }
     if (auto t = dynamic_cast<const SurfaceXTorus*>(&s)) {
       pr.kind = SurfaceProxy::Kind::TORUS;
-      pr.ax = 0; pr.tc = {t->x0_, t->y0_, t->z0_};
-      pr.A = t->A_; pr.B = t->B_; pr.C = t->C_;
+      pr.ax = 0;
+      pr.tc = {t->x0_, t->y0_, t->z0_};
+      pr.A = t->A_;
+      pr.B = t->B_;
+      pr.C = t->C_;
     } else if (auto t = dynamic_cast<const SurfaceYTorus*>(&s)) {
       pr.kind = SurfaceProxy::Kind::TORUS;
-      pr.ax = 1; pr.tc = {t->x0_, t->y0_, t->z0_};
-      pr.A = t->A_; pr.B = t->B_; pr.C = t->C_;
+      pr.ax = 1;
+      pr.tc = {t->x0_, t->y0_, t->z0_};
+      pr.A = t->A_;
+      pr.B = t->B_;
+      pr.C = t->C_;
     } else if (auto t = dynamic_cast<const SurfaceZTorus*>(&s)) {
       pr.kind = SurfaceProxy::Kind::TORUS;
-      pr.ax = 2; pr.tc = {t->x0_, t->y0_, t->z0_};
-      pr.A = t->A_; pr.B = t->B_; pr.C = t->C_;
+      pr.ax = 2;
+      pr.tc = {t->x0_, t->y0_, t->z0_};
+      pr.A = t->A_;
+      pr.B = t->B_;
+      pr.C = t->C_;
     }
   }
 
@@ -233,8 +251,8 @@ OctreeVolumeCalculation::OctreeVolumeCalculation(DomainType type,
       continue; // DAGMC cell: left as non-CSG, always straddles
     is_csg_[i] = true;
     simple_[i] = csg->region().is_simple();
-    postfix_[i] = simple_[i] ? csg->region().expression()
-                             : csg->region().postfix(csg->id_);
+    postfix_[i] =
+      simple_[i] ? csg->region().expression() : csg->region().postfix(csg->id_);
   }
 
   // Enumerate what a slack charge beneath each universe has to touch. This
@@ -251,7 +269,8 @@ OctreeVolumeCalculation::OctreeVolumeCalculation(DomainType type,
 
 int OctreeVolumeCalculation::register_pair(int slot, int32_t i_mat)
 {
-  int64_t key = (static_cast<int64_t>(slot) << 32) | static_cast<uint32_t>(i_mat);
+  int64_t key =
+    (static_cast<int64_t>(slot) << 32) | static_cast<uint32_t>(i_mat);
   auto it = pair_index_.find(key);
   if (it != pair_index_.end())
     return it->second;
@@ -264,7 +283,8 @@ int OctreeVolumeCalculation::register_pair(int slot, int32_t i_mat)
 
 int OctreeVolumeCalculation::find_pair(int slot, int32_t i_mat) const
 {
-  int64_t key = (static_cast<int64_t>(slot) << 32) | static_cast<uint32_t>(i_mat);
+  int64_t key =
+    (static_cast<int64_t>(slot) << 32) | static_cast<uint32_t>(i_mat);
   auto it = pair_index_.find(key);
   return it == pair_index_.end() ? -1 : it->second;
 }
@@ -437,9 +457,8 @@ double OctreeVolumeCalculation::worst_half_width() const
   return w;
 }
 
-void OctreeVolumeCalculation::fill_nuclides(int i_domain,
-  vector<int>& nuclides, vector<double>& atoms,
-  vector<double>& uncertainty) const
+void OctreeVolumeCalculation::fill_nuclides(int i_domain, vector<int>& nuclides,
+  vector<double>& atoms, vector<double>& uncertainty) const
 {
   // Mirrors the stochastic path's arithmetic: atom densities are in atoms/b-cm,
   // so atoms = 1e24 * V * density. What differs is the companion figure: the
@@ -795,7 +814,8 @@ bool OctreeVolumeCalculation::try_integrate(const OctBox& box,
             // the "outside" ones the maximum: the combination is an annulus
             // r_out < rho < r_in.
             int bit = 0, n_bounded = 0, i_bounded = -1;
-            vector<double> g_in(groups.size(), INFTY), g_out(groups.size(), 0.0);
+            vector<double> g_in(groups.size(), INFTY),
+              g_out(groups.size(), 0.0);
             bool dead = false;
             for (size_t g = 0; g < groups.size() && !dead; ++g) {
               for (int i : groups[g].members) {
@@ -947,6 +967,31 @@ bool OctreeVolumeCalculation::try_integrate(const OctBox& box,
 // Traversal
 //==============================================================================
 
+//! Member form of classify_box() that reads the pre-digested proxy instead of
+//! doing a dynamic_cast, which in the hot loop cost more than the arithmetic it
+//! guarded.
+BoxSense OctreeVolumeCalculation::classify(
+  int32_t i_surf, const OctBox& box) const
+{
+  const auto& pr = proxies_[i_surf];
+  double lo, hi;
+  switch (pr.kind) {
+  case SurfaceProxy::Kind::QUADRIC:
+    form_range(pr.q, box, lo, hi);
+    return from_range(lo, hi);
+  case SurfaceProxy::Kind::TORUS:
+    if (box.rotated)
+      break; // rho over an oriented box is not separable
+    torus_range(pr.ax, pr.tc, pr.A, pr.B, pr.C, box, lo, hi);
+    return from_range(lo, hi);
+  default:
+    break;
+  }
+  // Rotated tori, DAGMC surfaces, anything unrecognised. BOTH is always sound:
+  // it forces refinement and eventually charges slack.
+  return BoxSense::BOTH;
+}
+
 int OctreeVolumeCalculation::process(OctBox& box, int32_t& i_univ, int depth,
   int max_depth, vector<PathEntry>& path, Acc& acc, OctBox* kids) const
 {
@@ -1029,7 +1074,17 @@ int OctreeVolumeCalculation::process(OctBox& box, int32_t& i_univ, int depth,
     if (n_true > 1) {
       // Reported once after the sweep rather than here: this runs inside a
       // parallel region and could fire on millions of boxes.
-      overlap_universe_.store(u.id_, std::memory_order_relaxed);
+      //
+      // Keep the SMALLEST offending id rather than the last writer, so the
+      // message does not depend on which thread happened to get there first.
+      // Summation order costs a few ULP and nobody can see it; a warning that
+      // names a different universe run to run is the kind of difference a
+      // regression test does notice.
+      int prev = overlap_universe_.load(std::memory_order_relaxed);
+      while ((prev == C_NONE || u.id_ < prev) &&
+             !overlap_universe_.compare_exchange_weak(
+               prev, u.id_, std::memory_order_relaxed)) {
+      }
     }
 
     // Try to finish this box in closed form before spending more depth on it.

@@ -1,4 +1,6 @@
 #include "openmc/volume_octree_math.h"
+
+#include <catch2/catch_test_macros.hpp>
 #include <cstdio>
 #include <random>
 using namespace openmc;
@@ -30,7 +32,7 @@ static void rot(OctBox& b)
   b.rotated = true;
 }
 
-int main()
+static int run_all()
 {
   // === box_planes_volume: agrees with the single-plane closed form ===
   double worst = 0;
@@ -178,4 +180,12 @@ int main()
 
   printf(fails ? "\n%d FAILURES\n" : "\nall gap-closing kernels ok\n", fails);
   return fails ? 1 : 0;
+}
+
+TEST_CASE(
+  "volume_octree: polytope volume and torus slice bounds", "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

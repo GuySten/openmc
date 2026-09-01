@@ -1,4 +1,6 @@
 #include "openmc/volume_octree_math.h"
+
+#include <catch2/catch_test_macros.hpp>
 #include <cstdio>
 using namespace openmc;
 static int fails = 0;
@@ -11,7 +13,7 @@ static int fails = 0;
       ++fails;                                                                 \
     }                                                                          \
   } while (0)
-int main()
+static int run_all()
 {
   // TRISO-like concentric spheres. Shell volumes are 4/3 pi (ra^3 - rb^3).
   double R[5] = {
@@ -76,4 +78,11 @@ int main()
   }
   printf(fails ? "\n%d FAILURES\n" : "\nnested-shell bounds ok\n", fails);
   return fails ? 1 : 0;
+}
+
+TEST_CASE("volume_octree: concentric shell bounds", "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

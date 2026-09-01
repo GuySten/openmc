@@ -13,6 +13,8 @@
 
 #include "openmc/volume_octree_math.h"
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -21,7 +23,7 @@
 using namespace openmc;
 
 static int failures = 0;
-#define CHECK(cond, ...)                                                       \
+#define OCT_CHECK(cond, ...)                                                   \
   do {                                                                         \
     if (!(cond)) {                                                             \
       std::printf("  FAIL ");                                                  \
@@ -478,7 +480,7 @@ static void report(const char* name, const Stats& st, int cell, double exact)
   std::printf("  %-34s [%.9f, %.9f]  half-width %.2e  %6ld nodes  %s\n", name,
     lo, hi, 0.5 * st.slack[cell], st.nodes,
     ok ? "brackets" : "*** VIOLATION ***");
-  CHECK(ok, "%s: %.10f not in [%.10f, %.10f]", name, exact, lo, hi);
+  OCT_CHECK(ok, "%s: %.10f not in [%.10f, %.10f]", name, exact, lo, hi);
 }
 
 //==============================================================================
@@ -910,8 +912,8 @@ static void test_two_curved_convergence()
       std::printf("   slack x%.2f  nodes x%.2f", slack / prev_slack,
         double(st.nodes) / prev_nodes);
     std::printf("  %s\n", ok ? "" : "*** VIOLATION ***");
-    CHECK(ok, "two spheres depth %d: %.9f not in [%.9f, %.9f]", depth, exact,
-      lo, hi);
+    OCT_CHECK(ok, "two spheres depth %d: %.9f not in [%.9f, %.9f]", depth,
+      exact, lo, hi);
     prev_slack = slack;
     prev_nodes = st.nodes;
   }
@@ -919,7 +921,7 @@ static void test_two_curved_convergence()
               "   has retreated to the 1-D intersection curve)\n");
 }
 
-int main()
+static int run_all()
 {
   test_torus();
   test_cylinder_bundle();
@@ -938,4 +940,11 @@ int main()
   }
   std::printf("\n%d FAILURES\n", failures);
   return 1;
+}
+
+TEST_CASE("volume_octree: base-case integrators, end to end", "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

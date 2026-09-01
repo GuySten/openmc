@@ -1,7 +1,9 @@
 #include "openmc/volume_octree_math.h"
+
+#include <catch2/catch_test_macros.hpp>
 #include <cstdio>
 using namespace openmc;
-int main()
+static int run_all()
 {
   int fails = 0;
   // Sphere r=3 fully inside an 8 cm cube: bounds must bracket 4/3 pi r^3.
@@ -74,4 +76,12 @@ int main()
     ++fails;
   printf(fails ? "\n%d FAILURES\n" : "\nslice integrator ok\n", fails);
   return fails ? 1 : 0;
+}
+
+TEST_CASE(
+  "volume_octree: Riemann bounds for revolved surfaces", "[volume_octree]")
+{
+  // The body reports its own diagnostics on stdout and returns a failure count;
+  // run with -s to see the tables even when everything passes.
+  REQUIRE(run_all() == 0);
 }

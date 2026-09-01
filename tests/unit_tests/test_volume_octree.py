@@ -11,6 +11,7 @@ will not fix it.
 """
 
 import math
+import os
 
 import numpy as np
 import pytest
@@ -225,6 +226,48 @@ def _rotated_model(angles):
     model.materials = openmc.Materials([inner, outer])
     model.settings.run_mode = 'volume'
     return model
+
+
+def test_reproducible_across_thread_counts(pincell_model, run_in_tmpdir):
+    """The same calculation must agree between 1 and 4 threads.
+
+    The merge sums in nondeterministic order, so results are not bitwise
+    identical. Measured, reordering moves a volume by ~1e-13 relative even at
+    1e8 contributions, which is invisible at any sensible output precision --
+    but that is a measurement, not a guarantee, so assert it here. If a future
+    change introduces real nondeterminism (a hash-order dependence, a race)
+    this fails loudly instead of showing up as an intermittent regression
+    diff.
+
+    1e-9 is deliberately far looser than the measured spread and far tighter
+    than anything that could hide a genuine bug.
+    """
+    cells = pincell_model.geometry.get_all_cells()
+    vc = openmc.VolumeCalculation(
+        [cells[i] for i in (1, 2, 3, 4)],
+        method='octree', tolerance=1.0e-4,
+        lower_left=(-0.63, -0.63, -5.0), upper_right=(0.63, 0.63, 5.0))
+    pincell_model.settings.volume_calculations = [vc]
+    pincell_model.export_to_model_xml()
+
+    runs = {}
+    saved = os.environ.get('OMP_NUM_THREADS')
+    try:
+        for n_threads in (1, 4):
+            os.environ['OMP_NUM_THREADS'] = str(n_threads)
+            openmc.run()
+            res = openmc.VolumeCalculation.from_hdf5('volume_1.h5')
+            runs[n_threads] = {uid: res.volumes[uid].n for uid in (1, 2, 3, 4)}
+    finally:
+        if saved is None:
+            os.environ.pop('OMP_NUM_THREADS', None)
+        else:
+            os.environ['OMP_NUM_THREADS'] = saved
+
+    for uid in (1, 2, 3, 4):
+        a, b = runs[1][uid], runs[4][uid]
+        assert abs(a - b) <= 1.0e-9 * max(abs(a), abs(b)), (
+            f'cell {uid}: {a} vs {b} across thread counts')
 
 
 @pytest.mark.parametrize('angles', [

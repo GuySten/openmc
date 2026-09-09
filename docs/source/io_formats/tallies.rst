@@ -208,7 +208,12 @@ should be set to:
   was crossed, because the direction of a crossing follows from the cells on
   either side of it. To tally a directed current from one region to another,
   combine a filter with sense ``out`` on the first region with a filter with
-  sense ``in`` on the second.
+  sense ``in`` on the second. That is the only combination of two cellset
+  filters allowed: each must bind exactly one sense, one ``out`` and one
+  ``in``. Two ``out`` filters would select crossings that leave both regions at
+  once, and a ``net`` filter paired with an ``in`` filter would give a current
+  whose sign depends on how the regions are arranged, so both are rejected
+  rather than silently tallied.
 
 :cellborn:
   This filter allows the tally to be scored to only when particles were

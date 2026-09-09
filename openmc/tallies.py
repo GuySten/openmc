@@ -309,6 +309,39 @@ class Tally(IDManagerMixin):
                 raise ValueError(msg)
             visited_filters.add(f)
 
+        # Two cell set filters pin both ends of a crossing, which gives a
+        # directed current from one region to another. That only means
+        # something when one filter matches where the crossing came from and
+        # the other matches where it went. Without this check, two 'out'
+        # filters silently tally zero, and a 'net' filter paired with an 'in'
+        # filter silently tallies a current whose sign depends on how the
+        # regions happen to be arranged.
+        cell_sets = [f for f in filters
+                     if isinstance(f, openmc.CellSetFilter)]
+        if len(cell_sets) > 2:
+            raise ValueError(
+                f'Tally ID="{self.id}" has {len(cell_sets)} cell set filters. '
+                'At most two may be combined, one with sense "out" and one '
+                'with sense "in", to tally a current from one region to '
+                'another.')
+        if len(cell_sets) == 2:
+            for f in cell_sets:
+                if len(f.sense) != 1:
+                    raise ValueError(
+                        f'Cell set filter ID="{f.id}" on tally '
+                        f'ID="{self.id}" binds senses {list(f.sense)}. When '
+                        'two cell set filters are combined, each must bind '
+                        'exactly one sense, "out" on the region a crossing '
+                        'leaves and "in" on the region it enters.')
+            senses = {f.sense[0] for f in cell_sets}
+            if senses != {'out', 'in'}:
+                raise ValueError(
+                    f'Tally ID="{self.id}" combines cell set filters with '
+                    f'senses {sorted(f.sense[0] for f in cell_sets)}. A '
+                    'current from one region to another needs one filter with '
+                    'sense "out" on the region a crossing leaves and one with '
+                    'sense "in" on the region it enters.')
+
         self._filters = cv.CheckedList(_FILTER_CLASSES, 'tally filters', filters)
 
     @property

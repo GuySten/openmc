@@ -22,6 +22,7 @@
 #include "openmc/tallies/filter_cell.h"
 #include "openmc/tallies/filter_cellborn.h"
 #include "openmc/tallies/filter_cellfrom.h"
+#include "openmc/tallies/filter_cellset.h"
 #include "openmc/tallies/filter_collision.h"
 #include "openmc/tallies/filter_delayedgroup.h"
 #include "openmc/tallies/filter_energy.h"
@@ -536,6 +537,7 @@ void Tally::set_scores(const vector<std::string>& scores)
   bool surface_present = false;
   bool meshsurface_present = false;
   bool cellset_present = false;
+  vector<const CellSetFilter*> cellset_filters;
   bool non_cell_energy_present = false;
   for (auto i_filt : filters_) {
     const auto* filt {model::tally_filters[i_filt].get()};
@@ -560,6 +562,47 @@ void Tally::set_scores(const vector<std::string>& scores)
       meshsurface_present = true;
     } else if (filt->type() == FilterType::CELL_SET) {
       cellset_present = true;
+      cellset_filters.push_back(dynamic_cast<const CellSetFilter*>(filt));
+    }
+  }
+
+  // Two cell set filters pin both ends of a crossing, which gives a directed
+  // current from one region to another. That only means something when one
+  // filter matches where the crossing came from and the other matches where it
+  // went, so require exactly one 'out' and one 'in'. Without this, asking for
+  // two 'out' filters silently tallies zero, and pairing a 'net' filter with an
+  // 'in' filter silently tallies a current whose sign depends on how the
+  // regions happen to be arranged.
+  if (cellset_filters.size() > 2) {
+    fatal_error(fmt::format("Tally {} has {} cell set filters. At most two may "
+                            "be combined, one with sense 'out' and one with "
+                            "sense 'in', to tally a current from one region to "
+                            "another.",
+      id_, cellset_filters.size()));
+  }
+  if (cellset_filters.size() == 2) {
+    for (const auto* filt : cellset_filters) {
+      if (filt->senses().size() != 1) {
+        fatal_error(fmt::format("Cell set filter {} on tally {} binds {} "
+                                "senses. When two cell set filters are "
+                                "combined, each must bind exactly one sense, "
+                                "'out' on the region a crossing leaves and "
+                                "'in' on the region it enters.",
+          filt->id(), id_, filt->senses().size()));
+      }
+    }
+    auto sense_a = cellset_filters[0]->senses()[0];
+    auto sense_b = cellset_filters[1]->senses()[0];
+    bool paired =
+      (sense_a == CellSetSense::OUT && sense_b == CellSetSense::IN) ||
+      (sense_a == CellSetSense::IN && sense_b == CellSetSense::OUT);
+    if (!paired) {
+      fatal_error(fmt::format("Tally {} combines cell set filters with senses "
+                              "'{}' and '{}'. A current from one region to "
+                              "another needs one filter with sense 'out' on "
+                              "the region a crossing leaves and one with sense "
+                              "'in' on the region it enters.",
+        id_, cell_set_sense_str(sense_a), cell_set_sense_str(sense_b)));
     }
   }
   bool surface_types_present = (surface_present || cellfrom_present ||

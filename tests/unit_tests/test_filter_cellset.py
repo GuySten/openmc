@@ -189,3 +189,64 @@ def test_cellset_statepoint_roundtrip(run_in_tmpdir):
         df = out.get_pandas_dataframe()
         assert list(df['cellset sense'][:3]) == ['net', 'out', 'in']
         assert df['cellset'][0] == '1, 2'
+
+
+def test_cellset_pairing_validation():
+    """Two cell set filters must pin opposite ends of a crossing.
+
+    A pair gives a directed region-to-region current, which only means
+    something with one filter on the region a crossing leaves and one on the
+    region it enters. Two 'out' filters would silently tally zero, and a 'net'
+    filter paired with an 'in' filter would silently tally a current whose sign
+    depends on how the regions happen to be arranged.
+    """
+    openmc.reset_auto_ids()
+    cells = [openmc.Cell(cell_id=i) for i in range(1, 5)]
+    tally = openmc.Tally()
+
+    # The one combination that is meaningful
+    tally.filters = [openmc.CellSetFilter([[cells[0]]], sense='out'),
+                     openmc.CellSetFilter([[cells[1]]], sense='in')]
+
+    # A single filter may still bind as many senses as it likes
+    tally.filters = [openmc.CellSetFilter([[cells[0]]],
+                                          sense=['net', 'out', 'in'])]
+
+    with pytest.raises(ValueError, match='out.*in|in.*out'):
+        tally.filters = [openmc.CellSetFilter([[cells[0]]], sense='out'),
+                         openmc.CellSetFilter([[cells[1]]], sense='out')]
+
+    with pytest.raises(ValueError, match='out.*in|in.*out'):
+        tally.filters = [openmc.CellSetFilter([[cells[0]]], sense='net'),
+                         openmc.CellSetFilter([[cells[1]]], sense='in')]
+
+    with pytest.raises(ValueError, match='exactly one sense'):
+        tally.filters = [openmc.CellSetFilter([[cells[0]]],
+                                              sense=['out', 'in']),
+                         openmc.CellSetFilter([[cells[1]]], sense='in')]
+
+    with pytest.raises(ValueError, match='At most two'):
+        tally.filters = [openmc.CellSetFilter([[cells[0]]], sense='out'),
+                         openmc.CellSetFilter([[cells[1]]], sense='in'),
+                         openmc.CellSetFilter([[cells[2]]], sense='out')]
+
+
+def test_cellset_region_matrix(run_in_tmpdir):
+    """A pair of filters gives a full region-to-region current matrix."""
+    model, left, right = four_cell_model(1.0)
+    c1, c2 = left
+    c3, c4 = right
+
+    tally = openmc.Tally()
+    tally.filters = [
+        openmc.CellSetFilter([[c1], [c2], [c3]], sense='out'),
+        openmc.CellSetFilter([[c2], [c3], [c4]], sense='in'),
+    ]
+    tally.scores = ['current']
+    model.tallies = [tally]
+
+    model.run(apply_tally_results=True)
+
+    # Each particle crosses 1->2, 2->3 and 3->4 in turn, so the matrix of
+    # from-region against to-region is the identity.
+    assert np.allclose(tally.mean.reshape(3, 3), np.eye(3))

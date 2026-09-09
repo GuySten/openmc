@@ -766,7 +766,7 @@ class CellSetFilter(Filter):
         t.filters = [openmc.CellSetFilter([fuel], sense='out'),
                      openmc.CellSetFilter([clad], sense='in')]
 
-    .. versionadded:: 0.15.4
+    .. versionadded:: 0.17.0
 
     Parameters
     ----------

@@ -37,6 +37,11 @@ enum class CellSetSense {
 //! IN bin would not, since the two are correlated and no covariance between
 //! bins is tracked.
 //!
+//! At a boundary condition the cells either side of a crossing no longer say
+//! what happened, so the boundary decides instead: leaking out of the model
+//! counts as leaving the region, and a reflective, white or periodic boundary
+//! counts as one crossing out and one back in.
+//!
 //! Bins are region-major: bin = i_region * n_senses + i_sense.
 //==============================================================================
 
@@ -87,6 +92,9 @@ private:
 
   //! Is any coordinate level of the post-crossing position inside a region?
   bool is_inside(const Particle& p, int i_region) const;
+
+  //! Push the bins for one region, given which way the crossing went
+  void match_region(FilterMatch& match, int i_region, bool leaving) const;
 
   //----------------------------------------------------------------------------
   // Data members

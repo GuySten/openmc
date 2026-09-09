@@ -154,14 +154,77 @@ bool CellSetFilter::is_inside(const Particle& p, int i_region) const
   return false;
 }
 
+void CellSetFilter::match_region(
+  FilterMatch& match, int i_region, bool leaving) const
+{
+  int n_senses = senses_.size();
+  for (int i_sense = 0; i_sense < n_senses; ++i_sense) {
+    int bin = i_region * n_senses + i_sense;
+    switch (senses_[i_sense]) {
+    case CellSetSense::NET:
+      // Sign is carried as a filter weight so that the net current lands in a
+      // single bin with a correct variance
+      match.bins_.push_back(bin);
+      match.weights_.push_back(leaving ? 1.0 : -1.0);
+      break;
+    case CellSetSense::OUT:
+      if (leaving) {
+        match.bins_.push_back(bin);
+        match.weights_.push_back(1.0);
+      }
+      break;
+    case CellSetSense::IN:
+      if (!leaving) {
+        match.bins_.push_back(bin);
+        match.weights_.push_back(1.0);
+      }
+      break;
+    }
+  }
+}
+
 void CellSetFilter::get_all_bins(
   const Particle& p, TallyEstimator estimator, FilterMatch& match) const
 {
-  int n_senses = senses_.size();
+  auto crossing = p.surface_crossing();
 
   for (int i_region = 0; i_region < regions_.size(); ++i_region) {
     bool from_inside = was_inside(p, i_region);
     bool to_inside = is_inside(p, i_region);
+
+    // At a boundary condition the cells either side of the crossing no longer
+    // describe what happened, so take the answer from the boundary instead.
+    switch (crossing) {
+    case SurfaceCrossing::LEAKED:
+      // The particle left the model. The coordinate levels still name the cell
+      // it was in, which would otherwise read as a crossing that went nowhere
+      // and be discarded, losing the leakage from the region's net current.
+      to_inside = false;
+      break;
+    case SurfaceCrossing::REFLECT_OUT:
+      // First half of a reflection: treat it as reaching the boundary
+      to_inside = false;
+      break;
+    case SurfaceCrossing::REFLECT_IN:
+      // Second half: treat it as coming back in. Together the two halves give
+      // an outgoing and an incoming current of equal size and a net of zero,
+      // which is what a reflective boundary physically does.
+      from_inside = false;
+      break;
+    case SurfaceCrossing::PERIODIC:
+      // The particle left one face and entered its partner. When the region
+      // holds cells at both faces this is a crossing of its boundary twice
+      // over, once in each direction, and there is only this one scoring event
+      // to record both.
+      if (from_inside && to_inside) {
+        match_region(match, i_region, true);
+        match_region(match, i_region, false);
+        continue;
+      }
+      break;
+    case SurfaceCrossing::NORMAL:
+      break;
+    }
 
     // Only a crossing with one end inside the region and one end outside is a
     // crossing of that region's boundary. This is what lets a region be a
@@ -170,29 +233,7 @@ void CellSetFilter::get_all_bins(
     if (from_inside == to_inside)
       continue;
 
-    for (int i_sense = 0; i_sense < n_senses; ++i_sense) {
-      int bin = i_region * n_senses + i_sense;
-      switch (senses_[i_sense]) {
-      case CellSetSense::NET:
-        // Sign is carried as a filter weight so that the net current lands in
-        // a single bin with a correct variance
-        match.bins_.push_back(bin);
-        match.weights_.push_back(from_inside ? 1.0 : -1.0);
-        break;
-      case CellSetSense::OUT:
-        if (from_inside) {
-          match.bins_.push_back(bin);
-          match.weights_.push_back(1.0);
-        }
-        break;
-      case CellSetSense::IN:
-        if (to_inside) {
-          match.bins_.push_back(bin);
-          match.weights_.push_back(1.0);
-        }
-        break;
-      }
-    }
+    match_region(match, i_region, from_inside);
   }
 }
 

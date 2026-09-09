@@ -203,6 +203,15 @@ should be set to:
   region-major, so with two regions and three senses the six bins run region 1
   net, out, in, then region 2 net, out, in.
 
+  At a boundary condition the cells either side of a crossing no longer
+  describe what happened, so the boundary decides instead. Leaving the model at
+  a vacuum boundary counts as leaving the region, without which the net current
+  of any region touching the model boundary would be short by its leakage. A
+  reflective or white boundary counts as one crossing out and one back in, so
+  the partial currents are the flow that reaches the boundary and the net
+  across it is zero, which is what a symmetry plane represents. A periodic
+  boundary counts the same way when the region holds cells at both faces.
+
   Unlike a partial current tallied with cell and cell from filters, a current
   binned by this filter does not depend on the orientation of the surface that
   was crossed, because the direction of a crossing follows from the cells on

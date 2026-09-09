@@ -344,6 +344,10 @@ void Particle::event_cross_surface()
   surface() = boundary().surface();
   n_coord() = boundary().coord_level();
 
+  // Until a boundary condition says otherwise, this is an ordinary crossing
+  // between two cells
+  surface_crossing() = SurfaceCrossing::NORMAL;
+
   // The surface or lattice being crossed belongs to the universe at the lowest
   // coordinate level, so its normal is reported in that level's local frame
   // while the particle direction used to score surface tallies lives in the
@@ -769,6 +773,11 @@ void Particle::cross_vacuum_bc(const Surface& surf)
   // Score to global leakage tally
   keff_tally_leakage() += wgt();
 
+  // The coordinate levels still name the cell the particle was in, so a filter
+  // reading them would see a crossing that went nowhere. Record that it left
+  // the model instead.
+  surface_crossing() = SurfaceCrossing::LEAKED;
+
   // Kill the particle
   wgt() = 0.0;
 
@@ -795,6 +804,11 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
   // with a mesh boundary
 
   if (!model::active_surface_tallies.empty()) {
+    // This scoring is the half where the particle reaches the boundary; the
+    // one after cross_surface() returns is the half where it heads back in.
+    // A filter that works from the cells either side sees the same cell twice,
+    // so it needs to be told which half this is.
+    surface_crossing() = SurfaceCrossing::REFLECT_OUT;
     Direction normal = surf.normal(r());
     normal /= normal.norm();
     score_surface_tally(*this, model::active_surface_tallies, normal);
@@ -809,6 +823,7 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
 
   // Set the new particle direction
   u() = new_u;
+  surface_crossing() = SurfaceCrossing::REFLECT_IN;
 
   // Reassign particle's cell and surface
   coord(0).cell() = cell_last(0);
@@ -860,6 +875,11 @@ void Particle::cross_periodic_bc(
   // Adjust the particle's location and direction.
   r() = new_r;
   u() = new_u;
+
+  // The particle leaves one face and enters its partner, so the cells either
+  // side of the crossing are in two different places and do not by themselves
+  // say that a boundary was crossed twice.
+  surface_crossing() = SurfaceCrossing::PERIODIC;
 
   // Reassign particle's surface
   surface() = new_surface;

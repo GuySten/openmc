@@ -111,17 +111,20 @@ def test_cellset_current_senses(ux, run_in_tmpdir):
     j = tally.mean.reshape(2, 3)
 
     # Particles cross the left/right boundary exactly once, in the direction of
-    # travel. The two interior crossings (cell 1 to 2, and cell 3 to 4) are
-    # internal to a region and must not be counted at all.
+    # travel, then leak out of the far face. The two interior crossings (cell 1
+    # to 2, and cell 3 to 4) are internal to a region and must not be counted
+    # at all.
     source_side, other_side = (0, 1) if ux > 0 else (1, 0)
 
-    assert j[source_side, 0] == pytest.approx(1.0)   # net, leaving
+    # The half holding the source is only ever left
+    assert j[source_side, 0] == pytest.approx(1.0)   # net
     assert j[source_side, 1] == pytest.approx(1.0)   # out
     assert j[source_side, 2] == pytest.approx(0.0)   # in
 
-    assert j[other_side, 0] == pytest.approx(-1.0)   # net, entering
-    assert j[other_side, 1] == pytest.approx(0.0)    # out
-    assert j[other_side, 2] == pytest.approx(1.0)    # in
+    # The far half is entered once and then leaked out of, so it nets to zero
+    assert j[other_side, 0] == pytest.approx(0.0)    # net
+    assert j[other_side, 1] == pytest.approx(1.0)    # out, the leak
+    assert j[other_side, 2] == pytest.approx(1.0)    # in, from the other half
 
 
 def test_cellset_region_to_region(run_in_tmpdir):
@@ -146,7 +149,7 @@ def test_cellset_region_to_region(run_in_tmpdir):
 
 
 def test_cellset_internal_crossings_excluded(run_in_tmpdir):
-    """A region spanning the whole model has no boundary to cross."""
+    """A region spanning the whole model is crossed only where it leaks."""
     model, left, right = four_cell_model(1.0)
 
     tally = openmc.Tally()
@@ -156,10 +159,138 @@ def test_cellset_internal_crossings_excluded(run_in_tmpdir):
 
     model.run(apply_tally_results=True)
 
-    # Every crossing is between two cells of the one region, so nothing scores
-    # even though the particles cross three surfaces each.
-    assert tally.mean.flat[0] == pytest.approx(0.0)
+    # Each particle crosses three interior surfaces and then leaks. The three
+    # interior crossings are between two cells of the one region and must not
+    # count; the leak is a real crossing of the region's boundary and must. If
+    # internal crossings were counted this would be 4.0, and if leakage were
+    # not it would be 0.0.
+    assert tally.mean.flat[0] == pytest.approx(1.0)
     assert tally.mean.flat[1] == pytest.approx(0.0)
+
+
+def test_cellset_leakage_counts_as_leaving(run_in_tmpdir):
+    """Leaving the model counts as leaving a region.
+
+    A vacuum boundary kills the particle without changing its coordinate
+    levels, so the crossing reads as one that went nowhere. Left uncorrected it
+    is discarded, and the net current of any region touching the model boundary
+    is short by its leakage.
+    """
+    model, left, right = four_cell_model(1.0)
+
+    tally = openmc.Tally()
+    tally.filters = [openmc.CellSetFilter([right], sense=['net', 'out', 'in'])]
+    tally.scores = ['current']
+    model.tallies = [tally]
+
+    model.run(apply_tally_results=True)
+
+    # Particles enter the right half from the left half, then leak out of its
+    # far face. One in, one out, so the net current across its boundary is zero.
+    assert tally.mean.flat[0] == pytest.approx(0.0)   # net
+    assert tally.mean.flat[1] == pytest.approx(1.0)   # out, the leak
+    assert tally.mean.flat[2] == pytest.approx(1.0)   # in, from the left half
+
+
+def test_cellset_reflective_boundary(run_in_tmpdir):
+    """A reflective boundary contributes an outgoing and an incoming crossing.
+
+    The cell does not change when a particle turns around, so the crossing
+    would otherwise read as internal and be discarded. Physically the current
+    does leave and return, which is what a symmetry plane represents, so both
+    halves are counted and the net across them is zero.
+    """
+    openmc.reset_auto_ids()
+
+    refl = openmc.XPlane(-5.0, boundary_type='reflective')
+    mid = openmc.XPlane(0.0)
+    vac = openmc.XPlane(5.0, boundary_type='vacuum')
+    ymin = openmc.YPlane(-5.0, boundary_type='reflective')
+    ymax = openmc.YPlane(5.0, boundary_type='reflective')
+    zmin = openmc.ZPlane(-5.0, boundary_type='reflective')
+    zmax = openmc.ZPlane(5.0, boundary_type='reflective')
+    box = +ymin & -ymax & +zmin & -zmax
+
+    cell1 = openmc.Cell(cell_id=1, region=+refl & -mid & box)
+    cell2 = openmc.Cell(cell_id=2, region=+mid & -vac & box)
+
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([cell1, cell2])
+
+    src = openmc.IndependentSource()
+    src.space = openmc.stats.Point((-2.0, 0.0, 0.0))
+    src.angle = openmc.stats.Monodirectional((-1.0, 0.0, 0.0))
+
+    model.settings.run_mode = 'fixed source'
+    model.settings.batches = 1
+    model.settings.particles = 100
+    model.settings.source = src
+
+    tally = openmc.Tally()
+    tally.filters = [openmc.CellSetFilter([[cell1]], sense=['net', 'out', 'in'])]
+    tally.scores = ['current']
+    model.tallies = [tally]
+
+    model.run(apply_tally_results=True)
+
+    # Each particle bounces off the reflective face, which is one crossing out
+    # and one back in, and then leaves cell 1 through the interior surface.
+    assert tally.mean.flat[1] == pytest.approx(2.0)   # out: bounce plus exit
+    assert tally.mean.flat[2] == pytest.approx(1.0)   # in: the return
+    assert tally.mean.flat[0] == pytest.approx(1.0)   # net = out - in
+
+
+def test_cellset_periodic_boundary(run_in_tmpdir):
+    """A periodic boundary is a crossing out of a region and back into it.
+
+    The particle leaves one face and enters its partner, so the cells either
+    side of the crossing are in two different places. When the region holds
+    cells at both faces there is one scoring event standing for two crossings.
+    """
+    openmc.reset_auto_ids()
+
+    xmin = openmc.XPlane(-5.0, boundary_type='periodic')
+    xmax = openmc.XPlane(5.0, boundary_type='periodic')
+    xmin.periodic_surface = xmax
+    mid = openmc.XPlane(0.0)
+    ymin = openmc.YPlane(-5.0, boundary_type='vacuum')
+    ymax = openmc.YPlane(5.0, boundary_type='vacuum')
+    zmin = openmc.ZPlane(-5.0, boundary_type='reflective')
+    zmax = openmc.ZPlane(5.0, boundary_type='reflective')
+    box = +ymin & -ymax & +zmin & -zmax
+
+    cell1 = openmc.Cell(cell_id=1, region=+xmin & -mid & box)
+    cell2 = openmc.Cell(cell_id=2, region=+mid & -xmax & box)
+
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([cell1, cell2])
+
+    src = openmc.IndependentSource()
+    src.space = openmc.stats.Point((-2.0, 0.0, 0.0))
+    u = np.array([-1.0, 0.25, 0.0])
+    src.angle = openmc.stats.Monodirectional(tuple(u / np.linalg.norm(u)))
+
+    model.settings.run_mode = 'fixed source'
+    model.settings.batches = 1
+    model.settings.particles = 100
+    model.settings.source = src
+
+    tally = openmc.Tally()
+    tally.filters = [openmc.CellSetFilter([[cell1, cell2]],
+                                          sense=['net', 'out', 'in'])]
+    tally.scores = ['current']
+    model.tallies = [tally]
+
+    model.run(apply_tally_results=True)
+    net, out, into = tally.mean.flat[0], tally.mean.flat[1], tally.mean.flat[2]
+
+    # The region is the whole x domain, so every wrap is one crossing out and
+    # one back in and contributes nothing to the net. Each particle enters once
+    # at birth and leaves once through a y face, so the net is exactly one
+    # however many times it wrapped.
+    assert net == pytest.approx(1.0)
+    assert out - into == pytest.approx(net)
+    assert out > 1.0   # it did wrap at least once
 
 
 def test_cellset_statepoint_roundtrip(run_in_tmpdir):

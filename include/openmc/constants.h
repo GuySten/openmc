@@ -315,6 +315,21 @@ enum class TallyEstimator { ANALOG, TRACKLENGTH, COLLISION };
 
 enum class TallyEvent { SURFACE, LATTICE, KILL, SCATTER, ABSORB };
 
+//! How a surface crossing relates to the boundary of the model.
+//!
+//! A crossing between two cells says where a particle went by naming the cells
+//! on either side of it. A crossing at a boundary condition does not: the
+//! particle is killed, or turned around, or moved elsewhere, and the cells on
+//! either side no longer describe what happened. Tally filters that work from
+//! those cells need to be told which case they are looking at.
+enum class SurfaceCrossing {
+  NORMAL,      //!< Between two cells, or a lattice tile boundary
+  LEAKED,      //!< Left the model at a vacuum boundary
+  REFLECT_OUT, //!< Reached a reflective or white boundary, before turning
+  REFLECT_IN,  //!< Turned around at such a boundary and is heading back
+  PERIODIC     //!< Left one face of a periodic boundary and entered its partner
+};
+
 // Tally score type -- if you change these, make sure you also update the
 // _SCORES dictionary in openmc/lib/tally.py
 //

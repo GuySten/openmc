@@ -399,6 +399,11 @@ public:
     return std::abs(surface_) - 1;
   }
 
+  // How the crossing currently being scored relates to the model boundary.
+  // Reset for each crossing and set by the boundary condition handlers.
+  SurfaceCrossing& surface_crossing() { return surface_crossing_; }
+  SurfaceCrossing surface_crossing() const { return surface_crossing_; }
+
   // Boundary information
   BoundaryInfo& boundary() { return boundary_; }
 
@@ -446,6 +451,9 @@ private:
 
   //! Outward normal of the surface being crossed, in the root coordinate frame
   Direction surface_normal_ {0.0, 0.0, 1.0};
+
+  //! How the crossing being scored relates to the model boundary
+  SurfaceCrossing surface_crossing_ {SurfaceCrossing::NORMAL};
 
   BoundaryInfo boundary_; //!< Info about the next intersection
 

@@ -276,6 +276,12 @@ The following tables show all valid scores:
     |                      |from and cell filters thereby resulting in tallying|
     |                      |partial currents.                                  |
     |                      |                                                   |
+    |                      |When used in combination with a cellset filter: net|
+    |                      |or partial currents across the boundary of a region|
+    |                      |of cells, with the direction taken from the cells  |
+    |                      |on either side of the crossing rather than from the|
+    |                      |surface normal.                                    |
+    |                      |                                                   |
     |                      |Units are particles per source particle.           |
     +----------------------+---------------------------------------------------+
     |events                |Number of scoring events. Units are events per     |

@@ -28,6 +28,7 @@ _FILTER_TYPES = (
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
     'particleproduction', 'cellinstance', 'collision', 'time', 'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
+    'cellset',
 )
 
 def _mesh_current_names(mesh):
@@ -732,6 +733,206 @@ class SurfaceFilter(WithIDFilter):
 
     """
     expected_type = Surface
+
+
+
+_CELL_SET_SENSES = ('net', 'out', 'in')
+
+
+class CellSetFilter(Filter):
+    """Bins surface crossings by the region boundary they cross.
+
+    A region is a set of cells treated as a single unit. A crossing is binned
+    against a region only when it has one end inside the region and the other
+    outside, so crossings between two cells of the same region are not boundary
+    crossings and do not score. The cells of a region need not be adjacent.
+
+    Because the direction of a crossing follows from the cells on either side of
+    it, currents binned by this filter do not depend on the orientation of the
+    surface that was crossed.
+
+    Bins are region-major, so results reshape to ``(n_regions, n_senses)``::
+
+        f = openmc.CellSetFilter([fuel, clad], sense=['net', 'out', 'in'])
+        ...
+        j = tally.mean.reshape(2, 3)
+        j[0, 0]   # net current across the boundary of ``fuel``
+        j[0, 1]   # outgoing current from ``fuel``
+        j[0, 2]   # incoming current to ``fuel``
+
+    A directed current from one region to another is obtained by pinning both
+    ends of the crossing::
+
+        t.filters = [openmc.CellSetFilter([fuel], sense='out'),
+                     openmc.CellSetFilter([clad], sense='in')]
+
+    .. versionadded:: 0.15.4
+
+    Parameters
+    ----------
+    regions : iterable of iterable of openmc.Cell or int
+        The regions to tally. Each region is an iterable of cells, given either
+        as :class:`openmc.Cell` objects or as their ID numbers.
+    sense : str or iterable of str
+        Which senses to bin, one bin per sense per region. Valid senses are
+        'net' (signed, positive leaving the region), 'out' (crossings leaving
+        the region) and 'in' (crossings entering it). Defaults to 'net', whose
+        sign is applied as a filter weight so that a net current accumulates in
+        a single bin and keeps a correct variance; a net current recovered by
+        subtracting an 'in' bin from an 'out' bin would not, since the two are
+        correlated.
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    regions : tuple of tuple of int
+        Cell IDs making up each region
+    sense : tuple of str
+        The senses binned, in bin order
+    bins : list of tuple
+        One ``(region, sense)`` pair per bin, in bin order
+    id : int
+        Unique identifier for the filter
+    num_bins : Integral
+        The number of filter bins
+
+    """
+
+    def __init__(self, regions, sense='net', filter_id=None):
+        self.regions = regions
+        self.sense = sense
+        self.id = filter_id
+
+    @property
+    def regions(self):
+        return self._regions
+
+    @regions.setter
+    def regions(self, regions):
+        cv.check_type('cell set regions', regions, Iterable)
+        parsed = []
+        for region in regions:
+            if isinstance(region, (openmc.Cell, Integral)):
+                raise ValueError(
+                    'Each region of a CellSetFilter must be an iterable of '
+                    'cells. To use a single cell, wrap it in a list.')
+            cv.check_type('cell set region', region, Iterable)
+            cells = []
+            for cell in region:
+                cv.check_type('cell set cell', cell, (openmc.Cell, Integral))
+                cells.append(cell.id if isinstance(cell, openmc.Cell) else cell)
+            if not cells:
+                raise ValueError('Each region of a CellSetFilter must contain '
+                                 'at least one cell.')
+            parsed.append(tuple(cells))
+        if not parsed:
+            raise ValueError('A CellSetFilter must have at least one region.')
+        self._regions = tuple(parsed)
+
+    @property
+    def sense(self):
+        return self._sense
+
+    @sense.setter
+    def sense(self, sense):
+        if isinstance(sense, str):
+            sense = (sense,)
+        cv.check_type('cell set sense', sense, Iterable, str)
+        sense = tuple(sense)
+        for s in sense:
+            cv.check_value('cell set sense', s, _CELL_SET_SENSES)
+        if len(set(sense)) != len(sense):
+            raise ValueError('Senses given to a CellSetFilter must be unique.')
+        if not sense:
+            raise ValueError('A CellSetFilter must have at least one sense.')
+        self._sense = sense
+
+    @property
+    def bins(self):
+        return [(region, s) for region in self.regions for s in self.sense]
+
+    @property
+    def num_bins(self):
+        return len(self.regions) * len(self.sense)
+
+    def __eq__(self, other):
+        # A region is a set of cells, so ordering within one is not meaningful
+        if type(self) is not type(other):
+            return False
+        return (tuple(frozenset(r) for r in self.regions)
+                == tuple(frozenset(r) for r in other.regions)
+                and self.sense == other.sense)
+
+    def __hash__(self):
+        return hash((type(self).__name__,
+                     tuple(frozenset(r) for r in self.regions), self.sense))
+
+    def __repr__(self):
+        string = type(self).__name__ + '\n'
+        string += '{: <16}=\t{}\n'.format('\tRegions', self.regions)
+        string += '{: <16}=\t{}\n'.format('\tSense', self.sense)
+        string += '{: <16}=\t{}\n'.format('\tID', self.id)
+        return string
+
+    def to_xml_element(self):
+        element = ET.Element('filter')
+        element.set('id', str(self.id))
+        element.set('type', self.short_name.lower())
+
+        subelement = ET.SubElement(element, 'bins')
+        subelement.text = ' '.join(
+            str(c) for region in self.regions for c in region)
+
+        subelement = ET.SubElement(element, 'region_sizes')
+        subelement.text = ' '.join(str(len(r)) for r in self.regions)
+
+        subelement = ET.SubElement(element, 'senses')
+        subelement.text = ' '.join(self.sense)
+        return element
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        filter_id = int(get_text(elem, 'id'))
+        cells = get_elem_list(elem, 'bins', int) or []
+        sizes = get_elem_list(elem, 'region_sizes', int) or []
+        sense = get_text(elem, 'senses', 'net').split()
+        return cls(_split_regions(cells, sizes), sense, filter_id=filter_id)
+
+    @classmethod
+    def from_hdf5(cls, group, **kwargs):
+        if group['type'][()].decode() != cls.short_name.lower():
+            raise ValueError('Expected a cellset filter but got '
+                             + group['type'][()].decode())
+        filter_id = int(group.name.split('/')[-1].lstrip('filter '))
+        cells = group['bins'][()]
+        sizes = group['region_sizes'][()]
+        sense = [s.decode() for s in group['senses'][()]]
+        return cls(_split_regions(cells, sizes), sense, filter_id=filter_id)
+
+    def get_pandas_dataframe(self, data_size, stride, **kwargs):
+        # Label each bin by its region and sense so that the two are separately
+        # selectable rather than mashed into one opaque column
+        regions = [', '.join(str(c) for c in region)
+                   for region, _ in self.bins]
+        senses = [s for _, s in self.bins]
+
+        df = pd.DataFrame()
+        df[f'{self.short_name.lower()}'] = _repeat_and_tile(
+            regions, stride, data_size)
+        df[f'{self.short_name.lower()} sense'] = _repeat_and_tile(
+            senses, stride, data_size)
+        return df
+
+
+def _split_regions(cells, sizes):
+    """Split a flat list of cell IDs into regions of the given sizes."""
+    regions = []
+    offset = 0
+    for size in sizes:
+        regions.append([int(c) for c in cells[offset:offset + int(size)]])
+        offset += int(size)
+    return regions
 
 
 class ParticleFilter(Filter):

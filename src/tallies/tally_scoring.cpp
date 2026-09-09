@@ -2702,7 +2702,11 @@ void score_surface_tally(
         double score;
         if (score_bin == SCORE_CURRENT) {
           // Net current: weight carries the sign of the crossing direction.
-          score = wgt * current_sign;
+          // With a CellSetFilter the direction follows from the cells on
+          // either side of the crossing rather than from the surface normal,
+          // and the filter has already supplied the sign as a bin weight, so
+          // applying the normal's sign here as well would cancel it out.
+          score = tally.cell_set_filter_ ? wgt : wgt * current_sign;
         } else {
           // SCORE_FLUX: surface-crossing estimator phi_S = sum(w / |mu|).
           score = wgt / abs_mu;

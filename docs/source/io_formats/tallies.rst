@@ -190,6 +190,26 @@ should be set to:
   used in combination with a cell filter, to define the other cell.
   This filter should not be used in combination with a meshfilter.
 
+:cellset:
+  This filter bins surface crossings by the region boundary they cross, where a
+  region is a set of cells treated as a single unit. It takes a ``bins`` element
+  holding the cell IDs of every region concatenated together, a ``region_sizes``
+  element giving the number of cells in each region, and a ``senses`` element
+  listing one or more of ``net``, ``out`` and ``in``.
+
+  A crossing is binned against a region only when one end of it is inside the
+  region and the other is outside, so crossings between two cells of the same
+  region do not score. The cells of a region need not be adjacent. Bins are
+  region-major, so with two regions and three senses the six bins run region 1
+  net, out, in, then region 2 net, out, in.
+
+  Unlike a partial current tallied with cell and cell from filters, a current
+  binned by this filter does not depend on the orientation of the surface that
+  was crossed, because the direction of a crossing follows from the cells on
+  either side of it. To tally a directed current from one region to another,
+  combine a filter with sense ``out`` on the first region with a filter with
+  sense ``in`` on the second.
+
 :cellborn:
   This filter allows the tally to be scored to only when particles were
   originally born in a specified cell. A list of cell IDs should be

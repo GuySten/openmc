@@ -124,6 +124,7 @@ Constructing Tallies
    openmc.MaterialFromFilter
    openmc.CellFilter
    openmc.CellFromFilter
+   openmc.CellSetFilter
    openmc.CellBornFilter
    openmc.CellInstanceFilter
    openmc.CollisionFilter

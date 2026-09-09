@@ -173,6 +173,12 @@ public:
   int energyout_filter_ {C_NONE};
   int delayedgroup_filter_ {C_NONE};
 
+  //! True if a CellSetFilter is present, in which case the direction of a
+  //! surface crossing is determined by the cells on either side of it and the
+  //! filter carries the sign of a net current as a bin weight. Scoring must
+  //! then not apply the surface-normal sign as well.
+  bool cell_set_filter_ {false};
+
   vector<Trigger> triggers_;
 
   int deriv_ {C_NONE}; //!< Index of a TallyDerivative object for diff tallies.

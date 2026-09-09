@@ -467,6 +467,7 @@ void Tally::set_filters(span<Filter*> filters)
   // Clear old data.
   filters_.clear();
   strides_.clear();
+  cell_set_filter_ = false;
 
   // Copy in the given filter indices.
   auto n = filters.size();
@@ -489,6 +490,8 @@ void Tally::add_filter(Filter* filter)
     energyout_filter_ = filters_.size();
   } else if (filter->type() == FilterType::DELAYED_GROUP) {
     delayedgroup_filter_ = filters_.size();
+  } else if (filter->type() == FilterType::CELL_SET) {
+    cell_set_filter_ = true;
   }
   filters_.push_back(filter_idx);
 }
@@ -532,6 +535,7 @@ void Tally::set_scores(const vector<std::string>& scores)
   bool materialfrom_present = false;
   bool surface_present = false;
   bool meshsurface_present = false;
+  bool cellset_present = false;
   bool non_cell_energy_present = false;
   for (auto i_filt : filters_) {
     const auto* filt {model::tally_filters[i_filt].get()};
@@ -554,13 +558,15 @@ void Tally::set_scores(const vector<std::string>& scores)
       surface_present = true;
     } else if (filt->type() == FilterType::MESH_SURFACE) {
       meshsurface_present = true;
+    } else if (filt->type() == FilterType::CELL_SET) {
+      cellset_present = true;
     }
   }
-  bool surface_types_present =
-    (surface_present || cellfrom_present || materialfrom_present);
+  bool surface_types_present = (surface_present || cellfrom_present ||
+                                materialfrom_present || cellset_present);
   bool non_meshsurface_types_present =
     (surface_present || cell_present || cellfrom_present || material_present ||
-      materialfrom_present);
+      materialfrom_present || cellset_present);
 
   // Iterate over the given scores.
   for (auto score_str : scores) {

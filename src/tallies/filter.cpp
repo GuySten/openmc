@@ -15,6 +15,7 @@
 #include "openmc/tallies/filter_cell_instance.h"
 #include "openmc/tallies/filter_cellborn.h"
 #include "openmc/tallies/filter_cellfrom.h"
+#include "openmc/tallies/filter_cellset.h"
 #include "openmc/tallies/filter_collision.h"
 #include "openmc/tallies/filter_delayedgroup.h"
 #include "openmc/tallies/filter_distribcell.h"
@@ -114,6 +115,8 @@ Filter* Filter::create(const std::string& type, int32_t id)
     return Filter::create<CellFromFilter>(id);
   } else if (type == "cellinstance") {
     return Filter::create<CellInstanceFilter>(id);
+  } else if (type == "cellset") {
+    return Filter::create<CellSetFilter>(id);
   } else if (type == "distribcell") {
     return Filter::create<DistribcellFilter>(id);
   } else if (type == "delayedgroup") {

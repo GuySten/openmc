@@ -450,6 +450,7 @@ list(APPEND libopenmc_SOURCES
   src/tallies/filter.cpp
   src/tallies/filter_azimuthal.cpp
   src/tallies/filter_cell.cpp
+  src/tallies/filter_cellset.cpp
   src/tallies/filter_cell_instance.cpp
   src/tallies/filter_cellborn.cpp
   src/tallies/filter_cellfrom.cpp

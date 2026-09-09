@@ -22,6 +22,7 @@ enum class FilterType {
   CELLFROM,
   CELL,
   CELL_INSTANCE,
+  CELL_SET,
   COLLISION,
   DELAYED_GROUP,
   DISTRIBCELL,

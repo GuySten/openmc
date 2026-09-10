@@ -377,7 +377,7 @@ def model_cascade():
 
     model.settings = openmc.Settings()
     model.settings.run_mode = "fixed source"
-    model.settings.particles = 2000
+    model.settings.particles = 1000
     model.settings.batches = 2
     model.settings.seed = 1
     model.settings.photon_transport = True
@@ -594,20 +594,30 @@ def test_split_source_file(run_in_tmpdir, model_groups):
 
 def test_truncated_batch(run_in_tmpdir, model_groups):
     """A bank that fills partway through a batch marks that batch incomplete."""
-    model_groups.settings.surf_source_write = {"max_particles": 50}
+    model_groups.settings.surf_source_write = {"max_particles": 250}
     model_groups.run()
 
     with h5py.File("surface_source.h5", "r") as f:
-        assert f["source_bank"].shape[0] == 50
+        assert f["source_bank"].shape[0] == 250
         complete = f["batch_complete"][...]
         n_particles = f["batch_n_particles"][...]
         n_source_particles = f.attrs["n_source_particles"]
 
     # The file is written as soon as the bank fills, so the final batch is the
-    # truncated one and every earlier batch is intact
+    # truncated one and every earlier batch is intact. A history leaks at most
+    # once in this model, so at most 100 sites are banked per batch and the
+    # bank cannot fill before the third batch.
+    assert len(complete) >= 2
     assert complete[-1] == 0
     assert np.all(complete[:-1] == 1)
     assert n_source_particles == n_particles.sum()
+
+    # An incomplete batch is dropped when the file is split, and the intact
+    # ones remain usable
+    paths = openmc.split_source_file("surface_source.h5", 1, "split")
+    kept = openmc.read_source_file(paths[0])
+    assert len(kept.batches) == len(complete) - 1
+    assert all(b.complete for b in kept.batches)
 
 
 def test_split_source_file_no_groups(run_in_tmpdir):

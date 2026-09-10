@@ -651,6 +651,43 @@ def return_surface_source_data(filepath):
     return data[sorted_idx]
 
 
+def return_surface_source_structure(filepath):
+    """Return the group and batch structure of a surface source file.
+
+    Only rank-invariant quantities are returned. Group offsets index the file,
+    whose sites are ordered rank-major, so they depend on how many MPI ranks
+    wrote it; the sorted multiset of group sizes and the merged batch
+    quantities do not.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the surface source file
+
+    Returns
+    -------
+    dict or None
+        Rank-invariant group and batch structure, or None if the file carries
+        no group information
+
+    """
+    particles = openmc.read_source_file(filepath)
+    if particles.groups is None:
+        return None
+
+    batches = particles.batches
+    return {
+        "group_sizes": sorted(len(group) for group in particles.groups),
+        "n_batches": None if batches is None else len(batches),
+        "n_source_particles": (
+            None if batches is None else batches.n_source_particles
+        ),
+        "batch_complete": (
+            None if batches is None else [b.complete for b in batches]
+        ),
+    }
+
+
 class SurfaceSourceWriteTestHarness(PyAPITestHarness):
     def __init__(self, statepoint_name, model=None, inputs_true=None, workdir=None):
         super().__init__(statepoint_name, model, inputs_true)
@@ -670,6 +707,29 @@ class SurfaceSourceWriteTestHarness(PyAPITestHarness):
             source_true = return_surface_source_data("surface_source_true.h5")
             source_test = return_surface_source_data("surface_source.h5")
             np.testing.assert_allclose(source_true, source_test, rtol=1e-07)
+            self._compare_structure()
+
+    def _compare_structure(self):
+        """Compare the group and batch structure of surface_source.h5 files.
+
+        Reference files generated before surface source grouping was added
+        carry no structure, so the comparison is skipped for those rather than
+        requiring every reference to be regenerated at once.
+
+        """
+        structure_true = return_surface_source_structure(
+            "surface_source_true.h5")
+        if structure_true is None:
+            return
+
+        structure_test = return_surface_source_structure("surface_source.h5")
+        assert structure_test is not None, (
+            "Surface source file carries no group structure."
+        )
+        for key, expected in structure_true.items():
+            assert structure_test[key] == expected, (
+                f"Surface source {key} differs from the reference."
+            )
 
     def main(self):
         """Accept commandline arguments and either run or update tests."""

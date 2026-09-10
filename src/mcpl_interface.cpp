@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -400,6 +401,16 @@ void write_mcpl_source_bank_internal(mcpl_outfile_t* file_id,
   bool tag_groups = !group_offsets.empty();
   int64_t site_index = 0;
   size_t cursor = 0;
+
+  // Group indices are written to a 32-bit field, so refuse a file that cannot
+  // be labelled rather than silently wrapping around
+  if (tag_groups &&
+      group_offsets.size() - 1 >
+        static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+    fatal_error("Too many surface source history groups to label with MCPL "
+                "user flags, which are 32 bits wide. Write the surface source "
+                "in HDF5 format instead, or reduce max_particles.");
+  }
 
   if (mpi::master) {
     if (!file_id) {

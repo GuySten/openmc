@@ -561,15 +561,22 @@ uncertainty converges to the spread of one file's contents and understates the
 truth by a factor that does not shrink as the follow-on run simulates more
 particles.
 
-Setting ``independent_batches`` gives each batch its own disjoint slice of the
-file's history groups. No source history is then shared between two batches, so
-the batches are independent samples of the first stage as well as the second,
-and the spread between them carries both::
+OpenMC therefore gives each batch its own disjoint slice of the file's history
+groups. No source history is shared between two batches, so the batches are
+independent samples of the first stage as well as the second, and the spread
+between them carries both. This is the default; it is turned off with::
 
   settings.surf_source_read = {
       'path': 'surface_source.h5',
-      'independent_batches': True
+      'independent_batches': False
   }
+
+A file cannot always support it. One that carries no grouping, an eigenvalue
+calculation, a run with fewer than two active batches, or a file holding fewer
+history groups than the run has batches all fall back to batches that share the
+whole file, with a warning naming the reason and stating that the reported
+uncertainty then excludes the first stage. Asking for ``independent_batches``
+explicitly in one of those cases is an error rather than a fallback.
 
 The number of batches becomes the replicate count, so it governs how well the
 uncertainty itself is known: the estimate from ``n`` batches is uncertain to
@@ -580,8 +587,7 @@ would correlate them and defeat the purpose.
 
 This is the same estimator as splitting the file with
 :func:`openmc.split_source_file` and running once per piece, carried out inside
-a single run. Use the split when the pieces are to be run separately anyway, and
-``independent_batches`` otherwise.
+a single run. Use the split when the pieces are to be run separately anyway.
 
 .. note:: The batches are independent of one another only insofar as the source
           histories in the file are. That holds for a fixed source first stage,
@@ -589,6 +595,21 @@ a single run. Use the split when the pieces are to be run separately anyway, and
           stage correlates its generations through the fission source, and the
           estimate inherits that correlation just as any other batch statistic
           in an eigenvalue calculation does.
+
+.. warning:: Partitioning recovers the uncertainty due to *which* histories
+             landed in the file, but not the uncertainty due to *how many* did.
+             A run reading a file sees one realization of that count, and no
+             arrangement of its batches can reveal how much the count itself
+             fluctuates. The omitted term is negligible when nearly every source
+             particle reaches the recording surface, because then the count
+             barely varies. It dominates when only a small fraction do: with 327
+             history groups out of 6000 source particles, the true uncertainty
+             is essentially the Poisson spread of the count, :math:`1/\sqrt{327}`
+             or about 5.5 per cent, and the reported uncertainty still
+             understates it roughly sevenfold, against eighteenfold with batches
+             sharing the file. For a sparsely populated surface source, run the
+             first stage several times with different seeds and take the spread
+             over those runs.
 
 .. note:: Batches whose ``batch_complete`` flag is false lost sites because the
           surface source bank filled up partway through. They are a biased

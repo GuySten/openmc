@@ -83,8 +83,13 @@ extern bool surf_mcpl_write;         //!< write surface mcpl file?
 extern bool surf_source_read;        //!< read surface source file?
 //! Give each batch its own disjoint slice of the surface source file, so that
 //! batches share no source history and the reported uncertainty includes the
-//! sampling error of the calculation that wrote the file
+//! sampling error of the calculation that wrote the file. On by default, and
+//! turned off with a warning for a file that cannot support it.
 extern bool ssr_independent_batches;
+//! Whether the user asked for the setting above, rather than inheriting it.
+//! An explicit request that cannot be honoured is an error; the default
+//! quietly gives way to what the file allows.
+extern bool ssr_independent_batches_set;
 extern bool survival_biasing;        //!< use survival biasing?
 extern bool survival_normalization;  //!< use survival normalization?
 extern bool temperature_multipole;   //!< use multipole data?

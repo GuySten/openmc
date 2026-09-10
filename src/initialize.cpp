@@ -408,6 +408,24 @@ static void check_pulse_height_compatibility()
       }
     }
   }
+
+  // A pulse height is a per-history quantity: it is scored once, from the
+  // energy deposited by a source particle and all of its descendants. A surface
+  // source file is read one site per history, so a history that put several
+  // particles across the recording surface is scored as several smaller pulses
+  // instead of one. The resulting spectrum is shifted toward lower energies
+  // with an inflated count rate, and nothing about the result indicates this.
+  if (settings::surf_source_read) {
+    for (const auto& t : model::tallies) {
+      if (t->type_ == TallyType::PULSE_HEIGHT) {
+        fatal_error(
+          "Pulse-height tallies cannot currently be used with a surface source "
+          "file. Each site in the file is transported as its own history, so a "
+          "history that produced several sites is scored as several pulses "
+          "rather than one.");
+      }
+    }
+  }
 }
 
 bool read_model_xml()

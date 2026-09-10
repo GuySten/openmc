@@ -3,9 +3,11 @@
 #include "openmc/error.h"
 #include "openmc/ifp.h"
 #include "openmc/message_passing.h"
+#include "openmc/settings.h"
 #include "openmc/simulation.h"
 #include "openmc/vector.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -21,6 +23,13 @@ namespace simulation {
 vector<SourceSite> source_bank;
 
 SharedArray<SourceSite> surf_source_bank;
+
+vector<int64_t> ssw_group_offsets;
+vector<int64_t> ssw_batch_group_end;
+vector<int64_t> ssw_batch_n_particles;
+vector<int> ssw_batch_complete;
+int64_t ssw_gen_start {0};
+int64_t ssw_n_dropped {0};
 
 SharedArray<CollisionTrackSite> collision_track_bank;
 
@@ -61,6 +70,7 @@ void free_memory_bank()
 {
   simulation::source_bank.clear();
   simulation::surf_source_bank.clear();
+  surf_source_reset_groups();
   simulation::collision_track_bank.clear();
   simulation::fission_bank.clear();
   simulation::progeny_per_particle.clear();
@@ -70,6 +80,151 @@ void free_memory_bank()
   simulation::ifp_fission_lifetime_bank.clear();
   simulation::shared_secondary_bank_read.clear();
   simulation::shared_secondary_bank_write.clear();
+}
+
+int64_t SurfaceSourceGroups::n_source_particles() const
+{
+  return std::accumulate(
+    batch_n_particles.begin(), batch_n_particles.end(), int64_t {0});
+}
+
+void surf_source_close_generation()
+{
+  auto& bank = simulation::surf_source_bank;
+  int64_t start = simulation::ssw_gen_start;
+  int64_t stop = bank.size();
+
+  if (stop > start) {
+    // Threads append to the bank in whatever order they finish, so the sites of
+    // one history are scattered through the generation's range. Sorting on
+    // parent_id makes them contiguous, which is what lets the group boundaries
+    // be stored as breaks rather than as a per-site tag. parent_id is unique
+    // within a generation but not across generations, which is why this runs
+    // once per generation rather than once per batch. A useful side effect is
+    // that the contents of a surface source file no longer depend on thread
+    // scheduling.
+    std::stable_sort(bank.begin() + start, bank.begin() + stop,
+      [](const SourceSite& a, const SourceSite& b) {
+        return a.parent_id < b.parent_id;
+      });
+
+    for (int64_t i = start; i < stop; ++i) {
+      if (i == start || bank[i].parent_id != bank[i - 1].parent_id) {
+        simulation::ssw_group_offsets.push_back(i);
+      }
+    }
+  }
+
+  simulation::ssw_gen_start = stop;
+}
+
+void surf_source_close_batch()
+{
+  simulation::ssw_batch_group_end.push_back(
+    simulation::ssw_group_offsets.size());
+  simulation::ssw_batch_n_particles.push_back(
+    simulation::work_per_rank * settings::gen_per_batch);
+  simulation::ssw_batch_complete.push_back(
+    simulation::ssw_n_dropped == 0 ? 1 : 0);
+  simulation::ssw_n_dropped = 0;
+}
+
+void surf_source_reset_groups()
+{
+  simulation::ssw_group_offsets.clear();
+  simulation::ssw_batch_group_end.clear();
+  simulation::ssw_batch_n_particles.clear();
+  simulation::ssw_batch_complete.clear();
+  simulation::ssw_gen_start = 0;
+  simulation::ssw_n_dropped = 0;
+}
+
+SurfaceSourceGroups gather_surface_source_groups(
+  const vector<int64_t>& bank_index)
+{
+  SurfaceSourceGroups out;
+
+  // The file is a concatenation of the per-rank banks in rank order, so a group
+  // starting at local site index i on rank r starts at bank_index[r] + i in the
+  // file. Groups of rank r all lie within rank r's site range, so concatenating
+  // the group arrays in the same order stays consistent with the site array.
+  int n_groups = simulation::ssw_group_offsets.size();
+  int n_batches = simulation::ssw_batch_group_end.size();
+
+  vector<int64_t> local_groups(n_groups);
+  for (int g = 0; g < n_groups; ++g) {
+    local_groups[g] = bank_index[mpi::rank] + simulation::ssw_group_offsets[g];
+  }
+
+  // Ranks bank different numbers of groups, so those are gathered with explicit
+  // counts. Every rank runs every batch, so the batch arrays are not.
+  vector<int> counts(mpi::master ? mpi::n_procs : 0);
+  vector<int> displs(mpi::master ? mpi::n_procs : 0);
+  int n_groups_total = n_groups;
+
+#ifdef OPENMC_MPI
+  MPI_Gather(
+    &n_groups, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, mpi::intracomm);
+  if (mpi::master) {
+    n_groups_total = 0;
+    for (int r = 0; r < mpi::n_procs; ++r) {
+      displs[r] = n_groups_total;
+      n_groups_total += counts[r];
+    }
+  }
+#else
+  if (mpi::master) {
+    counts[0] = n_groups;
+    displs[0] = 0;
+  }
+#endif
+
+  int n_batches_total = n_batches * mpi::n_procs;
+  if (mpi::master) {
+    out.group_offsets.resize(n_groups_total + 1);
+    out.batch_offsets.resize(n_batches_total + 1);
+    out.batch_n_particles.resize(n_batches_total);
+    out.batch_complete.resize(n_batches_total);
+  }
+
+#ifdef OPENMC_MPI
+  MPI_Gatherv(local_groups.data(), n_groups, MPI_INT64_T,
+    out.group_offsets.data(), counts.data(), displs.data(), MPI_INT64_T, 0,
+    mpi::intracomm);
+  MPI_Gather(simulation::ssw_batch_group_end.data(), n_batches, MPI_INT64_T,
+    out.batch_offsets.data() + 1, n_batches, MPI_INT64_T, 0, mpi::intracomm);
+  MPI_Gather(simulation::ssw_batch_n_particles.data(), n_batches, MPI_INT64_T,
+    out.batch_n_particles.data(), n_batches, MPI_INT64_T, 0, mpi::intracomm);
+  MPI_Gather(simulation::ssw_batch_complete.data(), n_batches, MPI_INT,
+    out.batch_complete.data(), n_batches, MPI_INT, 0, mpi::intracomm);
+#else
+  std::copy(
+    local_groups.begin(), local_groups.end(), out.group_offsets.begin());
+  std::copy(simulation::ssw_batch_group_end.begin(),
+    simulation::ssw_batch_group_end.end(), out.batch_offsets.begin() + 1);
+  std::copy(simulation::ssw_batch_n_particles.begin(),
+    simulation::ssw_batch_n_particles.end(), out.batch_n_particles.begin());
+  std::copy(simulation::ssw_batch_complete.begin(),
+    simulation::ssw_batch_complete.end(), out.batch_complete.begin());
+#endif
+
+  if (!mpi::master)
+    return out;
+
+  // Batch boundaries arrive as rank-local group indices; shift each rank's
+  // block so that it indexes the concatenated group array
+  out.batch_offsets[0] = 0;
+  for (int r = 0; r < mpi::n_procs; ++r) {
+    for (int b = 0; b < n_batches; ++b) {
+      out.batch_offsets[1 + r * n_batches + b] += displs[r];
+    }
+  }
+
+  // Trailing entry so that group g spans sites
+  // [group_offsets[g], group_offsets[g + 1])
+  out.group_offsets[n_groups_total] = bank_index[mpi::n_procs];
+
+  return out;
 }
 
 void init_fission_bank(int64_t max)

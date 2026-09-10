@@ -1422,6 +1422,137 @@ def write_source_file(
     pl.export_to_hdf5(filename, **kwargs)
 
 
+def _parse_batch_structure(blob):
+    """Parse the openmc_batch_structure header blob of an MCPL surface source.
+
+    Returns a (batch_offsets, batch_n_particles, batch_complete) tuple, or None
+    if the blob is not in a version this release understands.
+
+    """
+    text = blob.decode() if isinstance(blob, (bytes, bytearray)) else blob
+    lines = text.strip().splitlines()
+    if not lines or not lines[0].startswith('openmc_batch_structure v1'):
+        warnings.warn(
+            'Unrecognized openmc_batch_structure blob; ignoring the batch '
+            'structure of this MCPL file.'
+        )
+        return None
+
+    fields = {}
+    for line in lines[1:]:
+        parts = line.split()
+        if parts:
+            fields[parts[0]] = np.array([int(v) for v in parts[1:]],
+                                        dtype=np.int64)
+    try:
+        return (
+            fields['batch_offsets'],
+            fields['batch_n_particles'],
+            fields['batch_complete'].astype(bool),
+        )
+    except KeyError:
+        warnings.warn(
+            'Incomplete openmc_batch_structure blob; ignoring the batch '
+            'structure of this MCPL file.'
+        )
+        return None
+
+
+class SourceBatch(Sequence):
+    """The history groups banked during one batch of a surface source write.
+
+    No source particle contributes to more than one batch, so batches are
+    statistically independent of one another. Indexing a batch yields its
+    groups, each a :class:`openmc.ParticleList` holding the sites banked by a
+    single source history.
+
+    .. versionadded:: 0.16.0
+
+    Attributes
+    ----------
+    n_particles : int
+        Number of source particles simulated for this batch, including those
+        that put nothing across the recording surface. This is the denominator
+        for normalizing or estimating the variance of any result derived from
+        the batch.
+    complete : bool
+        False if sites belonging to this batch were discarded because the
+        surface source bank filled up partway through, in which case the batch
+        is a biased sample of itself and should be dropped when the file is
+        used as a source.
+
+    """
+
+    def __init__(self, particles, group_offsets, n_particles, complete):
+        self._particles = particles
+        self._group_offsets = group_offsets
+        self.n_particles = int(n_particles)
+        self.complete = bool(complete)
+
+    def __len__(self):
+        return len(self._group_offsets) - 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError('Group index out of range')
+        start = self._group_offsets[index]
+        stop = self._group_offsets[index + 1]
+        return self._particles[int(start):int(stop)]
+
+    @property
+    def particles(self) -> ParticleList:
+        """All sites of this batch, without the group structure."""
+        return self._particles[
+            int(self._group_offsets[0]):int(self._group_offsets[-1])]
+
+
+class SourceBatchList(Sequence):
+    """The batches of a surface source file.
+
+    Batches are constructed on access rather than up front, so reading a source
+    file costs nothing extra unless the structure is used.
+
+    .. versionadded:: 0.16.0
+
+    """
+
+    def __init__(self, particles, group_offsets, batch_offsets,
+                 batch_n_particles, batch_complete):
+        self._particles = particles
+        self._group_offsets = group_offsets
+        self._batch_offsets = batch_offsets
+        self._n_particles = batch_n_particles
+        self._complete = batch_complete
+
+    def __len__(self):
+        return len(self._batch_offsets) - 1
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return [self[i] for i in range(*index.indices(len(self)))]
+        if index < 0:
+            index += len(self)
+        if not 0 <= index < len(self):
+            raise IndexError('Batch index out of range')
+        g0 = int(self._batch_offsets[index])
+        g1 = int(self._batch_offsets[index + 1])
+        return SourceBatch(
+            self._particles,
+            self._group_offsets[g0:g1 + 1],
+            self._n_particles[index],
+            self._complete[index],
+        )
+
+    @property
+    def n_source_particles(self) -> int:
+        """Total source particles represented by the file."""
+        return int(np.sum(self._n_particles))
+
+
 class ParticleList(list):
     """A collection of SourceParticle objects.
 
@@ -1430,7 +1561,45 @@ class ParticleList(list):
     particles : list of SourceParticle
         Particles to collect into the list
 
+    Attributes
+    ----------
+    batches : openmc.SourceBatchList or None
+        Batch and history-group structure, for particles read from a surface
+        source file that carries it. None otherwise. Slicing a particle list
+        does not carry the structure over, since the boundaries index the file
+        rather than the selection.
+
     """
+
+    # Set only by the readers below, and deliberately not propagated by
+    # __getitem__: the offsets index the file, not an arbitrary selection
+    _group_offsets = None
+    _batch_offsets = None
+    _batch_n_particles = None
+    _batch_complete = None
+
+    @property
+    def batches(self):
+        """Batch and history-group structure of the source file, if any.
+
+        .. versionadded:: 0.16.0
+
+        Returns
+        -------
+        openmc.SourceBatchList or None
+            None for files that carry no structure, such as those written by
+            older versions of OpenMC or by :func:`openmc.write_source_file`.
+            Note that such a file is not equivalent to one batch of
+            single-particle groups: how its sites map onto source histories is
+            unknown, not trivial.
+
+        """
+        if self._group_offsets is None:
+            return None
+        return SourceBatchList(
+            self, self._group_offsets, self._batch_offsets,
+            self._batch_n_particles, self._batch_complete)
+
     @classmethod
     def from_hdf5(cls, filename: PathLike) -> ParticleList:
         """Create particle list from an HDF5 file.
@@ -1445,9 +1614,17 @@ class ParticleList(list):
         ParticleList instance
 
         """
+        structure = None
         with h5py.File(filename, 'r') as fh:
             filetype = fh.attrs['filetype']
             arr = fh['source_bank'][...]
+            if 'group_offsets' in fh:
+                structure = (
+                    fh['group_offsets'][...],
+                    fh['batch_offsets'][...],
+                    fh['batch_n_particles'][...],
+                    fh['batch_complete'][...].astype(bool),
+                )
 
         if filetype != b'source':
             raise ValueError(f'File {filename} is not a source file')
@@ -1456,7 +1633,11 @@ class ParticleList(list):
             SourceParticle(*params, ParticleType(particle))
             for *params, particle in arr
         ]
-        return cls(source_particles)
+        particles = cls(source_particles)
+        if structure is not None:
+            (particles._group_offsets, particles._batch_offsets,
+             particles._batch_n_particles, particles._batch_complete) = structure
+        return particles
 
     @classmethod
     def from_mcpl(cls, filename: PathLike) -> ParticleList:
@@ -1475,8 +1656,20 @@ class ParticleList(list):
         import mcpl
         # Process .mcpl file
         particles = []
+        userflags = []
+        batch_structure = None
         with mcpl.MCPLFile(filename) as f:
+            # A surface source written by OpenMC stores the group index of each
+            # site in the user-flags field and the batch structure in a header
+            # blob; see the source file format documentation
+            tagged = f.opt_userflags
+            blob = f.blobs.get('openmc_batch_structure')
+            if blob is not None:
+                batch_structure = _parse_batch_structure(blob)
+
             for particle in f.particles:
+                if tagged:
+                    userflags.append(particle.userflags)
                 particle_type = ParticleType(particle.pdgcode)
 
                 # Create a source particle instance. Note that MCPL stores
@@ -1491,7 +1684,16 @@ class ParticleList(list):
                 )
                 particles.append(source_particle)
 
-        return cls(particles)
+        result = cls(particles)
+        if tagged and batch_structure is not None:
+            flags = np.asarray(userflags, dtype=np.int64)
+            # Group boundaries are where the tag changes
+            breaks = np.flatnonzero(np.diff(flags)) + 1
+            result._group_offsets = np.concatenate(
+                ([0], breaks, [len(flags)])).astype(np.int64)
+            (result._batch_offsets, result._batch_n_particles,
+             result._batch_complete) = batch_structure
+        return result
 
     def __getitem__(self, index):
         """
@@ -1584,6 +1786,129 @@ class ParticleList(list):
             fh.attrs['filetype'] = np.bytes_("source")
             fh.attrs['version'] = np.array([_VERSION_STATEPOINT, 2])
             fh.create_dataset('source_bank', data=arr, dtype=source_dtype)
+
+
+def split_source_file(
+    filename: PathLike,
+    n_files: int,
+    prefix: PathLike = 'surface_source_split',
+) -> list[Path]:
+    """Split a surface source file into independent files along batch boundaries.
+
+    Each output file holds a whole number of batches and is therefore
+    statistically independent of the others. Running the follow-on calculation
+    once per output file and taking the mean and standard deviation over those
+    runs gives an uncertainty that includes the sampling uncertainty of the
+    calculation that wrote the surface source, which the uncertainty reported
+    by a single follow-on run does not.
+
+    History group boundaries are carried through to the output files, so
+    nothing is lost by splitting first.
+
+    Batches are distributed evenly over the output files. An unweighted mean
+    over the runs is only unbiased if every file represents the same number of
+    source particles, which holds when ``n_files`` divides the number of
+    batches; a warning is issued otherwise. Incomplete batches are dropped.
+
+    .. versionadded:: 0.16.0
+
+    Parameters
+    ----------
+    filename : str or path-like
+        Path to the surface source file to split
+    n_files : int
+        Number of output files to produce
+    prefix : str or path-like
+        Prefix of the output files, which are named ``{prefix}.{i}.h5``
+
+    Returns
+    -------
+    list of pathlib.Path
+        Paths of the output files. Each carries an ``n_source_particles``
+        attribute giving the number of source particles it represents, by which
+        tallies from the corresponding run must be normalized.
+
+    See Also
+    --------
+    openmc.ParticleList.batches
+
+    """
+    cv.check_type('n_files', n_files, Integral)
+    cv.check_greater_than('n_files', n_files, 0)
+
+    # Work on the raw compound array: no SourceParticle objects are needed
+    with h5py.File(filename, 'r') as fh:
+        if fh.attrs.get('filetype') != b'source':
+            raise ValueError(f'File {filename} is not a source file')
+        if 'group_offsets' not in fh:
+            raise ValueError(
+                f'File {filename} carries no group information, so it cannot '
+                'be split into statistically independent files.'
+            )
+        arr = fh['source_bank'][...]
+        version = fh.attrs['version']
+        group_offsets = fh['group_offsets'][...]
+        batch_offsets = fh['batch_offsets'][...]
+        batch_n_particles = fh['batch_n_particles'][...]
+        batch_complete = fh['batch_complete'][...].astype(bool)
+
+    n_dropped = int((~batch_complete).sum())
+    if n_dropped:
+        warnings.warn(
+            f'Dropping {n_dropped} incomplete batch(es) from {filename}. These '
+            'lost sites when the surface source bank filled up and are a '
+            'biased sample of themselves.'
+        )
+    keep = np.flatnonzero(batch_complete)
+
+    if len(keep) < n_files:
+        raise ValueError(
+            f'Cannot split {len(keep)} complete batch(es) into {n_files} '
+            'files. Reduce n_files, or rerun with more batches.'
+        )
+
+    chunks = np.array_split(keep, n_files)
+    per_file = np.array([int(batch_n_particles[c].sum()) for c in chunks])
+    if not np.all(per_file == per_file[0]):
+        warnings.warn(
+            'The output files do not represent equal numbers of source '
+            'particles, so an unweighted mean over them is not an unbiased '
+            'estimator. Weight each run by its n_source_particles attribute, '
+            'or choose an n_files that divides the number of batches.'
+        )
+
+    prefix = Path(prefix)
+    paths = []
+    for i, chunk in enumerate(chunks):
+        sites = []
+        group_sizes = []
+        batch_n_groups = []
+        for b in chunk:
+            g0, g1 = batch_offsets[b], batch_offsets[b + 1]
+            sites.append(arr[group_offsets[g0]:group_offsets[g1]])
+            group_sizes.extend(np.diff(group_offsets[g0:g1 + 1]))
+            batch_n_groups.append(g1 - g0)
+
+        path = prefix.with_suffix(f'.{i}.h5')
+        with h5py.File(path, 'w') as fh:
+            fh.attrs['filetype'] = np.bytes_('source')
+            fh.attrs['version'] = version
+            fh.attrs['n_source_particles'] = int(batch_n_particles[chunk].sum())
+            fh.create_dataset(
+                'source_bank', data=np.concatenate(sites), dtype=arr.dtype)
+            fh.create_dataset(
+                'group_offsets',
+                data=np.concatenate(([0], np.cumsum(group_sizes))).astype('<i8'))
+            fh.create_dataset(
+                'batch_offsets',
+                data=np.concatenate(([0], np.cumsum(batch_n_groups))).astype('<i8'))
+            fh.create_dataset(
+                'batch_n_particles', data=batch_n_particles[chunk])
+            fh.create_dataset(
+                'batch_complete', data=np.ones(len(chunk), dtype='<i4'))
+        paths.append(path)
+
+    return paths
 
 
 def read_source_file(filename: PathLike) -> ParticleList:

@@ -72,6 +72,9 @@ using mcpl_add_particle_fpt = void (*)(
 using mcpl_close_outfile_fpt = void (*)(mcpl_outfile_t* outfile_handle);
 using mcpl_hdr_add_stat_sum_fpt = void (*)(
   mcpl_outfile_t* outfile_handle, const char* key, double value);
+using mcpl_hdr_add_comment_fpt = void (*)(
+  mcpl_outfile_t* outfile_handle, const char* comment);
+using mcpl_enable_userflags_fpt = void (*)(mcpl_outfile_t* outfile_handle);
 
 namespace openmc {
 
@@ -117,6 +120,8 @@ struct McplApi {
   mcpl_add_particle_fpt add_particle;
   mcpl_close_outfile_fpt close_outfile;
   mcpl_hdr_add_stat_sum_fpt hdr_add_stat_sum;
+  mcpl_hdr_add_comment_fpt hdr_add_comment;
+  mcpl_enable_userflags_fpt enable_userflags;
 
   explicit McplApi(LibraryHandleType lib_handle)
   {
@@ -154,6 +159,10 @@ struct McplApi {
       load_symbol_platform("mcpl_add_particle"));
     close_outfile = reinterpret_cast<mcpl_close_outfile_fpt>(
       load_symbol_platform("mcpl_close_outfile"));
+    hdr_add_comment = reinterpret_cast<mcpl_hdr_add_comment_fpt>(
+      load_symbol_platform("mcpl_hdr_add_comment"));
+    enable_userflags = reinterpret_cast<mcpl_enable_userflags_fpt>(
+      load_symbol_platform("mcpl_enable_userflags"));
 
     // Try to load mcpl_hdr_add_data (available in MCPL >= 2.1.0)
     // Set to nullptr if not available for graceful fallback
@@ -383,8 +392,15 @@ vector<SourceSite> mcpl_source_sites(std::string path)
 
 void write_mcpl_source_bank_internal(mcpl_outfile_t* file_id,
   span<SourceSite> local_source_bank,
-  const vector<int64_t>& bank_index_all_ranks)
+  const vector<int64_t>& bank_index_all_ranks,
+  const vector<int64_t>& group_offsets)
 {
+  // Sites are written in the same order as they are indexed by group_offsets,
+  // so a single cursor is enough to label each one with its group
+  bool tag_groups = !group_offsets.empty();
+  int64_t site_index = 0;
+  size_t cursor = 0;
+
   if (mpi::master) {
     if (!file_id) {
       fatal_error("MCPL: Internal error - master rank called "
@@ -428,6 +444,14 @@ void write_mcpl_source_bank_internal(mcpl_outfile_t* file_id,
         p_repr.time = site.time * 1e3;
         p_repr.weight = site.wgt;
         p_repr.pdgcode = site.particle.pdg_number();
+        if (tag_groups) {
+          while (cursor + 1 < group_offsets.size() &&
+                 group_offsets[cursor + 1] <= site_index) {
+            ++cursor;
+          }
+          p_repr.userflags = static_cast<uint32_t>(cursor);
+        }
+        ++site_index;
         g_mcpl_api->add_particle(file_id, &p_repr);
       }
     }
@@ -441,10 +465,36 @@ void write_mcpl_source_bank_internal(mcpl_outfile_t* file_id,
   }
 }
 
+//! Serialize the batch structure as text so that it is portable across
+//! machines, unlike a raw dump of the arrays
+std::string format_batch_structure(const SurfaceSourceGroups& groups)
+{
+  std::ostringstream out;
+  out << "openmc_batch_structure v1\n";
+  out << "n_batches " << groups.batch_n_particles.size() << "\n";
+  out << "batch_offsets";
+  for (auto v : groups.batch_offsets)
+    out << " " << v;
+  out << "\nbatch_n_particles";
+  for (auto v : groups.batch_n_particles)
+    out << " " << v;
+  out << "\nbatch_complete";
+  for (auto v : groups.batch_complete)
+    out << " " << v;
+  out << "\n";
+  return out.str();
+}
+
 void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
-  const vector<int64_t>& bank_index)
+  const vector<int64_t>& bank_index, bool surface_source)
 {
   ensure_mcpl_ready_or_fatal();
+
+  // Collective: every rank contributes its group and batch boundaries
+  SurfaceSourceGroups groups;
+  if (surface_source) {
+    groups = gather_surface_source_groups(bank_index);
+  }
 
   std::string filename_(filename);
   const auto extension = get_file_extension(filename_);
@@ -475,6 +525,26 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
     }
     g_mcpl_api->hdr_set_srcname(file_id, src_line.c_str());
 
+    if (surface_source) {
+      // MCNP's surface source format records, for every track, the number of
+      // the history that produced it. MCPL has one per-particle integer
+      // available for such information, and the format's own convention is that
+      // its meaning is documented by a header comment. The value stored is an
+      // index rather than OpenMC's internal particle ID, since consecutive
+      // sites sharing a value is the only property a reader needs and an index
+      // cannot overflow the 32-bit field for any file that fits in memory.
+      g_mcpl_api->enable_userflags(file_id);
+      g_mcpl_api->hdr_add_comment(file_id,
+        "The userflags in this file are group indices: all sites sharing a "
+        "value were produced by one source history and must be emitted as a "
+        "single history, not as one history per site.");
+      g_mcpl_api->hdr_add_comment(file_id,
+        "Blob 'openmc_batch_structure' gives the batch boundaries in units of "
+        "groups, the number of source particles simulated for each batch, and "
+        "whether each batch lost sites to a full bank. Batches are "
+        "statistically independent of one another.");
+    }
+
     // Initialize stat:sum with -1 to indicate incomplete file (issue #3514)
     // This follows MCPL >= 2.1.0 convention for tracking simulation statistics
     // The -1 value indicates "not available" if file creation is interrupted
@@ -485,7 +555,8 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
     }
   }
 
-  write_mcpl_source_bank_internal(file_id, source_bank, bank_index);
+  write_mcpl_source_bank_internal(
+    file_id, source_bank, bank_index, groups.group_offsets);
 
   if (mpi::master) {
     if (file_id) {
@@ -499,9 +570,27 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
         int64_t total_source_particles =
           static_cast<int64_t>(settings::n_batches - settings::n_inactive) *
           settings::gen_per_batch * settings::n_particles;
+        // A surface source file need not span the whole run: the bank can fill
+        // partway through, and max_source_files splits the run over several
+        // files. Use what this file actually represents.
+        if (surface_source) {
+          total_source_particles = groups.n_source_particles();
+        }
         // Update with actual count - this overwrites the initial -1 value
         g_mcpl_api->hdr_add_stat_sum(
           file_id, "openmc_np1", static_cast<double>(total_source_particles));
+      }
+
+      if (surface_source) {
+        if (g_mcpl_api->hdr_add_data) {
+          std::string blob = format_batch_structure(groups);
+          g_mcpl_api->hdr_add_data(file_id, "openmc_batch_structure",
+            static_cast<uint32_t>(blob.size()), blob.c_str());
+        } else {
+          warning("MCPL library does not provide mcpl_hdr_add_data; the batch "
+                  "structure of this surface source file will not be written. "
+                  "Group indices in the user-flags field are unaffected.");
+        }
       }
 
       g_mcpl_api->close_outfile(file_id);

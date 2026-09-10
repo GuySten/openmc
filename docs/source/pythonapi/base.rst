@@ -38,6 +38,7 @@ Simulation Settings
    :template: myfunction.rst
 
    openmc.read_source_file
+   openmc.split_source_file
    openmc.write_source_file
 
 Material Specification
@@ -210,6 +211,8 @@ Post-processing
 
    openmc.Particle
    openmc.ParticleList
+   openmc.SourceBatch
+   openmc.SourceBatchList
    openmc.ParticleTrack
    openmc.StatePoint
    openmc.Summary

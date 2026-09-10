@@ -333,3 +333,269 @@ def test_particle_direction_dagmc(parameter, run_in_tmpdir, model_dagmc):
                     assert ux * x + uy * y < 0
                 else:
                     assert False
+
+
+@pytest.fixture
+def model_groups():
+    """Leaky hydrogen sphere with an isotropic point source at the center."""
+    openmc.reset_auto_ids()
+    model = openmc.Model()
+
+    h1 = openmc.Material(name="H1")
+    h1.add_nuclide("H1", 1.0)
+    h1.set_density("g/cm3", 1e-7)
+
+    sphere = openmc.Sphere(r=1.0, boundary_type="vacuum")
+    model.geometry = openmc.Geometry([openmc.Cell(region=-sphere, fill=h1)])
+
+    model.settings = openmc.Settings()
+    model.settings.run_mode = "fixed source"
+    model.settings.particles = 100
+    model.settings.batches = 4
+    model.settings.seed = 1
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point(),
+        angle=openmc.stats.Isotropic(),
+        energy=openmc.stats.delta_function(1.0e6),
+    )
+    return model
+
+
+@pytest.fixture
+def model_cascade():
+    """Photon source in lead, producing several escaping particles per history."""
+    openmc.reset_auto_ids()
+    model = openmc.Model()
+
+    pb = openmc.Material()
+    pb.add_element("Pb", 1.0)
+    pb.set_density("g/cm3", 11.35)
+
+    sphere = openmc.Sphere(r=0.5, boundary_type="vacuum")
+    model.geometry = openmc.Geometry([openmc.Cell(region=-sphere, fill=pb)])
+
+    model.settings = openmc.Settings()
+    model.settings.run_mode = "fixed source"
+    model.settings.particles = 2000
+    model.settings.batches = 2
+    model.settings.seed = 1
+    model.settings.photon_transport = True
+    model.settings.electron_treatment = "ttb"
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point(),
+        angle=openmc.stats.Isotropic(),
+        energy=openmc.stats.delta_function(6.0e6),
+        particle="photon",
+    )
+    return model
+
+
+def test_group_and_batch_metadata(run_in_tmpdir, model_groups):
+    """Groups partition the sites and batches partition the groups."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+    model_groups.run()
+
+    with h5py.File("surface_source.h5", "r") as f:
+        n_sites = f["source_bank"].shape[0]
+        group_offsets = f["group_offsets"][...]
+        batch_offsets = f["batch_offsets"][...]
+        n_particles = f["batch_n_particles"][...]
+        complete = f["batch_complete"][...]
+        n_source_particles = f.attrs["n_source_particles"]
+
+    assert n_sites > 0
+
+    # Groups partition the source bank without gaps or overlap, and no group
+    # is empty
+    assert group_offsets[0] == 0
+    assert group_offsets[-1] == n_sites
+    assert np.all(np.diff(group_offsets) > 0)
+
+    # Batches partition the groups. One batch per active batch on a single rank
+    n_batches = model_groups.settings.batches
+    assert len(batch_offsets) == n_batches + 1
+    assert batch_offsets[0] == 0
+    assert batch_offsets[-1] == len(group_offsets) - 1
+    assert np.all(np.diff(batch_offsets) >= 0)
+
+    assert len(n_particles) == len(complete) == n_batches
+    assert np.all(n_particles == model_groups.settings.particles)
+    assert np.all(complete == 1)
+    assert n_source_particles == n_particles.sum()
+
+    # A neutron in a vacuum-bounded sphere with no secondary production can
+    # only leak once, so every group holds exactly one site here
+    assert len(group_offsets) - 1 == n_sites
+
+
+def test_group_sorting_is_deterministic(run_in_tmpdir, model_groups):
+    """Sorting each generation by history removes the thread-order dependence."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+
+    model_groups.run()
+    Path("surface_source.h5").rename("first.h5")
+    model_groups.run()
+
+    with h5py.File("first.h5") as f1, h5py.File("surface_source.h5") as f2:
+        assert np.array_equal(f1["source_bank"][...], f2["source_bank"][...])
+        assert np.array_equal(f1["group_offsets"][...], f2["group_offsets"][...])
+
+
+def test_multi_site_groups(run_in_tmpdir, model_cascade):
+    """A history that leaks several particles produces one group, not several."""
+    model_cascade.settings.surf_source_write = {"max_particles": 1000000}
+    model_cascade.run()
+
+    particles = openmc.read_source_file("surface_source.h5")
+    batches = particles.batches
+    assert batches is not None
+
+    groups = [group for batch in batches for group in batch]
+    sizes = [len(g) for g in groups]
+
+    # Every site belongs to exactly one group of exactly one batch
+    assert sum(sizes) == len(particles)
+    # Pair production and bremsstrahlung give histories with several escaping
+    # photons, so there are strictly fewer groups than sites
+    assert len(groups) < len(particles)
+    assert max(sizes) > 1
+
+    # A group is a plain particle list, and its sites are the file's own
+    first = batches[0][0]
+    assert isinstance(first, openmc.ParticleList)
+    assert list(first) == list(particles[:len(first)])
+
+
+def test_structure_is_not_carried_by_slicing(run_in_tmpdir, model_groups):
+    """Offsets index the file, so a selection must not claim to carry them."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+    model_groups.run()
+
+    particles = openmc.read_source_file("surface_source.h5")
+    assert particles.batches is not None
+    assert particles[:5].batches is None
+
+    # A file with no structure reports none, rather than one trivial group
+    # per site
+    openmc.write_source_file(particles[:5], "plain_source.h5")
+    assert openmc.read_source_file("plain_source.h5").batches is None
+
+
+def test_split_source_file(run_in_tmpdir, model_groups):
+    """Splitting preserves every site and carries the group structure through."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+    model_groups.run()
+
+    batches = openmc.read_source_file("surface_source.h5").batches
+    assert batches is not None
+    complete = [b for b in batches if b.complete]
+
+    paths = openmc.split_source_file(
+        "surface_source.h5", len(complete), "split")
+    assert len(paths) == len(complete)
+
+    total_sites = 0
+    for path, batch in zip(paths, complete):
+        piece = openmc.read_source_file(path)
+        assert len(piece.batches) == 1
+        assert piece.batches[0].n_particles == batch.n_particles
+        assert [len(g) for g in piece.batches[0]] == [len(g) for g in batch]
+        with h5py.File(path, "r") as f:
+            assert f.attrs["n_source_particles"] == batch.n_particles
+        total_sites += len(piece)
+
+    assert total_sites == sum(len(b.particles) for b in complete)
+
+    # The pieces are usable as sources in their own right
+    model_groups.settings.surf_source_write = None
+    model_groups.settings.surf_source_read = {"path": str(paths[0])}
+    model_groups.run()
+
+
+def test_truncated_batch(run_in_tmpdir, model_groups):
+    """A bank that fills partway through a batch marks that batch incomplete."""
+    model_groups.settings.surf_source_write = {"max_particles": 50}
+    model_groups.run()
+
+    with h5py.File("surface_source.h5", "r") as f:
+        assert f["source_bank"].shape[0] == 50
+        complete = f["batch_complete"][...]
+        n_particles = f["batch_n_particles"][...]
+        n_source_particles = f.attrs["n_source_particles"]
+
+    # The file is written as soon as the bank fills, so the final batch is the
+    # truncated one and every earlier batch is intact
+    assert complete[-1] == 0
+    assert np.all(complete[:-1] == 1)
+    assert n_source_particles == n_particles.sum()
+
+
+def test_split_source_file_no_groups(run_in_tmpdir):
+    """Files without group information cannot be split."""
+    particles = [openmc.SourceParticle(E=1.0e6) for _ in range(10)]
+    openmc.write_source_file(particles, "plain_source.h5")
+
+    with pytest.raises(ValueError, match="no group information"):
+        openmc.split_source_file("plain_source.h5", 2)
+
+
+def test_pulse_height_rejected(run_in_tmpdir, model_groups):
+    """Pulse-height tallies cannot be scored from a surface source file."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+    model_groups.run()
+
+    model_groups.settings.surf_source_write = None
+    model_groups.settings.surf_source_read = {"path": "surface_source.h5"}
+    cells = list(model_groups.geometry.get_all_cells().values())
+    tally = openmc.Tally()
+    tally.filters = [
+        openmc.CellFilter([c.id for c in cells]),
+        openmc.EnergyFilter(np.linspace(0.0, 2.0e6, 11)),
+    ]
+    tally.scores = ["pulse-height"]
+    model_groups.tallies = openmc.Tallies([tally])
+
+    with pytest.raises(RuntimeError, match="surface source file"):
+        model_groups.run()
+
+
+@pytest.mark.skipif(
+    not openmc.lib.is_mcpl_interface_available()
+    if hasattr(openmc.lib, "is_mcpl_interface_available")
+    else True,
+    reason="MCPL library not available",
+)
+def test_mcpl_group_userflags(run_in_tmpdir, model_cascade):
+    """MCPL files carry the group index in the user-flags field."""
+    mcpl = pytest.importorskip("mcpl")
+
+    model_cascade.settings.surf_source_write = {
+        "max_particles": 1000000,
+        "mcpl": True,
+    }
+    model_cascade.run()
+
+    with mcpl.MCPLFile("surface_source.mcpl") as f:
+        assert f.opt_userflags
+        flags = np.concatenate([b.userflags for b in f.particle_blocks])
+        stat_sums = f.stat_sums
+
+    # Group indices are dense and non-decreasing, and at least one group holds
+    # more than one site
+    assert flags[0] == 0
+    steps = np.diff(flags.astype(np.int64))
+    assert np.all((steps == 0) | (steps == 1))
+    assert np.any(steps == 0)
+
+    # The same structure comes back through the public reader
+    particles = openmc.ParticleList.from_mcpl("surface_source.mcpl")
+    batches = particles.batches
+    assert batches is not None
+    assert sum(len(g) for b in batches for g in b) == len(particles)
+    assert stat_sums["openmc_np1"] == batches.n_source_particles
+
+    # And matches what the HDF5 writer produces for the same problem
+    model_cascade.settings.surf_source_write = {"max_particles": 1000000}
+    model_cascade.run()
+    h5_batches = openmc.read_source_file("surface_source.h5").batches
+    assert [len(b) for b in h5_batches] == [len(b) for b in batches]

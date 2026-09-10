@@ -35,8 +35,13 @@ vector<SourceSite> mcpl_source_sites(std::string path);
 //!                         MPI rank.
 //! \param[in] bank_index   Pointer to vector of site index ranges over all
 //!                         MPI ranks.
+//! \param[in] surface_source  Whether this is a surface source file. If so, the
+//!                         group index of each site is written to the MCPL
+//!                         user-flags field, documented by a header comment,
+//!                         and the batch structure is written as a header blob
+//!                         with key "openmc_batch_structure".
 void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
-  const vector<int64_t>& bank_index);
+  const vector<int64_t>& bank_index, bool surface_source = false);
 
 //! Write an MCPL collision track file
 //!

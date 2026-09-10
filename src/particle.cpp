@@ -985,8 +985,18 @@ void Particle::update_neutron_xs(
 //==============================================================================
 void add_surf_source_to_bank(Particle& p, const Surface& surf)
 {
-  if (simulation::current_batch <= settings::n_inactive ||
-      simulation::surf_source_bank.full()) {
+  if (simulation::current_batch <= settings::n_inactive) {
+    return;
+  }
+
+  // Once the bank is full no further site can be stored, so the batch being
+  // accumulated is an incomplete sample of itself and consumers of the file
+  // need to know. The bank is only ever full for the remainder of the batch in
+  // which it filled, since it is flushed and cleared in finalize_batch(), so
+  // this count is never attributed to a batch other than the truncated one.
+  if (simulation::surf_source_bank.full()) {
+#pragma omp atomic
+    ++simulation::ssw_n_dropped;
     return;
   }
 
@@ -1067,6 +1077,10 @@ void add_surf_source_to_bank(Particle& p, const Surface& surf)
   site.parent_id = p.id();
   site.progeny_id = p.n_progeny();
   int64_t idx = simulation::surf_source_bank.thread_safe_append(site);
+  if (idx == -1) {
+#pragma omp atomic
+    ++simulation::ssw_n_dropped;
+  }
 }
 
 } // namespace openmc

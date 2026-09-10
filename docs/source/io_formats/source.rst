@@ -10,7 +10,8 @@ is that documented here.
 
 When surface source writing is triggered, a source file named
 ``surface_source.h5`` is written with only the sources on specified surfaces,
-following the same format.
+following the same format, with the addition of the group and batch datasets
+described below.
 
 **/**
 
@@ -26,3 +27,60 @@ following the same format.
              which represent the position, direction, energy, time, weight,
              delayed group, surface ID, and particle type (PDG number),
              respectively.
+
+           The following datasets and attribute are present only in surface
+           source files. They impose two levels of structure on the source
+           bank; see :ref:`surface_source_structure`.
+
+           A *group* is the set of sites banked by one source history. Its
+           sites are contiguous and are correlated with one another. A
+           calculation reading the file must emit a group as a single history,
+           not as one history per site, or scores defined per history such as
+           pulse-height tallies are split into several smaller scores.
+
+           A *batch* is the set of groups banked by one MPI rank during one
+           batch. No source particle contributes to more than one batch, so
+           batches are statistically independent of one another. A batch also
+           records how many source particles produced it, including those that
+           put nothing across the recording surface.
+
+           - **group_offsets** (*int64[]*) -- Index into ``source_bank`` at
+             which each group begins, with a trailing entry equal to the total
+             number of sites, so that group ``g`` spans
+             ``[group_offsets[g], group_offsets[g + 1])``.
+           - **batch_offsets** (*int64[]*) -- Index into ``group_offsets`` at
+             which each batch begins, with a trailing entry equal to the total
+             number of groups, so that batch ``b`` owns groups
+             ``[batch_offsets[b], batch_offsets[b + 1])``. Under MPI there is
+             one entry per rank and batch, ordered by rank and then by batch.
+           - **batch_n_particles** (*int64[]*) -- Number of source particles
+             simulated for each batch.
+           - **batch_complete** (*int[]*) -- Whether each batch is a complete
+             sample of itself. Zero indicates that sites were discarded because
+             the surface source bank filled up partway through, in which case
+             the batch is biased and should be discarded when the file is used
+             as a source.
+           - **n_source_particles** (*int64*) -- Attribute giving the total
+             number of source particles represented by the file, equal to the
+             sum of ``batch_n_particles``.
+
+MCPL surface source files
+-------------------------
+
+When a surface source is written in MCPL format the same structure is stored
+using facilities the MCPL format already provides, following the convention
+established by MCNP's surface source files, where each track records the
+history that produced it and the header records the number of histories run
+separately from the number of tracks stored.
+
+- The **user-flags** field of each particle holds its group index. All sites
+  sharing a value were produced by one source history. Two header comments
+  document this, as the MCPL format requires for any use of the user-flags
+  field.
+- The header blob **openmc_batch_structure** holds the batch boundaries in
+  units of groups, the source particle count of each batch, and the completeness
+  flags, as text. Its first line is ``openmc_batch_structure v1``.
+- The header **stat:sum** entry ``openmc_np1`` holds the number of source
+  particles represented by the file. Note that for a surface source this is the
+  count for the batches actually written, which differs from the whole-run
+  total when the bank fills early or ``max_source_files`` splits the run.

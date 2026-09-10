@@ -227,10 +227,10 @@ def _tally_with(lib, path, batches, particles, independent):
     model = _reader_model(lib, path)
     model.settings.batches = batches
     model.settings.particles = particles
-    ssr = {"path": str(path)}
-    if independent:
-        ssr["independent_batches"] = True
-    model.settings.surf_source_read = ssr
+    # Set it either way: the option is on by default, so "off" has to be asked
+    # for just as explicitly as "on"
+    model.settings.surf_source_read = {
+        "path": str(path), "independent_batches": independent}
     sp = model.run()
     with openmc.StatePoint(sp) as s:
         t = s.get_tally(name="absorption")
@@ -273,7 +273,7 @@ def test_independent_batches_requires_grouping(
     _writer_model(scatter_lib).run()
     _strip_groups("surface_source.h5", "flat_source.h5")
 
-    with pytest.raises(RuntimeError, match="independent_batches requires"):
+    with pytest.raises(RuntimeError, match="does not record which of its sites"):
         _tally_with(absorb_lib, "flat_source.h5", 30, 500, True)
 
 
@@ -283,5 +283,5 @@ def test_independent_batches_needs_two_batches(
     """A spread between batches needs more than one batch."""
     _writer_model(scatter_lib).run()
 
-    with pytest.raises(RuntimeError, match="at least two active batches"):
+    with pytest.raises(RuntimeError, match="fewer than two active batches"):
         _tally_with(absorb_lib, "surface_source.h5", 1, 500, True)

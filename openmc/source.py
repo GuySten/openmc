@@ -1637,6 +1637,27 @@ class ParticleList(list):
     _n_source_particles = None
 
     @property
+    def n_source_particles(self):
+        """Number of first-stage source particles the file represents.
+
+        Includes source particles that put nothing across the recording
+        surface, so it is the denominator for expressing a follow-on
+        calculation's tallies per first-stage source particle.
+
+        .. versionadded:: 0.16.0
+
+        Returns
+        -------
+        int or None
+            None for a file that does not record it, such as one written by
+            :func:`openmc.write_source_file`.
+
+        """
+        if self._n_source_particles is None:
+            return None
+        return int(self._n_source_particles)
+
+    @property
     def groups(self):
         """History groups of the source file, if any.
 

@@ -498,10 +498,19 @@ set by the number of source particles in the first stage; past that point,
 additional effort in the follow-on run buys nothing.
 
 Each output file carries an ``n_source_particles`` attribute giving the number
-of first-stage source particles it represents. Tallies from the follow-on run
-are normalized per particle simulated in that run, so they must be rescaled by
-the total weight of the sites divided by ``n_source_particles`` to be expressed
-per first-stage source particle.
+of first-stage source particles it represents, and
+:attr:`openmc.ParticleList.n_source_particles` reads it back. Tallies from the
+follow-on run are normalized per particle simulated in that run, and every site
+in the file is read as its own history, so they must be multiplied by the number
+of sites in the file divided by ``n_source_particles`` to be expressed per
+first-stage source particle::
+
+    particles = openmc.read_source_file(path)
+    factor = len(particles) / particles.n_source_particles
+
+That factor counts sites; it is not a sum of their weights. A site's weight is
+already carried into the scores that site produces, so applying it again here
+would count it twice.
 
 .. note:: Splitting the file addresses the uncertainty but not the per-history
           problem: each site is still emitted as its own history. Pulse-height

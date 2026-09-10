@@ -891,9 +891,11 @@ class Settings:
         cv.check_type('surface source reading options', ssr, Mapping)
         for key, value in ssr.items():
             cv.check_value('surface source reading key', key,
-                           ('path'))
+                           ('path', 'independent_batches'))
             if key == 'path':
                 cv.check_type('path to surface source file', value, PathLike)
+            elif key == 'independent_batches':
+                cv.check_type('independent batches', value, bool)
         self._surf_source_read = dict(ssr)
 
         # Resolve path to surface source file
@@ -1629,6 +1631,10 @@ class Settings:
             if 'path' in self._surf_source_read:
                 subelement = ET.SubElement(element, "path")
                 subelement.text = str(self._surf_source_read['path'])
+            if 'independent_batches' in self._surf_source_read:
+                subelement = ET.SubElement(element, "independent_batches")
+                subelement.text = str(
+                    self._surf_source_read['independent_batches']).lower()
 
     def _create_surf_source_write_subelement(self, root):
         if self._surf_source_write:

@@ -81,6 +81,10 @@ extern bool source_mcpl_write;       //!< write source in mcpl files?
 extern bool surf_source_write;       //!< write surface source file?
 extern bool surf_mcpl_write;         //!< write surface mcpl file?
 extern bool surf_source_read;        //!< read surface source file?
+//! Give each batch its own disjoint slice of the surface source file, so that
+//! batches share no source history and the reported uncertainty includes the
+//! sampling error of the calculation that wrote the file
+extern bool ssr_independent_batches;
 extern bool survival_biasing;        //!< use survival biasing?
 extern bool survival_normalization;  //!< use survival normalization?
 extern bool temperature_multipole;   //!< use multipole data?

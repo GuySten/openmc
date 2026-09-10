@@ -221,3 +221,67 @@ def test_normalization_to_first_stage(run_in_tmpdir, leaky_lib, absorb_lib):
     # file per first-stage source particle is just the site count over it
     truth = n_sites / n_src
     assert per_group * n_groups / n_src == pytest.approx(truth, rel=0.05)
+
+
+def _tally_with(lib, path, batches, particles, independent):
+    model = _reader_model(lib, path)
+    model.settings.batches = batches
+    model.settings.particles = particles
+    ssr = {"path": str(path)}
+    if independent:
+        ssr["independent_batches"] = True
+    model.settings.surf_source_read = ssr
+    sp = model.run()
+    with openmc.StatePoint(sp) as s:
+        t = s.get_tally(name="absorption")
+        return float(t.mean.flatten()[0]), float(t.std_dev.flatten()[0])
+
+
+def test_independent_batches_uncertainty_does_not_collapse(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """The first stage's sampling error cannot be reduced by working harder in
+    the second, so a correct uncertainty must stop shrinking. Sharing every
+    history between all batches hides that floor; partitioning them exposes it.
+    """
+    _writer_model(scatter_lib).run()
+
+    lo, hi = 500, 8000
+    mean_i_lo, std_i_lo = _tally_with(absorb_lib, "surface_source.h5", 30, lo, True)
+    mean_i_hi, std_i_hi = _tally_with(absorb_lib, "surface_source.h5", 30, hi, True)
+    mean_p_lo, std_p_lo = _tally_with(absorb_lib, "surface_source.h5", 30, lo, False)
+    mean_p_hi, std_p_hi = _tally_with(absorb_lib, "surface_source.h5", 30, hi, False)
+
+    # Sixteen times the second-stage effort. Sharing the whole file between
+    # batches lets the reported uncertainty fall away as if the first stage
+    # were exact
+    assert std_p_hi < 0.5 * std_p_lo
+
+    # Partitioning the file leaves it on the floor set by the first stage
+    assert 0.5 < std_i_hi / std_i_lo < 2.0
+    assert std_i_hi > 3 * std_p_hi
+
+    # None of this moves the answer: every group still gets an equal chance
+    for m in (mean_i_lo, mean_i_hi, mean_p_hi):
+        assert m == pytest.approx(mean_p_lo, rel=0.05)
+
+
+def test_independent_batches_requires_grouping(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """A file whose correlation structure is unknown cannot be partitioned."""
+    _writer_model(scatter_lib).run()
+    _strip_groups("surface_source.h5", "flat_source.h5")
+
+    with pytest.raises(RuntimeError, match="independent_batches requires"):
+        _tally_with(absorb_lib, "flat_source.h5", 30, 500, True)
+
+
+def test_independent_batches_needs_two_batches(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """A spread between batches needs more than one batch."""
+    _writer_model(scatter_lib).run()
+
+    with pytest.raises(RuntimeError, match="at least two active batches"):
+        _tally_with(absorb_lib, "surface_source.h5", 1, 500, True)

@@ -204,6 +204,12 @@ public:
   //! grouping is not yet read back.
   bool grouped() const { return !group_offsets_.empty(); }
 
+  //! Number of history groups the file carries, or zero if it carries none
+  int64_t n_groups() const
+  {
+    return group_offsets_.empty() ? 0 : group_offsets_.size() - 1;
+  }
+
 protected:
   SourceSite sample(uint64_t* seed) const override;
 
@@ -219,6 +225,15 @@ private:
   //! Give a site's surface ID the sign of the half-space the site is heading
   //! into, or clear it if it names no CSG surface containing the site
   void resolve_surface_id(SourceSite& site) const;
+
+  //! Half-open range of groups the current batch may sample from
+  //!
+  //! Normally the whole file. With independent batches each batch owns a
+  //! disjoint slice of it, so that no source history is shared between two
+  //! batches and the spread between them carries the sampling error of the
+  //! calculation that wrote the file, which is otherwise common to every batch
+  //! and so invisible to the reported uncertainty.
+  std::pair<int64_t, int64_t> group_range() const;
 
   vector<SourceSite> sites_;       //!< Source sites
   vector<int64_t> group_offsets_;  //!< Site index at which each history group

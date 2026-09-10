@@ -474,20 +474,53 @@ static void check_surface_source_compatibility()
             "independent history. Disabling shared secondary bank.");
   }
 
-  // The sites of one source history are emitted together for a file that
-  // records its grouping, so this is only worth saying about one that does not.
-  // Checked here rather than where the file is opened because that is too early
-  // to know whether it carries the grouping.
+  if (!settings::ssr_independent_batches)
+    return;
+
+  // Independent batches work by giving each batch its own disjoint slice of
+  // the file. That only makes the batches independent if the file says which
+  // sites belong to the same source history: splitting a history across two
+  // batches would correlate them, which is the very thing being avoided.
+  int64_t n_groups = -1;
   for (const auto& source : model::external_sources) {
     const auto* file_source = dynamic_cast<const FileSource*>(source.get());
-    if (file_source && !file_source->grouped()) {
-      warning("A surface source file being read does not record which of its "
-              "sites came from the same source history, so each site is "
-              "emitted as a history of its own and scores defined per history "
-              "are split across the sites that came from one original "
-              "history.");
-      break;
+    if (!file_source)
+      continue;
+    if (!file_source->grouped()) {
+      fatal_error(
+        "independent_batches requires a surface source file that records which "
+        "of its sites came from the same source history. Without it a history "
+        "can be split across batches, which is exactly the correlation this "
+        "option exists to remove. Write the file in HDF5 format with a current "
+        "version of OpenMC.");
     }
+    n_groups = file_source->n_groups();
+  }
+
+  if (settings::run_mode != RunMode::FIXED_SOURCE) {
+    fatal_error("independent_batches applies to fixed source calculations "
+                "only. An eigenvalue calculation seeds its source bank once, "
+                "so its batches do not draw from the file separately.");
+  }
+
+  int n_active = settings::n_batches - settings::n_inactive;
+  if (n_active < 2) {
+    fatal_error("independent_batches needs at least two active batches, since "
+                "the uncertainty it reports is the spread between them.");
+  }
+  if (n_groups >= 0 && n_groups < n_active) {
+    fatal_error(fmt::format(
+      "independent_batches needs at least one history group per active batch, "
+      "but the surface source file holds {} groups for {} batches. Reduce the "
+      "batch count, or write the file with more source particles.",
+      n_groups, n_active));
+  }
+  if (n_active < 30) {
+    warning(fmt::format(
+      "independent_batches reports an uncertainty estimated from the spread of "
+      "{} batches, which is itself uncertain to roughly {:.0f}%. Around 30 "
+      "batches or more gives a usable estimate.",
+      n_active, 100.0 / std::sqrt(2.0 * (n_active - 1))));
   }
 }
 

@@ -587,7 +587,7 @@ def test_split_source_file(run_in_tmpdir, model_groups):
     assert total_sites == sum(len(b.particles) for b in complete)
 
     # The pieces are usable as sources in their own right
-    model_groups.settings.surf_source_write = None
+    model_groups.settings.surf_source_write = {}
     model_groups.settings.surf_source_read = {"path": str(paths[0])}
     model_groups.run()
 
@@ -634,7 +634,7 @@ def test_pulse_height_rejected(run_in_tmpdir, model_groups):
     model_groups.settings.surf_source_write = {"max_particles": 100000}
     model_groups.run()
 
-    model_groups.settings.surf_source_write = None
+    model_groups.settings.surf_source_write = {}
     model_groups.settings.surf_source_read = {"path": "surface_source.h5"}
     cells = list(model_groups.geometry.get_all_cells().values())
     tally = openmc.Tally()
@@ -665,7 +665,7 @@ def test_mcpl_group_userflags(run_in_tmpdir, model_cascade):
     with mcpl.MCPLFile("surface_source.mcpl") as f:
         assert f.opt_userflags
         flags = np.concatenate([b.userflags for b in f.particle_blocks])
-        stat_sums = f.stat_sums
+        stat_sums = f.stat_sum
 
     # Group indices are dense and non-decreasing, and at least one group holds
     # more than one site

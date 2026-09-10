@@ -1703,11 +1703,19 @@ class ParticleList(list):
             arr = fh['source_bank'][...]
             if 'group_offsets' in fh:
                 n_src = fh.attrs.get('n_source_particles')
+                # The batch datasets are written together, but a file may carry
+                # the grouping without them, so the group information stands on
+                # its own rather than being discarded with them
+                has_batches = all(
+                    name in fh for name in
+                    ('batch_offsets', 'batch_n_particles', 'batch_complete')
+                )
                 structure = (
                     fh['group_offsets'][...],
-                    fh['batch_offsets'][...],
-                    fh['batch_n_particles'][...],
-                    fh['batch_complete'][...].astype(bool),
+                    fh['batch_offsets'][...] if has_batches else None,
+                    fh['batch_n_particles'][...] if has_batches else None,
+                    (fh['batch_complete'][...].astype(bool)
+                     if has_batches else None),
                     max(int(fh.attrs.get('n_ranks', 1)), 1),
                     None if n_src is None else int(n_src),
                 )

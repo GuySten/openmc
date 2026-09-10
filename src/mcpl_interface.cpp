@@ -569,6 +569,19 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
         "whether each batch lost sites to a full bank. Its arrays hold one "
         "entry per MPI rank and batch, in that order. Batches are "
         "statistically independent of one another.");
+
+      // Every header field has to be in place before the first particle is
+      // added, so the batch structure is written here rather than alongside the
+      // particle count below, which is a stat:sum and may be updated late
+      if (g_mcpl_api->hdr_add_data) {
+        std::string blob = format_batch_structure(groups);
+        g_mcpl_api->hdr_add_data(file_id, "openmc_batch_structure",
+          static_cast<uint32_t>(blob.size()), blob.c_str());
+      } else {
+        warning("MCPL library does not provide mcpl_hdr_add_data; the batch "
+                "structure of this surface source file will not be written. "
+                "Group indices in the user-flags field are unaffected.");
+      }
     }
 
     // Initialize stat:sum with -1 to indicate incomplete file (issue #3514)
@@ -605,18 +618,6 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
         // Update with actual count - this overwrites the initial -1 value
         g_mcpl_api->hdr_add_stat_sum(
           file_id, "openmc_np1", static_cast<double>(total_source_particles));
-      }
-
-      if (surface_source) {
-        if (g_mcpl_api->hdr_add_data) {
-          std::string blob = format_batch_structure(groups);
-          g_mcpl_api->hdr_add_data(file_id, "openmc_batch_structure",
-            static_cast<uint32_t>(blob.size()), blob.c_str());
-        } else {
-          warning("MCPL library does not provide mcpl_hdr_add_data; the batch "
-                  "structure of this surface source file will not be written. "
-                  "Group indices in the user-flags field are unaffected.");
-        }
       }
 
       g_mcpl_api->close_outfile(file_id);

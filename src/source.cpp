@@ -559,6 +559,16 @@ void FileSource::load_sites_from_file(const std::string& path)
     if (object_exists(file_id, "group_offsets")) {
       read_dataset(file_id, "group_offsets", group_offsets_);
 
+      // The file's own batch boundaries, and how many source particles each
+      // batch ran. Partitioning along them rather than by an even count of
+      // groups is what lets a batch's yield vary, and a varying yield is how
+      // the number of histories that wrote nothing reaches the uncertainty.
+      if (object_exists(file_id, "batch_offsets") &&
+          object_exists(file_id, "batch_n_particles")) {
+        read_dataset(file_id, "batch_offsets", batch_offsets_);
+        read_dataset(file_id, "batch_n_particles", batch_n_particles_);
+      }
+
       // The number of first-stage source particles the groups represent, which
       // a follow-on calculation needs to express its tallies per first-stage
       // source particle rather than per group sampled here
@@ -645,21 +655,43 @@ SourceSite FileSource::sample(uint64_t* seed) const
   return site;
 }
 
-std::pair<int64_t, int64_t> FileSource::group_range() const
+FileSource::SourceBlock FileSource::current_block() const
 {
   int64_t n_groups = group_offsets_.size() - 1;
-  if (!settings::ssr_independent_batches)
-    return {0, n_groups};
+  SourceBlock whole {0, n_groups, 1.0};
+  if (!settings::ssr_independent_batches || batch_offsets_.empty())
+    return whole;
 
+  int64_t n_file_batches = batch_offsets_.size() - 1;
   int64_t n_active = settings::n_batches - settings::n_inactive;
   int64_t i_active = simulation::current_batch - settings::n_inactive - 1;
-  if (n_active < 1 || i_active < 0 || n_groups < n_active)
-    return {0, n_groups};
+  if (n_active < 1 || i_active < 0 || n_file_batches < n_active)
+    return whole;
   i_active = std::min(i_active, n_active - 1);
 
-  // Integer arithmetic keeps the slices as even as the group count allows,
-  // differing by at most one when it does not divide evenly
-  return {n_groups * i_active / n_active, n_groups * (i_active + 1) / n_active};
+  // Whole batches of the file, never part of one: a batch is the unit that was
+  // independent when the file was written, so keeping them intact is what makes
+  // the blocks independent too, however long the chain of files that produced
+  // this one
+  int64_t lo = n_file_batches * i_active / n_active;
+  int64_t hi = n_file_batches * (i_active + 1) / n_active;
+
+  int64_t first = batch_offsets_[lo];
+  int64_t last = batch_offsets_[hi];
+  int64_t n_particles = 0;
+  for (int64_t b = lo; b < hi; ++b) {
+    n_particles += batch_n_particles_[b];
+  }
+
+  // A block that produced nothing is not an error: those source particles
+  // reached no surface, and the honest contribution of the block is zero
+  if (n_particles <= 0 || n_source_particles_ <= 0 || n_groups <= 0)
+    return {first, last, 1.0};
+
+  double block_yield = static_cast<double>(last - first) / n_particles;
+  double file_yield =
+    static_cast<double>(n_groups) / static_cast<double>(n_source_particles_);
+  return {first, last, block_yield / file_yield};
 }
 
 SourceSite FileSource::sample_history(
@@ -673,10 +705,20 @@ SourceSite FileSource::sample_history(
     return this->sample_with_constraints(seed);
   }
 
-  auto range = this->group_range();
-  int64_t lo = range.first;
-  int64_t n_avail = range.second - range.first;
+  auto block = this->current_block();
+  int64_t lo = block.first_group;
+  int64_t n_avail = block.last_group - block.first_group;
   int64_t n_local_reject = 0;
+
+  // A batch whose share of the file holds no group still has to emit
+  // something, so it emits a history of no weight. That is the correct
+  // contribution: every one of its source particles missed the surface.
+  if (n_avail <= 0) {
+    SourceSite site = sites_[0];
+    this->resolve_surface_id(site);
+    site.wgt = 0.0;
+    return site;
+  }
 
   while (true) {
     // Sample a history group, not a site: every site of the group is emitted
@@ -700,8 +742,9 @@ SourceSite FileSource::sample_history(
     }
 
     // For the "kill" strategy the history is emitted with zero weight so that
-    // it terminates immediately, keeping the history count unbiased
-    double wgt_factor = 1.0;
+    // it terminates immediately, keeping the history count unbiased. The
+    // block's yield rides along on the same factor.
+    double wgt_factor = block.wgt_factor;
     if (!accepted) {
       if (rejection_strategy_ == RejectionStrategy::RESAMPLE) {
         ++n_local_reject;

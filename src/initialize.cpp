@@ -473,6 +473,22 @@ static void check_surface_source_compatibility()
             "secondary bank, which transports each secondary particle as an "
             "independent history. Disabling shared secondary bank.");
   }
+
+  // The sites of one source history are emitted together for a file that
+  // records its grouping, so this is only worth saying about one that does not.
+  // Checked here rather than where the file is opened because that is too early
+  // to know whether it carries the grouping.
+  for (const auto& source : model::external_sources) {
+    const auto* file_source = dynamic_cast<const FileSource*>(source.get());
+    if (file_source && !file_source->grouped()) {
+      warning("A surface source file being read does not record which of its "
+              "sites came from the same source history, so each site is "
+              "emitted as a history of its own and scores defined per history "
+              "are split across the sites that came from one original "
+              "history.");
+      break;
+    }
+  }
 }
 
 bool read_model_xml()

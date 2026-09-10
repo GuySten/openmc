@@ -29,7 +29,7 @@ vector<int64_t> ssw_batch_group_end;
 vector<int64_t> ssw_batch_n_particles;
 vector<int> ssw_batch_complete;
 int64_t ssw_gen_start {0};
-int64_t ssw_n_dropped {0};
+int ssw_batch_truncated {0};
 
 SharedArray<CollisionTrackSite> collision_track_bank;
 
@@ -125,8 +125,8 @@ void surf_source_close_batch()
   simulation::ssw_batch_n_particles.push_back(
     simulation::work_per_rank * settings::gen_per_batch);
   simulation::ssw_batch_complete.push_back(
-    simulation::ssw_n_dropped == 0 ? 1 : 0);
-  simulation::ssw_n_dropped = 0;
+    simulation::ssw_batch_truncated == 0 ? 1 : 0);
+  simulation::ssw_batch_truncated = 0;
 }
 
 void surf_source_reset_groups()
@@ -136,7 +136,7 @@ void surf_source_reset_groups()
   simulation::ssw_batch_n_particles.clear();
   simulation::ssw_batch_complete.clear();
   simulation::ssw_gen_start = 0;
-  simulation::ssw_n_dropped = 0;
+  simulation::ssw_batch_truncated = 0;
 }
 
 SurfaceSourceGroups gather_surface_source_groups(
@@ -148,8 +148,14 @@ SurfaceSourceGroups gather_surface_source_groups(
   // starting at local site index i on rank r starts at bank_index[r] + i in the
   // file. Groups of rank r all lie within rank r's site range, so concatenating
   // the group arrays in the same order stays consistent with the site array.
-  int n_groups = simulation::ssw_group_offsets.size();
-  int n_batches = simulation::ssw_batch_group_end.size();
+  // MPI counts are int, so one rank's group count has to fit in one
+  if (simulation::ssw_group_offsets.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
+    fatal_error("Too many surface source history groups to gather across MPI "
+                "ranks. Reduce max_particles or increase max_source_files.");
+  }
+  int n_groups = static_cast<int>(simulation::ssw_group_offsets.size());
+  int n_batches = static_cast<int>(simulation::ssw_batch_group_end.size());
 
   vector<int64_t> local_groups(n_groups);
   for (int g = 0; g < n_groups; ++g) {
@@ -188,11 +194,16 @@ SurfaceSourceGroups gather_surface_source_groups(
   }
 
 #ifdef OPENMC_MPI
+  // Receive buffers are significant only on the root rank, and the batch
+  // boundaries land after the leading zero of batch_offsets
+  int64_t* batch_offsets_recv =
+    mpi::master ? out.batch_offsets.data() + 1 : nullptr;
+
   MPI_Gatherv(local_groups.data(), n_groups, MPI_INT64_T,
     out.group_offsets.data(), counts.data(), displs.data(), MPI_INT64_T, 0,
     mpi::intracomm);
   MPI_Gather(simulation::ssw_batch_group_end.data(), n_batches, MPI_INT64_T,
-    out.batch_offsets.data() + 1, n_batches, MPI_INT64_T, 0, mpi::intracomm);
+    batch_offsets_recv, n_batches, MPI_INT64_T, 0, mpi::intracomm);
   MPI_Gather(simulation::ssw_batch_n_particles.data(), n_batches, MPI_INT64_T,
     out.batch_n_particles.data(), n_batches, MPI_INT64_T, 0, mpi::intracomm);
   MPI_Gather(simulation::ssw_batch_complete.data(), n_batches, MPI_INT,

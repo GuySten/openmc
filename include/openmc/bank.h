@@ -55,8 +55,9 @@ extern vector<int> ssw_batch_complete;
 //! Index into surf_source_bank at which the current generation began
 extern int64_t ssw_gen_start;
 
-//! Number of sites discarded from the batch currently being accumulated
-extern int64_t ssw_n_dropped;
+//! Whether any site that passed the surface and cell filters was discarded
+//! from the batch currently being accumulated because the bank was full
+extern int ssw_batch_truncated;
 
 extern SharedArray<CollisionTrackSite> collision_track_bank;
 

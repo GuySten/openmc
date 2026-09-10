@@ -2,6 +2,7 @@
 surfaces in a file for a given simulation."""
 
 from pathlib import Path
+import shutil
 
 import openmc
 import openmc.lib
@@ -560,10 +561,7 @@ def test_pulse_height_rejected(run_in_tmpdir, model_groups):
 
 
 @pytest.mark.skipif(
-    not openmc.lib.is_mcpl_interface_available()
-    if hasattr(openmc.lib, "is_mcpl_interface_available")
-    else True,
-    reason="MCPL library not available",
+    shutil.which("mcpl-config") is None, reason="MCPL is not available."
 )
 def test_mcpl_group_userflags(run_in_tmpdir, model_cascade):
     """MCPL files carry the group index in the user-flags field."""

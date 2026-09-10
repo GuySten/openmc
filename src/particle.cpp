@@ -989,17 +989,6 @@ void add_surf_source_to_bank(Particle& p, const Surface& surf)
     return;
   }
 
-  // Once the bank is full no further site can be stored, so the batch being
-  // accumulated is an incomplete sample of itself and consumers of the file
-  // need to know. The bank is only ever full for the remainder of the batch in
-  // which it filled, since it is flushed and cleared in finalize_batch(), so
-  // this count is never attributed to a batch other than the truncated one.
-  if (simulation::surf_source_bank.full()) {
-#pragma omp atomic
-    ++simulation::ssw_n_dropped;
-    return;
-  }
-
   // If a cell/cellfrom/cellto parameter is defined
   if (settings::ssw_cell_id != C_NONE) {
 
@@ -1065,6 +1054,20 @@ void add_surf_source_to_bank(Particle& p, const Surface& surf)
     }
   }
 
+  // Once the bank is full no further site can be stored, so the batch being
+  // accumulated is an incomplete sample of itself and consumers of the file
+  // need to know. This is checked only after the surface and cell filters
+  // above have accepted the crossing, so that a batch is flagged only when a
+  // site that would genuinely have been banked was lost. The bank is only ever
+  // full for the remainder of the batch in which it filled, since it is
+  // flushed and cleared in finalize_batch(), so the flag is never attributed
+  // to a batch other than the truncated one.
+  if (simulation::surf_source_bank.full()) {
+#pragma omp atomic write
+    simulation::ssw_batch_truncated = 1;
+    return;
+  }
+
   SourceSite site;
   site.r = p.r();
   site.u = p.u();
@@ -1076,10 +1079,9 @@ void add_surf_source_to_bank(Particle& p, const Surface& surf)
   site.particle = p.type();
   site.parent_id = p.id();
   site.progeny_id = p.n_progeny();
-  int64_t idx = simulation::surf_source_bank.thread_safe_append(site);
-  if (idx == -1) {
-#pragma omp atomic
-    ++simulation::ssw_n_dropped;
+  if (simulation::surf_source_bank.thread_safe_append(site) == -1) {
+#pragma omp atomic write
+    simulation::ssw_batch_truncated = 1;
   }
 }
 

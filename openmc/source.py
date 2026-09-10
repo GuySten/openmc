@@ -1836,6 +1836,13 @@ def split_source_file(
     cv.check_type('n_files', n_files, Integral)
     cv.check_greater_than('n_files', n_files, 0)
 
+    if not h5py.is_hdf5(filename):
+        raise ValueError(
+            f'File {filename} is not an HDF5 source file. Splitting an MCPL '
+            'surface source is not supported; write the surface source in HDF5 '
+            'format instead.'
+        )
+
     # Work on the raw compound array: no SourceParticle objects are needed
     with h5py.File(filename, 'r') as fh:
         if fh.attrs.get('filetype') != b'source':
@@ -1889,7 +1896,7 @@ def split_source_file(
             group_sizes.extend(np.diff(group_offsets[g0:g1 + 1]))
             batch_n_groups.append(g1 - g0)
 
-        path = prefix.with_suffix(f'.{i}.h5')
+        path = prefix.with_name(f'{prefix.name}.{i}.h5')
         with h5py.File(path, 'w') as fh:
             fh.attrs['filetype'] = np.bytes_('source')
             fh.attrs['version'] = version

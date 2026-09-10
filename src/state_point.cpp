@@ -596,7 +596,7 @@ hid_t h5banktype(bool memory)
 }
 
 void write_source_point(std::string filename, span<SourceSite> source_bank,
-  const vector<int64_t>& bank_index, bool use_mcpl)
+  const vector<int64_t>& bank_index, bool use_mcpl, bool surface_source)
 {
   std::string ext = use_mcpl ? "mcpl" : "h5";
 
@@ -613,10 +613,14 @@ void write_source_point(std::string filename, span<SourceSite> source_bank,
   // Dispatch to appropriate function based on file type
   if (use_mcpl) {
     filename.append(".mcpl");
-    write_mcpl_source_point(filename.c_str(), source_bank, bank_index);
+    write_mcpl_source_point(
+      filename.c_str(), source_bank, bank_index, surface_source);
   } else {
     filename.append(".h5");
     write_h5_source_point(filename.c_str(), source_bank, bank_index);
+    if (surface_source) {
+      write_surface_source_metadata(filename, bank_index);
+    }
   }
 }
 
@@ -655,6 +659,23 @@ void write_h5_source_point(const char* filename, span<SourceSite> source_bank,
 
   if (mpi::master || parallel)
     file_close(file_id);
+}
+
+void write_surface_source_metadata(
+  const std::string& filename, const vector<int64_t>& bank_index)
+{
+  SurfaceSourceGroups groups = gather_surface_source_groups(bank_index);
+  if (!mpi::master)
+    return;
+
+  hid_t file_id = file_open(filename, 'a', false);
+  write_dataset(file_id, "group_offsets", groups.group_offsets);
+  write_dataset(file_id, "batch_offsets", groups.batch_offsets);
+  write_dataset(file_id, "batch_n_particles", groups.batch_n_particles);
+  write_dataset(file_id, "batch_complete", groups.batch_complete);
+  write_attribute(file_id, "n_ranks", groups.n_ranks);
+  write_attribute(file_id, "n_source_particles", groups.n_source_particles());
+  file_close(file_id);
 }
 
 void write_source_bank(hid_t group_id, span<SourceSite> source_bank,

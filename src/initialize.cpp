@@ -408,6 +408,48 @@ static void check_pulse_height_compatibility()
       }
     }
   }
+
+  // A pulse height is a per-history quantity: it is scored once, from the
+  // energy deposited by a source particle and all of its descendants. A surface
+  // source file is read one site per history, so a history that put several
+  // particles across the recording surface is scored as several smaller pulses
+  // instead of one. The resulting spectrum is shifted toward lower energies
+  // with an inflated count rate, and nothing about the result indicates this.
+  //
+  // TODO: Surface source files now record which sites belong to one history
+  // (see SurfaceSourceGroups). Once FileSource emits a group as a single
+  // history, this restriction can be lifted; until then the combination is
+  // refused rather than scored incorrectly.
+  if (settings::surf_source_read) {
+    for (const auto& t : model::tallies) {
+      if (t->type_ == TallyType::PULSE_HEIGHT) {
+        fatal_error(
+          "Pulse-height tallies cannot currently be used with a surface source "
+          "file. Each site in the file is transported as its own history, so a "
+          "history that produced several sites is scored as several pulses "
+          "rather than one.");
+      }
+    }
+  }
+}
+
+// TODO: Surface source grouping identifies a source history by the particle ID
+// recorded on each banked site. The shared secondary bank transports every
+// secondary as an independent Particle with a freshly assigned ID, so the sites
+// of one history no longer share one and, because the per-rank work is
+// rebalanced between secondary generations, IDs from different secondary
+// generations can even collide. A proper fix would carry a root history ID
+// through initialize_particle_track() and from_source(), which would also
+// retire the pulse-height restriction above. For now, disable the shared
+// secondary bank when a surface source is being written.
+static void check_surface_source_compatibility()
+{
+  if (settings::surf_source_write && settings::use_shared_secondary_bank) {
+    settings::use_shared_secondary_bank = false;
+    warning("Surface source writing is not yet compatible with the shared "
+            "secondary bank, which transports each secondary particle as an "
+            "independent history. Disabling shared secondary bank.");
+  }
 }
 
 bool read_model_xml()
@@ -505,6 +547,7 @@ bool read_model_xml()
     read_tallies_xml(root.child("tallies"));
 
   check_pulse_height_compatibility();
+  check_surface_source_compatibility();
 
   // Initialize distribcell_filters
   prepare_distribcell();
@@ -552,6 +595,7 @@ void read_separate_xml_files()
   read_tallies_xml();
 
   check_pulse_height_compatibility();
+  check_surface_source_compatibility();
 
   // Initialize distribcell_filters
   prepare_distribcell();

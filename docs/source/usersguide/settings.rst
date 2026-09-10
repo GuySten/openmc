@@ -422,6 +422,123 @@ As an example, to write a maximum of three surface source files:::
       'max_source_files': 3
   }
 
+.. _surface_source_structure:
+
+Structure of a surface source file
+++++++++++++++++++++++++++++++++++
+
+A surface source file is not a flat list of independent particles, and treating
+it as one gives wrong answers in two distinct ways.
+
+First, a single source history can put several particles across the recording
+surface: the members of a cascade, or one particle crossing a transmission
+surface more than once. Those sites belong to one history. If a follow-on
+calculation emits them as separate histories, any score defined per history is
+split among them. A pulse-height tally is the clearest case: one pulse becomes
+several smaller ones, shifting the spectrum down and inflating the count rate.
+
+Second, the sites in the file are a sample, drawn from the finite number of
+source particles simulated by the calculation that wrote them. A follow-on
+calculation draws sites from the file with replacement, so the uncertainty it
+reports converges to the spread of that one file's contents rather than to the
+true uncertainty of the two-stage result. The difference is fixed once the file
+is written and does not shrink as the follow-on run simulates more particles.
+
+OpenMC therefore records two levels of structure, documented in
+:ref:`io_source` for both the HDF5 and MCPL formats. The sites of one history
+form a *group*; the groups banked during one batch form a *batch*, which also
+carries the number of source particles simulated for it. Sites within a group
+are correlated; batches are independent of one another. Under MPI the file
+stores one entry per rank and batch, but these are merged when the file is
+read, so the batch count and the per-batch particle count do not depend on how
+many ranks the calculation ran on.
+
+Reading a surface source file exposes that structure as nested sequences. The
+flat particle list is unchanged, and the batches are built only if you ask for
+them::
+
+  particles = openmc.read_source_file('surface_source.h5')
+
+  for batch in particles.batches:
+      # batch.n_particles counts every source particle, including those that
+      # put nothing across the surface
+      for group in batch:
+          # group is a ParticleList holding the sites of one source history
+          total_weight = sum(p.wgt for p in group)
+
+``particles.batches`` is None for a file that carries no structure, such as one
+written by :func:`openmc.write_source_file` or by an older version of OpenMC.
+That is not the same as a file of single-site groups: how its sites map onto
+source histories is unknown, not trivial. ``particles.groups`` gives the
+history groups without the batch structure, for the rare file that carries the
+former but not the latter.
+
+To get an uncertainty that accounts for both stages, split the file along batch
+boundaries and run the follow-on calculation once per piece::
+
+  import openmc
+  import numpy as np
+
+  paths = openmc.split_source_file('surface_source.h5', 20, 'split')
+
+  results = []
+  for path in paths:
+      settings.surf_source_read = {'path': path}
+      # ... run and extract the tally of interest ...
+      results.append(mean_from_this_run)
+
+  results = np.array(results)
+  print(results.mean(), results.std(ddof=1) / np.sqrt(len(results)))
+
+The number of pieces is your replicate count, so aim for at least about 30,
+which means writing the surface source with at least that many batches. Batch
+count is nearly free to increase in a fixed source calculation. Increasing the
+number of particles in each follow-on run drives this estimate down to a floor
+set by the number of source particles in the first stage; past that point,
+additional effort in the follow-on run buys nothing.
+
+Each output file carries an ``n_source_particles`` attribute giving the number
+of first-stage source particles it represents, and
+:attr:`openmc.ParticleList.n_source_particles` reads it back. Tallies from the
+follow-on run are normalized per particle simulated in that run, and every site
+in the file is read as its own history, so they must be multiplied by the number
+of sites in the file divided by ``n_source_particles`` to be expressed per
+first-stage source particle::
+
+    particles = openmc.read_source_file(path)
+    factor = len(particles) / particles.n_source_particles
+
+That factor counts sites; it is not a sum of their weights. A site's weight is
+already carried into the scores that site produces, so applying it again here
+would count it twice.
+
+.. note:: Splitting the file addresses the uncertainty but not the per-history
+          problem: each site is still emitted as its own history. Pulse-height
+          tallies are rejected outright when a surface source file is used.
+
+.. note:: Batches whose ``batch_complete`` flag is false lost sites because the
+          surface source bank filled up partway through. They are a biased
+          sample and are dropped by :func:`openmc.split_source_file`. A batch
+          is incomplete if *any* rank lost a site, so under MPI incomplete
+          batches become likelier as the rank count grows. If many batches are
+          incomplete, increase ``max_particles`` or reduce the number of
+          particles per batch. When the file is a phase-space export
+          rather than a source, the truncated stream is still a valid record of
+          what crossed the surface and nothing needs to be dropped.
+
+.. note:: If the recording surface is a transmission surface rather than a
+          vacuum boundary, a particle can cross it more than once and each
+          crossing is banked. This is correct as long as the follow-on
+          calculation cannot send the emitted particle back through the surface
+          to produce the later crossings a second time, which usually means
+          making the inner region absorbing.
+
+.. note:: For an eigenvalue calculation, batches are not fully independent
+          because the fission source is correlated between generations. Batch
+          statistics inherit that correlation and understate the uncertainty by
+          the same factor that affects any other batch-based estimate in an
+          eigenvalue run.
+
 .. _compiled_source:
 
 Compiled Sources

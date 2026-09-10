@@ -467,6 +467,7 @@ void allocate_banks()
   if (settings::surf_source_write) {
     // Allocate surface source bank
     simulation::surf_source_bank.reserve(settings::ssw_max_particles);
+    surf_source_reset_groups();
   }
 
   if (settings::collision_track) {
@@ -587,7 +588,10 @@ void finalize_batch()
 
   // Write out surface source if requested.
   if (settings::surf_source_write &&
-      simulation::ssw_current_file <= settings::ssw_max_files) {
+      simulation::ssw_current_file <= settings::ssw_max_files &&
+      simulation::current_batch > settings::n_inactive) {
+    surf_source_close_batch();
+
     bool last_batch = (simulation::current_batch == settings::n_batches);
     if (simulation::surf_source_bank.full() || last_batch) {
       // Determine appropriate filename
@@ -604,12 +608,13 @@ void finalize_batch()
       span<SourceSite> surfbankspan(simulation::surf_source_bank.begin(),
         simulation::surf_source_bank.size());
 
-      // Write surface source file
-      write_source_point(
-        filename, surfbankspan, surf_work_index, settings::surf_mcpl_write);
+      // Write surface source file, including the group and batch boundaries
+      write_source_point(filename, surfbankspan, surf_work_index,
+        settings::surf_mcpl_write, true);
 
-      // Reset surface source bank and increment counter
+      // Reset surface source bank and group bookkeeping, then increment counter
       simulation::surf_source_bank.clear();
+      surf_source_reset_groups();
       if (!last_batch && settings::ssw_max_files >= 1) {
         simulation::surf_source_bank.reserve(settings::ssw_max_particles);
       }
@@ -641,6 +646,15 @@ void initialize_generation()
 void finalize_generation()
 {
   auto& gt = simulation::global_tallies;
+
+  // Close out the surface source sites banked during this generation, sorting
+  // them so that each history's sites are contiguous and recording where each
+  // history begins
+  if (settings::surf_source_write &&
+      simulation::ssw_current_file <= settings::ssw_max_files &&
+      simulation::current_batch > settings::n_inactive) {
+    surf_source_close_generation();
+  }
 
   // Update global tallies with the accumulation variables
   if (settings::run_mode == RunMode::EIGENVALUE) {

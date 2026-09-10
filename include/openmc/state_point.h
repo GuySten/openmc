@@ -39,8 +39,22 @@ void load_state_point();
 void write_h5_source_point(const char* filename, span<SourceSite> source_bank,
   const vector<int64_t>& bank_index);
 
+//! Write a source bank to file
+//!
+//! \param surface_source Whether this is a surface source file, in which case
+//!   the group and batch boundaries are written alongside the sites
 void write_source_point(std::string, span<SourceSite> source_bank,
-  const vector<int64_t>& bank_index, bool use_mcpl);
+  const vector<int64_t>& bank_index, bool use_mcpl,
+  bool surface_source = false);
+
+//! Append the surface source group and batch boundaries to a surface source
+//! file
+//!
+//! \param filename Path of the surface source file, including the extension
+//! \param bank_index Cumulative site counts per rank, as passed to
+//!   write_source_point
+void write_surface_source_metadata(
+  const std::string& filename, const vector<int64_t>& bank_index);
 
 // This appends a source bank specification to an HDF5 file
 // that's already open. It is used internally by write_source_point.

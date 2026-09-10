@@ -527,6 +527,25 @@ void FileSource::load_sites_from_file(const std::string& path)
     // Read in the source particles
     read_source_bank(file_id, sites_, false);
 
+    // A batch that lost sites because the surface source bank filled up
+    // partway through is a truncated, and therefore biased, sample of itself.
+    // openmc.split_source_file drops such batches; reading the file directly
+    // cannot, so say so rather than letting the bias pass unremarked.
+    if (object_exists(file_id, "batch_complete")) {
+      vector<int> batch_complete;
+      read_dataset(file_id, "batch_complete", batch_complete);
+      int n_incomplete =
+        std::count(batch_complete.begin(), batch_complete.end(), 0);
+      if (n_incomplete > 0) {
+        warning(fmt::format(
+          "Surface source file '{}' contains {} of {} batches that lost sites "
+          "because the surface source bank filled up partway through. Those "
+          "batches are a biased sample of themselves. Increase max_particles "
+          "when writing, or drop them with openmc.split_source_file.",
+          path, n_incomplete, batch_complete.size()));
+      }
+    }
+
     // Close file
     file_close(file_id);
   }

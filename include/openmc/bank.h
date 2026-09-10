@@ -31,13 +31,21 @@ extern SharedArray<SourceSite> surf_source_bank;
 // sorting each generation's range on parent_id in
 // surf_source_close_generation().
 //
-// A *batch* is the set of groups banked by one rank during one batch. Batches
-// are statistically independent of one another and carry the number of source
+// A *batch* is the set of groups banked during one batch. Batches are
+// statistically independent of one another and carry the number of source
 // particles simulated, including those that produced no site at all, which is
 // the denominator any normalization or variance estimate needs. This mirrors
 // the MCNP surface source convention, where each track records the history
 // number that produced it and the header records NP1, the number of histories
 // run, separately from NRSS, the number of tracks stored.
+//
+// Sites are written to the file rank-major, so the groups of one batch are
+// contiguous within a rank but not across ranks. The file therefore stores one
+// entry per rank and batch, along with the rank count needed to interpret
+// them; a reader merges same-numbered batches across ranks so that the batch
+// count, the source particle count of each batch, and the unit of statistical
+// independence are all the same whether the file was written on one rank or
+// many.
 
 //! Index into surf_source_bank at which each group begins. Local to this rank.
 extern vector<int64_t> ssw_group_offsets;
@@ -93,12 +101,15 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank);
 struct SurfaceSourceGroups {
   //! Site index at which each group begins, with a trailing total
   vector<int64_t> group_offsets;
-  //! Group index at which each batch begins, with a trailing total
+  //! Group index at which each rank-batch segment begins, with a trailing
+  //! total. Segment s = rank * n_batches + batch.
   vector<int64_t> batch_offsets;
-  //! Source particles simulated for each batch
+  //! Source particles simulated for each rank-batch segment
   vector<int64_t> batch_n_particles;
-  //! Whether each batch lost no site to a full bank
+  //! Whether each rank-batch segment lost no site to a full bank
   vector<int> batch_complete;
+  //! Number of ranks the segments are spread over, needed to merge them
+  int n_ranks {1};
 
   //! Total number of source particles represented by the file
   int64_t n_source_particles() const;

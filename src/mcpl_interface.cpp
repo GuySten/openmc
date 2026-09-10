@@ -470,8 +470,12 @@ void write_mcpl_source_bank_internal(mcpl_outfile_t* file_id,
 std::string format_batch_structure(const SurfaceSourceGroups& groups)
 {
   std::ostringstream out;
+  int n_ranks = groups.n_ranks > 0 ? groups.n_ranks : 1;
   out << "openmc_batch_structure v1\n";
-  out << "n_batches " << groups.batch_n_particles.size() << "\n";
+  // Arrays hold one entry per rank and batch, in that order, so n_batches is
+  // the number of batches the calculation ran rather than the array length
+  out << "n_ranks " << n_ranks << "\n";
+  out << "n_batches " << groups.batch_n_particles.size() / n_ranks << "\n";
   out << "batch_offsets";
   for (auto v : groups.batch_offsets)
     out << " " << v;
@@ -541,7 +545,8 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
       g_mcpl_api->hdr_add_comment(file_id,
         "Blob 'openmc_batch_structure' gives the batch boundaries in units of "
         "groups, the number of source particles simulated for each batch, and "
-        "whether each batch lost sites to a full bank. Batches are "
+        "whether each batch lost sites to a full bank. Its arrays hold one "
+        "entry per MPI rank and batch, in that order. Batches are "
         "statistically independent of one another.");
     }
 

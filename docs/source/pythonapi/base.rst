@@ -213,6 +213,7 @@ Post-processing
    openmc.ParticleList
    openmc.SourceBatch
    openmc.SourceBatchList
+   openmc.SourceGroupList
    openmc.ParticleTrack
    openmc.StatePoint
    openmc.Summary

@@ -673,6 +673,7 @@ void write_surface_source_metadata(
   write_dataset(file_id, "batch_offsets", groups.batch_offsets);
   write_dataset(file_id, "batch_n_particles", groups.batch_n_particles);
   write_dataset(file_id, "batch_complete", groups.batch_complete);
+  write_attribute(file_id, "n_ranks", groups.n_ranks);
   write_attribute(file_id, "n_source_particles", groups.n_source_particles());
   file_close(file_id);
 }

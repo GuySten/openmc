@@ -402,6 +402,7 @@ def test_group_and_batch_metadata(run_in_tmpdir, model_groups):
         batch_offsets = f["batch_offsets"][...]
         n_particles = f["batch_n_particles"][...]
         complete = f["batch_complete"][...]
+        n_ranks = f.attrs["n_ranks"]
         n_source_particles = f.attrs["n_source_particles"]
 
     assert n_sites > 0
@@ -412,17 +413,27 @@ def test_group_and_batch_metadata(run_in_tmpdir, model_groups):
     assert group_offsets[-1] == n_sites
     assert np.all(np.diff(group_offsets) > 0)
 
-    # Batches partition the groups. One batch per active batch on a single rank
+    # Segments partition the groups. There is one segment per rank and active
+    # batch, so the array lengths depend on rank count but the batch count
+    # recovered from them does not
     n_batches = model_groups.settings.batches
-    assert len(batch_offsets) == n_batches + 1
+    assert len(batch_offsets) == n_ranks * n_batches + 1
     assert batch_offsets[0] == 0
     assert batch_offsets[-1] == len(group_offsets) - 1
     assert np.all(np.diff(batch_offsets) >= 0)
 
-    assert len(n_particles) == len(complete) == n_batches
-    assert np.all(n_particles == model_groups.settings.particles)
+    assert len(n_particles) == len(complete) == n_ranks * n_batches
     assert np.all(complete == 1)
     assert n_source_particles == n_particles.sum()
+
+    # Merging the segments is what the reader exposes, and it is what makes
+    # the batch count and the per-batch particle count rank-independent
+    batches = openmc.read_source_file("surface_source.h5").batches
+    assert len(batches) == n_batches
+    for batch in batches:
+        assert batch.n_particles == model_groups.settings.particles
+        assert batch.complete
+    assert batches.n_source_particles == n_source_particles
 
     # A neutron in a vacuum-bounded sphere with no secondary production can
     # only leak once, so every group holds exactly one site here
@@ -467,6 +478,73 @@ def test_multi_site_groups(run_in_tmpdir, model_cascade):
     assert list(first) == list(particles[:len(first)])
 
 
+def test_batches_merged_across_ranks(run_in_tmpdir):
+    """Segments written by separate ranks are merged into one batch each.
+
+    A surface source stores sites rank-major, so one batch of the calculation
+    is spread over one segment per rank. The layout is built by hand here so
+    that the merge is exercised without running under MPI.
+
+    """
+    particles = [openmc.SourceParticle(E=float(i + 1)) for i in range(6)]
+    openmc.write_source_file(particles, "ranked.h5")
+
+    # Four groups of sizes 1, 2, 1, 2. Two ranks and two batches, so segment
+    # s = rank * n_batches + batch owns exactly one group.
+    with h5py.File("ranked.h5", "a") as f:
+        f.create_dataset("group_offsets", data=np.array([0, 1, 3, 4, 6], "<i8"))
+        f.create_dataset("batch_offsets", data=np.array([0, 1, 2, 3, 4], "<i8"))
+        f.create_dataset(
+            "batch_n_particles", data=np.array([10, 10, 20, 20], "<i8"))
+        f.create_dataset("batch_complete", data=np.array([1, 1, 1, 0], "<i4"))
+        f.attrs["n_ranks"] = 2
+
+    read = openmc.read_source_file("ranked.h5")
+    batches = read.batches
+
+    # Two ranks times two batches is four segments, but two batches
+    assert len(batches) == 2
+
+    # Batch 0 is rank 0's group 0 and rank 1's group 2
+    assert [len(g) for g in batches[0]] == [1, 1]
+    assert list(batches[0].particles) == [read[0], read[3]]
+    # Particle counts add over ranks
+    assert batches[0].n_particles == 30
+    assert batches[0].complete
+
+    # Batch 1 is rank 0's group 1 and rank 1's group 3
+    assert [len(g) for g in batches[1]] == [2, 2]
+    assert list(batches[1].particles) == [read[1], read[2], read[4], read[5]]
+    assert batches[1].n_particles == 30
+    # One rank losing a site makes the whole batch incomplete
+    assert not batches[1].complete
+
+    assert batches.n_source_particles == 60
+
+    # Every site belongs to exactly one group of exactly one batch
+    assert sum(len(g) for b in batches for g in b) == len(read)
+
+    # The groups are also reachable without the batch structure, in file order
+    assert [len(g) for g in read.groups] == [1, 2, 1, 2]
+
+
+def test_groups_without_batch_structure(run_in_tmpdir, model_groups):
+    """Group information stands on its own if the batch structure is absent."""
+    model_groups.settings.surf_source_write = {"max_particles": 100000}
+    model_groups.run()
+
+    with h5py.File("surface_source.h5", "a") as f:
+        n_groups = len(f["group_offsets"]) - 1
+        for name in ("batch_offsets", "batch_n_particles", "batch_complete"):
+            del f[name]
+
+    particles = openmc.read_source_file("surface_source.h5")
+    assert particles.batches is None
+    assert particles.groups is not None
+    assert len(particles.groups) == n_groups
+    assert sum(len(g) for g in particles.groups) == len(particles)
+
+
 def test_structure_is_not_carried_by_slicing(run_in_tmpdir, model_groups):
     """Offsets index the file, so a selection must not claim to carry them."""
     model_groups.settings.surf_source_write = {"max_particles": 100000}
@@ -475,6 +553,7 @@ def test_structure_is_not_carried_by_slicing(run_in_tmpdir, model_groups):
     particles = openmc.read_source_file("surface_source.h5")
     assert particles.batches is not None
     assert particles[:5].batches is None
+    assert particles[:5].groups is None
 
     # A file with no structure reports none, rather than one trivial group
     # per site

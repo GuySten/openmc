@@ -38,28 +38,43 @@ described below.
            not as one history per site, or scores defined per history such as
            pulse-height tallies are split into several smaller scores.
 
-           A *batch* is the set of groups banked by one MPI rank during one
-           batch. No source particle contributes to more than one batch, so
-           batches are statistically independent of one another. A batch also
-           records how many source particles produced it, including those that
-           put nothing across the recording surface.
+           A *batch* is the set of groups banked during one batch. No source
+           particle contributes to more than one batch, so batches are
+           statistically independent of one another. A batch also records how
+           many source particles produced it, including those that put nothing
+           across the recording surface.
+
+           Sites are stored rank-major, so the groups of one batch are
+           contiguous within a rank but not across ranks. The batch datasets
+           therefore hold one entry per rank and batch -- a *segment* --
+           ordered by rank and then by batch, alongside an ``n_ranks``
+           attribute. A reader merges same-numbered segments across ranks, so
+           that the batch count, the source particle count of each batch, and
+           the unit of statistical independence do not depend on how many ranks
+           wrote the file. This is what :attr:`openmc.ParticleList.batches`
+           returns.
 
            - **group_offsets** (*int64[]*) -- Index into ``source_bank`` at
              which each group begins, with a trailing entry equal to the total
              number of sites, so that group ``g`` spans
              ``[group_offsets[g], group_offsets[g + 1])``.
            - **batch_offsets** (*int64[]*) -- Index into ``group_offsets`` at
-             which each batch begins, with a trailing entry equal to the total
-             number of groups, so that batch ``b`` owns groups
-             ``[batch_offsets[b], batch_offsets[b + 1])``. Under MPI there is
-             one entry per rank and batch, ordered by rank and then by batch.
+             which each segment begins, with a trailing entry equal to the
+             total number of groups, so that segment ``s`` owns groups
+             ``[batch_offsets[s], batch_offsets[s + 1])``. Segment
+             ``s = rank * n_batches + batch``, where ``n_batches`` is
+             ``(len(batch_offsets) - 1) // n_ranks``.
            - **batch_n_particles** (*int64[]*) -- Number of source particles
-             simulated for each batch.
-           - **batch_complete** (*int[]*) -- Whether each batch is a complete
+             simulated for each segment. Summing over the segments of one batch
+             gives the source particles simulated for that batch.
+           - **batch_complete** (*int[]*) -- Whether each segment is a complete
              sample of itself. Zero indicates that sites were discarded because
              the surface source bank filled up partway through, in which case
-             the batch is biased and should be discarded when the file is used
-             as a source.
+             the batch that segment belongs to is biased and should be
+             discarded when the file is used as a source.
+           - **n_ranks** (*int*) -- Attribute giving the number of MPI ranks
+             the segments are spread over, needed to merge them into batches.
+             One for a file written by a serial calculation.
            - **n_source_particles** (*int64*) -- Attribute giving the total
              number of source particles represented by the file, equal to the
              sum of ``batch_n_particles``.
@@ -79,7 +94,10 @@ separately from the number of tracks stored.
   field.
 - The header blob **openmc_batch_structure** holds the batch boundaries in
   units of groups, the source particle count of each batch, and the completeness
-  flags, as text. Its first line is ``openmc_batch_structure v1``.
+  flags, as text. Its first line is ``openmc_batch_structure v1``, followed by
+  ``n_ranks`` and ``n_batches`` and then the three arrays. As in the HDF5
+  format, the arrays hold one entry per rank and batch, ordered by rank and
+  then by batch.
 - The header **stat:sum** entry ``openmc_np1`` holds the number of source
   particles represented by the file. Note that for a surface source this is the
   count for the batches actually written, which differs from the whole-run

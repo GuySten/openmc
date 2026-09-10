@@ -143,6 +143,7 @@ SurfaceSourceGroups gather_surface_source_groups(
   const vector<int64_t>& bank_index)
 {
   SurfaceSourceGroups out;
+  out.n_ranks = mpi::n_procs;
 
   // The file is a concatenation of the per-rank banks in rank order, so a group
   // starting at local site index i on rank r starts at bank_index[r] + i in the

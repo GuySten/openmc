@@ -446,9 +446,12 @@ is written and does not shrink as the follow-on run simulates more particles.
 
 OpenMC therefore records two levels of structure, documented in
 :ref:`io_source` for both the HDF5 and MCPL formats. The sites of one history
-form a *group*; the groups banked by one rank during one batch form a *batch*,
-which also carries the number of source particles simulated for it. Sites
-within a group are correlated; batches are independent of one another.
+form a *group*; the groups banked during one batch form a *batch*, which also
+carries the number of source particles simulated for it. Sites within a group
+are correlated; batches are independent of one another. Under MPI the file
+stores one entry per rank and batch, but these are merged when the file is
+read, so the batch count and the per-batch particle count do not depend on how
+many ranks the calculation ran on.
 
 Reading a surface source file exposes that structure as nested sequences. The
 flat particle list is unchanged, and the batches are built only if you ask for
@@ -466,7 +469,9 @@ them::
 ``particles.batches`` is None for a file that carries no structure, such as one
 written by :func:`openmc.write_source_file` or by an older version of OpenMC.
 That is not the same as a file of single-site groups: how its sites map onto
-source histories is unknown, not trivial.
+source histories is unknown, not trivial. ``particles.groups`` gives the
+history groups without the batch structure, for the rare file that carries the
+former but not the latter.
 
 To get an uncertainty that accounts for both stages, split the file along batch
 boundaries and run the follow-on calculation once per piece::
@@ -504,9 +509,11 @@ per first-stage source particle.
 
 .. note:: Batches whose ``batch_complete`` flag is false lost sites because the
           surface source bank filled up partway through. They are a biased
-          sample and are dropped by :func:`openmc.split_source_file`. If many
-          batches are incomplete, increase ``max_particles`` or reduce the
-          number of particles per batch. When the file is a phase-space export
+          sample and are dropped by :func:`openmc.split_source_file`. A batch
+          is incomplete if *any* rank lost a site, so under MPI incomplete
+          batches become likelier as the rank count grows. If many batches are
+          incomplete, increase ``max_particles`` or reduce the number of
+          particles per batch. When the file is a phase-space export
           rather than a source, the truncated stream is still a valid record of
           what crossed the surface and nothing needs to be dropped.
 

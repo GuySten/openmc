@@ -19,6 +19,7 @@
 #endif
 #include "openmc/tensor.h"
 
+#include "openmc/array.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/constants.h"
@@ -439,7 +440,16 @@ void print_generation()
     fmt::print("   {:8.5f}", simulation::entropy[idx]);
   }
 
-  if (n > 1) {
+  // The average k column reports the combined estimator of k-effective. It is
+  // only defined once enough active batches have been accumulated, and until
+  // then the column is left empty. Random ray has a single estimator of k, so
+  // there is nothing to combine and its average over active generations is
+  // reported instead.
+  if (keff_combined_available()) {
+    array<double, 2> k_combined;
+    openmc_get_keff(k_combined.data());
+    fmt::print("   {:8.5f} +/-{:8.5f}", k_combined[0], k_combined[1]);
+  } else if (settings::solver_type == SolverType::RANDOM_RAY && n > 1) {
     fmt::print("   {:8.5f} +/-{:8.5f}", simulation::keff, simulation::keff_std);
   }
   fmt::print("\n");

@@ -425,19 +425,25 @@ void calculate_average_keff()
   }
 }
 
+bool keff_combined_available()
+{
+  // Random ray computes a single estimate of k from the scalar flux rather
+  // than three independent ones, and a combination is not defined below
+  // MIN_REALIZATIONS_TO_COMBINE realizations.
+  return settings::solver_type != SolverType::RANDOM_RAY &&
+         simulation::n_realizations >= MIN_REALIZATIONS_TO_COMBINE;
+}
+
 int openmc_get_keff(double* k_combined)
 {
   int64_t n = simulation::n_realizations;
 
-  // Random ray computes a single estimate of k from the scalar flux rather
-  // than three independent ones, and a combination is not defined below
-  // MIN_REALIZATIONS_TO_COMBINE realizations. In both cases report the average
-  // over generations, which is the only estimate of k defined at every point
-  // in a run: during inactive generations it holds the most recent generation
-  // estimate, and thereafter the average over active ones. For random ray it
-  // is not a substitute at all, but the only estimate there is.
-  if (settings::solver_type == SolverType::RANDOM_RAY ||
-      n < MIN_REALIZATIONS_TO_COMBINE) {
+  // Where no combination is available, report the average over generations,
+  // which is the only estimate of k defined at every point in a run: during
+  // inactive generations it holds the most recent generation estimate, and
+  // thereafter the average over active ones. For random ray it is not a
+  // substitute at all, but the only estimate there is.
+  if (!keff_combined_available()) {
     k_combined[0] = simulation::keff;
 
     // keff_std is only assigned once there is more than one active generation

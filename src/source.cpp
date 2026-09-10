@@ -248,6 +248,13 @@ SourceSite Source::sample_with_constraints(uint64_t* seed) const
   return site;
 }
 
+SourceSite Source::sample_history(
+  uint64_t* seed, vector<SourceSite>& extra) const
+{
+  extra.clear();
+  return this->sample_with_constraints(seed);
+}
+
 bool Source::satisfies_energy_constraints(double E) const
 {
   return E > energy_bounds_.first && E < energy_bounds_.second;
@@ -546,6 +553,20 @@ void FileSource::load_sites_from_file(const std::string& path)
       }
     }
 
+    // A surface source file records which of its sites were produced by the
+    // same source history. Reading it lets those sites be emitted together as
+    // one history rather than as one history each.
+    if (object_exists(file_id, "group_offsets")) {
+      read_dataset(file_id, "group_offsets", group_offsets_);
+
+      // The number of first-stage source particles the groups represent, which
+      // a follow-on calculation needs to express its tallies per first-stage
+      // source particle rather than per group sampled here
+      if (attribute_exists(file_id, "n_source_particles")) {
+        read_attribute(file_id, "n_source_particles", n_source_particles_);
+      }
+    }
+
     // Close file
     file_close(file_id);
   }
@@ -561,6 +582,58 @@ void FileSource::load_sites_from_file(const std::string& path)
       settings::photon_transport = true;
     }
   }
+
+  // A grouped file is sampled one group per history, so a tally from this
+  // calculation is per group. Report the factor that converts it to a
+  // per-first-stage-source-particle basis rather than leaving it to be derived.
+  if (!group_offsets_.empty() && n_source_particles_ > 0) {
+    int64_t n_groups = group_offsets_.size() - 1;
+    write_message(5,
+      "Surface source '{}': {} history groups from {} source particles. "
+      "Multiply tallies by {}/{} = {:.6g} to express them per source particle "
+      "of the calculation that wrote the file.",
+      path, n_groups, n_source_particles_, n_groups, n_source_particles_,
+      static_cast<double>(n_groups) / n_source_particles_);
+  }
+
+  // Refuse a grouping that does not describe the sites that were read rather
+  // than indexing past the end of them later, during transport
+  if (!group_offsets_.empty()) {
+    bool valid = group_offsets_.front() == 0 &&
+                 group_offsets_.back() == static_cast<int64_t>(sites_.size());
+    for (size_t g = 1; valid && g < group_offsets_.size(); ++g) {
+      valid = group_offsets_[g] > group_offsets_[g - 1];
+    }
+    if (!valid) {
+      fatal_error(fmt::format(
+        "Source file '{}' has a group_offsets dataset that does not partition "
+        "its {} sites into non-empty, ascending groups.",
+        path, sites_.size()));
+    }
+  }
+}
+
+void FileSource::resolve_surface_id(SourceSite& site) const
+{
+  // Surface source files store unsigned surface IDs. If the ID refers to a CSG
+  // surface containing the source site, determine the signed half-space from
+  // the particle direction. Otherwise, ignore the surface ID and allow the
+  // normal cell search to locate the particle.
+  if (site.surf_id == SURFACE_NONE)
+    return;
+
+  auto it = model::surface_map.find(std::abs(site.surf_id));
+  if (it != model::surface_map.end()) {
+    const auto& surf = *model::surfaces[it->second];
+    if (surf.geom_type() == GeometryType::CSG &&
+        std::abs(surf.evaluate(site.r)) < FP_COINCIDENT) {
+      int surf_id = std::abs(site.surf_id);
+      site.surf_id =
+        (site.u.dot(surf.normal(site.r)) > 0.0) ? surf_id : -surf_id;
+      return;
+    }
+  }
+  site.surf_id = SURFACE_NONE;
 }
 
 SourceSite FileSource::sample(uint64_t* seed) const
@@ -568,27 +641,79 @@ SourceSite FileSource::sample(uint64_t* seed) const
   // Sample a particle randomly from list
   size_t i_site = sites_.size() * prn(seed);
   SourceSite site = sites_[i_site];
+  this->resolve_surface_id(site);
+  return site;
+}
 
-  // Surface source files store unsigned surface IDs. If the ID refers to a CSG
-  // surface containing the source site, determine the signed half-space from
-  // the particle direction. Otherwise, ignore the surface ID and allow the
-  // normal cell search to locate the particle.
-  if (site.surf_id != SURFACE_NONE) {
-    auto it = model::surface_map.find(std::abs(site.surf_id));
-    if (it != model::surface_map.end()) {
-      const auto& surf = *model::surfaces[it->second];
-      if (surf.geom_type() == GeometryType::CSG &&
-          std::abs(surf.evaluate(site.r)) < FP_COINCIDENT) {
-        int surf_id = std::abs(site.surf_id);
-        site.surf_id =
-          (site.u.dot(surf.normal(site.r)) > 0.0) ? surf_id : -surf_id;
-        return site;
-      }
-    }
-    site.surf_id = SURFACE_NONE;
+SourceSite FileSource::sample_history(
+  uint64_t* seed, vector<SourceSite>& extra) const
+{
+  extra.clear();
+
+  // Without grouping there is nothing to emit together, and a site is a
+  // history on its own
+  if (!this->grouped()) {
+    return this->sample_with_constraints(seed);
   }
 
-  return site;
+  int64_t n_groups = group_offsets_.size() - 1;
+  int64_t n_local_reject = 0;
+
+  while (true) {
+    // Sample a history group, not a site: every site of the group is emitted
+    int64_t g = n_groups * prn(seed);
+    int64_t start = group_offsets_[g];
+    int64_t stop = group_offsets_[g + 1];
+
+    // A partially emitted history would split per-history scores just as
+    // emitting one site at a time does, so the group stands or falls together
+    bool accepted = true;
+    if (!this->constraints_applied()) {
+      for (int64_t i = start; i < stop; ++i) {
+        const SourceSite& s = sites_[i];
+        if (!(this->satisfies_spatial_constraints(s.r) &&
+              this->satisfies_energy_constraints(s.E) &&
+              this->satisfies_time_constraints(s.time))) {
+          accepted = false;
+          break;
+        }
+      }
+    }
+
+    // For the "kill" strategy the history is emitted with zero weight so that
+    // it terminates immediately, keeping the history count unbiased
+    double wgt_factor = 1.0;
+    if (!accepted) {
+      if (rejection_strategy_ == RejectionStrategy::RESAMPLE) {
+        ++n_local_reject;
+        if (n_local_reject >= MAX_SOURCE_REJECTIONS_PER_SAMPLE) {
+          fatal_error("Exceeded maximum number of source rejections per "
+                      "sample. Please check your source definition.");
+        }
+        continue;
+      }
+      wgt_factor = 0.0;
+    }
+
+    if (n_local_reject > 0) {
+      source_n_reject += n_local_reject;
+    }
+    ++source_n_accept;
+    check_rejection_fraction(source_n_reject, source_n_accept);
+
+    extra.reserve(stop - start - 1);
+    for (int64_t i = start + 1; i < stop; ++i) {
+      SourceSite s = sites_[i];
+      this->resolve_surface_id(s);
+      s.wgt *= wgt_factor;
+      extra.push_back(s);
+    }
+
+    SourceSite site = sites_[start];
+    this->resolve_surface_id(site);
+    site.wgt *= wgt_factor;
+    return site;
+  }
 }
 
 //==============================================================================
@@ -1216,7 +1341,13 @@ void initialize_source()
   }
 }
 
-SourceSite sample_external_source(uint64_t* seed)
+//! Sample one site, or one whole history when \p extra is given
+//!
+//! Passing nullptr for \p extra samples a single site, which is what every
+//! caller that can only hold one site per history wants: the eigenvalue source
+//! bank, the C API's source inspection, and the lost-particle restart record.
+static SourceSite sample_external_source_impl(
+  uint64_t* seed, vector<SourceSite>* extra)
 {
   // Sample from among multiple source distributions
   int i = 0;
@@ -1229,26 +1360,54 @@ SourceSite sample_external_source(uint64_t* seed)
     }
   }
 
-  // Sample source site from i-th source distribution
-  SourceSite site {model::external_sources[i]->sample_with_constraints(seed)};
+  // Sample from the i-th source distribution, as a whole history where the
+  // caller can take one. Only a grouped source file ever returns extra sites.
+  SourceSite site {
+    extra ? model::external_sources[i]->sample_history(seed, *extra)
+          : model::external_sources[i]->sample_with_constraints(seed)};
 
   // For uniform source sampling, multiply the weight by the ratio of the actual
   // probability of sampling source i to the biased probability of sampling
   // source i, which is (strength_i / total_strength) / (1 / n)
   if (n_sources > 1 && settings::uniform_source_sampling) {
     double total_strength = model::external_sources_probability.integral();
-    site.wgt *=
+    double factor =
       model::external_sources[i]->strength() * n_sources / total_strength;
+    site.wgt *= factor;
+    if (extra) {
+      for (auto& s : *extra) {
+        s.wgt *= factor;
+      }
+    }
   }
 
   // If running in MG, convert site.E to group
   if (!settings::run_CE) {
-    site.E = lower_bound_index(data::mg.rev_energy_bins_.begin(),
-      data::mg.rev_energy_bins_.end(), site.E);
-    site.E = data::mg.num_energy_groups_ - site.E - 1.;
+    auto to_group = [](double E) {
+      double g = lower_bound_index(
+        data::mg.rev_energy_bins_.begin(), data::mg.rev_energy_bins_.end(), E);
+      return data::mg.num_energy_groups_ - g - 1.;
+    };
+    site.E = to_group(site.E);
+    if (extra) {
+      for (auto& s : *extra) {
+        s.E = to_group(s.E);
+      }
+    }
   }
 
   return site;
+}
+
+SourceSite sample_external_source(uint64_t* seed)
+{
+  return sample_external_source_impl(seed, nullptr);
+}
+
+SourceSite sample_external_source(uint64_t* seed, vector<SourceSite>& extra)
+{
+  extra.clear();
+  return sample_external_source_impl(seed, &extra);
 }
 
 void free_memory_source()

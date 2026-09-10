@@ -30,6 +30,7 @@
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
+#include "openmc/source.h"
 #include "openmc/string_utils.h"
 #include "openmc/summary.h"
 #include "openmc/tallies/tally.h"
@@ -410,24 +411,46 @@ static void check_pulse_height_compatibility()
   }
 
   // A pulse height is a per-history quantity: it is scored once, from the
-  // energy deposited by a source particle and all of its descendants. A surface
-  // source file is read one site per history, so a history that put several
-  // particles across the recording surface is scored as several smaller pulses
-  // instead of one. The resulting spectrum is shifted toward lower energies
-  // with an inflated count rate, and nothing about the result indicates this.
-  //
-  // TODO: Surface source files now record which sites belong to one history
-  // (see SurfaceSourceGroups). Once FileSource emits a group as a single
-  // history, this restriction can be lifted; until then the combination is
-  // refused rather than scored incorrectly.
+  // energy deposited by a source particle and all of its descendants. A file
+  // that records which of its sites came from the same source history is now
+  // emitted one group per history, so the pulse stays whole. Two cases remain
+  // in which it does not, and in both the spectrum is shifted toward lower
+  // energies with an inflated count rate that nothing in the result reveals.
   if (settings::surf_source_read) {
-    for (const auto& t : model::tallies) {
-      if (t->type_ == TallyType::PULSE_HEIGHT) {
+    // A file written before the grouping existed, one written by
+    // openmc.write_source_file, or an MCPL file, whose per-particle group
+    // indices are not read back yet
+    bool ungrouped = false;
+    for (const auto& source : model::external_sources) {
+      const auto* file_source = dynamic_cast<const FileSource*>(source.get());
+      if (file_source && !file_source->grouped()) {
+        ungrouped = true;
+        break;
+      }
+    }
+
+    // An eigenvalue calculation uses the file only to seed its source bank,
+    // which holds one site per entry and so cannot carry a group
+    bool eigenvalue = settings::run_mode == RunMode::EIGENVALUE;
+
+    if (ungrouped || eigenvalue) {
+      for (const auto& t : model::tallies) {
+        if (t->type_ != TallyType::PULSE_HEIGHT)
+          continue;
+        if (eigenvalue) {
+          fatal_error(
+            "Pulse-height tallies cannot be used with a surface source file in "
+            "an eigenvalue calculation. The file seeds the initial source bank "
+            "one site per entry, so a history that produced several sites is "
+            "scored as several pulses rather than one.");
+        }
         fatal_error(
-          "Pulse-height tallies cannot currently be used with a surface source "
-          "file. Each site in the file is transported as its own history, so a "
-          "history that produced several sites is scored as several pulses "
-          "rather than one.");
+          "Pulse-height tallies cannot be used with a surface source file that "
+          "does not record which of its sites came from the same source "
+          "history. Each site is transported as its own history, so a history "
+          "that produced several sites is scored as several pulses rather than "
+          "one. Write the file in HDF5 format with a current version of OpenMC "
+          "to get the grouping.");
       }
     }
   }

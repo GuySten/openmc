@@ -544,6 +544,13 @@ private:
   int n_secondaries_ {0};
   int secondary_bank_index_ {0};
 
+  // Number of entries at the bottom of the secondary bank that are
+  // co-primaries rather than secondaries. A co-primary is a site read from a
+  // source file that belongs to the same original source history as this
+  // particle but was not produced by it, so its energy must not be subtracted
+  // from the running pulse height the way a true secondary's is.
+  int64_t n_coprimary_ {0};
+
   int64_t current_work_ {0};
 
   vector<double> flux_derivs_;
@@ -710,6 +717,11 @@ public:
   // Number of secondaries created in a collision
   int& n_secondaries() { return n_secondaries_; }
   const int& n_secondaries() const { return n_secondaries_; }
+
+  // Number of co-primary sites still waiting at the bottom of the secondary
+  // bank
+  int64_t& n_coprimary() { return n_coprimary_; }
+  const int64_t& n_coprimary() const { return n_coprimary_; }
 
   // Starting index in secondary bank for this collision
   int& secondary_bank_index() { return secondary_bank_index_; }

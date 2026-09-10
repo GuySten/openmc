@@ -491,7 +491,8 @@ void Particle::event_collide()
     reconcile_cell_after_collision(*this);
 }
 
-void Particle::event_revive_from_secondary(const SourceSite& site)
+void Particle::event_revive_from_secondary(
+  const SourceSite& site, bool is_coprimary)
 {
   // Write final position for the previous track (skip if this is a freshly
   // constructed particle with no prior track, e.g., Phase 2 of shared
@@ -510,8 +511,11 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
 
   // Subtract secondary particle energy from interim pulse-height results.
   // In shared secondary mode, this subtraction was already done on the parent
-  // particle during create_secondary(), so skip it here.
-  if (!settings::use_shared_secondary_bank &&
+  // particle during create_secondary(), so skip it here. A co-primary is
+  // skipped as well: it is a site read from a source file that belongs to this
+  // history but was never produced by this particle, so no parent ever
+  // deposited its energy and there is nothing to take back out.
+  if (!settings::use_shared_secondary_bank && !is_coprimary &&
       !model::active_pulse_height_tallies.empty() && this->type().is_photon()) {
     // Since the birth cell of the particle has not been set we
     // have to determine it before the energy of the secondary particle can be
@@ -554,9 +558,17 @@ void Particle::event_check_limit_and_revive()
   // In non-shared-secondary mode, revive from local secondary bank
   if (!alive() && !settings::use_shared_secondary_bank &&
       !local_secondary_bank().empty()) {
+    // Co-primaries are placed at the bottom of the bank before transport
+    // begins, so the site being revived is one exactly when nothing but
+    // co-primaries is left. Secondaries produced along the way sit above them
+    // and are therefore consumed first.
+    bool is_coprimary =
+      static_cast<int64_t>(local_secondary_bank().size()) <= n_coprimary();
     SourceSite& site = local_secondary_bank().back();
-    event_revive_from_secondary(site);
+    event_revive_from_secondary(site, is_coprimary);
     local_secondary_bank().pop_back();
+    if (is_coprimary)
+      --n_coprimary();
   }
 }
 
@@ -946,7 +958,10 @@ void Particle::write_restart() const
       // current_work() is 0-indexed, compute_particle_id expects 1-indexed.
       int64_t id = compute_transport_seed(compute_particle_id(i + 1));
       uint64_t seed = init_seed(id, STREAM_SOURCE);
-      site = sample_external_source(&seed);
+      // Sample the whole history so that a grouped source file yields the same
+      // first site the lost particle started from, rather than a different one
+      vector<SourceSite> extra;
+      site = sample_external_source(&seed, extra);
     }
     write_dataset(file_id, "weight", site.wgt);
     write_dataset(file_id, "energy", site.E);

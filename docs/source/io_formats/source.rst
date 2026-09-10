@@ -30,7 +30,9 @@ described below.
 
            The following datasets and attribute are present only in surface
            source files. They impose two levels of structure on the source
-           bank; see :ref:`surface_source_structure`.
+           bank; see :ref:`surface_source_structure`. ``group_offsets`` is read
+           back by OpenMC when the file is used as a source in a fixed source
+           calculation, so that each group is emitted as a single history.
 
            A *group* is the set of sites banked by one source history. Its
            sites are contiguous and are correlated with one another. A

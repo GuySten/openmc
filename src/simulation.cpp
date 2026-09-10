@@ -712,8 +712,16 @@ void sample_source_particle(Particle& p, int64_t index_source)
     // initialize random number seed
     int64_t id = compute_transport_seed(compute_particle_id(index_source));
     uint64_t seed = init_seed(id, STREAM_SOURCE);
-    // sample from external source distribution or custom library then set
-    auto site = sample_external_source(&seed);
+    // Sample from external source distribution or custom library then set. A
+    // source file that groups its sites by source history hands back every
+    // site of one history; the sites after the first are placed at the bottom
+    // of the secondary bank as co-primaries, so that the whole history is
+    // transported under one particle ID and scored once. The bank is emptied by
+    // the transport loop, but clear it so that a history abandoned partway
+    // through cannot leak sites into the next one.
+    p.local_secondary_bank().clear();
+    auto site = sample_external_source(&seed, p.local_secondary_bank());
+    p.n_coprimary() = p.local_secondary_bank().size();
     p.from_source(&site);
   }
 }
@@ -724,6 +732,9 @@ void initialize_particle_track(
   // Note: index_source is 1-based (first particle = 1), but current_work() is
   // stored as 0-based for direct use as an array index into
   // progeny_per_particle, source_bank, ifp banks, etc.
+  // A secondary track starts no new history, so it inherits no co-primaries
+  p.n_coprimary() = 0;
+
   if (!is_secondary) {
     sample_source_particle(p, index_source);
   }

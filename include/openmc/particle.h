@@ -73,7 +73,16 @@ public:
   void event_advance();
   void event_cross_surface();
   void event_collide();
-  void event_revive_from_secondary(const SourceSite& site);
+  //! Restart this particle from a banked site
+  //!
+  //! \param site Site to restart from
+  //! \param is_coprimary Whether the site is a co-primary of the same source
+  //!   history rather than a secondary produced by this particle. A true
+  //!   secondary had its energy deposited by its parent already, so that
+  //!   energy is removed from the running pulse height on revival; a
+  //!   co-primary's was not, and must not be.
+  void event_revive_from_secondary(
+    const SourceSite& site, bool is_coprimary = false);
   void event_check_limit_and_revive();
   void event_death();
 

@@ -500,21 +500,56 @@ additional effort in the follow-on run buys nothing.
 Each output file carries an ``n_source_particles`` attribute giving the number
 of first-stage source particles it represents, and
 :attr:`openmc.ParticleList.n_source_particles` reads it back. Tallies from the
-follow-on run are normalized per particle simulated in that run, and every site
-in the file is read as its own history, so they must be multiplied by the number
-of sites in the file divided by ``n_source_particles`` to be expressed per
-first-stage source particle::
+follow-on run are normalized per particle simulated in that run, so they must be
+multiplied by the number of sampling units the file holds divided by
+``n_source_particles`` to be expressed per first-stage source particle.
+
+What counts as a sampling unit depends on how the file is read. A grouped HDF5
+file in a fixed source calculation is sampled one history group at a time, so
+the unit is the group; anything else is sampled one site at a time, so the unit
+is the site::
 
     particles = openmc.read_source_file(path)
-    factor = len(particles) / particles.n_source_particles
+    if particles.groups is not None:
+        factor = len(particles.groups) / particles.n_source_particles
+    else:
+        factor = len(particles) / particles.n_source_particles
 
-That factor counts sites; it is not a sum of their weights. A site's weight is
-already carried into the scores that site produces, so applying it again here
-would count it twice.
+OpenMC reports this factor for a grouped file at verbosity 5 and above, so it
+does not have to be derived by hand.
 
-.. note:: Splitting the file addresses the uncertainty but not the per-history
-          problem: each site is still emitted as its own history. Pulse-height
-          tallies are rejected outright when a surface source file is used.
+Either way the factor counts sampling units; it is not a sum of their weights. A
+site's weight is already carried into the scores that site produces, so applying
+it again here would count it twice.
+
+.. warning:: The factor is not recorded in the file and does not compose by
+             itself. A file written by a calculation that was itself driven by a
+             surface source file records only its own source particle count, so
+             chaining a third calculation means carrying the product of every
+             stage's factor yourself.
+
+Reading a grouped file back
++++++++++++++++++++++++++++
+
+A fixed source calculation reading an HDF5 surface source file that carries the
+grouping emits a whole group as one history: the first site becomes the source
+particle and the rest are placed alongside it, sharing its particle ID, so the
+history is transported and scored exactly once. Nothing needs to be configured
+for this, and the sampling unit becomes the history rather than the site, which
+means a run of ``n`` particles emits ``n`` histories and somewhat more than
+``n`` particles.
+
+That is what makes a pulse-height tally correct when the source is a surface
+source file, and such a tally is accepted in exactly the case where the grouping
+can be honoured. It is still refused when the file carries no grouping, and in
+an eigenvalue calculation, where the file only seeds the initial source bank one
+site per entry. MCPL files record the grouping in their user-flags field, but
+OpenMC does not yet read it back, so they count as carrying no grouping.
+
+.. note:: Splitting the file with :func:`openmc.split_source_file` addresses the
+          uncertainty; emitting a group as one history addresses the per-history
+          problem. They are independent, and a two-stage calculation that cares
+          about both wants both.
 
 .. note:: Batches whose ``batch_complete`` flag is false lost sites because the
           surface source bank filled up partway through. They are a biased

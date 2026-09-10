@@ -90,6 +90,22 @@ public:
   //! \return Sampled site
   virtual SourceSite sample(uint64_t* seed) const = 0;
 
+  //! Sample a complete source history, with constraints applied
+  //!
+  //! Nearly every source emits one particle per history, and the default
+  //! implementation does exactly that. A source file that records which of its
+  //! sites came from the same original history is the exception: those sites
+  //! are correlated, and any score defined per history is split into several
+  //! smaller scores if they are emitted separately, so they are handed back
+  //! together to be transported as one history.
+  //!
+  //! \param[inout] seed Pseudorandom seed pointer
+  //! \param[out] extra Sites of this history beyond the first, cleared on
+  //!   entry. Empty for every source that emits one particle per history.
+  //! \return The first site of the history
+  virtual SourceSite sample_history(
+    uint64_t* seed, vector<SourceSite>& extra) const;
+
   static unique_ptr<Source> create(pugi::xml_node node);
 
 protected:
@@ -182,11 +198,34 @@ public:
   void load_sites_from_file(
     const std::string& path); //!< Load source sites from file
 
+  //! Whether the file records which sites were produced by the same source
+  //! history. False for files written before that information existed, for
+  //! those written by openmc.write_source_file, and for MCPL files, whose
+  //! grouping is not yet read back.
+  bool grouped() const { return !group_offsets_.empty(); }
+
 protected:
   SourceSite sample(uint64_t* seed) const override;
 
+  //! Sample a whole history group from the file
+  //!
+  //! Constraints are applied to the group as a unit: a group is accepted only
+  //! if every one of its sites satisfies them, since emitting part of a
+  //! history would reintroduce the very splitting the grouping prevents.
+  SourceSite sample_history(
+    uint64_t* seed, vector<SourceSite>& extra) const override;
+
 private:
-  vector<SourceSite> sites_; //!< Source sites
+  //! Give a site's surface ID the sign of the half-space the site is heading
+  //! into, or clear it if it names no CSG surface containing the site
+  void resolve_surface_id(SourceSite& site) const;
+
+  vector<SourceSite> sites_;       //!< Source sites
+  vector<int64_t> group_offsets_;  //!< Site index at which each history group
+                                   //!< begins, with a trailing total. Empty
+                                   //!< if the file carries no grouping.
+  int64_t n_source_particles_ {0}; //!< First-stage source particles the file
+                                   //!< represents, or 0 if it does not say
 };
 
 //==============================================================================
@@ -408,6 +447,13 @@ extern "C" void initialize_source();
 //! \param[inout] seed Pseudorandom seed pointer
 //! \return Sampled source site
 SourceSite sample_external_source(uint64_t* seed);
+
+//! Sample a complete source history from the external source distributions
+//!
+//! \param[inout] seed Pseudorandom seed pointer
+//! \param[out] extra Sites of this history beyond the first, cleared on entry
+//! \return The first site of the history
+SourceSite sample_external_source(uint64_t* seed, vector<SourceSite>& extra);
 
 void free_memory_source();
 

@@ -474,54 +474,67 @@ static void check_surface_source_compatibility()
             "independent history. Disabling shared secondary bank.");
   }
 
-  if (!settings::surf_source_read || !settings::ssr_independent_batches)
-    return;
-
-  // Reasons a file or a run cannot support a partition. The first one found is
-  // reported, since they are not independent of each other.
-  std::string reason;
-  int64_t n_groups = -1;
+  // Every file-based source, however it was specified: a <source> element
+  // naming a file, or surf_source_read, which appends one of its own. Gating on
+  // surf_source_read alone would leave a file given as an ordinary source
+  // partitioned with nothing checked.
+  int n_file_sources = 0;
+  int64_t min_file_batches = -1;
+  bool any_ungrouped = false;
+  bool any_without_batches = false;
   for (const auto& source : model::external_sources) {
     const auto* file_source = dynamic_cast<const FileSource*>(source.get());
     if (!file_source)
       continue;
+    ++n_file_sources;
     if (!file_source->grouped()) {
-      // Splitting a history across two batches would correlate them, which is
-      // the very thing a partition is for, so the file has to say which sites
-      // belong to the same history
-      reason = "the surface source file does not record which of its sites "
-               "came from the same source history";
-      break;
+      any_ungrouped = true;
+    } else if (file_source->n_file_batches() == 0) {
+      any_without_batches = true;
+    } else {
+      // The smallest file binds: a batch here needs one batch from every file
+      int64_t n = file_source->n_file_batches();
+      min_file_batches =
+        min_file_batches < 0 ? n : std::min(min_file_batches, n);
     }
-    if (file_source->n_file_batches() == 0) {
-      reason = "the surface source file does not record the batches it was "
-               "written in, which are the units that were independent of one "
-               "another when it was written";
-      break;
-    }
-    n_groups = file_source->n_file_batches();
   }
+  if (n_file_sources == 0)
+    return;
 
   int n_active = settings::n_batches - settings::n_inactive;
-  if (reason.empty() && settings::run_mode != RunMode::FIXED_SOURCE) {
+
+  // Reasons a file or a run cannot support a partition. Only the first is
+  // reported, since they are not independent of each other.
+  std::string reason;
+  if (any_ungrouped) {
+    // Splitting a history across two batches would correlate them, which is
+    // the very thing a partition is for, so the file has to say which sites
+    // belong to the same history
+    reason = "a surface source file does not record which of its sites came "
+             "from the same source history, so each site is also emitted as a "
+             "history of its own and scores defined per history are split "
+             "across the sites of one original history";
+  } else if (any_without_batches) {
+    reason = "a surface source file does not record the batches it was written "
+             "in, which are the units that were independent of one another "
+             "when it was written";
+  } else if (settings::run_mode != RunMode::FIXED_SOURCE) {
     reason = "an eigenvalue calculation seeds its source bank once rather than "
              "drawing from the file batch by batch";
-  }
-  if (reason.empty() && n_active < 2) {
+  } else if (n_active < 2) {
     reason = "the uncertainty is the spread between batches, and there are "
              "fewer than two active batches";
-  }
-  if (reason.empty() && n_groups >= 0 && n_groups < n_active) {
+  } else if (min_file_batches >= 0 && min_file_batches < n_active) {
     reason = fmt::format(
-      "the file was written in {} batches, fewer than the {} active batches "
-      "here that would each need one. Batches of the file are the units that "
-      "were independent when it was written, so a batch here cannot be given "
-      "less than one. Reduce the batch count, or write the file with more "
-      "batches",
-      n_groups, n_active);
+      "a surface source file was written in {} batches, fewer than the {} "
+      "active batches here that would each need one. Batches of the file are "
+      "the units that were independent when it was written, so a batch here "
+      "cannot be given less than one. Reduce the batch count, or write the "
+      "file with more batches",
+      min_file_batches, n_active);
   }
 
-  if (!reason.empty()) {
+  if (settings::ssr_independent_batches && !reason.empty()) {
     // Asking for it and not getting it is an error; inheriting the default and
     // not getting it is a fact about the file worth stating
     if (settings::ssr_independent_batches_set) {
@@ -531,13 +544,16 @@ static void check_surface_source_compatibility()
         reason));
     }
     settings::ssr_independent_batches = false;
+  }
+
+  if (!settings::ssr_independent_batches) {
     warning(fmt::format(
       "Batches will share the whole surface source file because {}. The "
       "uncertainty reported for this calculation therefore excludes the "
       "sampling error of the calculation that wrote the file, and understates "
       "the true uncertainty by an amount that does not shrink as more "
       "particles are simulated here.",
-      reason));
+      reason.empty() ? "independent_batches is turned off" : reason));
     return;
   }
 

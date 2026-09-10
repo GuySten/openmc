@@ -686,21 +686,12 @@ void read_settings_xml(pugi::xml_node root)
     }
     model::external_sources.push_back(make_unique<FileSource>(path));
 
-    // Two properties of a surface source file are not respected by reading it
-    // as a flat list of independent particles, and neither shows up in the
-    // reported results. Sites are drawn from the file with replacement, so the
-    // uncertainty reported here converges to the spread of the file's contents
-    // rather than to the true uncertainty. And each site is emitted as its own
-    // history, so a history that put several particles across the recording
-    // surface has its per-history scores split among them.
-    warning(
-      "Uncertainties reported for a calculation using a surface source file do "
-      "not include the sampling uncertainty of the calculation that wrote the "
-      "file, and understate the true uncertainty by an amount that does not "
-      "decrease with the number of particles simulated here. Each site is also "
-      "emitted as its own history, so scores defined per history are split "
-      "across the sites that came from one original history. See the surface "
-      "source section of the user's guide.");
+    // Both of the properties this used to warn about unconditionally are now
+    // respected for a file that records its history grouping: the sites of one
+    // history are emitted together, and partitioning the file between batches
+    // puts the writing calculation's sampling error into the reported
+    // uncertainty. Whatever cannot be respected for a given file is reported by
+    // check_surface_source_compatibility(), which sees the file itself.
   }
 
   // If no source specified, default to isotropic point source at origin with

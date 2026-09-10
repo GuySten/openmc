@@ -572,11 +572,22 @@ between them carries both. This is the default; it is turned off with::
   }
 
 A file cannot always support it. One that carries no grouping, an eigenvalue
-calculation, a run with fewer than two active batches, or a file holding fewer
-history groups than the run has batches all fall back to batches that share the
-whole file, with a warning naming the reason and stating that the reported
-uncertainty then excludes the first stage. Asking for ``independent_batches``
-explicitly in one of those cases is an error rather than a fallback.
+calculation, a run with fewer than two active batches, or a file written in fewer
+batches than the run has all fall back to batches that share the whole file, with
+a warning naming the reason and stating that the reported uncertainty then
+excludes the first stage. Asking for ``independent_batches`` explicitly in one of
+those cases is an error rather than a fallback.
+
+Note that a batch here is given whole batches of the file, never part of one,
+because a batch is the unit that was independent when the file was written. The
+writing calculation's batch count is therefore a floor on the reading
+calculation's.
+
+Although the option is spelled under ``surf_source_read``, it governs every
+file-based source in the calculation, including one named by
+:class:`openmc.FileSource` as an ordinary source. Several may be combined, with
+each other and with ordinary sources; where several files are read, a batch needs
+one batch from each of them, so the file written in the fewest batches decides.
 
 The number of batches becomes the replicate count, so it governs how well the
 uncertainty itself is known: the estimate from ``n`` batches is uncertain to

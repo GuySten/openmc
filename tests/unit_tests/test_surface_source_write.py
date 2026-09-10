@@ -586,10 +586,23 @@ def test_split_source_file(run_in_tmpdir, model_groups):
 
     assert total_sites == sum(len(b.particles) for b in complete)
 
-    # The pieces are usable as sources in their own right
-    model_groups.settings.surf_source_write = {}
-    model_groups.settings.surf_source_read = {"path": str(paths[0])}
-    model_groups.run()
+    # The pieces are usable as sources in their own right. They are read into a
+    # model that contains the recording surface rather than back into the one
+    # that wrote them: the only surface here is a vacuum boundary, so the sites
+    # sit exactly on it and half of them would start out of that geometry
+    # altogether and be lost immediately.
+    h1 = openmc.Material()
+    h1.add_nuclide("H1", 1.0)
+    h1.set_density("g/cm3", 1e-7)
+    outer = openmc.Sphere(r=2.0, boundary_type="vacuum")
+    reader = openmc.Model()
+    reader.geometry = openmc.Geometry([openmc.Cell(region=-outer, fill=h1)])
+    reader.settings = openmc.Settings()
+    reader.settings.run_mode = "fixed source"
+    reader.settings.particles = 100
+    reader.settings.batches = 2
+    reader.settings.surf_source_read = {"path": str(paths[0])}
+    reader.run()
 
 
 def test_truncated_batch(run_in_tmpdir, model_groups):
@@ -636,6 +649,10 @@ def test_pulse_height_rejected(run_in_tmpdir, model_groups):
 
     model_groups.settings.surf_source_write = {}
     model_groups.settings.surf_source_read = {"path": "surface_source.h5"}
+    # A pulse height is deposited by photons, so photon transport has to be on
+    # for the tally to be set up at all; without it a different check rejects
+    # the tally before the surface source is ever considered
+    model_groups.settings.photon_transport = True
     cells = list(model_groups.geometry.get_all_cells().values())
     tally = openmc.Tally()
     tally.filters = [

@@ -645,6 +645,23 @@ SourceSite FileSource::sample(uint64_t* seed) const
   return site;
 }
 
+std::pair<int64_t, int64_t> FileSource::group_range() const
+{
+  int64_t n_groups = group_offsets_.size() - 1;
+  if (!settings::ssr_independent_batches)
+    return {0, n_groups};
+
+  int64_t n_active = settings::n_batches - settings::n_inactive;
+  int64_t i_active = simulation::current_batch - settings::n_inactive - 1;
+  if (n_active < 1 || i_active < 0 || n_groups < n_active)
+    return {0, n_groups};
+  i_active = std::min(i_active, n_active - 1);
+
+  // Integer arithmetic keeps the slices as even as the group count allows,
+  // differing by at most one when it does not divide evenly
+  return {n_groups * i_active / n_active, n_groups * (i_active + 1) / n_active};
+}
+
 SourceSite FileSource::sample_history(
   uint64_t* seed, vector<SourceSite>& extra) const
 {
@@ -656,12 +673,14 @@ SourceSite FileSource::sample_history(
     return this->sample_with_constraints(seed);
   }
 
-  int64_t n_groups = group_offsets_.size() - 1;
+  auto range = this->group_range();
+  int64_t lo = range.first;
+  int64_t n_avail = range.second - range.first;
   int64_t n_local_reject = 0;
 
   while (true) {
     // Sample a history group, not a site: every site of the group is emitted
-    int64_t g = n_groups * prn(seed);
+    int64_t g = lo + static_cast<int64_t>(n_avail * prn(seed));
     int64_t start = group_offsets_[g];
     int64_t stop = group_offsets_[g + 1];
 

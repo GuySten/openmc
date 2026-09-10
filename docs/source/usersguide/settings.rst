@@ -551,6 +551,45 @@ OpenMC does not yet read it back, so they count as carrying no grouping.
           problem. They are independent, and a two-stage calculation that cares
           about both wants both.
 
+Making the reported uncertainty include the first stage
++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+The uncertainty OpenMC reports is the spread between batches. Every batch
+normally resamples the whole file, so the sampling error of the calculation that
+wrote it is common to all of them and cancels out of that spread: the reported
+uncertainty converges to the spread of one file's contents and understates the
+truth by a factor that does not shrink as the follow-on run simulates more
+particles.
+
+Setting ``independent_batches`` gives each batch its own disjoint slice of the
+file's history groups. No source history is then shared between two batches, so
+the batches are independent samples of the first stage as well as the second,
+and the spread between them carries both::
+
+  settings.surf_source_read = {
+      'path': 'surface_source.h5',
+      'independent_batches': True
+  }
+
+The number of batches becomes the replicate count, so it governs how well the
+uncertainty itself is known: the estimate from ``n`` batches is uncertain to
+roughly :math:`1/\sqrt{2(n-1)}`, and OpenMC warns below 30. Each batch needs at
+least one group, and the option requires a fixed source calculation reading an
+HDF5 file that carries the grouping, since a history split across two batches
+would correlate them and defeat the purpose.
+
+This is the same estimator as splitting the file with
+:func:`openmc.split_source_file` and running once per piece, carried out inside
+a single run. Use the split when the pieces are to be run separately anyway, and
+``independent_batches`` otherwise.
+
+.. note:: The batches are independent of one another only insofar as the source
+          histories in the file are. That holds for a fixed source first stage,
+          whose histories are independent by construction. An eigenvalue first
+          stage correlates its generations through the fission source, and the
+          estimate inherits that correlation just as any other batch statistic
+          in an eigenvalue calculation does.
+
 .. note:: Batches whose ``batch_complete`` flag is false lost sites because the
           surface source bank filled up partway through. They are a biased
           sample and are dropped by :func:`openmc.split_source_file`. A batch

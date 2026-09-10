@@ -76,6 +76,7 @@ bool source_mcpl_write {false};
 bool surf_source_write {false};
 bool surf_mcpl_write {false};
 bool surf_source_read {false};
+bool ssr_independent_batches {false};
 bool survival_biasing {false};
 bool survival_normalization {false};
 bool temperature_multipole {false};
@@ -675,6 +676,11 @@ void read_settings_xml(pugi::xml_node root)
     // Check if the user has specified different file for surface source reading
     if (check_for_node(node_ssr, "path")) {
       path = get_node_value(node_ssr, "path", false, true);
+    }
+
+    if (check_for_node(node_ssr, "independent_batches")) {
+      ssr_independent_batches =
+        get_node_value_bool(node_ssr, "independent_batches");
     }
     model::external_sources.push_back(make_unique<FileSource>(path));
 

@@ -86,3 +86,104 @@ def test_from_endf_search(endf_data):
                 "search_cf_orders": [5, 3],
             },
         )
+
+
+def _rational_xs(n_res=3, seed=11, tol=3e-5):
+    """Cross sections that are exactly representable in multipole form.
+
+    Because the target is an exact sum of pole terms, vector fitting can
+    reproduce it to arbitrary accuracy, which makes it a clean check that
+    ``rtol`` is really enforced.
+
+    The energy grid is refined adaptively, the way NJOY reconstructs
+    point-wise data, so that linear interpolation between grid points stays
+    within ``tol``. This matters because :func:`_vectfit_xs` assesses accuracy
+    against a linear interpolant of the input on a refined grid: on a grid too
+    coarse to resolve the resonances, that reference is itself inaccurate and
+    no fit can meet a tight ``rtol``.
+    """
+    rng = np.random.default_rng(seed)
+    E_r = np.sort(rng.uniform(50.0, 9e4, n_res))
+    sqrt_E_r = np.sqrt(E_r)
+    gamma = sqrt_E_r * rng.uniform(3e-3, 1e-2, n_res)
+
+    # purely imaginary residues give strictly positive resonance peaks, and
+    # the two extra poles supply a smooth positive background
+    poles = np.concatenate([sqrt_E_r + 1j*gamma, [120 + 260j, 20 + 60j]])
+    residues = np.hstack([
+        np.vstack([-1j*rng.uniform(5, 60, n_res)*sqrt_E_r*gamma,
+                   -1j*rng.uniform(2, 30, n_res)*sqrt_E_r*gamma]),
+        np.array([[-6.0e5j, -3.0e4j], [-2.0e3j, -8.0e2j]])
+    ])
+    # both members of each conjugate pair, stored adjacently
+    all_poles = np.empty(2*poles.size, dtype=complex)
+    all_poles[0::2], all_poles[1::2] = poles, np.conj(poles)
+    all_residues = np.empty((2, 2*poles.size), dtype=complex)
+    all_residues[:, 0::2], all_residues[:, 1::2] = residues, np.conj(residues)
+
+    def xs_at(energy):
+        return openmc.data.multipole.evaluate(
+            np.sqrt(energy), all_poles, all_residues) / energy
+
+    energy = np.unique(np.concatenate(
+        [np.geomspace(1e-3, 1e5, 400), E_r, E_r*(1 + 1e-6), E_r*(1 - 1e-6)]))
+    for _ in range(40):
+        midpoint = 0.5*(energy[:-1] + energy[1:])
+        xs = xs_at(energy)
+        interpolated = 0.5*(xs[:, :-1] + xs[:, 1:])
+        exact = xs_at(midpoint)
+        coarse = np.any(np.abs(interpolated - exact) > tol*np.abs(exact), axis=0)
+        if not coarse.any():
+            break
+        energy = np.unique(np.concatenate([energy, midpoint[coarse]]))
+
+    return energy, xs_at(energy)
+
+
+def test_vectfit_rtol_is_enforced():
+    """The relative error tolerance must be honored, not merely penalized."""
+    energy, xs = _rational_xs()
+
+    for rtol in (1e-3, 1e-4):
+        poles, residues = openmc.data.multipole._vectfit_xs(
+            energy, xs, [2, 27], rtol=rtol, orders=range(6, 18, 2),
+            n_vf_iter=10)
+        fit = openmc.data.multipole.evaluate(
+            np.sqrt(energy), poles, residues*1j) / energy
+        assert np.max(np.abs(fit - xs)/np.abs(xs)) <= rtol
+
+
+def test_vectfit_rtol_unreachable():
+    """An unreachable tolerance must fail loudly rather than silently."""
+    energy, xs = _rational_xs()
+    with pytest.raises(RuntimeError, match='rtol'):
+        openmc.data.multipole._vectfit_xs(
+            energy, xs, [2, 27], rtol=1e-12, orders=[6, 8], n_vf_iter=4)
+
+
+def test_vectfit_orders_are_searched_in_order():
+    """A user-supplied list of orders must not be scrambled by set().
+
+    ``list(set([2, 4, 6, 8]))`` gives ``[8, 2, 4, 6]``, so an unsorted
+    normalization shows up as a reversed range in the reported error.
+    """
+    energy, xs = _rational_xs()
+    with pytest.raises(RuntimeError, match='orders 2 to 8'):
+        openmc.data.multipole._vectfit_xs(
+            energy, xs, [2, 27], rtol=1e-12, orders=range(2, 10, 2),
+            n_vf_iter=4)
+
+
+def test_vectfit_gives_up_when_error_stops_improving(capsys):
+    """A hopeless tolerance must abandon the search, not exhaust it.
+
+    Adding poles beyond a certain point cannot reduce the error further, and
+    the search must notice rather than grinding through every order in the
+    range, which for a real nuclide can be hundreds of them.
+    """
+    energy, xs = _rational_xs(n_res=2)
+    with pytest.raises(RuntimeError, match='rtol'):
+        openmc.data.multipole._vectfit_xs(
+            energy, xs, [2, 27], rtol=1e-14, orders=range(2, 100, 2),
+            n_vf_iter=2, log=True)
+    assert 'stopped improving' in capsys.readouterr().out

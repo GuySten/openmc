@@ -155,7 +155,12 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
     mts : Iterable of int
         Reaction list
     rtol : float, optional
-        Relative error tolerance
+        Maximum relative error tolerance. A fit is accepted only if the
+        relative error stays within this bound at every energy point whose
+        absolute error also exceeds `atol`. If no order in the search range
+        achieves it, a :class:`RuntimeError` is raised. Defaults to 1e-3,
+        matching the default tolerance used by NJOY when reconstructing
+        point-wise cross sections from ENDF.
     atol : float, optional
         Absolute error tolerance
     orders : Iterable of int, optional
@@ -217,8 +222,8 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
     peaks, _ = find_peaks(ce_xs[0] + ce_xs[1])
     n_peaks = peaks.size
     if orders is not None:
-        # make sure orders are even integers
-        orders = list(set([int(i/2)*2 for i in orders if i >= 2]))
+        # make sure orders are even integers, searched in increasing order
+        orders = sorted({int(i/2)*2 for i in orders if i >= 2})
     else:
         lowest_order = max(2, 2*n_peaks)
         highest_order = max(200, 4*n_peaks)
@@ -231,7 +236,8 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
     # perform VF with increasing orders
     found_ideal = False
     n_discarded = 0  # for accelation, number of discarded searches
-    best_quality = best_ratio = -np.inf
+    best_maxre = np.inf
+    best_poles = None
     for i, order in enumerate(orders):
         if log:
             print(f"Order={order}({i}/{len(orders)})")
@@ -240,7 +246,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
         poles = poles_r + poles_r*0.01j
         poles = np.sort(np.append(poles, np.conj(poles)))
 
-        found_better = False
+        maxre_before = best_maxre
         # fitting iteration
         for i_vf in range(n_vf_iter):
             if log >= DETAILED_LOGGING:
@@ -267,64 +273,72 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
                 new_poles, residues, *_ = \
                       vectfit(f, s, new_poles, weight, skip_pole_update=True)
 
-            # assess the result on test grid
+            # assess the result on test grid. A fit with negative cross
+            # sections or a non-finite result is unusable, whatever its error.
             test_xs = evaluate(test_s, new_poles, residues) / test_energy
             abserr = np.abs(test_xs - test_xs_ref)
             with np.errstate(invalid='ignore', divide='ignore'):
                 relerr = abserr / test_xs_ref
-                if np.any(np.isnan(abserr)):
-                    maxre, ratio, ratio2 = np.inf, -np.inf, -np.inf
+                if np.any(np.isnan(abserr)) or np.any(test_xs < -atol):
+                    maxre = np.inf
                 elif np.all(abserr <= atol):
-                    maxre, ratio, ratio2 = 0., 1., 1.
+                    maxre = 0.
                 else:
                     maxre = np.max(relerr[abserr > atol])
-                    ratio = np.sum((relerr < rtol) | (abserr < atol)) / relerr.size
-                    ratio2 = np.sum((relerr < 10*rtol) | (abserr < atol)) / relerr.size
-
-            # define a metric for choosing the best fitting results
-            # basically, it is preferred to have more points within accuracy
-            # tolerance, smaller maximum deviation and fewer poles
-            #TODO: improve the metric with clearer basis
-            quality = ratio + ratio2 - min(0.1*maxre, 1) - 0.001*new_poles.size
-
-            if np.any(test_xs < -atol):
-                quality = -np.inf
 
             if log >= DETAILED_LOGGING:
                 print(f"  # poles: {new_poles.size}")
                 print(f"  Max relative error: {maxre * 100:.3f}%")
-                print(f"  Satisfaction: {ratio * 100:.1f}%, {ratio2 * 100:.1f}%")
-                print(f"  Quality: {quality:.2f}")
 
-            if quality > best_quality:
+            if maxre < best_maxre:
                 if log >= DETAILED_LOGGING:
                     print("  Best so far!")
-                found_better = True
-                best_quality, best_ratio = quality, ratio
+                best_maxre = maxre
                 best_poles, best_residues = new_poles, residues
                 best_test_xs, best_relerr = test_xs, relerr
-                if best_ratio >= 1.0:
-                    if log:
-                        print("Found ideal results. Stop!")
-                    found_ideal = True
-                    break
-            else:
-                if log >= DETAILED_LOGGING:
-                    print("  Discarded!")
+            elif log >= DETAILED_LOGGING:
+                print("  Discarded!")
+
+            # the search is done as soon as every point is within tolerance;
+            # because orders are tried in increasing order, this is also the
+            # smallest number of poles that achieves it
+            if maxre <= rtol:
+                if log:
+                    print("Found ideal results. Stop!")
+                found_ideal = True
+                break
 
         if found_ideal:
             break
 
-        # acceleration
-        if found_better:
+        # acceleration: keep adding poles for as long as the maximum relative
+        # error keeps coming down, then give up. Stopping here never returns a
+        # poor fit because the tolerance check after the loop raises.
+        if best_maxre < maxre_before:
             n_discarded = 0
         else:
-            if order > max(2*n_peaks, 50) and best_ratio > 0.7:
-                n_discarded += 1
-                if n_discarded >= 10 or (n_discarded >= 5 and best_ratio > 0.9):
-                    if log >= DETAILED_LOGGING:
-                        print("Couldn't get better results. Stop!")
-                    break
+            n_discarded += 1
+            if n_discarded >= 10:
+                if log:
+                    print("Maximum relative error stopped improving. Stop!")
+                break
+
+    if best_poles is None:
+        raise RuntimeError(
+            f"Vector fitting produced no usable fit for energy range "
+            f"{energy[0]:.3e} to {energy[-1]:.3e} eV with orders "
+            f"{orders[0]} to {orders[-1]}. This usually means every candidate "
+            f"gave negative cross sections or a non-finite result.")
+
+    if best_maxre > rtol:
+        raise RuntimeError(
+            f"Vector fitting could not reach the maximum relative error "
+            f"tolerance (rtol={rtol:.3g}) for energy range "
+            f"{energy[0]:.3e} to {energy[-1]:.3e} eV with orders "
+            f"{orders[0]} to {orders[-1]}. The best fit had a maximum "
+            f"relative error of {best_maxre:.3%} using {best_poles.size} "
+            f"poles. Either relax 'rtol' or widen the pole search range "
+            f"with 'orders'.")
 
     # merge conjugate poles
     real_idx = []
@@ -350,6 +364,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
                                   best_residues[:, conj_idx]*2), axis=1)/1j
     if log:
         print(f"Final number of poles: {mp_poles.size}")
+        print(f"Maximum relative error: {best_maxre:.3%} (rtol={rtol:.3g})")
 
     if path_out:
         if not os.path.exists(path_out):
@@ -666,9 +681,8 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
                 relerr = abserr / xs_ref
             if not np.any(np.isnan(abserr)):
                 re = relerr[abserr > atol]
-                if re.size == 0 or np.all(re <= rtol) or \
-                   (re.max() <= 2*rtol and (re > rtol).sum() <= 0.01*relerr.size) or \
-                   (iw == 0 and np.all(relerr.mean(axis=1) <= rtol)):
+                # every point in the window must be within rtol
+                if re.size == 0 or re.max() <= rtol:
                     # meet tolerances
                     if log >= DETAILED_LOGGING:
                         print("Accuracy satisfied.")

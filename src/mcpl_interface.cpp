@@ -548,11 +548,21 @@ void write_mcpl_source_point(const char* filename, span<SourceSite> source_bank,
       // index rather than OpenMC's internal particle ID, since consecutive
       // sites sharing a value is the only property a reader needs and an index
       // cannot overflow the 32-bit field for any file that fits in memory.
+      //
+      // This collides with the only other established use of the field in the
+      // MCNP ecosystem: ssw2mcpl stores SSW surface IDs there, and mcpl2ssw
+      // assumes the field holds a surface ID unless given an explicit -s<ID>.
+      // Group indices start at zero while valid SSW surface IDs are 1-999999,
+      // so the clash is spelled out in a header comment as well as the docs.
       g_mcpl_api->enable_userflags(file_id);
       g_mcpl_api->hdr_add_comment(file_id,
         "The userflags in this file are group indices: all sites sharing a "
         "value were produced by one source history and must be emitted as a "
         "single history, not as one history per site.");
+      g_mcpl_api->hdr_add_comment(file_id,
+        "These userflags are NOT MCNP surface IDs, unlike those written by "
+        "ssw2mcpl. Pass an explicit -s<ID> to mcpl2ssw when converting this "
+        "file, or it will read these group indices as surface IDs.");
       g_mcpl_api->hdr_add_comment(file_id,
         "Blob 'openmc_batch_structure' gives the batch boundaries in units of "
         "groups, the number of source particles simulated for each batch, and "

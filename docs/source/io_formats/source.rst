@@ -89,9 +89,8 @@ history that produced it and the header records the number of histories run
 separately from the number of tracks stored.
 
 - The **user-flags** field of each particle holds its group index. All sites
-  sharing a value were produced by one source history. Two header comments
-  document this, as the MCPL format requires for any use of the user-flags
-  field.
+  sharing a value were produced by one source history. Header comments document
+  this, as the MCPL format requires for any use of the user-flags field.
 - The header blob **openmc_batch_structure** holds the batch boundaries in
   units of groups, the source particle count of each batch, and the completeness
   flags, as text. Its first line is ``openmc_batch_structure v1``, followed by
@@ -102,3 +101,13 @@ separately from the number of tracks stored.
   particles represented by the file. Note that for a surface source this is the
   count for the batches actually written, which differs from the whole-run
   total when the bank fills early or ``max_source_files`` splits the run.
+
+.. warning::
+    The user-flags field is also used by the MCNP converters distributed with
+    MCPL to carry SSW surface IDs: ``ssw2mcpl --surf`` writes them there, and
+    ``mcpl2ssw`` assumes the field holds a surface ID unless it is given an
+    explicit ``-s<ID>``. OpenMC writes group indices instead, and these are not
+    surface IDs -- they start at zero, whereas valid SSW surface IDs are
+    1--999999. Always pass ``-s<ID>`` to ``mcpl2ssw`` when converting an OpenMC
+    surface source file, or the group indices will be silently taken as surface
+    IDs.

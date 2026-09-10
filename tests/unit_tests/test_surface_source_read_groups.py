@@ -312,6 +312,10 @@ def _read_model(lib, sources=None, ssr=None, batches=30, particles=200):
         model.settings.source = sources
     if ssr is not None:
         model.settings.surf_source_read = ssr
+
+    tally = openmc.Tally(name="absorption")
+    tally.scores = ["absorption"]
+    model.tallies = openmc.Tallies([tally])
     return model
 
 
@@ -367,3 +371,37 @@ def test_smallest_file_binds_with_several_file_sources(
     )
     with pytest.raises(RuntimeError, match="written in 4 batches"):
         model.run()
+
+
+def test_two_file_sources_with_different_strengths(
+    run_in_tmpdir, scatter_lib, leaky_lib, absorb_lib
+):
+    """Two files combined by strength give the strength-weighted sum of what
+    each gives alone. OpenMC normalises a fixed-source tally per unit total
+    source strength, so that sum is sum(strength * result), not a mean."""
+    _writer_model(scatter_lib).run()
+    shutil.move("surface_source.h5", "dense.h5")
+    _writer_model(leaky_lib, macroscopic="leaky").run()
+    shutil.move("surface_source.h5", "sparse.h5")
+
+    alone = {}
+    for name in ("dense.h5", "sparse.h5"):
+        alone[name] = _absorption_per_source_particle(
+            _read_model(absorb_lib, sources=[openmc.FileSource(name)])
+        )
+
+    # The two files must actually differ, or the mixture is not being tested
+    assert alone["dense.h5"] > 1.3 * alone["sparse.h5"]
+
+    s_dense, s_sparse = 3.0, 1.0
+    mixed = _absorption_per_source_particle(
+        _read_model(
+            absorb_lib,
+            sources=[
+                openmc.FileSource("dense.h5", strength=s_dense),
+                openmc.FileSource("sparse.h5", strength=s_sparse),
+            ],
+        )
+    )
+    expected = s_dense * alone["dense.h5"] + s_sparse * alone["sparse.h5"]
+    assert mixed == pytest.approx(expected, rel=0.05)

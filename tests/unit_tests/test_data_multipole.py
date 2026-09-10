@@ -154,11 +154,20 @@ def test_vectfit_rtol_is_enforced():
 
 
 def test_vectfit_rtol_unreachable():
-    """An unreachable tolerance must fail loudly rather than silently."""
+    """An unreachable tolerance must fail loudly rather than silently.
+
+    ``atol`` is lowered along with ``rtol``: a point whose absolute error is
+    already within ``atol`` counts as converged regardless of ``rtol``, so a
+    tight relative tolerance is only meaningful with a tight absolute one.
+    Which of the two failures is reported depends on whether any candidate was
+    usable at all; either way it must raise rather than return a poor fit, and
+    name the energy range so the failure can be located.
+    """
     energy, xs = _rational_xs()
-    with pytest.raises(RuntimeError, match='rtol'):
+    with pytest.raises(RuntimeError, match='Vector fitting'):
         openmc.data.multipole._vectfit_xs(
-            energy, xs, [2, 27], rtol=1e-12, orders=[6, 8], n_vf_iter=4)
+            energy, xs, [2, 27], rtol=1e-12, atol=1e-14, orders=[6, 8],
+            n_vf_iter=4)
 
 
 def test_vectfit_orders_are_searched_in_order():
@@ -170,8 +179,8 @@ def test_vectfit_orders_are_searched_in_order():
     energy, xs = _rational_xs()
     with pytest.raises(RuntimeError, match='orders 2 to 8'):
         openmc.data.multipole._vectfit_xs(
-            energy, xs, [2, 27], rtol=1e-12, orders=range(2, 10, 2),
-            n_vf_iter=4)
+            energy, xs, [2, 27], rtol=1e-12, atol=1e-14,
+            orders=range(2, 10, 2), n_vf_iter=4)
 
 
 def test_vectfit_gives_up_when_error_stops_improving(capsys):
@@ -184,6 +193,26 @@ def test_vectfit_gives_up_when_error_stops_improving(capsys):
     energy, xs = _rational_xs(n_res=2)
     with pytest.raises(RuntimeError, match='rtol'):
         openmc.data.multipole._vectfit_xs(
-            energy, xs, [2, 27], rtol=1e-14, orders=range(2, 100, 2),
-            n_vf_iter=2, log=True)
+            energy, xs, [2, 27], rtol=1e-14, atol=1e-16,
+            orders=range(2, 100, 2), n_vf_iter=2, log=True)
     assert 'stopped improving' in capsys.readouterr().out
+
+
+def test_vectfit_check_grid():
+    """A finer checking grid must be used as the reference for accuracy."""
+    energy, xs = _rational_xs()
+    # a grid twice as dense, sampled from the same exact target
+    fine = np.unique(np.concatenate([energy, 0.5*(energy[:-1] + energy[1:])]))
+    coarse = energy[::2]
+
+    poles, residues = openmc.data.multipole._vectfit_xs(
+        coarse, xs[:, ::2], [2, 27], rtol=1e-3,
+        check_energy=fine, check_xs=np.vstack(
+            [np.interp(fine, energy, xs[i]) for i in range(2)]),
+        orders=range(6, 20, 2), n_vf_iter=10)
+
+    # accuracy must hold on the finer grid, not merely at the fitted points
+    fit = openmc.data.multipole.evaluate(
+        np.sqrt(fine), poles, residues*1j) / fine
+    ref = np.vstack([np.interp(fine, energy, xs[i]) for i in range(2)])
+    assert np.max(np.abs(fit - ref)/np.abs(ref)) <= 1e-3

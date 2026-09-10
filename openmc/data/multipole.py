@@ -141,8 +141,9 @@ def _broaden_wmp_polynomials(E, dopp, n):
     return factors
 
 
-def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
-                n_vf_iter=30, log=False, path_out=None):
+def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
+                check_xs=None, excursion=0.1, orders=None, n_vf_iter=30,
+                log=False, path_out=None):
     """Convert point-wise cross section to multipole data via vector fitting.
 
     Parameters
@@ -163,6 +164,20 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
         point-wise cross sections from ENDF.
     atol : float, optional
         Absolute error tolerance
+    check_energy : np.ndarray, optional
+        Energies at which the fit is judged. These should come from a finer
+        NJOY reconstruction than `energy`, so that the reference is evaluated
+        data rather than an interpolant of it, and so that the fit is
+        constrained between the fitting points as well as at them. Defaults to
+        `energy`, which leaves the behaviour between fitting points checked
+        only by `excursion`.
+    check_xs : np.ndarray, optional
+        Cross sections at `check_energy`, same reactions and order as `ce_xs`.
+    excursion : float, optional
+        How far, in relative terms, the fit may stray outside the range of the
+        two fitting points bracketing it. This rejects a fit that oscillates
+        between the fitting points; it is not an accuracy tolerance. Defaults
+        to 0.1.
     orders : Iterable of int, optional
         A list of orders (number of poles) to be searched
     n_vf_iter : int, optional
@@ -184,19 +199,37 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
     if ce_xs.shape != (nmt, ne):
         raise ValueError('Inconsistent cross section data.')
 
-    # construct test data: interpolate xs with finer grids
+    # Accuracy is judged against evaluated data, never against an interpolant
+    # of it: NJOY only guarantees linear interpolation of its grid to its own
+    # reconstruction tolerance, so scoring between grid points would measure
+    # that interpolant rather than the fit.
+    if check_energy is None:
+        check_energy, check_xs = energy, ce_xs
+    else:
+        inside = (check_energy >= energy[0]) & (check_energy <= energy[-1])
+        check_energy, check_xs = check_energy[inside], check_xs[:, inside]
+        if check_xs.shape[0] != nmt:
+            raise ValueError('Inconsistent check cross section data.')
+    check_s = np.sqrt(check_energy)
+
+    # A refined grid guards against the rational fit oscillating between the
+    # fitting points, where nothing else constrains it. The bracketing data
+    # values give the envelope; no interpolated reference is involved.
     n_finer = 10
     ne_test = (ne - 1)*n_finer + 1
     test_energy = np.interp(np.arange(ne_test),
                             np.arange(ne_test, step=n_finer), energy)
     test_energy[[0, -1]] = energy[[0, -1]]  # avoid numerical issue
-    test_xs_ref = np.zeros((nmt, ne_test))
-    for i in range(nmt):
-        test_xs_ref[i] = np.interp(test_energy, energy, ce_xs[i])
+    segment = np.minimum(np.arange(ne_test)//n_finer, ne - 2)
+    envelope_lo = np.minimum(ce_xs[:, :-1], ce_xs[:, 1:])[:, segment]
+    envelope_hi = np.maximum(ce_xs[:, :-1], ce_xs[:, 1:])[:, segment]
+    envelope_lo = envelope_lo*(1.0 - excursion) - atol
+    envelope_hi = envelope_hi*(1.0 + excursion) + atol
 
     if log:
         print(f"\tenergy: {energy[0]:.3e} to {energy[-1]:.3e} eV ({ne} points)")
         print(f"\terror tolerance: rtol={rtol}, atol={atol}")
+        print(f"\tchecked at {check_energy.size} points")
 
     # transform xs (sigma) and energy (E) to f (sigma*E) and s (sqrt(E)) to be
     # compatible with the multipole representation
@@ -273,18 +306,27 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
                 new_poles, residues, *_ = \
                       vectfit(f, s, new_poles, weight, skip_pole_update=True)
 
-            # assess the result on test grid. A fit with negative cross
+            # assess against the evaluated data. A fit with negative cross
             # sections or a non-finite result is unusable, whatever its error.
-            test_xs = evaluate(test_s, new_poles, residues) / test_energy
-            abserr = np.abs(test_xs - test_xs_ref)
+            check_fit = evaluate(check_s, new_poles, residues) / check_energy
+            abserr = np.abs(check_fit - check_xs)
             with np.errstate(invalid='ignore', divide='ignore'):
-                relerr = abserr / test_xs_ref
-                if np.any(np.isnan(abserr)) or np.any(test_xs < -atol):
+                relerr = abserr / check_xs
+                if np.any(np.isnan(abserr)) or np.any(check_fit < -atol):
                     maxre = np.inf
                 elif np.all(abserr <= atol):
                     maxre = 0.
                 else:
-                    maxre = np.max(relerr[abserr > atol])
+                    maxre = np.max(np.where(abserr > atol, relerr, 0.0))
+
+            # reject a fit that swings outside the data envelope between the
+            # fitting points
+            if np.isfinite(maxre):
+                test_xs = evaluate(test_s, new_poles, residues) / test_energy
+                if np.any(test_xs > envelope_hi) or np.any(test_xs < envelope_lo):
+                    if log >= DETAILED_LOGGING:
+                        print("  Rejected: fit oscillates between grid points")
+                    maxre = np.inf
 
             if log >= DETAILED_LOGGING:
                 print(f"  # poles: {new_poles.size}")
@@ -295,7 +337,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
                     print("  Best so far!")
                 best_maxre = maxre
                 best_poles, best_residues = new_poles, residues
-                best_test_xs, best_relerr = test_xs, relerr
+                best_check_fit, best_relerr = check_fit, relerr
             elif log >= DETAILED_LOGGING:
                 print("  Discarded!")
 
@@ -370,14 +412,14 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
         if not os.path.exists(path_out):
             os.makedirs(path_out)
         for i, mt in enumerate(mts):
-            if not test_xs_ref[i].any():
+            if not check_xs[i].any():
                 continue
             import matplotlib.pyplot as plt
             fig, ax1 = plt.subplots()
-            lns1 = ax1.loglog(test_energy, test_xs_ref[i], 'g', label="ACE xs")
-            lns2 = ax1.loglog(test_energy, best_test_xs[i], 'b', label="VF xs")
+            lns1 = ax1.loglog(check_energy, check_xs[i], 'g', label="ACE xs")
+            lns2 = ax1.loglog(check_energy, best_check_fit[i], 'b', label="VF xs")
             ax2 = ax1.twinx()
-            lns3 = ax2.loglog(test_energy, best_relerr[i], 'r',
+            lns3 = ax2.loglog(check_energy, best_relerr[i], 'r',
                               label="Relative error", alpha=0.5)
             lns = lns1 + lns2 + lns3
             labels = [l.get_label() for l in lns]
@@ -399,9 +441,9 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, orders=None,
 
     return (mp_poles, mp_residues)
 
-def vectfit_nuclide(endf_file, njoy_error=5e-4, vf_pieces=None,
-                    log=False, path_out=None, mp_filename=None,
-                    **kwargs):
+def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
+                    vf_pieces=None, log=False, path_out=None,
+                    mp_filename=None, **kwargs):
     r"""Generate multipole data for a nuclide from ENDF.
 
     Parameters
@@ -409,7 +451,17 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, vf_pieces=None,
     endf_file : str
         Path to ENDF evaluation
     njoy_error : float, optional
-        Fractional error tolerance for processing point-wise data with NJOY
+        Fractional error tolerance for processing the point-wise data that is
+        fitted.
+    njoy_error_check : float or None, optional
+        Fractional error tolerance for a second, finer NJOY reconstruction used
+        only to judge the fit. Because NJOY reconstructs to `errmax`, which
+        defaults to ten times the requested tolerance, a fit cannot be verified
+        to better than roughly ten times `njoy_error` on the fitting grid
+        alone. Evaluating the fit on a finer grid checks it between the fitting
+        points against evaluated data instead of an interpolant. Set to None to
+        skip the second NJOY run and judge the fit on the fitting grid only.
+        Defaults to 1e-6.
     vf_pieces : integer, optional
         Number of equal-in-momentum spaced energy pieces for data fitting
     log : bool or int, optional
@@ -437,6 +489,17 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, vf_pieces=None,
 
     nuc_ce = IncidentNeutron.from_njoy(endf_file, temperatures=[0.0],
              error=njoy_error, broadr=False, heatr=False, purr=False)
+
+    nuc_check = None
+    if njoy_error_check is not None:
+        if njoy_error_check >= njoy_error:
+            raise ValueError('njoy_error_check must be finer than njoy_error')
+        if log:
+            print("Running NJOY again for the finer checking grid "
+                  f"(error={njoy_error_check})...")
+        nuc_check = IncidentNeutron.from_njoy(
+            endf_file, temperatures=[0.0], error=njoy_error_check,
+            broadr=False, heatr=False, purr=False)
 
     if log:
         print("Parsing cross sections within resolved resonance range...")
@@ -486,9 +549,25 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, vf_pieces=None,
         ce_xs = np.vstack((elastic_xs, absorption_xs))
         mts = [2, 27]
 
+    # the same reactions on the finer grid, used only to judge the fit
+    check_energy = check_xs = None
+    if nuc_check is not None:
+        check_energy = nuc_check.energy['0K']
+        check_energy = check_energy[(check_energy >= E_min) &
+                                    (check_energy <= E_max)]
+        rows = []
+        for mt in mts:
+            try:
+                rows.append(nuc_check[mt].xs['0K'](check_energy))
+            except KeyError:
+                rows.append(np.zeros_like(check_energy))
+        check_xs = np.vstack(rows)
+
     if log:
         print(f"  MTs: {mts}")
         print(f"  Energy range: {E_min:.3e} to {E_max:.3e} eV ({n_points} points)")
+        if check_energy is not None:
+            print(f"  Checking grid: {check_energy.size} points")
 
     # ======================================================================
     # PERFORM VECTOR FITTING
@@ -524,7 +603,15 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, vf_pieces=None,
         e_end_idx = np.searchsorted(energy, e_end, side='left') + 1
         e_idx = range(e_start_idx, min(e_end_idx + 1, n_points))
 
+        if check_energy is None:
+            c_energy = c_xs = None
+        else:
+            lo, hi = energy[e_idx][0], energy[e_idx][-1]
+            c_mask = (check_energy >= lo) & (check_energy <= hi)
+            c_energy, c_xs = check_energy[c_mask], check_xs[:, c_mask]
+
         p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts, log=log,
+                           check_energy=c_energy, check_xs=c_xs,
                            path_out=path_out, **kwargs)
 
         poles.append(p)

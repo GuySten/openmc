@@ -63,8 +63,10 @@ def _writer_model(lib, macroscopic="scatter"):
     model.settings = openmc.Settings()
     model.settings.energy_mode = "multi-group"
     model.settings.run_mode = "fixed source"
-    model.settings.particles = 500
-    model.settings.batches = 4
+    # Written in many batches: a reading run partitions along the batches of
+    # the file, so the file needs at least as many as the reader has
+    model.settings.particles = 50
+    model.settings.batches = 40
     model.settings.seed = 1
     model.settings.source = openmc.IndependentSource(
         space=openmc.stats.Point(), angle=openmc.stats.Isotropic()

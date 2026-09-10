@@ -493,7 +493,13 @@ static void check_surface_source_compatibility()
                "came from the same source history";
       break;
     }
-    n_groups = file_source->n_groups();
+    if (file_source->n_file_batches() == 0) {
+      reason = "the surface source file does not record the batches it was "
+               "written in, which are the units that were independent of one "
+               "another when it was written";
+      break;
+    }
+    n_groups = file_source->n_file_batches();
   }
 
   int n_active = settings::n_batches - settings::n_inactive;
@@ -506,8 +512,12 @@ static void check_surface_source_compatibility()
              "fewer than two active batches";
   }
   if (reason.empty() && n_groups >= 0 && n_groups < n_active) {
-    reason = fmt::format("the file holds {} history groups, fewer than the {} "
-                         "active batches that would each need one",
+    reason = fmt::format(
+      "the file was written in {} batches, fewer than the {} active batches "
+      "here that would each need one. Batches of the file are the units that "
+      "were independent when it was written, so a batch here cannot be given "
+      "less than one. Reduce the batch count, or write the file with more "
+      "batches",
       n_groups, n_active);
   }
 

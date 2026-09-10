@@ -210,6 +210,12 @@ public:
     return group_offsets_.empty() ? 0 : group_offsets_.size() - 1;
   }
 
+  //! Number of batches the file records, or zero if it records none
+  int64_t n_file_batches() const
+  {
+    return batch_offsets_.empty() ? 0 : batch_offsets_.size() - 1;
+  }
+
 protected:
   SourceSite sample(uint64_t* seed) const override;
 
@@ -233,9 +239,30 @@ private:
   //! batches and the spread between them carries the sampling error of the
   //! calculation that wrote the file, which is otherwise common to every batch
   //! and so invisible to the reported uncertainty.
-  std::pair<int64_t, int64_t> group_range() const;
+  //! One batch's share of the file
+  struct SourceBlock {
+    int64_t first_group; //!< First group of the block
+    int64_t last_group;  //!< One past the last group of the block
+    //! Weight given to each site emitted from the block, being the block's
+    //! yield of history groups per source particle relative to the file's.
+    //! It averages one, so weights are left near where they were, and it
+    //! varies with how many of the block's source histories reached the
+    //! recording surface, which is what carries that count's fluctuation into
+    //! the spread between batches.
+    double wgt_factor;
+  };
+
+  //! The share of the file the current batch may sample from
+  SourceBlock current_block() const;
 
   vector<SourceSite> sites_;       //!< Source sites
+  //! Group index at which each of the file's own batches begins, with a
+  //! trailing total, and the source particles each of them simulated. Together
+  //! they say how many histories wrote nothing, which is what a partition needs
+  //! in order to report an honest uncertainty for a sparsely populated file.
+  vector<int64_t> batch_offsets_;
+  vector<int64_t> batch_n_particles_;
+
   vector<int64_t> group_offsets_;  //!< Site index at which each history group
                                    //!< begins, with a trailing total. Empty
                                    //!< if the file carries no grouping.

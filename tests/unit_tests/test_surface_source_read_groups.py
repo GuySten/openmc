@@ -43,7 +43,7 @@ def absorb_lib():
     return "absorb.h5"
 
 
-def _writer_model(lib, macroscopic="scatter"):
+def _writer_model(lib, macroscopic="scatter", batches=40):
     """Ball with an interior recording surface."""
     openmc.reset_auto_ids()
     mat = openmc.Material()
@@ -66,7 +66,7 @@ def _writer_model(lib, macroscopic="scatter"):
     # Written in many batches: a reading run partitions along the batches of
     # the file, so the file needs at least as many as the reader has
     model.settings.particles = 50
-    model.settings.batches = 40
+    model.settings.batches = batches
     model.settings.seed = 1
     model.settings.source = openmc.IndependentSource(
         space=openmc.stats.Point(), angle=openmc.stats.Isotropic()
@@ -287,3 +287,83 @@ def test_independent_batches_needs_two_batches(
 
     with pytest.raises(RuntimeError, match="fewer than two active batches"):
         _tally_with(absorb_lib, "surface_source.h5", 1, 500, True)
+
+
+def _read_model(lib, sources=None, ssr=None, batches=30, particles=200):
+    """Absorbing ball big enough to contain the recorded sites."""
+    openmc.reset_auto_ids()
+    mat = openmc.Material()
+    mat.set_density("macro", 1.0)
+    mat.add_macroscopic("absorb")
+
+    model = openmc.Model()
+    model.materials = openmc.Materials([mat])
+    model.materials.cross_sections = lib
+    outer = openmc.Sphere(r=10.0, boundary_type="vacuum")
+    model.geometry = openmc.Geometry([openmc.Cell(fill=mat, region=-outer)])
+
+    model.settings = openmc.Settings()
+    model.settings.energy_mode = "multi-group"
+    model.settings.run_mode = "fixed source"
+    model.settings.particles = particles
+    model.settings.batches = batches
+    model.settings.seed = 3
+    if sources is not None:
+        model.settings.source = sources
+    if ssr is not None:
+        model.settings.surf_source_read = ssr
+    return model
+
+
+def test_file_source_and_independent_source_together(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """Mixing a file with an ordinary source is allowed, and the file's share is
+    still partitioned."""
+    _writer_model(scatter_lib).run()
+
+    model = _read_model(
+        absorb_lib,
+        sources=[
+            openmc.FileSource("surface_source.h5"),
+            openmc.IndependentSource(
+                space=openmc.stats.Point(), angle=openmc.stats.Isotropic()
+            ),
+        ],
+    )
+    model.run()
+
+
+def test_file_source_given_as_an_ordinary_source_is_checked(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """A file named by a <source> element rather than surf_source_read is
+    partitioned too, so it has to be checked the same way."""
+    # Written in 4 batches, read by a run wanting 30: too few to give one each
+    _writer_model(scatter_lib, batches=4).run()
+
+    model = _read_model(
+        absorb_lib,
+        sources=[openmc.FileSource("surface_source.h5")],
+        ssr={"path": "surface_source.h5", "independent_batches": True},
+    )
+    with pytest.raises(RuntimeError, match="written in 4 batches"):
+        model.run()
+
+
+def test_smallest_file_binds_with_several_file_sources(
+    run_in_tmpdir, scatter_lib, absorb_lib
+):
+    """A batch needs one batch from every file, so the smallest file decides."""
+    _writer_model(scatter_lib, batches=40).run()
+    shutil.move("surface_source.h5", "many.h5")
+    _writer_model(scatter_lib, batches=4).run()
+    shutil.move("surface_source.h5", "few.h5")
+
+    model = _read_model(
+        absorb_lib,
+        sources=[openmc.FileSource("many.h5")],
+        ssr={"path": "few.h5", "independent_batches": True},
+    )
+    with pytest.raises(RuntimeError, match="written in 4 batches"):
+        model.run()

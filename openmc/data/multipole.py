@@ -63,8 +63,7 @@ DETAILED_LOGGING = 2
 # for the checking grid means "do without one" rather than "choose for me"
 _UNSET = object()
 
-# Curve fit orders the windowing search tries, highest first. The highest of
-# them also sets how many checking points a window has to hold to be testable.
+# Curve fit orders the windowing search tries, highest first
 _SEARCH_CF_ORDERS = range(10, 1, -1)
 
 
@@ -752,22 +751,21 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
         grid's cross sections are evaluated from the resonance parameters at
         its own energies, whatever tolerance was asked for, and the fit is
         judged at those energies without interpolating between them. It has to
-        be fine enough to land where the fit is worst, and, since every window
-        is judged on the points that fall inside it, to leave each window more
-        of them than its curve fit has coefficients.
+        be fine enough to land where the fit is worst, which is a fixed ratio
+        to the tolerance being checked rather than a number of points. A
+        hundredth of `rtol` finds the same maximum error on Na-23, at the same
+        energy, as a grid ten times finer, using a third of the points, and
+        gives B-10, Xe-135 and H-1 the same libraries as grids two to five
+        times larger. That is the default, capped at a tenth of `njoy_error`
+        so it stays finer than the grid it is checking. Pass a number to
+        override, or None to skip the second NJOY run and judge the fit on the
+        fitting grid alone.
 
-        Those two scale differently, so the default is the stricter of them
-        rather than a fixed ratio. The first is a ratio: a hundredth of `rtol`
-        finds the same maximum error on Na-23, at the same energy, as a grid
-        ten times finer. The second is a number of points, which a nuclide
-        with few resonances reaches only at a much finer tolerance -- on B-10
-        a hundredth of `rtol` leaves windows holding eight or nine points
-        against a curve fit of order ten, and no windowing can be tested at
-        all. Requiring both keeps the cost where it buys something: B-10 is
-        reconstructed to 9e-7 and U-235, whose grid is already ample, to the
-        1e-5 the ratio asks for. Never coarser than a tenth of `njoy_error`.
-        Pass a number to override, or None to skip the second NJOY run and
-        judge the fit on the fitting grid alone.
+        A window holding fewer checking points than its curve fit has
+        coefficients is judged on those points interpolated, which is sound
+        for the same reason the grid is usable at all: its tolerance is a
+        guarantee about linear interpolation between its points. So the grid
+        does not have to be dense enough to resolve every window separately.
     vf_pieces : integer, optional
         Number of equal-in-momentum spaced energy pieces for data fitting
     kink_threshold : float or None, optional
@@ -846,26 +844,10 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
     nuc_ce = IncidentNeutron.from_njoy(endf_file, temperatures=[0.0],
              error=njoy_error, broadr=False, heatr=False, purr=False)
 
+    # fine enough to land where the fit is worst, and never coarser than the
+    # grid it is checking
     if njoy_error_check is _UNSET:
-        # Fine enough to land where the fit is worst, which is a fixed ratio
-        # to the tolerance being checked, and fine enough that a library built
-        # at `min_n_win` windows can be tested at all, which is a number of
-        # points and so depends on the nuclide rather than on `rtol`. NJOY
-        # refines until linear interpolation holds, so its grid grows as the
-        # inverse square root of the tolerance; inverting that gives the
-        # tolerance at which this nuclide reaches the points it needs. On a
-        # nuclide with many resonances the first requirement binds and the
-        # second costs nothing; on a small one such as B-10 it is the second,
-        # whose grid would otherwise leave windows with fewer points than
-        # their curve fit has coefficients.
         njoy_error_check = min(0.01*rtol, 0.1*njoy_error)
-        if min_n_win:
-            # a few times more points than the largest curve fit has
-            # coefficients, in every one of the windows
-            wanted = 4*min_n_win*(max(_SEARCH_CF_ORDERS) + 2)
-            have = nuc_ce.energy['0K'].size
-            njoy_error_check = min(njoy_error_check,
-                                   njoy_error*(have/wanted)**2)
 
     nuc_check = None
     if njoy_error_check is not None:

@@ -313,45 +313,28 @@ def test_corners_to_split_leaves_room_for_windows():
 def test_checking_grid_follows_the_tolerance():
     """The checking grid must track `rtol`, not sit at a fixed density.
 
-    It has to land where the fit is worst, which is a fixed ratio to the
-    tolerance being checked, and it has to leave every window more points than
-    its curve fit has coefficients, which is a number of points and so depends
-    on the nuclide. Neither alone will do: a fixed ratio starves the windows of
-    a nuclide with few resonances, and a fixed number of points cannot verify a
-    tight `rtol`. It must also stay finer than the fitting grid, which
-    `vectfit_nuclide` requires.
+    It has to land where the fit is worst, so it must tighten with the
+    tolerance being checked. A fixed density cannot: too coarse to verify a
+    tight `rtol`, and wasteful for a loose one. It must also stay finer than
+    the fitting grid, which `vectfit_nuclide` requires. It does not have to
+    resolve every window separately, because a window holding too few points
+    is judged on them interpolated.
     """
-    from openmc.data.multipole import _UNSET, _SEARCH_CF_ORDERS
+    from openmc.data.multipole import _UNSET
 
     sig = inspect.signature(openmc.data.multipole.vectfit_nuclide)
     assert sig.parameters['njoy_error_check'].default is _UNSET, \
         'the default must be distinguishable from an explicit None'
 
-    def chosen(rtol, njoy_error, have, min_n_win=1000):
-        error = min(0.01*rtol, 0.1*njoy_error)
-        if min_n_win:
-            wanted = 4*min_n_win*(max(_SEARCH_CF_ORDERS) + 2)
-            error = min(error, njoy_error*(have/wanted)**2)
-        return error
+    def chosen(rtol, njoy_error):
+        return min(0.01*rtol, 0.1*njoy_error)
 
-    # NJOY refines until linear interpolation holds, so its grid grows as the
-    # inverse square root of the tolerance: a nuclide reconstructed to the
-    # chosen tolerance must reach the points a window needs
-    wanted = 4*1000*(max(_SEARCH_CF_ORDERS) + 2)
-    for have in (1081, 2000, 4306, 48851, 322983):
-        error = chosen(1e-3, 5e-4, have)
-        assert have*(5e-4/error)**0.5 >= wanted - 1
-
-    # the ratio binds for a nuclide whose grid is already ample, and the point
-    # count for one with few resonances, which needs a far finer grid
-    assert chosen(1e-3, 5e-4, 322983) == pytest.approx(1e-5)
-    assert chosen(1e-3, 5e-4, 2000) < 1e-6
-
-    # tightening rtol tightens the grid, which a fixed density could not do
-    assert chosen(1e-5, 5e-4, 322983) == pytest.approx(1e-7)
+    # a hundredth of the tolerance, so the margin is the same at any rtol
+    assert chosen(1e-3, 5e-4) == pytest.approx(1e-5)
+    assert chosen(1e-5, 5e-4) == pytest.approx(1e-7)
 
     # and never coarser than a tenth of the fitting grid, which would make the
     # second NJOY run pointless and trip its own consistency check
-    assert chosen(1.0, 5e-4, 10**9) == pytest.approx(5e-5)
+    assert chosen(5e-2, 5e-4) == pytest.approx(5e-5)
     for rtol in (1e-5, 1e-3, 5e-2, 1.0):
-        assert chosen(rtol, 5e-4, 10**9) < 5e-4
+        assert chosen(rtol, 5e-4) < 5e-4

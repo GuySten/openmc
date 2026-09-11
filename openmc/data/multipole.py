@@ -541,8 +541,8 @@ def _background_kinks(endf_file, mts, threshold, E_min, E_max):
 
 def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                     vf_pieces=None, kink_threshold=0.25, rtol=1e-3,
-                    corner_rtol=5e-2, log=False, path_out=None,
-                    mp_filename=None, **kwargs):
+                    corner_rtol=5e-2, min_n_win=1000, log=False,
+                    path_out=None, mp_filename=None, **kwargs):
     r"""Generate multipole data for a nuclide from ENDF.
 
     Parameters
@@ -587,6 +587,15 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         whole piece. The error each piece achieves over its full range,
         exempt neighbourhoods included, is recorded under ``max_error`` in the
         returned data. Defaults to 5e-2.
+    min_n_win : int, optional
+        Fewest windows the library may later be built with. A window takes its
+        poles from a single piece and spans its own width plus four Doppler
+        widths on each side, while adjacent pieces overlap only by that same
+        margin, so a window straddling a boundary would fall outside both
+        neighbours and be described by poles fitted somewhere else. Pieces are
+        therefore widened by half a window as well, which costs about 2% more
+        energy range per piece and supports any window count at or above this
+        one. Coarser windowings remain unavailable. Defaults to 1000.
     log : bool or int, optional
         Whether to print running logs (use int for verbosity control)
     path_out : str, optional
@@ -767,6 +776,13 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
             e_start = max(E_min, (sqrt(alpha*lo_bound) - 4.0)**2/alpha)
         # end E of this piece, extended for Doppler broadening
         e_end = min(E_max, (sqrt(alpha*hi_bound) + 4.0)**2/alpha)
+        # and by half a window, so that a window straddling this boundary is
+        # still covered by the fit rather than extrapolating from it. Half a
+        # window of momentum spacing is sqrt(E)*spacing in energy.
+        if min_n_win:
+            spacing = (sqrt(E_max) - sqrt(E_min))/min_n_win
+            e_start = max(E_min, e_start - sqrt(lo_bound)*spacing)
+            e_end = min(E_max, e_end + sqrt(hi_bound)*spacing)
         # do not extend across a corner
         if kinks.size:
             below = kinks[kinks <= lo_bound]

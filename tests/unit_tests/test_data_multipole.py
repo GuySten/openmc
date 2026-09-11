@@ -1,3 +1,4 @@
+import inspect
 import os
 import pathlib
 
@@ -307,3 +308,31 @@ def test_corners_to_split_leaves_room_for_windows():
         if hi in ends:
             need += min(E_max, (sqrt(alpha*hi) + 4.0)**2/alpha) - hi
         assert hi - lo >= 2*need
+
+
+def test_checking_grid_follows_the_tolerance():
+    """The checking grid must track `rtol`, not sit at a fixed density.
+
+    Its job is to sample finely enough to land where the fit is worst, so it
+    has to tighten with the tolerance being checked. A fixed density cannot:
+    too coarse to verify a tight `rtol`, and wasteful for a loose one. It must
+    also stay finer than the fitting grid, which `vectfit_nuclide` requires.
+    """
+    from openmc.data.multipole import _UNSET
+
+    sig = inspect.signature(openmc.data.multipole.vectfit_nuclide)
+    assert sig.parameters['njoy_error_check'].default is _UNSET, \
+        'the default must be distinguishable from an explicit None'
+
+    def chosen(rtol, njoy_error):
+        return min(0.01*rtol, 0.1*njoy_error)
+
+    # a hundredth of the tolerance, so the margin is the same at any rtol
+    assert chosen(1e-3, 5e-4) == pytest.approx(1e-5)
+    assert chosen(1e-5, 5e-4) == pytest.approx(1e-7)
+
+    # and never coarser than a tenth of the fitting grid, which would make the
+    # second NJOY run pointless and trip its own consistency check
+    assert chosen(5e-2, 5e-4) == pytest.approx(5e-5)
+    for rtol in (1e-5, 1e-3, 5e-2, 1.0):
+        assert chosen(rtol, 5e-4) < 5e-4

@@ -665,6 +665,14 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         if log and kinks.size:
             print(f"  Splitting at {kinks.size} background corners: "
                   + ", ".join(f"{k:.4g}" for k in kinks) + " eV")
+    bounds = np.array(bounds)
+    if kinks.size:
+        # an equally spaced boundary falling inside a stepping interval would
+        # only carve a sliver off it
+        inside = np.zeros(bounds.size, dtype=bool)
+        for lo_k, hi_k in zip(kinks[::2], kinks[1::2]):
+            inside |= (bounds > lo_k) & (bounds < hi_k)
+        bounds = bounds[~inside]
     bounds = np.unique(np.concatenate([bounds, kinks]))
     n_pieces = bounds.size - 1
 
@@ -790,7 +798,10 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
                            for i in range(n_pieces + 1)])
     bounds = np.asarray(bounds, dtype=float)
     bounds_sqrt = np.sqrt(bounds)
-    piece_width = np.min(np.diff(bounds_sqrt))
+    # Pieces split off at corners in the background are deliberately narrow, so
+    # the narrowest piece is not a useful bound on the window spacing; the
+    # typical piece is.
+    piece_width = np.median(np.diff(bounds_sqrt))
     alpha = awr / (K_BOLTZMANN*TEMPERATURE_LIMIT)
 
     # determine window size

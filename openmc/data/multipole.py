@@ -1528,6 +1528,7 @@ class WindowedMultipole(EqualityMixin):
         n_win_min = max(5, n_poles // 20)
         n_win_max = 2000 if n_poles < 2000 else 8000
         best_wmp = best_metric = None
+        failures = []
         for n_w in np.unique(
             np.linspace(n_win_min, n_win_max, search_n_win, dtype=int)
         ):
@@ -1544,9 +1545,18 @@ class WindowedMultipole(EqualityMixin):
                 except Exception as e:
                     if log:
                         print('Failed: ' + str(e))
-                    break
+                    # Try the remaining curve fit orders rather than giving up
+                    # on this window count. Orders are tried highest first and
+                    # the highest is the worst conditioned, the curve fit
+                    # matrix spanning 1/E to E**4, so it is the most likely to
+                    # fail and the least informative about the rest.
+                    failures.append((int(n_w), int(n_cf), str(e)))
+                    continue
 
-                # select wmp library with metric:
+                # Rank by cost alone: every library returned here already meets
+                # the tolerance, since the windowing rejects any that does not,
+                # so the candidates differ only in how expensive they are to
+                # evaluate.
                 # - performance: average # used poles per window and CF order
                 # - memory: # windows
                 metric = -(wmp.poles_per_window * 10. + wmp.fit_order * 1. +
@@ -1556,6 +1566,22 @@ class WindowedMultipole(EqualityMixin):
                         print("Best library so far.")
                     best_wmp = deepcopy(wmp)
                     best_metric = metric
+
+        if best_wmp is None:
+            # one line per distinct reason, since a reason that recurs across
+            # every curve fit order says the same thing each time
+            distinct = {}
+            for n, c, m in failures:
+                distinct.setdefault(m, []).append((n, c))
+            detail = "\n".join(
+                f"    [{len(where)} of {len(failures)}] {m}"
+                for m, where in sorted(distinct.items(),
+                                       key=lambda kv: -len(kv[1]))[:5])
+            raise RuntimeError(
+                f"No windowing configuration met the tolerance: all "
+                f"{len(failures)} combinations of window count and curve fit "
+                f"order failed, with {len(distinct)} distinct reasons:\n"
+                f"{detail}")
 
         # return the best wmp library
         if log:

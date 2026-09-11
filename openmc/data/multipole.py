@@ -37,14 +37,24 @@ _FIT_F = 2       # Fission
 # windowing both widen their energy range by four Doppler widths on each side so
 # that broadening up to this temperature stays accurate, and that margin grows
 # as its square root. The margin in turn sets how narrow a piece may be and
-# still hold a window, which decides whether a piece can be split either side of
-# a corner in the ENDF background; a corner left inside a piece cannot be fitted
-# by a sum of poles at any order. Lowering this limit shrinks the margin and so
-# can let a nuclide reach a tolerance it cannot reach at 3000 K, at the cost of
-# the temperature range the library is valid over. For Fe-56 the margin at
-# 650 keV is about 880 eV at 3000 K against corners 1000 eV apart, too wide to
-# split; at 600 K it is about 310 eV, which is not.
+# still hold a window, and so which corners in the ENDF background are worth
+# splitting pieces at; a corner left inside a piece cannot be fitted by a sum of
+# poles at any order and is held to a looser tolerance instead. Lowering this
+# limit shrinks the margin and so can let a nuclide reach a tolerance it cannot
+# reach at 3000 K, at the cost of the temperature range the library is valid
+# over. For Na-23 the margin at 1 eV is about 1 eV at 3000 K, wider than the
+# piece a corner there would leave, so that corner is not split at; at 600 K it
+# is about 0.4 eV, which is not.
 TEMPERATURE_LIMIT = 3000
+
+# How sharply the ENDF background must turn at a tabulated energy, as a
+# fraction of the steeper of the two slopes meeting there, before that energy
+# counts as a corner rather than a coarsely sampled curve. A smooth function
+# tabulated on a logarithmic mesh turns by well under this at every point,
+# while a background that goes flat on one side of an energy turns by all of
+# it. Paired with the step threshold, which decides whether enough cross
+# section is involved to be worth working around.
+_KINK_SLOPE_CHANGE = 0.8
 
 # Logging control
 DETAILED_LOGGING = 2
@@ -492,8 +502,9 @@ def _background_kinks(endf_file, mts, threshold, E_min, E_max):
     Backgrounds in MF3 are tabulated on a coarse grid and interpolated
     linearly, so the cross section has discontinuous slope at every tabulated
     energy. A sum of poles is analytic and cannot reproduce a corner at any
-    order, so pieces must not straddle the pronounced ones. Both ends of an
-    interval whose background steps by more than `threshold` are returned.
+    order, so the pronounced ones are worth keeping off the middle of a fit.
+    Both ends of an interval whose background steps by more than `threshold`
+    are corners, along with the scale each is resolved on.
 
     Parameters
     ----------
@@ -510,7 +521,9 @@ def _background_kinks(endf_file, mts, threshold, E_min, E_max):
     Returns
     -------
     np.ndarray
-        Sorted energies, excluding the ends of the range
+        One row per corner, sorted by energy and excluding the ends of the
+        range: the energy of the corner, and half the tabulation spacing
+        beside it, which is the scale its influence dies away over.
 
     """
     from .endf import Evaluation, get_head_record, get_tab1_record
@@ -529,14 +542,169 @@ def _background_kinks(endf_file, mts, threshold, E_min, E_max):
         get_head_record(file_obj)
         _, tab = get_tab1_record(file_obj)
         e, xs = np.asarray(tab.x), np.asarray(tab.y)
+        if e.size < 2:
+            continue
+        # how finely the background is tabulated either side of each energy;
+        # that is the scale a corner there is resolved on, and so the scale
+        # its influence dies away over. It is not the width of the stepping
+        # interval, which may be broad: a background that steps across a wide
+        # interval is a slope, and only its ends are corners.
+        width = np.diff(e)
+        # A repeated energy is a jump in the background rather than a change
+        # of slope. Its zero width says nothing about the scale the jump is
+        # resolved on, so borrow the nearest real spacing beside it.
+        real = np.flatnonzero(width > 0)
+        if real.size == 0:
+            continue
+        degenerate = np.flatnonzero(width <= 0)
+        if degenerate.size:
+            j = np.searchsorted(real, degenerate)
+            width = width.astype(float)
+            width[degenerate] = np.minimum(
+                width[real[np.minimum(j, real.size - 1)]],
+                width[real[np.maximum(j - 1, 0)]])
+        near = np.minimum(np.concatenate([width[:1], width]),
+                          np.concatenate([width, width[-1:]]))
+
+        # How far the background steps across each interval, and how sharply
+        # it turns at each tabulated energy. Both are needed. A step alone
+        # only says the grid is coarse, which is true of a smooth curve
+        # sampled on a logarithmic mesh; a turn alone catches every energy
+        # where a background happens to be flat on one side, however little
+        # cross section is involved. A corner worth working around does both.
         scale = np.maximum(np.abs(xs[:-1]), np.abs(xs[1:]))
         with np.errstate(invalid='ignore', divide='ignore'):
             step = np.abs(np.diff(xs))/np.where(scale > 0, scale, np.inf)
-        for i in np.flatnonzero(step > threshold):
-            kinks.extend((e[i], e[i+1]))
+            slope = np.diff(xs)/np.where(np.diff(e) > 0, np.diff(e), np.nan)
+            bend = np.zeros(e.size)
+            bend[1:-1] = np.abs(np.diff(slope))/np.maximum(np.abs(slope[:-1]),
+                                                           np.abs(slope[1:]))
+        bend = np.nan_to_num(bend, nan=0.0, posinf=np.inf)
+        # a repeated energy is a jump, which turns as sharply as anything can
+        for i in degenerate:
+            bend[i] = bend[i+1] = np.inf
 
-    kinks = np.unique([k for k in kinks if E_min < k < E_max])
-    return kinks
+        for i in np.flatnonzero(step > threshold):
+            for j in (i, i + 1):
+                if bend[j] > _KINK_SLOPE_CHANGE:
+                    kinks.append((e[j], near[j]/2))
+
+    kinks = sorted(k for k in kinks if E_min < k[0] < E_max)
+    merged = []
+    for e_k, half in kinks:
+        if merged and e_k == merged[-1][0]:
+            merged[-1][1] = min(merged[-1][1], half)
+        else:
+            merged.append([e_k, half])
+    return np.array(merged, dtype=float).reshape(-1, 2)
+
+
+def _doppler_margin(e, above, alpha, E_min, E_max):
+    """How far past `e` a window sitting against it is evaluated.
+
+    Fitting and windowing both leave room for broadening up to
+    `TEMPERATURE_LIMIT` by extending their energy range four Doppler widths
+    beyond the energy of interest.
+
+    """
+    if above:
+        return min(E_max, (sqrt(alpha*e) + 4.0)**2/alpha) - e
+    return e - max(E_min, (sqrt(alpha*e) - 4.0)**2/alpha)
+
+
+def _corner_band(corner):
+    """The energies a corner spoils the fit over.
+
+    A sum of poles is smooth, so it cannot follow the discontinuous slope
+    where two linearly interpolated background intervals meet, but the damage
+    is local: measured against point-wise data, the error from a corner dies
+    away within about the spacing of the tabulation around it.
+
+    """
+    e_k, half = corner
+    return e_k - half, e_k + half
+
+
+def _corners_to_split(kinks, bounds, alpha, E_min, E_max, unsplit, corner_rtol,
+                      energy=None, min_points=11, log=False):
+    """Decide which background corners are worth making piece boundaries.
+
+    A window is evaluated over its own width plus a margin of four Doppler
+    widths on each side and takes its poles from a single piece. Splitting at
+    a corner that would leave a piece narrower than that margin buys nothing:
+    the piece is then mostly the extension it shares with its neighbours, and
+    the windowing stage cannot place a window inside it without using an
+    impractical number of them. Splitting is given up for the same reason
+    where it would leave a piece holding too few points of the fitting grid to
+    determine a fit at all. Those corners are left where they are, and are
+    held to `corner_rtol` only if a piece turns out to need it. Dropping one
+    corner widens its neighbours, so the choice is iterated until it settles.
+
+    Parameters
+    ----------
+    kinks : numpy.ndarray
+        Corners from :func:`_background_kinks`, as energy and half-width rows.
+    bounds : numpy.ndarray
+        The equally spaced piece boundaries the corners are added to.
+    alpha : float
+        Atomic weight ratio divided by :math:`k_B T` at `TEMPERATURE_LIMIT`.
+    E_min, E_max : float
+        Energy range of interest
+    unsplit : list
+        Appended with the energy range spoiled by each corner not split out.
+    corner_rtol : float
+        Tolerance those ranges may be held to; used only in the log.
+    energy : numpy.ndarray, optional
+        The fitting grid. When given, a split that would leave either side
+        with fewer than `min_points` of it is given up as well.
+    min_points : int, optional
+        Fewest fitting points a piece may hold. Defaults to 11, enough to
+        determine the ten poles of a mid-range fit.
+
+    Returns
+    -------
+    list of float
+        The energies to split pieces at.
+
+    """
+    def margin(e, above):
+        return _doppler_margin(e, above, alpha, E_min, E_max)
+
+    corners = [tuple(c) for c in np.asarray(kinks, dtype=float).reshape(-1, 2)]
+    while corners:
+        ends = {e for e, _ in corners}
+        edges = np.unique(np.concatenate([bounds, np.fromiter(ends, float)]))
+        worst = None
+        for lo, hi in zip(edges[:-1], edges[1:]):
+            need = 2*((margin(lo, False) if lo in ends else 0.0)
+                      + (margin(hi, True) if hi in ends else 0.0))
+            short = (hi - lo) - need
+            if energy is not None and (lo in ends or hi in ends):
+                held = np.searchsorted(energy, hi) - np.searchsorted(energy, lo)
+                if held < min_points:
+                    # measured the same way, as a shortfall to be made up
+                    short = min(short, (hi - lo)*(held/min_points - 1.0))
+            if short < 0 and (worst is None or short < worst[0]):
+                worst = (short, lo, hi, need)
+        if worst is None:
+            break
+
+        # give up whichever corner bounds the worst piece; when both ends are
+        # corners, the one demanding the wider margin
+        _, lo, hi, need = worst
+        i = max((j for j, c in enumerate(corners) if c[0] in (lo, hi)),
+                key=lambda j: margin(corners[j][0], corners[j][0] == lo))
+        dropped = corners.pop(i)
+        unsplit.append(_corner_band(dropped))
+        if log:
+            print(f"  Not splitting at the corner at {dropped[0]:.6g} eV: it "
+                  f"would leave the piece from {lo:.6g} to {hi:.6g} eV too "
+                  f"small, against the {need:.6g} eV of Doppler margin its "
+                  f"windows need and the {min_points} fitting points a fit "
+                  f"needs")
+
+    unsplit.sort()
+    return [e for e, _ in corners]
 
 
 def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
@@ -568,13 +736,17 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         piece boundary is inserted. Backgrounds in MF3 are interpolated
         linearly between tabulated energies, so the cross section has a corner
         at each of them, and a sum of poles cannot reproduce a corner at any
-        order. Splitting there puts the corners on piece boundaries instead of
-        inside a piece. Set to None to disable. Defaults to 0.25.
+        order. Splitting there puts the pronounced ones on piece boundaries
+        rather than in the middle of a fit. Set to None to disable. Defaults
+        to 0.25.
 
-        A corner can only be split out where the interval it spans is wide
-        enough to hold a window, which `TEMPERATURE_LIMIT` governs; see that
-        constant. Corners too narrow to split are left inside a piece, which is
-        then fitted to `corner_rtol`.
+        Splitting is given up at a corner that would leave a piece narrower
+        than the Doppler margin its windows need, which `TEMPERATURE_LIMIT`
+        governs; see that constant. Such a corner is left where it is and its
+        neighbourhood held to `corner_rtol` instead. A piece is extended past
+        its boundaries to leave room for broadening, so the corners it is
+        split at are still inside the range it is fitted over; the split
+        decides where the boundary falls, not what the fit has to reproduce.
     rtol : float, optional
         Maximum relative error tolerance for the fit, passed to
         :func:`openmc.data.multipole._vectfit_xs`. Defaults to 1e-3.
@@ -607,8 +779,19 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
 
     Returns
     -------
-    mp_data
-        Dictionary containing necessary multipole data of the nuclide
+    dict
+        Multipole data for the nuclide. Alongside the ``poles`` and
+        ``residues`` of each piece it carries what the windowing stage needs
+        to judge itself honestly: ``bounds``, the piece boundaries, which are
+        not equally spaced once corners have been split at; ``fit_ranges``,
+        the wider range each piece was actually fitted over, so a window can
+        be given poles that describe it rather than poles extrapolated from
+        elsewhere; ``check_energy`` and ``check_xs``, the finer NJOY
+        reconstruction, so windows are judged against evaluated data rather
+        than against the fit they were built from; ``relaxed``, the energy
+        ranges holding a corner that could not be split out; and
+        ``max_error``, the relative error each piece achieved over its full
+        range, those ranges included.
 
     """
 
@@ -715,53 +898,40 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     piece_width = (sqrt(E_max) - sqrt(E_min)) / vf_pieces
 
     # Boundaries of the equal-in-momentum pieces, plus the pronounced corners
-    # in the background. A piece may be extended past its boundary to leave
-    # room for Doppler broadening, but never past a corner, which would put the
-    # corner back inside a piece.
+    # in the background that are worth splitting at.
     alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
     bounds = [(sqrt(E_min) + piece_width*i)**2 for i in range(vf_pieces + 1)]
     bounds[0], bounds[-1] = E_min, E_max
+    bounds = np.array(bounds)
     kinks = np.array([])
+    all_kinks = np.empty((0, 2))
     unsplit = []
     if kink_threshold is not None:
-        kinks = _background_kinks(endf_file, mts, kink_threshold, E_min, E_max)
-        # A window is evaluated over its own width plus a margin of four
-        # Doppler widths on each side, and takes its poles from a single
-        # piece, so a piece narrower than that margin cannot host any window
-        # at all however many are used. Splitting there would only produce
-        # poles that every window has to extrapolate from.
-        keep = []
-        for lo_k, hi_k in zip(kinks[::2], kinks[1::2]):
-            margin = ((sqrt(alpha*hi_k) + 4.0)**2/alpha - hi_k
-                      + lo_k - (sqrt(alpha*lo_k) - 4.0)**2/alpha)
-            if hi_k - lo_k >= 2*margin:
-                keep.extend((lo_k, hi_k))
-            else:
-                # the corner and the margin a window needs around it
-                unsplit.append((lo_k - margin/2, hi_k + margin/2))
-                if log:
-                    print(f"  Not splitting at the corner spanning {lo_k:.6g} "
-                          f"to {hi_k:.6g} eV: {hi_k - lo_k:.0f} eV is too "
-                          f"narrow for a window, which needs about "
-                          f"{2*margin:.0f} eV here; that piece will be fitted "
-                          f"to corner_rtol={corner_rtol:.3g}")
-        kinks = np.array(keep)
+        all_kinks = _background_kinks(endf_file, mts, kink_threshold,
+                                      E_min, E_max)
+        orders_wanted = kwargs.get('orders')
+        corners = _corners_to_split(
+            all_kinks, bounds, alpha, E_min, E_max, unsplit, corner_rtol,
+            energy=energy,
+            min_points=(max(orders_wanted) + 1) if orders_wanted else 11,
+            log=log)
+        kinks = np.array(corners, dtype=float)
         if log and kinks.size:
             print(f"  Splitting at {kinks.size} background corners: "
                   + ", ".join(f"{k:.4g}" for k in kinks) + " eV")
-    bounds = np.array(bounds)
-    if kinks.size:
-        # an equally spaced boundary falling inside a stepping interval would
-        # only carve a sliver off it
-        inside = np.zeros(bounds.size, dtype=bool)
-        for lo_k, hi_k in zip(kinks[::2], kinks[1::2]):
-            inside |= (bounds > lo_k) & (bounds < hi_k)
-        bounds = bounds[~inside]
     bounds = np.unique(np.concatenate([bounds, kinks]))
     n_pieces = bounds.size - 1
 
 
     poles, residues, max_error, fit_ranges = [], [], [], []
+    # The neighbourhood of every corner, to fall back on for a piece that
+    # cannot reach `rtol` across one, and the bands actually used, which the
+    # windowing stage has to honour too. Nothing is exempt up front: a corner
+    # is usually fitted well enough anyway, and on a nuclide whose background
+    # is tabulated coarsely the bands would otherwise cover much of the
+    # energy range without a single one of them being needed.
+    corner_bands = [_corner_band(row) for row in all_kinks]
+    used_relaxed = set()
     atol = kwargs.get('atol', 1e-5)
     # VF piece by piece
     for i_piece in range(n_pieces):
@@ -783,25 +953,9 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
             spacing = (sqrt(E_max) - sqrt(E_min))/min_n_win
             e_start = max(E_min, e_start - sqrt(lo_bound)*spacing)
             e_end = min(E_max, e_end + sqrt(hi_bound)*spacing)
-        # do not extend across a corner
-        if kinks.size:
-            below = kinks[kinks <= lo_bound]
-            above = kinks[kinks >= hi_bound]
-            if below.size:
-                e_start = max(e_start, below[-1])
-            if above.size:
-                e_end = min(e_end, above[0])
         e_start_idx = max(0, np.searchsorted(energy, e_start, side='right') - 1)
         e_end_idx = np.searchsorted(energy, e_end, side='left') + 1
-        lo_idx, hi_idx = e_start_idx, min(e_end_idx, n_points - 1)
-        if kinks.size:
-            # the padding above is deliberately generous; do not let it reach
-            # back across a corner that this piece was split at
-            while lo_idx < hi_idx and energy[lo_idx] < e_start:
-                lo_idx += 1
-            while hi_idx > lo_idx and energy[hi_idx] > e_end:
-                hi_idx -= 1
-        e_idx = range(lo_idx, hi_idx + 1)
+        e_idx = range(e_start_idx, min(e_end_idx, n_points - 1) + 1)
 
         if check_energy is None:
             c_energy = c_xs = None
@@ -810,21 +964,37 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
             c_mask = (check_energy >= lo) & (check_energy <= hi)
             c_energy, c_xs = check_energy[c_mask], check_xs[:, c_mask]
 
-        # A corner that could not be split out cannot be fitted by poles at
-        # any order. Exempt its neighbourhood from the tolerance rather than
-        # loosening the tolerance over the whole piece, then hold that
-        # neighbourhood to corner_rtol on its own.
+        # A corner cannot be fitted by poles at any order. Exempt its
+        # neighbourhood from the tolerance rather than loosening the tolerance
+        # over the whole piece, then hold that neighbourhood to corner_rtol on
+        # its own. Corners that could not be split out are exempt from the
+        # start, since no fit can reach `rtol` across one. A corner this piece
+        # was split at is still inside the range it is fitted over, because
+        # the range is extended to leave room for broadening, but it sits in
+        # that extension rather than in the middle of the piece and is usually
+        # fitted well enough anyway. Exempting every one of those up front
+        # would give away most of the energy range on some nuclides, so they
+        # are only exempted for a piece that has actually failed without them.
         lo_p, hi_p = energy[e_idx][0], energy[e_idx][-1]
-        relaxed = [(a, b) for a, b in unsplit if a < hi_p and b > lo_p]
-        if relaxed and log:
-            print(f"  holds corners that cannot be split out; holding "
-                  + ", ".join(f"{a:.6g}-{b:.6g}" for a, b in relaxed)
-                  + f" eV to {corner_rtol:.3g}")
-
-        p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts, log=log,
-                           rtol=rtol, check_energy=c_energy, check_xs=c_xs,
-                           relaxed=relaxed, relaxed_rtol=corner_rtol,
-                           path_out=path_out, **kwargs)
+        fit_args = dict(log=log, rtol=rtol, check_energy=c_energy,
+                        check_xs=c_xs, relaxed_rtol=corner_rtol,
+                        path_out=path_out, **kwargs)
+        try:
+            p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts, **fit_args)
+            relaxed = []
+        except RuntimeError:
+            relaxed = [(a, b) for a, b in corner_bands
+                       if a < hi_p and b > lo_p]
+            if not relaxed:
+                raise
+            if log:
+                print(f"  cannot reach rtol={rtol:.3g} across the corners in "
+                      f"the range it is fitted over; holding "
+                      + ", ".join(f"{a:.6g}-{b:.6g}" for a, b in relaxed)
+                      + f" eV to {corner_rtol:.3g}")
+            p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts,
+                               relaxed=relaxed, **fit_args)
+        used_relaxed.update(relaxed)
 
         # record what this piece actually achieved against the evaluated data
         if c_energy is not None and c_energy.size:
@@ -859,7 +1029,10 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                "fit_ranges": np.array(fit_ranges),
                "check_energy": check_energy,
                "check_xs": check_xs,
-               "relaxed": np.asarray(unsplit, dtype=float).reshape(-1, 2),
+               "relaxed": np.asarray(sorted(used_relaxed),
+                                     dtype=float).reshape(-1, 2),
+               "corner_bands": np.asarray(sorted(corner_bands),
+                                          dtype=float).reshape(-1, 2),
                "poles": poles,
                "residues": residues}
 
@@ -950,6 +1123,12 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
     check_energy = mp_data.get("check_energy")
     check_xs = mp_data.get("check_xs")
     relaxed = np.asarray(mp_data.get("relaxed", np.empty((0, 2))), dtype=float)
+    # Corners the fitting stage got through without help. A window is a
+    # weaker approximant than a whole piece -- its curve fit is a low-order
+    # polynomial over a narrow range -- so one may still need a corner
+    # exempted where the piece did not, and it is given the same fallback.
+    corner_bands = np.asarray(mp_data.get("corner_bands", np.empty((0, 2))),
+                              dtype=float)
     fit_ranges = mp_data.get("fit_ranges")
     if fit_ranges is not None:
         fit_ranges = np.asarray(fit_ranges, dtype=float)
@@ -1006,12 +1185,13 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
             e_start = max(E_min, (sqrt(alpha)*inbegin - 4.0)**2/alpha)
         e_end = min(E_max, (sqrt(alpha)*inend + 4.0)**2/alpha)
 
-        # Locate the piece to take poles from. Pieces are fitted over a
-        # range wider than their boundaries so that broadening stays accurate,
-        # and those ranges overlap, so a window straddling a boundary is
-        # usually covered by the fit on either side. Prefer a piece whose fit
-        # actually covers the window, since outside that range its poles are
-        # an extrapolation and describe nothing.
+        # Locate the piece to take poles from. Pieces are fitted over a range
+        # wider than their boundaries, by the same Doppler margin a window
+        # spans plus half a window, so their ranges overlap and a window
+        # straddling a boundary is still covered by the fit on either side, at
+        # any window count at or above the `min_n_win` used when fitting.
+        # Prefer a piece whose fit actually covers the window, since outside
+        # that range its poles are an extrapolation and describe nothing.
         i_piece = None
         if fit_ranges is not None:
             covering = [ip for ip in range(n_pieces)
@@ -1053,6 +1233,13 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
         tol = np.full(energy.size, float(rtol))
         for lo_x, hi_x in relaxed:
             tol[(energy >= lo_x) & (energy <= hi_x)] = corner_rtol
+        # and the same again for corners the fitting stage did not need to
+        # exempt, to fall back on only once every pole has been tried
+        fallback_tol = tol.copy()
+        for lo_x, hi_x in corner_bands:
+            fallback_tol[(energy >= lo_x) & (energy <= hi_x)] = corner_rtol
+        if np.array_equal(fallback_tol, tol):
+            fallback_tol = None
 
         # curve fit matrix
         matrix = np.vstack([energy**(0.5*i - 1) for i in range(n_cf + 1)]).T
@@ -1098,13 +1285,24 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
                     if log >= DETAILED_LOGGING:
                         print("Accuracy satisfied.")
                     break
+                # With every pole of the piece already in, a polynomial is all
+                # that is left to add, and it cannot follow a corner either.
+                # Exempt the corners as the fitting stage does rather than
+                # abandon a windowing that is otherwise within tolerance.
+                if (fallback_tol is not None and lp <= 0 and rp >= n_poles
+                        and np.max(scored/fallback_tol) <= 1.0):
+                    if log >= DETAILED_LOGGING:
+                        print("Accuracy satisfied outside the corners.")
+                    break
 
-            # we expect pure curvefit will succeed for the first window
-            # TODO: find the energy boundary below which no poles are allowed
-            if iw == 0:
-                raise RuntimeError('Pure curvefit failed for the first window!')
-
-            # try to include one more pole (next center nearest)
+            # try to include one more pole (next center nearest). The first
+            # window is no different: a window near E_min has its curve fit
+            # left unbroadened, since broadening it would reach below the
+            # bottom of the library, but its poles are still broadened through
+            # the Faddeeva form like any other window's, and nothing in the
+            # format or the evaluation treats window zero specially. Requiring
+            # it to be a pure curve fit only made generation fail for nuclides
+            # whose lowest window a polynomial cannot describe on its own.
             if lp <= 0 and rp >= n_poles:
                 # every pole of the piece is already in and the window still
                 # misses; against evaluated data this is reachable, so stop

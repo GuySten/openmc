@@ -232,19 +232,78 @@ def test_background_kinks(endf_data):
 
     kinks = openmc.data.multipole._background_kinks(
         endf_file, [2, 27], 0.25, 1e-5, 8.5e5)
+    energy, half = kinks[:, 0], kinks[:, 1]
 
     # the capture background steps by roughly a factor of two at 650 keV over
-    # a 1 keV interval, and both ends must be returned
-    assert 650000.0 in kinks
-    assert 651000.0 in kinks
+    # a 1 keV interval, and both ends of it are corners
+    assert 650000.0 in energy
+    assert 651000.0 in energy
 
-    # a tighter threshold can only add boundaries, a looser one only remove
+    # the band around a corner is the tabulation spacing beside it, not the
+    # width of the stepping interval: a background that steps across a broad
+    # interval is a slope, and only its ends are corners
+    assert half[list(energy).index(650000.0)] == pytest.approx(500.0)
+
+    # a tighter threshold can only add corners, a looser one only remove
     loose = openmc.data.multipole._background_kinks(
         endf_file, [2, 27], 0.5, 1e-5, 8.5e5)
     tight = openmc.data.multipole._background_kinks(
         endf_file, [2, 27], 0.1, 1e-5, 8.5e5)
-    assert set(loose) <= set(kinks) <= set(tight)
+    assert set(loose[:, 0]) <= set(energy) <= set(tight[:, 0])
 
-    # boundaries are sorted and strictly inside the requested range
-    assert np.all(np.diff(kinks) > 0)
-    assert kinks.min() > 1e-5 and kinks.max() < 8.5e5
+    # corners are sorted and strictly inside the requested range
+    assert np.all(np.diff(energy) > 0)
+    assert energy.min() > 1e-5 and energy.max() < 8.5e5
+    assert np.all(half > 0)
+
+
+def test_corners_to_split_leaves_room_for_windows():
+    """A corner is only split at if the pieces it leaves can host a window.
+
+    A piece is never extended across a corner, so poles fitted on one side say
+    nothing about the other. A window whose Doppler-broadened range crosses the
+    corner then has to extrapolate, and the narrower the piece the further that
+    extrapolation reaches. Splitting is given up in that case, which is only
+    correct if it also accounts for the pieces on either side of the corner and
+    not merely the sliver between its own two ends.
+    """
+    from math import sqrt
+    from openmc.data.multipole import _corners_to_split, TEMPERATURE_LIMIT
+    from openmc.data.data import K_BOLTZMANN
+
+    E_min, E_max = 1e-5, 4.6e5
+    alpha = 23.0/(K_BOLTZMANN*TEMPERATURE_LIMIT)
+    outer = np.array([E_min, E_max])
+
+    # Splitting at 1 eV would leave a piece only 1 eV wide, while a window
+    # sitting against 1 eV is evaluated well past 2 eV, so that corner is
+    # given up and held to corner_rtol over the spacing beside it. The corner
+    # at 10 eV is then left with room below it and is kept.
+    unsplit = []
+    kept = _corners_to_split(np.array([[1.0, 0.1], [10.0, 1.0]]), outer, alpha,
+                             E_min, E_max, unsplit, 5e-2)
+    assert kept == [10.0]
+    assert unsplit == [(0.9, 1.1)]
+
+    # higher up the same step is worth splitting at: the margin grows only as
+    # the square root of the energy, so it soon becomes small next to the
+    # pieces the corner leaves behind
+    unsplit = []
+    kept = _corners_to_split(np.array([[100.0, 1.0], [200.0, 1.0]]), outer,
+                             alpha, E_min, E_max, unsplit, 5e-2)
+    assert kept == [100.0, 200.0]
+    assert unsplit == []
+
+    # every piece a kept corner bounds really does have room for its windows
+    kinks = np.array([[e, 1.0] for e in (50., 100., 2e4, 3e4, 2e5, 2.2e5)])
+    unsplit = []
+    kept = _corners_to_split(kinks, outer, alpha, E_min, E_max, unsplit, 5e-2)
+    edges = np.unique(np.concatenate([outer, np.array(kept or [])]))
+    ends = set(kept)
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        need = 0.0
+        if lo in ends:
+            need += lo - max(E_min, (sqrt(alpha*lo) - 4.0)**2/alpha)
+        if hi in ends:
+            need += min(E_max, (sqrt(alpha*hi) + 4.0)**2/alpha) - hi
+        assert hi - lo >= 2*need

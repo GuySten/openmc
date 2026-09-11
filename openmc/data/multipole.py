@@ -67,6 +67,22 @@ _UNSET = object()
 _SEARCH_CF_ORDERS = range(10, 1, -1)
 
 
+class _ToleranceNotMet(RuntimeError):
+    """The best fit found did not reach the tolerance, and is attached.
+
+    Carrying it means a caller that decides to accept the fit anyway, or to
+    try again with some energies exempted, does not have to run the whole
+    order search a second time to get back a result already computed.
+
+    """
+
+    def __init__(self, message, poles, residues, max_error):
+        super().__init__(message)
+        self.poles = poles
+        self.residues = residues
+        self.max_error = max_error
+
+
 def _faddeeva(z):
     r"""Evaluate the complex Faddeeva function.
 
@@ -173,8 +189,8 @@ def _broaden_wmp_polynomials(E, dopp, n):
 
 def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
                 check_xs=None, relaxed=None, relaxed_rtol=5e-2,
-                excursion=0.1, orders=None, n_vf_iter=30, require=True,
-                log=False, path_out=None):
+                excursion=0.1, orders=None, n_vf_iter=30, log=False,
+                path_out=None):
     """Convert point-wise cross section to multipole data via vector fitting.
 
     Parameters
@@ -220,14 +236,6 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         A list of orders (number of poles) to be searched
     n_vf_iter : int, optional
         Number of maximum VF iterations
-    require : bool, optional
-        Whether failing to reach `rtol` is an error. Poles alone are not the
-        whole library -- each window adds a polynomial of its own -- so where
-        the cross section is a background polyline rather than resonances,
-        the poles may be unable to reach `rtol` over a whole piece while the
-        windows built from them have no difficulty. Pass False to return the
-        best fit found and leave the tolerance for the windowing stage to
-        enforce. Defaults to True.
     log : bool or int, optional
         Whether to print running logs (use int for verbosity control)
     path_out : str, optional
@@ -238,6 +246,13 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
     -------
     tuple
         (poles, residues)
+
+    Raises
+    ------
+    _ToleranceNotMet
+        If no order in the search range reaches `rtol`. The best fit found is
+        attached, so a caller willing to accept it, or to try again with some
+        energies exempted, need not repeat the search to recover it.
 
     """
     ne = energy.size
@@ -441,20 +456,6 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             f"{orders[0]} to {orders[-1]}. This usually means every candidate "
             f"gave negative cross sections or a non-finite result.")
 
-    if best_severity > 1.0:
-        if require:
-            raise RuntimeError(
-                f"Vector fitting could not reach the maximum relative error "
-                f"tolerance (rtol={rtol:.3g}) for energy range "
-                f"{energy[0]:.3e} to {energy[-1]:.3e} eV with orders "
-                f"{orders[0]} to {orders[-1]}. The best fit had a maximum "
-                f"relative error of {best_maxre:.3%} using {best_poles.size} "
-                f"poles. Either relax 'rtol' or widen the pole search range "
-                f"with 'orders'.")
-        if log:
-            print(f"\tkeeping the best fit at {best_maxre:.3%}, over "
-                  f"rtol={rtol:.3g}, for the windowing stage to make good")
-
     # merge conjugate poles
     real_idx = []
     conj_idx = []
@@ -511,6 +512,16 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             plt.close()
             if log:
                 print(f"Saved figure: {fig_file}")
+
+    if best_severity > 1.0:
+        raise _ToleranceNotMet(
+            f"Vector fitting could not reach the maximum relative error "
+            f"tolerance (rtol={rtol:.3g}) for energy range "
+            f"{energy[0]:.3e} to {energy[-1]:.3e} eV with orders "
+            f"{orders[0]} to {orders[-1]}. The best fit had a maximum "
+            f"relative error of {best_maxre:.3%} using {best_poles.size} "
+            f"poles. Either relax 'rtol' or widen the pole search range "
+            f"with 'orders'.", mp_poles, mp_residues, best_maxre)
 
     return (mp_poles, mp_residues)
 
@@ -1046,7 +1057,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
         try:
             p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts, **fit_args)
             relaxed = []
-        except RuntimeError:
+        except _ToleranceNotMet as strict:
             relaxed = [(a, b) for a, b in corner_bands
                        if a < hi_p and b > lo_p]
             if relaxed and log:
@@ -1054,24 +1065,28 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
                       f"the range it is fitted over; holding "
                       + ", ".join(f"{a:.6g}-{b:.6g}" for a, b in relaxed)
                       + f" eV to {corner_rtol:.3g}")
-            try:
-                if not relaxed:
-                    raise
-                p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts,
-                                   relaxed=relaxed, **fit_args)
-            except RuntimeError:
+            attempt = strict
+            if relaxed:
+                try:
+                    p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts,
+                                       relaxed=relaxed, **fit_args)
+                    attempt = None
+                except _ToleranceNotMet as exempted:
+                    attempt = exempted
+            if attempt is not None:
                 # Poles are not the whole library: every window adds a
                 # polynomial of its own, over a range narrow enough that a
                 # stretch of background the poles cannot follow across a
                 # whole piece is a straight line within one window. Keep the
-                # best pole set and let the windowing stage, which is judged
-                # against the same evaluated data and is where the library's
-                # accuracy actually lives, be the one to enforce `rtol`.
+                # best pole set the search already found -- repeating it would
+                # only arrive at the same one -- and let the windowing stage,
+                # which is judged against the same evaluated data and is where
+                # the library's accuracy actually lives, enforce `rtol`.
                 if log:
-                    print(f"  poles alone cannot reach rtol={rtol:.3g} here; "
-                          f"leaving it to the windowing stage")
-                p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts,
-                                   relaxed=relaxed, require=False, **fit_args)
+                    print(f"  poles alone reach only {attempt.max_error:.3%} "
+                          f"here, over rtol={rtol:.3g}; leaving it to the "
+                          f"windowing stage")
+                p, r = attempt.poles, attempt.residues
         used_relaxed.update(relaxed)
 
         # record what this piece actually achieved against the evaluated data

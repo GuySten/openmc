@@ -657,11 +657,28 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     # in the background. A piece may be extended past its boundary to leave
     # room for Doppler broadening, but never past a corner, which would put the
     # corner back inside a piece.
+    alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
     bounds = [(sqrt(E_min) + piece_width*i)**2 for i in range(vf_pieces + 1)]
     bounds[0], bounds[-1] = E_min, E_max
     kinks = np.array([])
     if kink_threshold is not None:
         kinks = _background_kinks(endf_file, mts, kink_threshold, E_min, E_max)
+        # A window is evaluated over its own width plus a margin of four
+        # Doppler widths on each side, and takes its poles from a single
+        # piece, so a piece narrower than that margin cannot host any window
+        # at all however many are used. Splitting there would only produce
+        # poles that every window has to extrapolate from.
+        keep = []
+        for lo_k, hi_k in zip(kinks[::2], kinks[1::2]):
+            margin = ((sqrt(alpha*hi_k) + 4.0)**2/alpha - hi_k
+                      + lo_k - (sqrt(alpha*lo_k) - 4.0)**2/alpha)
+            if hi_k - lo_k >= 2*margin:
+                keep.extend((lo_k, hi_k))
+            elif log:
+                print(f"  Not splitting at the corner spanning {lo_k:.6g} to "
+                      f"{hi_k:.6g} eV: {hi_k - lo_k:.0f} eV is too narrow for "
+                      f"a window, which needs about {2*margin:.0f} eV here")
+        kinks = np.array(keep)
         if log and kinks.size:
             print(f"  Splitting at {kinks.size} background corners: "
                   + ", ".join(f"{k:.4g}" for k in kinks) + " eV")
@@ -675,8 +692,6 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         bounds = bounds[~inside]
     bounds = np.unique(np.concatenate([bounds, kinks]))
     n_pieces = bounds.size - 1
-
-    alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
 
     poles, residues = [], []
     # VF piece by piece
@@ -798,10 +813,7 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
                            for i in range(n_pieces + 1)])
     bounds = np.asarray(bounds, dtype=float)
     bounds_sqrt = np.sqrt(bounds)
-    # Pieces split off at corners in the background are deliberately narrow, so
-    # the narrowest piece is not a useful bound on the window spacing; the
-    # typical piece is.
-    piece_width = np.median(np.diff(bounds_sqrt))
+    piece_width = np.min(np.diff(bounds_sqrt))
     alpha = awr / (K_BOLTZMANN*TEMPERATURE_LIMIT)
 
     # determine window size
@@ -816,7 +828,11 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
     spacing = (sqrt(E_max) - sqrt(E_min)) / n_win
     # make sure inner window size is smaller than energy piece size
     if spacing > piece_width:
-        raise ValueError('Window spacing cannot be larger than piece spacing.')
+        raise ValueError(
+            f'Window spacing {spacing:.4g} is larger than the narrowest piece '
+            f'{piece_width:.4g} (both in momentum), so a window would need '
+            f'poles from outside the piece it was assigned. Use at least '
+            f'{int(np.ceil((sqrt(E_max) - sqrt(E_min))/piece_width))} windows.')
 
     if log:
         print("Windowing:")

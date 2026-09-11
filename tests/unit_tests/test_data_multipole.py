@@ -428,3 +428,56 @@ def test_pieces_divide_on_the_nuclide():
     # a heavy nuclide over a short range is limited by that margin, not by
     # its resonance count: U-235 resolves only to 2250 eV
     assert pieces(2703, 322560, 233.0, 2250.0) < 2703//_RESONANCES_PER_PIECE
+
+
+def test_poles_are_moved_off_the_real_axis():
+    """A pole on the real axis inside the range is a 0 K singularity.
+
+    The repair has to leave the fit with exactly the poles it was asked for,
+    or the order the search settles on is not the size of the fit it gets,
+    and the repaired set has to be one vector fitting can be handed back.
+    """
+    from openmc.data.multipole import _offaxis_poles
+
+    lo, hi, spacing = 10.0, 20.0, 0.1
+
+    def check(poles):
+        out = _offaxis_poles(np.array(poles, dtype=complex), lo, hi, spacing)
+        # as many poles as came in, and none of them real inside the range
+        assert out.size == len(poles)
+        inside = (np.imag(out) == 0.) & (np.real(out) >= lo) \
+            & (np.real(out) <= hi)
+        assert not inside.any()
+        # every complex pole is still adjacent to its own conjugate, which is
+        # what both vector fitting and the merge step require
+        i = 0
+        while i < out.size:
+            if np.imag(out[i]) != 0.:
+                assert i + 1 < out.size and out[i + 1] == np.conj(out[i])
+                i += 2
+            else:
+                i += 1
+        return out
+
+    # poles that are already admissible are returned untouched
+    fine = np.array([12.0 + 1j, 12.0 - 1j, 5.0, 25.0], dtype=complex)
+    assert _offaxis_poles(fine, lo, hi, spacing) is fine
+
+    # an even number of real poles pairs up, centred between each pair
+    out = check([11.0, 13.0, 16.0 + 2j, 16.0 - 2j, 19.0])
+    assert 12.0 + 1j in out and 12.0 - 1j in out
+
+    # a pair closer together than the grid is widened to what it can resolve,
+    # since a narrower resonance is not one the data could show
+    out = check([15.0, 15.0 + spacing/10])
+    assert np.max(np.abs(np.imag(out))) >= spacing
+
+    # an odd one out is reflected past the nearer end of the range
+    out = check([11.0])
+    assert out[0] == lo - (11.0 - lo)
+    out = check([19.0])
+    assert out[0] == hi + (hi - 19.0)
+
+    # real poles outside the range are left where they are
+    out = check([5.0, 25.0, 12.0, 18.0])
+    assert 5.0 in out and 25.0 in out

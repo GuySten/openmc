@@ -328,6 +328,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
     f = ce_xs * energy
     s = np.sqrt(energy)
     test_s = np.sqrt(test_energy)
+    spacing = np.median(np.diff(s))
 
     # inverse weighting is used for minimizing the relative deviation instead of
     # absolute deviation in vector fitting
@@ -389,27 +390,24 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             # call vf
             poles, residues, *_ = vectfit(f, s, poles, weight)
 
-            # convert real pole to conjugate pairs
-            n_real_poles = 0
-            new_poles = []
-            for p in poles:
-                p_r, p_i = np.real(p), np.imag(p)
-                if (s[0] <= p_r <= s[-1]) and p_i == 0.:
-                    new_poles += [p_r+p_r*0.01j, p_r-p_r*0.01j]
-                    n_real_poles += 1
-                else:
-                    new_poles += [p]
-            new_poles = np.array(new_poles)
-            # re-calculate residues if poles changed
-            if n_real_poles > 0:
+            # a pole on the real axis inside the range is a singularity of the
+            # zero temperature cross section, so move any off it. The repair
+            # keeps the number of poles, so the next iteration can carry on
+            # from the poles that were actually fitted and scored.
+            moved = _offaxis_poles(poles, s[0], s[-1], spacing)
+            if moved is not poles:
                 if log >= DETAILED_LOGGING:
-                    print(f"  # real poles: {n_real_poles}")
-                new_poles, residues, *_ = \
-                      vectfit(f, s, new_poles, weight, skip_pole_update=True)
+                    print("  # real poles: {}".format(np.count_nonzero(
+                        (np.imag(poles) == 0.)
+                        & (np.real(poles) >= s[0])
+                        & (np.real(poles) <= s[-1]))))
+                # the residues were solved for where the poles used to be
+                poles, residues, *_ = \
+                      vectfit(f, s, moved, weight, skip_pole_update=True)
 
             # assess against the evaluated data. A fit with negative cross
             # sections or a non-finite result is unusable, whatever its error.
-            check_fit = evaluate(check_s, new_poles, residues) / check_energy
+            check_fit = evaluate(check_s, poles, residues) / check_energy
             abserr = np.abs(check_fit - check_xs)
             with np.errstate(invalid='ignore', divide='ignore'):
                 relerr = abserr / check_xs
@@ -427,20 +425,20 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             # reject a fit that swings outside the data envelope between the
             # fitting points
             if np.isfinite(maxre):
-                test_xs = evaluate(test_s, new_poles, residues) / test_energy
+                test_xs = evaluate(test_s, poles, residues) / test_energy
                 if np.any(test_xs > envelope_hi) or np.any(test_xs < envelope_lo):
                     if log >= DETAILED_LOGGING:
                         print("  Rejected: fit oscillates between grid points")
                     maxre = severity = np.inf
 
             if log >= DETAILED_LOGGING:
-                print(f"  # poles: {new_poles.size}")
+                print(f"  # poles: {poles.size}")
                 print(f"  Max relative error: {maxre * 100:.3f}%")
 
             if severity < best[0]:
                 if log >= DETAILED_LOGGING:
                     print("  Best so far!")
-                best = (severity, maxre, new_poles, residues, check_fit,
+                best = (severity, maxre, poles, residues, check_fit,
                         relerr)
             elif log >= DETAILED_LOGGING:
                 print("  Discarded!")
@@ -587,6 +585,67 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             f"with 'orders'.", mp_poles, mp_residues, best_maxre)
 
     return (mp_poles, mp_residues)
+
+def _offaxis_poles(poles, s_lo, s_hi, spacing):
+    """Move poles off the real axis within the fitted range.
+
+    At zero temperature a pole contributes ``1/(sqrt(E) - p)``, so one sitting
+    on the real axis between the first and last point of the grid is a
+    singularity of the cross section at a real energy. Vector fitting works
+    under no such constraint and places them freely: at the orders these fits
+    need, a quarter of the poles land there on every iteration.
+
+    Pairing them up two at a time into a conjugate pair keeps the number of
+    poles the fit was asked for, so the order the search settles on is the size
+    of the fit it gets. Giving each one its own pair instead would grow the fit
+    by a pole every time one appeared, which is why such a repair also cannot
+    be carried into the next iteration: within a few passes the fit outgrows
+    the data it is fitted to.
+
+    Parameters
+    ----------
+    poles : numpy.ndarray
+        Complex poles, with any conjugate pairs adjacent.
+    s_lo, s_hi : float
+        First and last point of the fitting grid, in sqrt(eV).
+    spacing : float
+        Grid spacing in sqrt(eV), the narrowest resonance the data resolves.
+
+    Returns
+    -------
+    numpy.ndarray
+        The poles, as many as came in, none of them real within the range.
+
+    """
+    kept = []
+    real_in = []
+    for p in poles:
+        if np.imag(p) == 0. and s_lo <= np.real(p) <= s_hi:
+            real_in.append(np.real(p))
+        else:
+            kept.append(p)
+    if not real_in:
+        return poles
+
+    # removing only real poles leaves the conjugate pairs among `kept`
+    # adjacent, and each pair built below is written out adjacent too
+    real_in.sort()
+    out = kept
+    for lower, upper in zip(real_in[::2], real_in[1::2]):
+        centre = 0.5*(lower + upper)
+        # a resonance narrower than the grid is one the data cannot show, so
+        # there is nothing to be gained by placing the pair closer than that
+        half_width = max(0.5*(upper - lower), spacing)
+        out += [centre + half_width*1j, centre - half_width*1j]
+    if len(real_in) % 2:
+        # nothing left to pair the last one with, so reflect it across the
+        # nearer end of the range, beyond which a real pole is no longer a
+        # singularity of anything the fit is judged on
+        leftover = real_in[-1]
+        out.append(2*s_lo - leftover if leftover - s_lo <= s_hi - leftover
+                   else 2*s_hi - leftover)
+    return np.array(out, dtype=complex)
+
 
 def _count_resonances(xs, rtol):
     """How many resonances a cross section has, for sizing the fit.

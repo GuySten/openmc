@@ -97,10 +97,9 @@ def _rational_xs(n_res=3, seed=11, tol=3e-5):
 
     The energy grid is refined adaptively, the way NJOY reconstructs
     point-wise data, so that linear interpolation between grid points stays
-    within ``tol``. This matters because :func:`_vectfit_xs` assesses accuracy
-    against a linear interpolant of the input on a refined grid: on a grid too
-    coarse to resolve the resonances, that reference is itself inaccurate and
-    no fit can meet a tight ``rtol``.
+    within ``tol``. Without a separate checking grid :func:`_vectfit_xs` judges
+    the fit at these points, so they have to resolve the resonances for a tight
+    ``rtol`` to mean anything.
     """
     rng = np.random.default_rng(seed)
     E_r = np.sort(rng.uniform(50.0, 9e4, n_res))
@@ -216,3 +215,36 @@ def test_vectfit_check_grid():
         np.sqrt(fine), poles, residues*1j) / fine
     ref = np.vstack([np.interp(fine, energy, xs[i]) for i in range(2)])
     assert np.max(np.abs(fit - ref)/np.abs(ref)) <= 1e-3
+
+
+def test_background_kinks(endf_data):
+    """Only pronounced corners in the MF3 background become piece boundaries.
+
+    Backgrounds are interpolated linearly between tabulated energies, so the
+    cross section has a corner at each one. A sum of poles cannot reproduce a
+    corner, but splitting at every one of them would fragment the fit, so only
+    those whose step exceeds the threshold are returned, and both ends of the
+    stepping interval are needed to keep the corner off the interior.
+    """
+    endf_file = os.path.join(endf_data, 'neutrons', 'n-026_Fe_056.endf')
+    if not os.path.exists(endf_file):
+        pytest.skip('Fe-56 evaluation not available')
+
+    kinks = openmc.data.multipole._background_kinks(
+        endf_file, [2, 27], 0.25, 1e-5, 8.5e5)
+
+    # the capture background steps by roughly a factor of two at 650 keV over
+    # a 1 keV interval, and both ends must be returned
+    assert 650000.0 in kinks
+    assert 651000.0 in kinks
+
+    # a tighter threshold can only add boundaries, a looser one only remove
+    loose = openmc.data.multipole._background_kinks(
+        endf_file, [2, 27], 0.5, 1e-5, 8.5e5)
+    tight = openmc.data.multipole._background_kinks(
+        endf_file, [2, 27], 0.1, 1e-5, 8.5e5)
+    assert set(loose) <= set(kinks) <= set(tight)
+
+    # boundaries are sorted and strictly inside the requested range
+    assert np.all(np.diff(kinks) > 0)
+    assert kinks.min() > 1e-5 and kinks.max() < 8.5e5

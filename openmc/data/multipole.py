@@ -1,4 +1,5 @@
 from numbers import Real
+from io import StringIO
 from math import exp, erf, pi, sqrt
 from copy import deepcopy
 
@@ -262,6 +263,16 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         highest_order = max(200, 4*n_peaks)
         orders = list(range(lowest_order, highest_order + 1, 2))
 
+    # The constrained least-squares system in the pole identification step
+    # needs at least as many samples as poles; beyond that the fit is not
+    # determined by the data anyway.
+    order_limit = 2*((ne - 1)//2)
+    orders = [o for o in orders if o <= order_limit]
+    if not orders:
+        raise ValueError(
+            f"Energy range {energy[0]:.3e} to {energy[-1]:.3e} eV has only "
+            f"{ne} points, too few to fit even two poles.")
+
     if log:
         print(f"Found {n_peaks} peaks")
         print(f"Fitting orders from {orders[0]} to {orders[-1]}")
@@ -441,9 +452,62 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
 
     return (mp_poles, mp_residues)
 
+def _background_kinks(endf_file, mts, threshold, E_min, E_max):
+    """Energies where the ENDF background cross section has a sharp corner.
+
+    Backgrounds in MF3 are tabulated on a coarse grid and interpolated
+    linearly, so the cross section has discontinuous slope at every tabulated
+    energy. A sum of poles is analytic and cannot reproduce a corner at any
+    order, so pieces must not straddle the pronounced ones. Both ends of an
+    interval whose background steps by more than `threshold` are returned.
+
+    Parameters
+    ----------
+    endf_file : str
+        Path to ENDF evaluation
+    mts : Iterable of int
+        Reactions being fitted
+    threshold : float
+        Relative step in the background above which a corner is considered
+        pronounced
+    E_min, E_max : float
+        Energy range of interest
+
+    Returns
+    -------
+    np.ndarray
+        Sorted energies, excluding the ends of the range
+
+    """
+    from .endf import Evaluation, get_head_record, get_tab1_record
+
+    # MT27 (absorption) is a derived sum and has no MF3 section of its own
+    wanted = set()
+    for mt in mts:
+        wanted.update({2: [2], 27: [102, 103, 107], 18: [18]}.get(mt, [mt]))
+
+    ev = Evaluation(endf_file)
+    kinks = []
+    for mt in sorted(wanted):
+        if (3, mt) not in ev.section:
+            continue
+        file_obj = StringIO(ev.section[3, mt])
+        get_head_record(file_obj)
+        _, tab = get_tab1_record(file_obj)
+        e, xs = np.asarray(tab.x), np.asarray(tab.y)
+        scale = np.maximum(np.abs(xs[:-1]), np.abs(xs[1:]))
+        with np.errstate(invalid='ignore', divide='ignore'):
+            step = np.abs(np.diff(xs))/np.where(scale > 0, scale, np.inf)
+        for i in np.flatnonzero(step > threshold):
+            kinks.extend((e[i], e[i+1]))
+
+    kinks = np.unique([k for k in kinks if E_min < k < E_max])
+    return kinks
+
+
 def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
-                    vf_pieces=None, log=False, path_out=None,
-                    mp_filename=None, **kwargs):
+                    vf_pieces=None, kink_threshold=0.25, log=False,
+                    path_out=None, mp_filename=None, **kwargs):
     r"""Generate multipole data for a nuclide from ENDF.
 
     Parameters
@@ -464,6 +528,13 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         Defaults to 1e-6.
     vf_pieces : integer, optional
         Number of equal-in-momentum spaced energy pieces for data fitting
+    kink_threshold : float or None, optional
+        Relative step in the ENDF background cross section above which an extra
+        piece boundary is inserted. Backgrounds in MF3 are interpolated
+        linearly between tabulated energies, so the cross section has a corner
+        at each of them, and a sum of poles cannot reproduce a corner at any
+        order. Splitting there puts the corners on piece boundaries instead of
+        inside a piece. Set to None to disable. Defaults to 0.25.
     log : bool or int, optional
         Whether to print running logs (use int for verbosity control)
     path_out : str, optional
@@ -582,26 +653,56 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
             vf_pieces = 1
     piece_width = (sqrt(E_max) - sqrt(E_min)) / vf_pieces
 
+    # Boundaries of the equal-in-momentum pieces, plus the pronounced corners
+    # in the background. A piece may be extended past its boundary to leave
+    # room for Doppler broadening, but never past a corner, which would put the
+    # corner back inside a piece.
+    bounds = [(sqrt(E_min) + piece_width*i)**2 for i in range(vf_pieces + 1)]
+    bounds[0], bounds[-1] = E_min, E_max
+    kinks = np.array([])
+    if kink_threshold is not None:
+        kinks = _background_kinks(endf_file, mts, kink_threshold, E_min, E_max)
+        if log and kinks.size:
+            print(f"  Splitting at {kinks.size} background corners: "
+                  + ", ".join(f"{k:.4g}" for k in kinks) + " eV")
+    bounds = np.unique(np.concatenate([bounds, kinks]))
+    n_pieces = bounds.size - 1
+
     alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
 
     poles, residues = [], []
     # VF piece by piece
-    for i_piece in range(vf_pieces):
+    for i_piece in range(n_pieces):
+        lo_bound, hi_bound = bounds[i_piece], bounds[i_piece + 1]
         if log:
-            print(f"Vector fitting piece {i_piece + 1}/{vf_pieces}...")
-        # start E of this piece
-        e_bound = (sqrt(E_min) + piece_width*(i_piece-0.5))**2
-        if i_piece == 0 or sqrt(alpha*e_bound) < 4.0:
+            print(f"Vector fitting piece {i_piece + 1}/{n_pieces} "
+                  f"({lo_bound:.4g} to {hi_bound:.4g} eV)...")
+        # start E of this piece, extended for Doppler broadening
+        if i_piece == 0 or sqrt(alpha*lo_bound) < 4.0:
             e_start = E_min
-            e_start_idx = 0
         else:
-            e_start = max(E_min, (sqrt(alpha*e_bound) - 4.0)**2/alpha)
-            e_start_idx = np.searchsorted(energy, e_start, side='right') - 1
-        # end E of this piece
-        e_bound = (sqrt(E_min) + piece_width*(i_piece + 1))**2
-        e_end = min(E_max, (sqrt(alpha*e_bound) + 4.0)**2/alpha)
+            e_start = max(E_min, (sqrt(alpha*lo_bound) - 4.0)**2/alpha)
+        # end E of this piece, extended for Doppler broadening
+        e_end = min(E_max, (sqrt(alpha*hi_bound) + 4.0)**2/alpha)
+        # do not extend across a corner
+        if kinks.size:
+            below = kinks[kinks <= lo_bound]
+            above = kinks[kinks >= hi_bound]
+            if below.size:
+                e_start = max(e_start, below[-1])
+            if above.size:
+                e_end = min(e_end, above[0])
+        e_start_idx = max(0, np.searchsorted(energy, e_start, side='right') - 1)
         e_end_idx = np.searchsorted(energy, e_end, side='left') + 1
-        e_idx = range(e_start_idx, min(e_end_idx + 1, n_points))
+        lo_idx, hi_idx = e_start_idx, min(e_end_idx, n_points - 1)
+        if kinks.size:
+            # the padding above is deliberately generous; do not let it reach
+            # back across a corner that this piece was split at
+            while lo_idx < hi_idx and energy[lo_idx] < e_start:
+                lo_idx += 1
+            while hi_idx > lo_idx and energy[hi_idx] > e_end:
+                hi_idx -= 1
+        e_idx = range(lo_idx, hi_idx + 1)
 
         if check_energy is None:
             c_energy = c_xs = None
@@ -622,6 +723,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                "AWR": nuc_ce.atomic_weight_ratio,
                "E_min": E_min,
                "E_max": E_max,
+               "bounds": bounds,
                "poles": poles,
                "residues": residues}
 
@@ -678,7 +780,17 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
     mp_residues = mp_data["residues"]
 
     n_pieces = len(mp_poles)
-    piece_width = (sqrt(E_max) - sqrt(E_min)) / n_pieces
+    # Piece boundaries are not equally spaced when extra ones were inserted at
+    # corners in the background, so they are carried with the data. Older
+    # multipole data has none, in which case they are equal in momentum.
+    bounds = mp_data.get("bounds")
+    if bounds is None:
+        width = (sqrt(E_max) - sqrt(E_min)) / n_pieces
+        bounds = np.array([(sqrt(E_min) + width*i)**2
+                           for i in range(n_pieces + 1)])
+    bounds = np.asarray(bounds, dtype=float)
+    bounds_sqrt = np.sqrt(bounds)
+    piece_width = np.min(np.diff(bounds_sqrt))
     alpha = awr / (K_BOLTZMANN*TEMPERATURE_LIMIT)
 
     # determine window size
@@ -727,8 +839,10 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
             e_start = max(E_min, (sqrt(alpha)*inbegin - 4.0)**2/alpha)
         e_end = min(E_max, (sqrt(alpha)*inend + 4.0)**2/alpha)
 
-        # locate piece and relevant poles
-        i_piece = min(n_pieces - 1, int((inbegin - sqrt(E_min))/piece_width + 0.5))
+        # locate piece and relevant poles: the piece whose boundaries
+        # bracket the centre of this window
+        i_piece = int(np.clip(np.searchsorted(bounds_sqrt, incenter) - 1,
+                              0, n_pieces - 1))
         poles, residues = mp_poles[i_piece], mp_residues[i_piece]
         n_poles = poles.size
 

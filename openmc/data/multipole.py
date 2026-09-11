@@ -32,6 +32,18 @@ _FIT_A = 1       # Absorption
 _FIT_F = 2       # Fission
 
 # Upper temperature limit (K)
+#
+# This is not only the temperature the library may be broadened to. Fitting and
+# windowing both widen their energy range by four Doppler widths on each side so
+# that broadening up to this temperature stays accurate, and that margin grows
+# as its square root. The margin in turn sets how narrow a piece may be and
+# still hold a window, which decides whether a piece can be split either side of
+# a corner in the ENDF background; a corner left inside a piece cannot be fitted
+# by a sum of poles at any order. Lowering this limit shrinks the margin and so
+# can let a nuclide reach a tolerance it cannot reach at 3000 K, at the cost of
+# the temperature range the library is valid over. For Fe-56 the margin at
+# 650 keV is about 880 eV at 3000 K against corners 1000 eV apart, too wide to
+# split; at 600 K it is about 310 eV, which is not.
 TEMPERATURE_LIMIT = 3000
 
 # Logging control
@@ -143,8 +155,9 @@ def _broaden_wmp_polynomials(E, dopp, n):
 
 
 def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
-                check_xs=None, excursion=0.1, orders=None, n_vf_iter=30,
-                log=False, path_out=None):
+                check_xs=None, relaxed=None, relaxed_rtol=5e-2,
+                excursion=0.1, orders=None, n_vf_iter=30, log=False,
+                path_out=None):
     """Convert point-wise cross section to multipole data via vector fitting.
 
     Parameters
@@ -174,6 +187,13 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         only by `excursion`.
     check_xs : np.ndarray, optional
         Cross sections at `check_energy`, same reactions and order as `ce_xs`.
+    relaxed : iterable of 2-tuple, optional
+        Energy ranges held to `relaxed_rtol` rather than `rtol`. Use this only
+        where the cross section cannot be represented by a sum of poles
+        however many are used, as at a corner in the ENDF background, so that
+        one such feature does not force the whole piece to a looser tolerance.
+    relaxed_rtol : float, optional
+        Tolerance over the `relaxed` ranges. Defaults to 5e-2.
     excursion : float, optional
         How far, in relative terms, the fit may stray outside the range of the
         two fitting points bracketing it. This rejects a fit that oscillates
@@ -212,6 +232,15 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         if check_xs.shape[0] != nmt:
             raise ValueError('Inconsistent check cross section data.')
     check_s = np.sqrt(check_energy)
+
+    # a per-point tolerance, looser only where the cross section cannot be
+    # represented by poles at all
+    tol = np.full(check_energy.size, float(rtol))
+    for lo_x, hi_x in (relaxed or ()):
+        tol[(check_energy >= lo_x) & (check_energy <= hi_x)] = relaxed_rtol
+    if np.all(tol > rtol):
+        raise ValueError('Every checking point is held to the relaxed '
+                         'tolerance.')
 
     # A refined grid guards against the rational fit oscillating between the
     # fitting points, where nothing else constrains it. The bracketing data
@@ -280,7 +309,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
     # perform VF with increasing orders
     found_ideal = False
     n_discarded = 0  # for accelation, number of discarded searches
-    best_maxre = np.inf
+    best_maxre = best_severity = np.inf
     best_poles = None
     for i, order in enumerate(orders):
         if log:
@@ -290,7 +319,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         poles = poles_r + poles_r*0.01j
         poles = np.sort(np.append(poles, np.conj(poles)))
 
-        maxre_before = best_maxre
+        maxre_before = best_severity
         # fitting iteration
         for i_vf in range(n_vf_iter):
             if log >= DETAILED_LOGGING:
@@ -324,11 +353,15 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             with np.errstate(invalid='ignore', divide='ignore'):
                 relerr = abserr / check_xs
                 if np.any(np.isnan(abserr)) or np.any(check_fit < -atol):
-                    maxre = np.inf
+                    maxre = severity = np.inf
                 elif np.all(abserr <= atol):
-                    maxre = 0.
+                    maxre = severity = 0.
                 else:
-                    maxre = np.max(np.where(abserr > atol, relerr, 0.0))
+                    scored = np.where(abserr > atol, relerr, 0.0)
+                    # measured against each point's own tolerance, so a corner
+                    # held to a looser one does not dominate the search
+                    severity = np.max(scored/tol)
+                    maxre = np.max(scored)
 
             # reject a fit that swings outside the data envelope between the
             # fitting points
@@ -337,13 +370,14 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
                 if np.any(test_xs > envelope_hi) or np.any(test_xs < envelope_lo):
                     if log >= DETAILED_LOGGING:
                         print("  Rejected: fit oscillates between grid points")
-                    maxre = np.inf
+                    maxre = severity = np.inf
 
             if log >= DETAILED_LOGGING:
                 print(f"  # poles: {new_poles.size}")
                 print(f"  Max relative error: {maxre * 100:.3f}%")
 
-            if maxre < best_maxre:
+            if severity < best_severity:
+                best_severity = severity
                 if log >= DETAILED_LOGGING:
                     print("  Best so far!")
                 best_maxre = maxre
@@ -355,7 +389,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             # the search is done as soon as every point is within tolerance;
             # because orders are tried in increasing order, this is also the
             # smallest number of poles that achieves it
-            if maxre <= rtol:
+            if severity <= 1.0:
                 if log:
                     print("Found ideal results. Stop!")
                 found_ideal = True
@@ -367,7 +401,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         # acceleration: keep adding poles for as long as the maximum relative
         # error keeps coming down, then give up. Stopping here never returns a
         # poor fit because the tolerance check after the loop raises.
-        if best_maxre < maxre_before:
+        if best_severity < maxre_before:
             n_discarded = 0
         else:
             n_discarded += 1
@@ -383,7 +417,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             f"{orders[0]} to {orders[-1]}. This usually means every candidate "
             f"gave negative cross sections or a non-finite result.")
 
-    if best_maxre > rtol:
+    if best_severity > 1.0:
         raise RuntimeError(
             f"Vector fitting could not reach the maximum relative error "
             f"tolerance (rtol={rtol:.3g}) for energy range "
@@ -506,8 +540,9 @@ def _background_kinks(endf_file, mts, threshold, E_min, E_max):
 
 
 def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
-                    vf_pieces=None, kink_threshold=0.25, log=False,
-                    path_out=None, mp_filename=None, **kwargs):
+                    vf_pieces=None, kink_threshold=0.25, rtol=1e-3,
+                    corner_rtol=5e-2, log=False, path_out=None,
+                    mp_filename=None, **kwargs):
     r"""Generate multipole data for a nuclide from ENDF.
 
     Parameters
@@ -535,6 +570,23 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         at each of them, and a sum of poles cannot reproduce a corner at any
         order. Splitting there puts the corners on piece boundaries instead of
         inside a piece. Set to None to disable. Defaults to 0.25.
+
+        A corner can only be split out where the interval it spans is wide
+        enough to hold a window, which `TEMPERATURE_LIMIT` governs; see that
+        constant. Corners too narrow to split are left inside a piece, which is
+        then fitted to `corner_rtol`.
+    rtol : float, optional
+        Maximum relative error tolerance for the fit, passed to
+        :func:`openmc.data.multipole._vectfit_xs`. Defaults to 1e-3.
+    corner_rtol : float, optional
+        Tolerance around a corner that could not be split out. A sum of poles
+        cannot reproduce a corner at any order, so a piece holding one cannot
+        meet `rtol` and would otherwise abort generation. Only the corner's
+        own neighbourhood is held to this looser tolerance; the rest of the
+        piece must still meet `rtol`, so one narrow feature does not degrade a
+        whole piece. The error each piece achieves over its full range,
+        exempt neighbourhoods included, is recorded under ``max_error`` in the
+        returned data. Defaults to 5e-2.
     log : bool or int, optional
         Whether to print running logs (use int for verbosity control)
     path_out : str, optional
@@ -661,6 +713,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     bounds = [(sqrt(E_min) + piece_width*i)**2 for i in range(vf_pieces + 1)]
     bounds[0], bounds[-1] = E_min, E_max
     kinks = np.array([])
+    unsplit = []
     if kink_threshold is not None:
         kinks = _background_kinks(endf_file, mts, kink_threshold, E_min, E_max)
         # A window is evaluated over its own width plus a margin of four
@@ -674,10 +727,15 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                       + lo_k - (sqrt(alpha*lo_k) - 4.0)**2/alpha)
             if hi_k - lo_k >= 2*margin:
                 keep.extend((lo_k, hi_k))
-            elif log:
-                print(f"  Not splitting at the corner spanning {lo_k:.6g} to "
-                      f"{hi_k:.6g} eV: {hi_k - lo_k:.0f} eV is too narrow for "
-                      f"a window, which needs about {2*margin:.0f} eV here")
+            else:
+                # the corner and the margin a window needs around it
+                unsplit.append((lo_k - margin/2, hi_k + margin/2))
+                if log:
+                    print(f"  Not splitting at the corner spanning {lo_k:.6g} "
+                          f"to {hi_k:.6g} eV: {hi_k - lo_k:.0f} eV is too "
+                          f"narrow for a window, which needs about "
+                          f"{2*margin:.0f} eV here; that piece will be fitted "
+                          f"to corner_rtol={corner_rtol:.3g}")
         kinks = np.array(keep)
         if log and kinks.size:
             print(f"  Splitting at {kinks.size} background corners: "
@@ -693,7 +751,9 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     bounds = np.unique(np.concatenate([bounds, kinks]))
     n_pieces = bounds.size - 1
 
-    poles, residues = [], []
+
+    poles, residues, max_error = [], [], []
+    atol = kwargs.get('atol', 1e-5)
     # VF piece by piece
     for i_piece in range(n_pieces):
         lo_bound, hi_bound = bounds[i_piece], bounds[i_piece + 1]
@@ -734,9 +794,40 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
             c_mask = (check_energy >= lo) & (check_energy <= hi)
             c_energy, c_xs = check_energy[c_mask], check_xs[:, c_mask]
 
+        # A corner that could not be split out cannot be fitted by poles at
+        # any order. Exempt its neighbourhood from the tolerance rather than
+        # loosening the tolerance over the whole piece, then hold that
+        # neighbourhood to corner_rtol on its own.
+        lo_p, hi_p = energy[e_idx][0], energy[e_idx][-1]
+        relaxed = [(a, b) for a, b in unsplit if a < hi_p and b > lo_p]
+        if relaxed and log:
+            print(f"  holds corners that cannot be split out; holding "
+                  + ", ".join(f"{a:.6g}-{b:.6g}" for a, b in relaxed)
+                  + f" eV to {corner_rtol:.3g}")
+
         p, r = _vectfit_xs(energy[e_idx], ce_xs[:, e_idx], mts, log=log,
-                           check_energy=c_energy, check_xs=c_xs,
+                           rtol=rtol, check_energy=c_energy, check_xs=c_xs,
+                           relaxed=relaxed, relaxed_rtol=corner_rtol,
                            path_out=path_out, **kwargs)
+
+        # record what this piece actually achieved against the evaluated data
+        if c_energy is not None and c_energy.size:
+            fit = evaluate(np.sqrt(c_energy), p, r*1j)/c_energy
+            abserr = np.abs(fit - c_xs)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                achieved = float(np.max(np.where(abserr > atol,
+                                                 abserr/np.abs(c_xs), 0.0)))
+        else:
+            achieved = float('nan')
+        max_error.append(achieved)
+        if log:
+            print(f"  reproduces the point-wise data to {achieved:.3%}")
+        if relaxed and achieved > corner_rtol:
+            raise RuntimeError(
+                f"Energy range {lo_p:.3e} to {hi_p:.3e} eV holds a corner in "
+                f"the ENDF background that cannot be split out, and the fit "
+                f"there reaches only {achieved:.3%}, outside "
+                f"corner_rtol={corner_rtol:.3g}.")
 
         poles.append(p)
         residues.append(r)
@@ -747,8 +838,21 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                "E_min": E_min,
                "E_max": E_max,
                "bounds": bounds,
+               "max_error": np.array(max_error),
                "poles": poles,
                "residues": residues}
+
+    if log:
+        worst = np.nanmax(max_error) if max_error else float('nan')
+        print(f"Multipole data reproduces the point-wise data to {worst:.3%}")
+        over = [i for i, e in enumerate(max_error) if e > rtol]
+        if over:
+            print(f"  {len(over)} of {n_pieces} pieces exceed rtol={rtol:.3g}, "
+                  "each holding a corner in the background that cannot be "
+                  "fitted by poles:")
+            for i in over:
+                print(f"    {bounds[i]:.6g} to {bounds[i+1]:.6g} eV: "
+                      f"{max_error[i]:.3%}")
 
     # dump multipole data to file
     if path_out:

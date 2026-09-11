@@ -376,3 +376,55 @@ def test_resonances_are_counted_above_the_noise():
     # a flat or degenerate cross section must not raise
     assert _count_resonances(np.zeros(50), 1e-3) == 0
     assert _count_resonances(np.array([1.0, 2.0]), 1e-3) == 0
+
+
+def test_pieces_divide_on_the_nuclide():
+    """How much one fit is asked to describe, not whether to divide at all.
+
+    A rule that divided only above a threshold left every nuclide under it
+    with a single piece spanning the whole range, however wide: O-16 got one
+    piece over ten decades. Dividing further is also cheaper almost until it
+    stops working, since the order a piece needs grows with the resonances in
+    it and the search costs more than the order.
+
+    It cannot divide without limit. A piece has to hold enough of the fitting
+    grid to determine a fit, and to be wider than the Doppler margin its
+    windows reach past it, which for pieces equal in momentum comes out
+    independent of energy.
+    """
+    from math import sqrt
+    from openmc.data.multipole import (_RESONANCES_PER_PIECE,
+                                       _POINTS_PER_PIECE, _MIN_PIECE_POINTS,
+                                       TEMPERATURE_LIMIT)
+    from openmc.data.data import K_BOLTZMANN
+
+    def pieces(n_peaks, n_points, awr, E_max, E_min=1e-5):
+        alpha = awr/(K_BOLTZMANN*TEMPERATURE_LIMIT)
+        n = max(n_peaks//_RESONANCES_PER_PIECE, n_points//_POINTS_PER_PIECE)
+        n = min(n, n_points//_MIN_PIECE_POINTS,
+                int((sqrt(E_max) - sqrt(E_min))*sqrt(alpha)/16))
+        return max(1, n)
+
+    # a nuclide with hardly any resonances is still divided, because a single
+    # piece would span its whole range
+    assert pieces(6, 1500, 15.86, 2.355e6) > 1
+
+    # more resonances means more pieces, with no threshold to cross
+    counts = [pieces(n, 4306, 22.79, 4.5931e5) for n in (40, 80, 160, 320)]
+    assert counts == sorted(counts) and counts[0] < counts[-1]
+
+    # every piece keeps enough points to determine a fit
+    for n_peaks, n_points in ((3000, 5000), (10**6, 900)):
+        assert n_points//pieces(n_peaks, n_points, 22.79, 4.5931e5) \
+            >= _MIN_PIECE_POINTS
+
+    # and stays wider than the margin its windows need: the momentum spacing
+    # must exceed 16/sqrt(alpha) whatever the energy
+    for awr, E_max in ((22.79, 4.5931e5), (233.0, 2250.0), (0.999, 2e7)):
+        alpha = awr/(K_BOLTZMANN*TEMPERATURE_LIMIT)
+        n = pieces(10**6, 10**7, awr, E_max)
+        assert (sqrt(E_max) - sqrt(1e-5))/n >= 16/sqrt(alpha) - 1e-9
+
+    # a heavy nuclide over a short range is limited by that margin, not by
+    # its resonance count: U-235 resolves only to 2250 eV
+    assert pieces(2703, 322560, 233.0, 2250.0) < 2703//_RESONANCES_PER_PIECE

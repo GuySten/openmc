@@ -67,6 +67,16 @@ _UNSET = object()
 _SEARCH_CF_ORDERS = range(10, 1, -1)
 
 
+# How much of the cross section one vector fit is asked to describe. Fewer
+# resonances per piece is cheaper -- the search cost grows faster than the
+# order, and the order grows with the resonances -- and does not cost library
+# size, since the windowing stage keeps only the poles its windows use. The
+# floor on points per piece keeps a piece able to determine a fit at all.
+_RESONANCES_PER_PIECE = 4
+_POINTS_PER_PIECE = 200
+_MIN_PIECE_POINTS = 11
+
+
 class _ToleranceNotMet(RuntimeError):
     """The best fit found did not reach the tolerance, and is attached.
 
@@ -278,9 +288,13 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
     tol = np.full(check_energy.size, float(rtol))
     for lo_x, hi_x in (relaxed or ()):
         tol[(check_energy >= lo_x) & (check_energy <= hi_x)] = relaxed_rtol
-    if np.all(tol > rtol):
-        raise ValueError('Every checking point is held to the relaxed '
-                         'tolerance.')
+    if relaxed and np.all(tol > rtol) and log:
+        # A piece can lie wholly inside a corner's neighbourhood where the
+        # background is tabulated coarsely. Holding all of it to the looser
+        # tolerance is the honest outcome; there is nothing here that a sum of
+        # poles could have been held to `rtol` over.
+        print(f"\tevery point is beside a corner; the whole range is held to "
+              f"{relaxed_rtol:.3g}")
 
     # A refined grid guards against the rational fit oscillating between the
     # fitting points, where nothing else constrains it. The bracketing data
@@ -963,18 +977,39 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
     # ======================================================================
     # PERFORM VECTOR FITTING
 
+    alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
+
     if vf_pieces is None:
-        # divide into pieces for complex nuclides
+        # How much one fit is asked to describe, rather than whether the
+        # nuclide is complicated enough to bother dividing at all. The order a
+        # piece needs grows with the resonances in it and the cost of the
+        # search grows faster than the order, so dividing further is cheaper
+        # almost until it stops working: on Na-23, 76 pieces fit three times
+        # faster than 38 and leave a smaller library, because the windowing
+        # stage keeps fewer poles when each piece describes less. A rule that
+        # divided only above a threshold left the nuclides under it with a
+        # single piece spanning the whole range -- for O-16 ten decades, which
+        # no windowing of it could be made accurate.
         n_peaks = _count_resonances(total_xs, rtol)
-        if n_peaks > 200 or n_points > 30000 or n_peaks * n_points > 100*10000:
-            vf_pieces = max(5, n_peaks // 50,  n_points // 2000)
-        else:
-            vf_pieces = 1
+        vf_pieces = max(n_peaks//_RESONANCES_PER_PIECE,
+                        n_points//_POINTS_PER_PIECE)
+        # but a piece still has to hold enough of the fitting grid to
+        # determine a fit, and to be wider than the Doppler margin its windows
+        # reach past it -- the same requirement `_corners_to_split` puts on a
+        # corner. For pieces equal in momentum that works out independent of
+        # energy: a piece at E is 2*sqrt(E)*spacing wide and the margin either
+        # side of it is 8*sqrt(E/alpha), so the momentum spacing must exceed
+        # 16/sqrt(alpha) whatever E is.
+        vf_pieces = min(vf_pieces, n_points//_MIN_PIECE_POINTS,
+                        int((sqrt(E_max) - sqrt(E_min))*sqrt(alpha)/16))
+        vf_pieces = max(1, vf_pieces)
+        if log:
+            print(f"  {n_peaks} resonances over {n_points} points "
+                  f"-> {vf_pieces} pieces")
     piece_width = (sqrt(E_max) - sqrt(E_min)) / vf_pieces
 
     # Boundaries of the equal-in-momentum pieces, plus the pronounced corners
     # in the background that are worth splitting at.
-    alpha = nuc_ce.atomic_weight_ratio/(K_BOLTZMANN*TEMPERATURE_LIMIT)
     bounds = [(sqrt(E_min) + piece_width*i)**2 for i in range(vf_pieces + 1)]
     bounds[0], bounds[-1] = E_min, E_max
     bounds = np.array(bounds)

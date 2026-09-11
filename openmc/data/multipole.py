@@ -752,7 +752,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     n_pieces = bounds.size - 1
 
 
-    poles, residues, max_error = [], [], []
+    poles, residues, max_error, fit_ranges = [], [], [], []
     atol = kwargs.get('atol', 1e-5)
     # VF piece by piece
     for i_piece in range(n_pieces):
@@ -820,6 +820,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
         else:
             achieved = float('nan')
         max_error.append(achieved)
+        fit_ranges.append((lo_p, hi_p))
         if log:
             print(f"  reproduces the point-wise data to {achieved:.3%}")
         if relaxed and achieved > corner_rtol:
@@ -839,6 +840,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                "E_max": E_max,
                "bounds": bounds,
                "max_error": np.array(max_error),
+               "fit_ranges": np.array(fit_ranges),
                "check_energy": check_energy,
                "check_xs": check_xs,
                "relaxed": np.asarray(unsplit, dtype=float).reshape(-1, 2),
@@ -932,6 +934,9 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
     check_energy = mp_data.get("check_energy")
     check_xs = mp_data.get("check_xs")
     relaxed = np.asarray(mp_data.get("relaxed", np.empty((0, 2))), dtype=float)
+    fit_ranges = mp_data.get("fit_ranges")
+    if fit_ranges is not None:
+        fit_ranges = np.asarray(fit_ranges, dtype=float)
     piece_width = np.min(np.diff(bounds_sqrt))
     alpha = awr / (K_BOLTZMANN*TEMPERATURE_LIMIT)
 
@@ -985,10 +990,23 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
             e_start = max(E_min, (sqrt(alpha)*inbegin - 4.0)**2/alpha)
         e_end = min(E_max, (sqrt(alpha)*inend + 4.0)**2/alpha)
 
-        # locate piece and relevant poles: the piece whose boundaries
-        # bracket the centre of this window
-        i_piece = int(np.clip(np.searchsorted(bounds_sqrt, incenter) - 1,
-                              0, n_pieces - 1))
+        # Locate the piece to take poles from. Pieces are fitted over a
+        # range wider than their boundaries so that broadening stays accurate,
+        # and those ranges overlap, so a window straddling a boundary is
+        # usually covered by the fit on either side. Prefer a piece whose fit
+        # actually covers the window, since outside that range its poles are
+        # an extrapolation and describe nothing.
+        i_piece = None
+        if fit_ranges is not None:
+            covering = [ip for ip in range(n_pieces)
+                        if fit_ranges[ip, 0] <= e_start and
+                        e_end <= fit_ranges[ip, 1]]
+            if covering:
+                i_piece = min(covering, key=lambda ip: abs(
+                    incenter - sqrt(0.5*(fit_ranges[ip, 0] + fit_ranges[ip, 1]))))
+        if i_piece is None:
+            i_piece = int(np.clip(np.searchsorted(bounds_sqrt, incenter) - 1,
+                                  0, n_pieces - 1))
         poles, residues = mp_poles[i_piece], mp_residues[i_piece]
         n_poles = poles.size
 
@@ -1037,8 +1055,19 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
             else:
                 xs_wp = np.zeros_like(xs_ref)
 
-            # do least square curve fit on the remains
-            coefs = np.linalg.lstsq(matrix, (xs_ref - xs_wp).T, rcond=None)[0]
+            # Do least square curve fit on the remains, weighted by the
+            # inverse cross section so that it minimizes relative rather than
+            # absolute deviation, as the tolerance below is relative. A window
+            # spanning a resonance and its wing covers orders of magnitude, and
+            # an unweighted fit trades error at the bottom of that range for
+            # error at the top. Points below atol are not scored, so they are
+            # not allowed to dominate the weighting either.
+            coefs = np.empty((n_cf + 1, xs_ref.shape[0]))
+            for i_mt in range(xs_ref.shape[0]):
+                w = 1.0/np.maximum(np.abs(xs_ref[i_mt]), atol)
+                coefs[:, i_mt] = np.linalg.lstsq(
+                    matrix*w[:, np.newaxis], (xs_ref[i_mt] - xs_wp[i_mt])*w,
+                    rcond=None)[0]
             xs_fit = (matrix @ coefs).T
 
             # assess the result

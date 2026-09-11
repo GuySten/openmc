@@ -76,6 +76,14 @@ _RESONANCES_PER_PIECE = 4
 _POINTS_PER_PIECE = 200
 _MIN_PIECE_POINTS = 11
 
+# How many times a search that fell short may resume with twice the iterations,
+# and how few orders each resumed pass may cover. Spending the larger budget on
+# every fit would multiply the cost of every nuclide to rescue the few pieces
+# that fall short, and letting a resumed pass run the whole remaining order
+# range would do the same to those pieces.
+_EXTRA_VF_PASSES = 2
+_EXTRA_VF_ORDERS = 5
+
 
 class _ToleranceNotMet(RuntimeError):
     """The best fit found did not reach the tolerance, and is attached.
@@ -359,24 +367,24 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
         print(f"Found {n_peaks} peaks")
         print(f"Fitting orders from {orders[0]} to {orders[-1]}")
 
-    # perform VF with increasing orders
-    found_ideal = False
-    n_discarded = 0  # for accelation, number of discarded searches
-    best_maxre = best_severity = np.inf
-    best_poles = None
-    for i, order in enumerate(orders):
-        if log:
-            print(f"Order={order}({i}/{len(orders)})")
-        # initial guessed poles
-        poles_r = np.linspace(s[0], s[-1], order//2)
-        poles = poles_r + poles_r*0.01j
-        poles = np.sort(np.append(poles, np.conj(poles)))
+    def fit_at(order, n_iter, poles=None):
+        """Vector fit at one order, returning that order's best iteration.
 
-        maxre_before = best_severity
-        # fitting iteration
-        for i_vf in range(n_vf_iter):
+        Starts from `poles` when given, so a fit can be handed back its own
+        poles and carried further, and otherwise from the usual evenly spaced
+        guess. The return is the best iteration's
+        ``(severity, maxre, poles, residues, check_fit, relerr)``, with the
+        poles ``None`` if every iteration was unusable.
+        """
+        if poles is None:
+            poles_r = np.linspace(s[0], s[-1], order//2)
+            poles = poles_r + poles_r*0.01j
+            poles = np.sort(np.append(poles, np.conj(poles)))
+
+        best = (np.inf, np.inf, None, None, None, None)
+        for i_vf in range(n_iter):
             if log >= DETAILED_LOGGING:
-                print(f"VF iteration {i_vf + 1}/{n_vf_iter}")
+                print(f"VF iteration {i_vf + 1}/{n_iter}")
 
             # call vf
             poles, residues, *_ = vectfit(f, s, poles, weight)
@@ -429,39 +437,80 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
                 print(f"  # poles: {new_poles.size}")
                 print(f"  Max relative error: {maxre * 100:.3f}%")
 
-            if severity < best_severity:
-                best_severity = severity
+            if severity < best[0]:
                 if log >= DETAILED_LOGGING:
                     print("  Best so far!")
-                best_maxre = maxre
-                best_poles, best_residues = new_poles, residues
-                best_check_fit, best_relerr = check_fit, relerr
+                best = (severity, maxre, new_poles, residues, check_fit,
+                        relerr)
             elif log >= DETAILED_LOGGING:
                 print("  Discarded!")
+
+            # every point is within tolerance, so there is nothing left to
+            # gain from further iterations at this order
+            if severity <= 1.0:
+                break
+
+        return best
+
+    # perform VF with increasing orders
+    best_maxre = best_severity = np.inf
+    best_poles = None
+    n_iter = n_vf_iter
+    start, stop = 0, len(orders)
+    for _ in range(_EXTRA_VF_PASSES + 1):
+        improved = False
+        n_discarded = 0  # for accelation, number of discarded searches
+        for i in range(start, stop):
+            order = orders[i]
+            if log:
+                print(f"Order={order}({i}/{len(orders)})")
+
+            maxre_before = best_severity
+            found = fit_at(order, n_iter)
+            if found[0] < best_severity:
+                (best_severity, best_maxre, best_poles, best_residues,
+                 best_check_fit, best_relerr) = found
+                improved = True
 
             # the search is done as soon as every point is within tolerance;
             # because orders are tried in increasing order, this is also the
             # smallest number of poles that achieves it
-            if severity <= 1.0:
+            if best_severity <= 1.0:
                 if log:
                     print("Found ideal results. Stop!")
-                found_ideal = True
                 break
 
-        if found_ideal:
+            # acceleration: keep adding poles for as long as the maximum
+            # relative error keeps coming down, then give up. Stopping here
+            # never returns a poor fit because the tolerance check after the
+            # loop raises.
+            if best_severity < maxre_before:
+                n_discarded = 0
+            else:
+                n_discarded += 1
+                if n_discarded >= 10:
+                    if log:
+                        print("Maximum relative error stopped improving. "
+                              "Stop!")
+                    break
+
+        if best_severity <= 1.0:
             break
 
-        # acceleration: keep adding poles for as long as the maximum relative
-        # error keeps coming down, then give up. Stopping here never returns a
-        # poor fit because the tolerance check after the loop raises.
-        if best_severity < maxre_before:
-            n_discarded = 0
-        else:
-            n_discarded += 1
-            if n_discarded >= 10:
-                if log:
-                    print("Maximum relative error stopped improving. Stop!")
-                break
+        # The search fell short. An order whose poles have not finished moving
+        # scores worse than a smaller order that has settled, so "stopped
+        # improving" can mean the added poles were never given the passes to
+        # settle rather than that they cannot help. Resume from the order the
+        # search gave up on with twice the iterations, spending them only on
+        # the pieces that need them, and stop as soon as a resumed pass
+        # improves nothing, because that is the real ceiling.
+        if not improved and n_iter > n_vf_iter:
+            break
+        start, n_iter = i, 2*n_iter
+        stop = min(len(orders), start + _EXTRA_VF_ORDERS)
+        if log:
+            print(f"Short of tolerance; redrawing orders {orders[start]} to "
+                  f"{orders[stop - 1]} with {n_iter} iterations")
 
     if best_poles is None:
         raise RuntimeError(

@@ -839,6 +839,9 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
                "E_max": E_max,
                "bounds": bounds,
                "max_error": np.array(max_error),
+               "check_energy": check_energy,
+               "check_xs": check_xs,
+               "relaxed": np.asarray(unsplit, dtype=float).reshape(-1, 2),
                "poles": poles,
                "residues": residues}
 
@@ -869,8 +872,8 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=1e-6,
     return mp_data
 
 
-def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
-               log=False):
+def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
+               n_win=None, spacing=None, log=False):
     """Generate windowed multipole library from multipole data with specific
         settings of window size, curve fit order, etc.
 
@@ -884,6 +887,10 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
         Maximum relative error tolerance
     atol : float, optional
         Minimum absolute error tolerance
+    corner_rtol : float, optional
+        Tolerance over the energy ranges `mp_data` records as holding a corner
+        in the ENDF background, which a sum of poles and a polynomial cannot
+        reproduce at any order. Defaults to 5e-2.
     n_win : int, optional
         Number of equal-in-mementum spaced energy windows
     spacing : float, optional
@@ -917,6 +924,14 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
                            for i in range(n_pieces + 1)])
     bounds = np.asarray(bounds, dtype=float)
     bounds_sqrt = np.sqrt(bounds)
+    # Windows are judged against the evaluated cross sections when they are
+    # available. Judging them against the multipole form instead only asks
+    # whether the curve fit reproduces the poles it was built from, which says
+    # nothing about the library's accuracy and cannot detect a window whose
+    # poles come from a piece fitted somewhere else.
+    check_energy = mp_data.get("check_energy")
+    check_xs = mp_data.get("check_xs")
+    relaxed = np.asarray(mp_data.get("relaxed", np.empty((0, 2))), dtype=float)
     piece_width = np.min(np.diff(bounds_sqrt))
     alpha = awr / (K_BOLTZMANN*TEMPERATURE_LIMIT)
 
@@ -977,14 +992,33 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
         poles, residues = mp_poles[i_piece], mp_residues[i_piece]
         n_poles = poles.size
 
-        # generate energy points for fitting: equally spaced in momentum
-        n_points = min(max(100, int((e_end - e_start)*4)), 10000)
-        energy_sqrt = np.linspace(np.sqrt(e_start), np.sqrt(e_end), n_points)
-        energy = energy_sqrt**2
+        # energy points for fitting, and the reference to fit against
+        in_check = None
+        if check_energy is not None:
+            in_check = np.flatnonzero((check_energy >= e_start) &
+                                      (check_energy <= e_end))
+            # thin a dense window, and fall back if the grid is too sparse
+            if in_check.size > 10000:
+                in_check = in_check[::int(np.ceil(in_check.size/10000))]
+            if in_check.size < max(100, n_cf + 2):
+                in_check = None
+        if in_check is None:
+            # no evaluated data here: the multipole form is all there is
+            n_points = min(max(100, int((e_end - e_start)*4)), 10000)
+            energy_sqrt = np.linspace(np.sqrt(e_start), np.sqrt(e_end), n_points)
+            energy = energy_sqrt**2
+            # note the residue terms in the multipole and vector fitting
+            # representations differ by a 1j
+            xs_ref = evaluate(energy_sqrt, poles, residues*1j) / energy
+        else:
+            energy = check_energy[in_check]
+            energy_sqrt = np.sqrt(energy)
+            xs_ref = check_xs[:, in_check]
 
-        # reference xs from multipole form, note the residue terms in the
-        # multipole and vector fitting representations differ by a 1j
-        xs_ref = evaluate(energy_sqrt, poles, residues*1j) / energy
+        # a corner in the background is looser, as in the fitting stage
+        tol = np.full(energy.size, float(rtol))
+        for lo_x, hi_x in relaxed:
+            tol[(energy >= lo_x) & (energy <= hi_x)] = corner_rtol
 
         # curve fit matrix
         matrix = np.vstack([energy**(0.5*i - 1) for i in range(n_cf + 1)]).T
@@ -1012,9 +1046,9 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
             with np.errstate(invalid='ignore', divide='ignore'):
                 relerr = abserr / xs_ref
             if not np.any(np.isnan(abserr)):
-                re = relerr[abserr > atol]
-                # every point in the window must be within rtol
-                if re.size == 0 or re.max() <= rtol:
+                scored = np.where(abserr > atol, relerr, 0.0)
+                # every point in the window must be within its own tolerance
+                if np.max(scored/tol) <= 1.0:
                     # meet tolerances
                     if log >= DETAILED_LOGGING:
                         print("Accuracy satisfied.")
@@ -1026,6 +1060,14 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, n_win=None, spacing=None,
                 raise RuntimeError('Pure curvefit failed for the first window!')
 
             # try to include one more pole (next center nearest)
+            if lp <= 0 and rp >= n_poles:
+                # every pole of the piece is already in and the window still
+                # misses; against evaluated data this is reachable, so stop
+                raise RuntimeError(
+                    f'Window {iw + 1} of {n_win} covering {e_start:.4g} to '
+                    f'{e_end:.4g} eV cannot reach the tolerance with all '
+                    f'{n_poles} poles of its piece and a curve fit of order '
+                    f'{n_cf}.')
             if rp >= n_poles:
                 lp -= 1
             elif lp <= 0 or poles[rp] - incenter <= incenter - poles[lp - 1]:

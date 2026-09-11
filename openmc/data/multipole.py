@@ -307,8 +307,7 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
                max(weight[i, ce_xs[i] > min_cross_section])
 
     # detect peaks (resonances) and determine VF order search range
-    peaks, _ = find_peaks(ce_xs[0] + ce_xs[1])
-    n_peaks = peaks.size
+    n_peaks = _count_resonances(ce_xs[0] + ce_xs[1], rtol)
     if orders is not None:
         # make sure orders are even integers, searched in increasing order
         orders = sorted({int(i/2)*2 for i in orders if i >= 2})
@@ -514,6 +513,28 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
                 print(f"Saved figure: {fig_file}")
 
     return (mp_poles, mp_residues)
+
+def _count_resonances(xs, rtol):
+    """How many resonances a cross section has, for sizing the fit.
+
+    Counting every local maximum counts the noise in the reconstructed data as
+    well, which on a smooth stretch is most of them: without a threshold O-16
+    is credited with 149 resonances below 500 keV, where it has none and is
+    nearly constant, and the fit there starts at 298 poles rather than 2.
+
+    A peak has to rise above its surroundings by `rtol` of the median cross
+    section to be counted, since one that does not cannot decide whether a fit
+    meets `rtol`. Erring low is the safe direction: this only sets where the
+    order search starts, and the search climbs until the tolerance is met.
+
+    """
+    if xs.size < 3:
+        return 0
+    median = np.median(np.abs(xs))
+    if not np.isfinite(median) or median <= 0:
+        return find_peaks(xs)[0].size
+    return find_peaks(xs, prominence=rtol*median)[0].size
+
 
 def _background_kinks(endf_file, mts, threshold, E_min, E_max):
     """Energies where the ENDF background cross section has a sharp corner.
@@ -933,8 +954,7 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
 
     if vf_pieces is None:
         # divide into pieces for complex nuclides
-        peaks, _ = find_peaks(total_xs)
-        n_peaks = peaks.size
+        n_peaks = _count_resonances(total_xs, rtol)
         if n_peaks > 200 or n_points > 30000 or n_peaks * n_points > 100*10000:
             vf_pieces = max(5, n_peaks // 50,  n_points // 2000)
         else:

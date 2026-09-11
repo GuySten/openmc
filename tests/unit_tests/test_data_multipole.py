@@ -4,6 +4,7 @@ import pathlib
 
 import numpy as np
 import pytest
+from scipy.signal import find_peaks
 import openmc.data
 
 
@@ -338,3 +339,40 @@ def test_checking_grid_follows_the_tolerance():
     assert chosen(5e-2, 5e-4) == pytest.approx(5e-5)
     for rtol in (1e-5, 1e-3, 5e-2, 1.0):
         assert chosen(rtol, 5e-4) < 5e-4
+
+
+def test_resonances_are_counted_above_the_noise():
+    """A wiggle in the reconstructed data is not a resonance.
+
+    The resonance count sets where the order search starts, so counting every
+    local maximum makes the fit start hundreds of poles too high on a nuclide
+    that is smooth over most of its range. O-16 is the case that matters: it
+    has no resonances below 500 keV and is nearly constant there, but the
+    reconstructed data wanders enough to put a local maximum every few points.
+
+    The threshold is the tolerance being fitted to, since a peak that rises
+    less than that cannot decide whether the fit meets it.
+    """
+    from openmc.data.multipole import _count_resonances
+
+    energy = np.linspace(1.0, 1000.0, 4001)
+
+    # a smooth cross section with reconstruction noise on it is not resonant
+    rng = np.random.default_rng(3)
+    smooth = 3.8 + 0.2*np.exp(-energy/500.0)
+    noisy = smooth*(1.0 + 3e-6*rng.standard_normal(energy.size))
+    assert find_peaks(noisy)[0].size > 100, 'the test data must be noisy'
+    assert _count_resonances(noisy, 1e-3) == 0
+
+    # three real resonances on the same background are all found, noise or not
+    for centre in (250.0, 500.0, 750.0):
+        smooth = smooth + 4.0/(1.0 + ((energy - centre)/3.0)**2)
+    resonant = smooth*(1.0 + 3e-6*rng.standard_normal(energy.size))
+    assert _count_resonances(resonant, 1e-3) == 3
+
+    # a tighter tolerance must still find the three
+    assert _count_resonances(resonant, 1e-6) >= 3
+
+    # a flat or degenerate cross section must not raise
+    assert _count_resonances(np.zeros(50), 1e-3) == 0
+    assert _count_resonances(np.array([1.0, 2.0]), 1e-3) == 0

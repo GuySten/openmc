@@ -1,9 +1,12 @@
 #include "openmc/tallies/filter_point.h"
 #include "openmc/tallies/tally_scoring.h"
 
+#include <cmath> // for exp
+
 #include <fmt/core.h>
 
 #include "openmc/math_functions.h"
+#include "openmc/ray.h"
 #include "openmc/simulation.h"
 #include "openmc/xml_interface.h"
 
@@ -39,17 +42,33 @@ void PointFilter::set_detectors(span<std::pair<Position, double>> detectors)
 void PointFilter::get_all_bins(
   const Particle& p, TallyEstimator estimator, FilterMatch& match) const
 {
-  double attenuation = p.wgt() / p.wgt_last();
+  // A PointFilter puts its tally on the next-event estimator, and the only
+  // thing that scores those is score_point_tally_impl(), which always hands
+  // over the ParticleRay it just traced. Keying on the estimator makes that
+  // invariant explicit here instead of assumed, and leaves the filter inert
+  // if it is ever reached any other way.
+  if (estimator != TallyEstimator::NEXT_EVENT)
+    return;
+  const auto& ray = static_cast<const ParticleRay&>(p);
+
+  // Both quantities are recorded by the flight itself, so they are read back
+  // rather than reconstructed: the distance was measured as the ray flew it,
+  // and the optical depth was accumulated segment by segment.
+  const double distance = ray.total_distance();
+  const double attenuation = std::exp(-ray.traversal_mfp());
+
   int i = 0;
   for (auto [pos, r] : detectors_) {
-    if ((p.r() - pos).norm() < FP_COINCIDENT) {
+    if ((ray.r() - pos).norm() < FP_COINCIDENT) {
       match.bins_.push_back(i);
       double weight;
-      double distance = (p.r_last() - pos).norm();
       if (distance > r) {
         weight = attenuation / (distance * distance);
       } else {
-        weight = 3.0 * exprel(-p.macro_xs().total * r) / (r * r);
+        // Inside the exclusion sphere the 1/distance^2 singularity is replaced
+        // by its average over a uniform isotropic source in a sphere of radius
+        // r, which is 3 (1 - exp(-Sigma_t r)) / (Sigma_t r^3)
+        weight = 3.0 * exprel(-ray.macro_xs().total * r) / (r * r);
       }
       match.weights_.push_back(weight);
     }

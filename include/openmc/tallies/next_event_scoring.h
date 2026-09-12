@@ -169,16 +169,14 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     // Snapping makes the comparison exact regardless of model size.
     p.r() = det;
 
-    double mfp = p.traversal_mfp();
-    double attenuation = std::exp(-mfp);
-
-    // Carry the emitting particle's weight, and save the attenuation for point
-    // filter handling
+    // The ray carries the emitting particle's weight. The attenuation and the
+    // 1/distance^2 belong to the detector, not to the particle, so they are
+    // applied by PointFilter as its bin weight -- it reads them straight off
+    // the flight rather than having them smuggled through wgt()/wgt_last().
     p.wgt() = wgt;
     p.wgt_last() = wgt;
-    p.wgt() *= attenuation;
 
-    double flux = p.wgt_last() * pdf;
+    double flux = wgt * pdf;
     score_tracklength_tally_general(p, flux, model::active_point_tallies);
   }
 

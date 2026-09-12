@@ -482,7 +482,18 @@ def _vectfit_xs(energy, ce_xs, mts, rtol=1e-3, atol=1e-5, check_energy=None,
             # relative error keeps coming down, then give up. Stopping here
             # never returns a poor fit because the tolerance check after the
             # loop raises.
-            if best_severity < maxre_before:
+            if (best_severity < maxre_before
+                    or (best_poles is None and order <= 4*n_peaks)):
+                # Nothing usable has been found at any order yet, so there is
+                # no fit for more poles to fail to improve on, and the counter
+                # below is asking a question with no answer: it would stop the
+                # search ten orders in, before ever reaching an order that
+                # works. A piece whose candidates are all rejected out of hand
+                # -- for a negative cross section, or for swinging between the
+                # fitting points -- is given the orders its resonances call
+                # for before the counter is allowed to start. Beyond that the
+                # search gives up as it always did, so a piece that cannot be
+                # fitted at all still fails promptly.
                 n_discarded = 0
             else:
                 n_discarded += 1

@@ -12,7 +12,6 @@
 #include "openmc/tensor.h"
 #include "pugixml.hpp"
 
-#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -217,7 +216,10 @@ extern vector<int> active_surface_tallies;
 extern vector<int> active_pulse_height_tallies;
 extern vector<int32_t> pulse_height_cells;
 extern vector<double> time_grid;
-extern std::set<Position> active_point_detectors;
+//! Unique positions of every detector across all active point tallies, sorted
+//! so that a detector's index is a stable handle for the batch. PointFilter
+//! maps those indices onto its own bins; see PointFilter::build_detector_bins.
+extern vector<Position> active_point_detectors;
 
 } // namespace model
 

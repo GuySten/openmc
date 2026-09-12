@@ -44,12 +44,25 @@ public:
 
   void set_detectors(span<std::pair<Position, double>> detectors);
 
+  //! Record, for each of this filter's bins, which entry of
+  //! model::active_point_detectors it sits on. Called once per batch from
+  //! setup_active_tallies(), after that list has been assembled.
+  void build_detector_bins();
+
 private:
   //----------------------------------------------------------------------------
   // Data members
 
   vector<std::pair<Position, double>> detectors_;
+
+  //! Parallel to detectors_: the index into model::active_point_detectors
+  //! that each bin sits on, or C_NONE if this filter's tally is not active.
+  //! Mapping this way rather than the reverse keeps the behaviour of a filter
+  //! that puts two bins on one position -- different exclusion radii at the
+  //! same point -- where a detector-to-bin map could only name one of them.
+  //! Rebuilt every batch by build_detector_bins().
+  vector<int> bin_detector_;
 };
 
 } // namespace openmc
-#endif // OPENMC_TALLIES_FILTER_PARTICLE_H
+#endif // OPENMC_TALLIES_FILTER_POINT_H

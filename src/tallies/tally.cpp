@@ -95,7 +95,7 @@ vector<int> active_surface_tallies;
 vector<int> active_pulse_height_tallies;
 vector<int32_t> pulse_height_cells;
 vector<double> time_grid;
-std::set<Position> active_point_detectors;
+vector<Position> active_point_detectors;
 } // namespace model
 
 namespace simulation {
@@ -1310,11 +1310,25 @@ void setup_active_tallies()
         // Populate the set of unique detector positions from PointFilter
         if (auto pf = tally.get_filter<PointFilter>()) {
           for (const auto& [pos, r0] : pf->detectors()) {
-            model::active_point_detectors.insert(pos);
+            model::active_point_detectors.push_back(pos);
           }
         }
         break;
       }
+    }
+  }
+
+  // Reduce the detectors collected above to a sorted, unique list. Sorting
+  // gives every detector an index that does not depend on the order the
+  // tallies happened to be declared in, and each point filter is then told
+  // which of those indices map onto its own bins.
+  if (!model::active_point_detectors.empty()) {
+    auto& dets = model::active_point_detectors;
+    std::sort(dets.begin(), dets.end());
+    dets.erase(std::unique(dets.begin(), dets.end()), dets.end());
+    for (auto& filt : model::tally_filters) {
+      if (auto* pf = dynamic_cast<PointFilter*>(filt.get()))
+        pf->build_detector_bins();
     }
   }
 

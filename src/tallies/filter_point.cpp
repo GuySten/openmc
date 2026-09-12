@@ -39,6 +39,20 @@ void PointFilter::set_detectors(span<std::pair<Position, double>> detectors)
   n_bins_ = detectors_.size();
 }
 
+void PointFilter::build_detector_bins()
+{
+  bin_detector_.assign(detectors_.size(), C_NONE);
+  for (int bin = 0; bin < detectors_.size(); ++bin) {
+    const auto& pos = detectors_[bin].first;
+    for (int i = 0; i < model::active_point_detectors.size(); ++i) {
+      if (model::active_point_detectors[i] == pos) {
+        bin_detector_[bin] = i;
+        break;
+      }
+    }
+  }
+}
+
 void PointFilter::get_all_bins(
   const Particle& p, TallyEstimator estimator, FilterMatch& match) const
 {
@@ -57,22 +71,33 @@ void PointFilter::get_all_bins(
   const double distance = ray.total_distance();
   const double attenuation = std::exp(-ray.traversal_mfp());
 
-  int i = 0;
-  for (auto [pos, r] : detectors_) {
-    if ((ray.r() - pos).norm() < FP_COINCIDENT) {
-      match.bins_.push_back(i);
-      double weight;
-      if (distance > r) {
-        weight = attenuation / (distance * distance);
-      } else {
-        // Inside the exclusion sphere the 1/distance^2 singularity is replaced
-        // by its average over a uniform isotropic source in a sphere of radius
-        // r, which is 3 (1 - exp(-Sigma_t r)) / (Sigma_t r^3)
-        weight = 3.0 * exprel(-ray.macro_xs().total * r) / (r * r);
-      }
-      match.weights_.push_back(weight);
+  // The ray says which detector it was aimed at, so bins are selected by
+  // comparing indices. This used to compare the ray's end position against
+  // every detector, which made a contribution's bin -- and so whether it was
+  // counted at all -- depend on roundoff accumulated over the whole flight.
+  const int i_detector = ray.detector_index();
+  if (i_detector == C_NONE)
+    return;
+
+  // Bounded by bin_detector_, which is empty until build_detector_bins() has
+  // run for this batch
+  for (int bin = 0; bin < bin_detector_.size(); ++bin) {
+    if (bin_detector_[bin] != i_detector)
+      continue;
+
+    const double r = detectors_[bin].second;
+    double weight;
+    if (distance > r) {
+      weight = attenuation / (distance * distance);
+    } else {
+      // Inside the exclusion sphere the 1/distance^2 singularity is replaced
+      // by its average over a uniform isotropic source in a sphere of radius
+      // r, which is 3 (1 - exp(-Sigma_t r)) / (Sigma_t r^3)
+      weight = 3.0 * exprel(-ray.macro_xs().total * r) / (r * r);
     }
-    ++i;
+
+    match.bins_.push_back(bin);
+    match.weights_.push_back(weight);
   }
 }
 

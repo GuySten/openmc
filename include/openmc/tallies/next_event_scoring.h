@@ -49,9 +49,9 @@ inline uint64_t point_detector_hash(std::initializer_list<double> values)
 //! RNG substream offset for a detector, derived from its position.
 //!
 //! Keying on the position rather than on the detector's index in
-//! model::active_point_detectors matters: that container is a std::set, so
-//! adding a detector can renumber the ones already there. A position-derived
-//! offset makes each detector's contribution depend only on where it is.
+//! model::active_point_detectors matters: adding a detector renumbers the
+//! ones that sort after it. A position-derived offset makes each detector's
+//! contribution depend only on where it is.
 //! Masked to 56 bits to keep the skip-ahead cheap while leaving collisions
 //! between substreams negligible.
 inline int64_t point_detector_substream_offset(const Position& det)
@@ -130,7 +130,8 @@ void score_point_tally_impl(const Position r, const ParticleType type,
   // Reused across every detector and every event on this thread
   ParticleRay& p = simulation::point_detector_rays[thread_num()];
 
-  for (auto& det : model::active_point_detectors) {
+  for (int i_det = 0; i_det < model::active_point_detectors.size(); ++i_det) {
+    const Position& det = model::active_point_detectors[i_det];
     *seed = seed_start;
     advance_prn_seed(point_detector_substream_offset(det), seed);
 
@@ -142,6 +143,7 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     if (pdf == 0.0)
       continue;
     p.reset(r, u, type, time, E);
+    p.set_detector_index(i_det);
 
     // The ray needs a defined RNG state of its own: calculate_xs() reaches
     // Nuclide::calculate_urr_xs() for any nuclide with probability tables, and
@@ -161,12 +163,10 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     if (!p.completed())
       continue;
 
-    // Land the ray exactly on the detector. PointFilter::get_all_bins works
-    // out which detector a contribution belongs to by comparing positions
-    // against FP_COINCIDENT, and the roundoff accumulated over a long
-    // multi-segment flight grows with the model's coordinate magnitudes -- in
-    // a large model it can exceed that tolerance and silently drop the score.
-    // Snapping makes the comparison exact regardless of model size.
+    // Land the ray exactly on the detector rather than wherever the flight's
+    // accumulated roundoff put it. Any other filter on the tally -- a mesh or
+    // cell filter, say -- bins the contribution by this position, and the
+    // detector's own coordinates are the intended answer.
     p.r() = det;
 
     // The ray carries the emitting particle's weight. The attenuation and the

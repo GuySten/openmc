@@ -806,9 +806,9 @@ class PointFilter(Filter):
         The number of filter bins
 
     """
-    
+
     __hash__ = Filter.__hash__
-    
+
     def __eq__(self, other):
         if type(self) is not type(other):
             return False
@@ -826,30 +826,58 @@ class PointFilter(Filter):
             cv.check_type(f'bins[{i}][0]', item[0], tuple, Real)
             cv.check_length(f'bins[{i}][0]', item[0], 3, 3)
             cv.check_type(f'bins[{i}][1]', item[1], Real)
+            cv.check_greater_than(f'bins[{i}][1]', item[1], 0.0, equality=True)
         self._bins = bins
+
+    @staticmethod
+    def _bins_from_flat(values, filter_id):
+        """Group a flat (x, y, z, r0) sequence into detector tuples."""
+        if len(values) % 4 != 0:
+            raise ValueError(
+                f'PointFilter {filter_id} has {len(values)} bin values, which '
+                'is not a multiple of four. Each detector is given as three '
+                'position coordinates followed by an exclusion radius.'
+            )
+        return [(tuple(float(v) for v in values[i:i + 3]), float(values[i + 3]))
+                for i in range(0, len(values), 4)]
 
     @classmethod
     def from_hdf5(cls, group, **kwargs):
         filter_id = int(group.name.split('/')[-1].lstrip('filter '))
-        flat = group['bins'][()]
-        # Reconstruct tuple structure: every 4 values = (x, y, z, r0)
-        bins = []
-        for i in range(0, len(flat), 4):
-            pos = (float(flat[i]), float(flat[i+1]), float(flat[i+2]))
-            r0 = float(flat[i+3])
-            bins.append((pos, r0))
-        out = cls(bins, filter_id=filter_id)
-        out._num_bins = group['n_bins'][()]
-        return out
+        bins = cls._bins_from_flat(group['bins'][()], filter_id)
+        return cls(bins, filter_id=filter_id)
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        """Generate a point filter from an XML element
+
+        Parameters
+        ----------
+        elem : lxml.etree._Element
+            XML element
+        **kwargs
+            Keyword arguments (not used)
+
+        Returns
+        -------
+        openmc.PointFilter
+            Point filter object
+
+        """
+        # The generic Filter.from_xml_element reads bins as integers, which
+        # cannot represent detector coordinates
+        filter_id = int(get_text(elem, 'id'))
+        values = get_elem_list(elem, 'bins', float) or []
+        return cls(cls._bins_from_flat(values, filter_id),
+                   filter_id=filter_id)
 
     def get_pandas_dataframe(self, data_size, stride, **kwargs):
-        import pandas as pd
         labels = [f"({p[0]}, {p[1]}, {p[2]}) R0={r}" for (p, r) in self.bins]
         filter_bins = np.repeat(labels, stride)
         tile_factor = data_size // len(filter_bins)
         filter_bins = np.tile(filter_bins, tile_factor)
         return pd.DataFrame({self.short_name.lower(): filter_bins})
-    
+
     def to_xml_element(self):
         """Return XML Element representing the Filter.
 
@@ -864,9 +892,10 @@ class PointFilter(Filter):
         element.set('type', self.short_name.lower())
 
         subelement = ET.SubElement(element, 'bins')
-        subelement.text = ' '.join(str(b) for item in self.bins 
-                                          for b in list(item[0])+[item[1]])
-        return element    
+        subelement.text = ' '.join(str(b) for item in self.bins
+                                   for b in list(item[0]) + [item[1]])
+        return element
+
 
 class ParentNuclideFilter(ParticleFilter):
     """Bins tally events based on the parent nuclide

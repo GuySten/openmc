@@ -275,6 +275,16 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
     nu_bank_entry.wgt = site.wgt;
     nu_bank_entry.E = site.E;
     nu_bank_entry.delayed_group = site.delayed_group;
+
+    // Score the next-event contribution of this fission neutron. It is done
+    // here, rather than inside sample_fission_neutron(), so that the site is
+    // known to have survived the time cutoff and to have been banked -- a
+    // rejected site is never born and must not contribute. The emitted
+    // particle is the site, not the colliding neutron, so it carries the
+    // site's weight and (for delayed neutrons) its precursor decay time.
+    if (!model::active_point_tallies.empty()) {
+      score_point_tally_fission(p, i_nuclide, rx, site);
+    }
   }
 
   // If shared fission bank was full, and no fissions could be added,
@@ -1136,10 +1146,6 @@ void sample_fission_neutron(
 
     // set the delayed group for the particle born from fission to 0
     site->delayed_group = 0;
-  }
-
-  if (!model::active_point_tallies.empty()) {
-    score_point_tally_fission(p, i_nuclide, rx, site->delayed_group);
   }
 
   // sample from prompt neutron energy distribution

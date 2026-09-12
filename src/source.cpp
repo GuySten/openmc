@@ -1232,7 +1232,7 @@ SourceSite sample_external_source(uint64_t* seed)
   }
 
   if (!model::active_point_tallies.empty()) {
-    score_point_tally_source(site, i);
+    score_point_tally_source(site, i, seed);
   }
 
   return site;

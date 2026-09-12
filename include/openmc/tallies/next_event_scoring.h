@@ -80,12 +80,13 @@ void score_point_tally_inelastic(
   Particle& p, int i_nuclide, const Reaction& rx, int i_product, double yield);
 
 void score_point_tally_fission(
-  Particle& p, int i_nuclide, const Reaction& rx, int i_product);
+  Particle& p, int i_nuclide, const Reaction& rx, const SourceSite& site);
 
 void score_point_tally_sab(Particle& p, int i_nuclide, const ThermalData& sab,
   const NuclideMicroXS& micro);
 
-void score_point_tally_source(SourceSite& site, int source_index);
+void score_point_tally_source(
+  SourceSite& site, int source_index, uint64_t* seed);
 
 //! Accumulate next-event contributions to every active point detector.
 //!
@@ -93,8 +94,8 @@ void score_point_tally_source(SourceSite& site, int source_index);
 //! \param[in] type Type of the emitted particle
 //! \param[in] time Time of the emitting event
 //! \param[in] wgt Weight of the emitting particle (or source site)
-//! \param[inout] seed Point-detector RNG stream, or nullptr if pdffunc
-//!   consumes no random numbers
+//! \param[inout] seed Point-detector RNG stream. Must not be null: even a
+//!   pdffunc that draws no random numbers needs this to seed the ray.
 //! \param[in] pdffunc Returns the emission density per steradian toward a
 //!   given direction, and sets the outgoing energy
 template<typename PDF>
@@ -110,13 +111,11 @@ void score_point_tally_impl(const Position r, const ParticleType type,
   // it so that the contribution scored to a given detector does not depend on
   // how many other detectors are present, nor on how many random numbers the
   // preceding detectors happened to consume.
-  const uint64_t seed_start = (seed != nullptr) ? *seed : 0;
+  const uint64_t seed_start = *seed;
 
   for (auto& det : model::active_point_detectors) {
-    if (seed != nullptr) {
-      *seed = seed_start;
-      advance_prn_seed(point_detector_substream_offset(det), seed);
-    }
+    *seed = seed_start;
+    advance_prn_seed(point_detector_substream_offset(det), seed);
 
     auto u = (det - r);
     double total_distance = u.norm();
@@ -133,10 +132,7 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     // default is not detector-specific, so seed every stream from this
     // detector's substream. Without this the optical depth through a URR
     // nuclide depends on how many detectors were traced before this one.
-    uint64_t ray_seed =
-      (seed != nullptr)
-        ? *seed
-        : point_detector_hash({det.x, det.y, det.z, r.x, r.y, r.z, E});
+    uint64_t ray_seed = *seed;
     for (int i_stream = 0; i_stream < N_STREAMS; ++i_stream) {
       p.seeds(i_stream) = ray_seed;
       advance_prn_seed(1, &ray_seed);
@@ -147,6 +143,15 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     // The ray left the model before reaching the detector
     if (!p.completed())
       continue;
+
+    // Land the ray exactly on the detector. PointFilter::get_all_bins works
+    // out which detector a contribution belongs to by comparing positions
+    // against FP_COINCIDENT, and the roundoff accumulated over a long
+    // multi-segment flight grows with the model's coordinate magnitudes -- in
+    // a large model it can exceed that tolerance and silently drop the score.
+    // Snapping makes the comparison exact regardless of model size.
+    p.r() = det;
+
     double mfp = p.traversal_mfp();
     double attenuation = std::exp(-mfp);
 

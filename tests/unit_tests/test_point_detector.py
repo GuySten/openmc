@@ -223,3 +223,146 @@ def test_point_detector_applies_particle_weight(run_in_tmpdir):
     difference = abs(b_mean.sum() - a_mean.sum())
 
     assert difference < max(4.0 * sigma, 0.05 * a_mean.sum())
+
+
+# ---------------------------------------------------------------------------
+# PointFilter API. These need no nuclear data.
+# ---------------------------------------------------------------------------
+
+def test_point_filter_xml_round_trip():
+    """A PointFilter must survive a write/read cycle.
+
+    The generic Filter.from_xml_element reads bins as integers, which cannot
+    represent detector coordinates, so PointFilter has to override it. Without
+    that, openmc.Tallies.from_xml -- and so Model.from_xml -- raises on any
+    model containing a point detector.
+    """
+    detectors = [((10.0, 0.0, 0.0), 1.0), ((0.0, 25.0, -3.5), 2.0)]
+    original = openmc.PointFilter(detectors)
+
+    restored = openmc.Filter.from_xml_element(original.to_xml_element())
+
+    assert isinstance(restored, openmc.PointFilter)
+    assert restored.bins == original.bins
+    assert restored.num_bins == len(detectors)
+
+
+def test_point_filter_hdf5_round_trip(run_in_tmpdir):
+    """The same for the statepoint representation.
+
+    The group is built the way PointFilter::to_statepoint writes it: a flat
+    'bins' dataset of four doubles per detector, plus 'n_bins'.
+    """
+    h5py = pytest.importorskip('h5py')
+
+    detectors = [((1.5, -2.0, 3.0), 0.5), ((0.0, 0.0, 7.25), 0.0)]
+    flat = [v for pos, r0 in detectors for v in (*pos, r0)]
+
+    with h5py.File('filter.h5', 'w') as f:
+        group = f.create_group('filter 1')
+        group.create_dataset('type', data=np.bytes_('point'))
+        group.create_dataset('n_bins', data=len(detectors))
+        group.create_dataset('bins', data=np.array(flat))
+    with h5py.File('filter.h5', 'r') as f:
+        restored = openmc.PointFilter.from_hdf5(f['filter 1'])
+
+    assert restored.bins == detectors
+    assert restored.num_bins == len(detectors)
+
+
+@pytest.mark.parametrize('bad_bins', [
+    [((0.0, 0.0, 0.0), -1.0)],   # negative exclusion radius
+    [((0.0, 0.0), 1.0)],         # position is not three-dimensional
+    [((0.0, 0.0, 0.0),)],        # missing radius
+])
+def test_point_filter_rejects_invalid_bins(bad_bins):
+    with pytest.raises(ValueError):
+        openmc.PointFilter(bad_bins)
+
+
+def test_point_filter_rejects_ragged_xml():
+    """Bin values must come in groups of four (x, y, z, radius)."""
+    import lxml.etree as ET
+
+    elem = ET.fromstring(
+        '<filter id="1" type="point"><bins>1.0 2.0 3.0</bins></filter>')
+    with pytest.raises(ValueError, match='multiple of four'):
+        openmc.PointFilter.from_xml_element(elem)
+
+
+def test_point_filter_registered_in_lib():
+    """openmc.lib must be able to construct a point filter by type name.
+
+    openmc.lib._get_filter() looks the C++ filter type up in a table; a missing
+    entry raises KeyError for any model that defines a point detector.
+    """
+    import openmc.lib
+    assert openmc.lib.filter._FILTER_TYPE_MAP['point'] is openmc.lib.PointFilter
+
+
+# ---------------------------------------------------------------------------
+# Setup-time rejection of configurations the estimator cannot represent.
+# These run the transport solver and so require nuclear data.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('boundary', ['reflective', 'white'])
+def test_point_detector_rejects_nonvacuum_boundary(run_in_tmpdir, boundary):
+    """Non-vacuum boundaries must be refused rather than silently mis-tallied.
+
+    A next-event estimator draws a straight line from the emitting event to
+    the detector, so it cannot account for particles that arrive after
+    reflecting or being re-emitted by a white boundary. The match is on the
+    specific message: a bare `raises(RuntimeError)` would also be satisfied by
+    an unrelated failure such as missing nuclear data, and would keep passing
+    if the guard were removed.
+    """
+    model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)
+    for surface in model.geometry.get_all_surfaces().values():
+        surface.boundary_type = boundary
+
+    with pytest.raises(RuntimeError, match='non-vacuum boundary'):
+        model.run()
+
+
+def test_point_detector_rejects_photon_transport(run_in_tmpdir):
+    """Photon transport must be refused for a tally that can see photons.
+
+    The estimator has no scoring hooks in photon physics -- neither photon
+    collisions nor secondary photon production contribute -- so a photon
+    response would be missing every collided term while still looking
+    plausible.
+    """
+    model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)
+    model.settings.photon_transport = True
+
+    with pytest.raises(RuntimeError, match='photon transport'):
+        model.run()
+
+
+def test_point_detector_allows_neutron_only_with_photon_transport(run_in_tmpdir):
+    """...but a neutron-restricted tally stays legal.
+
+    Enabling photon transport does not alter the neutron random walk, and
+    every neutron emission path is hooked, so a detector filtered to neutrons
+    is complete. The guard above must not be so broad that it blocks this.
+    """
+    model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)
+    model.settings.photon_transport = True
+    tally = model.tallies[0]
+    tally.filters = tally.filters + [openmc.ParticleFilter(['neutron'])]
+
+    model.run()  # must not raise
+
+
+def test_point_detector_rejects_non_independent_source(run_in_tmpdir):
+    """Only an independent source has an angular density to evaluate."""
+    model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)
+
+    # A real source file, so that reading settings.xml succeeds and the tally
+    # check is actually reached
+    openmc.write_source_file(
+        [openmc.SourceParticle(r=(0., 0., 0.), E=1.0e6)], 'source.h5')
+    model.settings.source = openmc.FileSource('source.h5')
+
+    with pytest.raises(RuntimeError, match='independent source'):
+        model.run()

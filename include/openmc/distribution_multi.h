@@ -133,6 +133,19 @@ public:
   //! \param seed Pseudorandom number seed pointer
   //! \return (sampled direction, sample weight)
   std::pair<Direction, double> sample(uint64_t* seed) const override;
+
+  //! Evaluate the probability density for a given direction
+  //
+  //! A monodirectional source emits along a single direction, so its angular
+  //! density is a delta function. The set of directions that reach any given
+  //! point has measure zero, so the density toward a point detector is zero
+  //! and such a source produces no uncollided contribution -- contributions
+  //! from subsequent collisions are unaffected. Returning zero states that
+  //! rather than inheriting the base class's fatal_error, which would abort
+  //! any run pairing a beam source with a point detector.
+  //! \param[in] u Direction on the unit sphere
+  //! \return Probability density at the given direction
+  double evaluate(Direction u) const override { return 0.0; }
 };
 
 using UPtrAngle = unique_ptr<UnitSphereDistribution>;

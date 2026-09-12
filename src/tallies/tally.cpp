@@ -1,6 +1,7 @@
 #include "openmc/tallies/tally.h"
 
 #include "openmc/array.h"
+#include "openmc/boundary_condition.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/constants.h"
@@ -17,6 +18,7 @@
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
 #include "openmc/source.h"
+#include "openmc/surface.h"
 #include "openmc/tallies/derivative.h"
 #include "openmc/tallies/filter.h"
 #include "openmc/tallies/filter_cell.h"
@@ -47,6 +49,31 @@
 #include <string>
 
 namespace openmc {
+
+namespace {
+
+//! Whether the model has any boundary condition other than vacuum.
+//!
+//! A next-event estimator draws a straight line from the emitting event to the
+//! detector, so it cannot account for particles that reach the detector after
+//! reflecting, crossing a periodic boundary, or being re-emitted by a white
+//! boundary -- representing those would require image detectors.
+//!
+//! This is scanned from the loaded surfaces rather than recorded while reading
+//! surfaces.xml, so that it also covers geometries whose boundary conditions
+//! do not come from that file at all, such as DAGMC models that take them from
+//! CAD metadata. A surface with no boundary condition is a transmission
+//! surface, which is harmless here.
+bool has_nonvacuum_boundary()
+{
+  for (const auto& surf : model::surfaces) {
+    if (surf->bc_ && surf->bc_->type() != "vacuum")
+      return true;
+  }
+  return false;
+}
+
+} // namespace
 
 //==============================================================================
 // Global variable definitions
@@ -537,8 +564,16 @@ void Tally::set_scores(const vector<std::string>& scores)
   bool surface_present = false;
   bool meshsurface_present = false;
   bool non_cell_energy_present = false;
+  bool neutrons_only = false;
   for (auto i_filt : filters_) {
     const auto* filt {model::tally_filters[i_filt].get()};
+    if (const auto* pf {dynamic_cast<const ParticleFilter*>(filt)}) {
+      const auto& particles {pf->particles()};
+      neutrons_only =
+        !particles.empty() &&
+        std::all_of(particles.begin(), particles.end(),
+          [](ParticleType t) { return t == ParticleType::neutron(); });
+    }
     // Checking for only cell and energy filters for pulse-height tally
     if (!(filt->type() == FilterType::CELL ||
           filt->type() == FilterType::ENERGY)) {
@@ -573,9 +608,27 @@ void Tally::set_scores(const vector<std::string>& scores)
   if (point_present) {
     if (!settings::run_CE)
       fatal_error("Cannot use point detectors in multi-group mode.");
-    if (simulation::nonvacuum_boundary_present)
+    if (has_nonvacuum_boundary())
       fatal_error(
         "Cannot use point detectors with non-vacuum boundary conditions.");
+    // The estimator has scoring hooks in the neutron collision physics only,
+    // so nothing a photon does on its way to a detector is ever counted. A
+    // tally restricted to neutrons is still correct -- enabling photon
+    // transport does not change the neutron random walk -- so only reject the
+    // cases whose results would be silently incomplete.
+    if (settings::photon_transport && !neutrons_only)
+      fatal_error("Cannot use point detectors with photon transport unless the "
+                  "tally is restricted to neutrons with a ParticleFilter. The "
+                  "next-event estimator does not score photon collisions or "
+                  "secondary photon production, so photon results would be "
+                  "silently incomplete.");
+    for (const auto& src : model::external_sources) {
+      if (!dynamic_cast<const IndependentSource*>(src.get()))
+        fatal_error("Point detectors require independent sources. The "
+                    "next-event estimator needs to evaluate the source angular "
+                    "density toward each detector, which is only available for "
+                    "an independent source.");
+    }
     if (legendre_present)
       fatal_error("Cannot use LegendreFilter with PointFilter.");
     if (energyout_present)

@@ -2069,10 +2069,28 @@ class WindowedMultipole(EqualityMixin):
         n_win_max = 2000 if n_poles < 2000 else 8000
         best_wmp = best_metric = None
         failures = []
+        # The ranking below charges a hundredth per window and one per curve
+        # fit order, and cannot charge less than nothing for the poles, so
+        # those two terms alone are the least a configuration could possibly
+        # cost. Once something has been found, anything whose floor already
+        # exceeds it cannot win however well it windows, and windowing it
+        # would be the greater part of the work for a foregone answer.
+        cheapest_cf = min(search_cf_orders)
         for n_w in np.unique(
             np.linspace(n_win_min, n_win_max, search_n_win, dtype=int)
         ):
+            if (best_metric is not None
+                    and -(0.01*n_w + cheapest_cf) <= best_metric):
+                # window counts are tried in increasing order and the floor
+                # rises with them, so nothing further along can win either
+                if log:
+                    print(f"Stopping at N_win={n_w}: no window count this "
+                          f"large can beat what has been found.")
+                break
             for n_cf in search_cf_orders:
+                if (best_metric is not None
+                        and -(0.01*n_w + n_cf) <= best_metric):
+                    continue
                 if log:
                     print(f"Testing N_win={n_w} N_cf={n_cf}")
 

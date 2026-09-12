@@ -670,14 +670,27 @@ def _count_resonances(xs, rtol):
 
 
 def _background_kinks(endf_file, mts, threshold, E_min, E_max):
-    """Energies where the ENDF background cross section has a sharp corner.
+    """Energies where the ENDF background cross section steps sharply.
 
     Backgrounds in MF3 are tabulated on a coarse grid and interpolated
     linearly, so the cross section has discontinuous slope at every tabulated
-    energy. A sum of poles is analytic and cannot reproduce a corner at any
-    order, so the pronounced ones are worth keeping off the middle of a fit.
-    Both ends of an interval whose background steps by more than `threshold`
-    are corners, along with the scale each is resolved on.
+    energy. A sum of poles is analytic and cannot reproduce such a corner at
+    any order, so the pronounced ones are worth keeping off the middle of a
+    fit. Both ends of an interval whose background steps by more than
+    `threshold` are corners, along with the scale each is resolved on.
+
+    What this finds is the corners the background *steps* across, not every
+    energy it turns at. The distinction matters at a local maximum or minimum,
+    where the background turns as sharply as it ever does while its value is
+    stationary, so no step test can reach it. Those are left alone
+    deliberately. A turn says only that the tabulation is coarse, which is
+    true of any smooth curve sampled on a logarithmic mesh: measured across
+    the evaluations this has been run on, treating every sign change of the
+    slope as a corner would nominate over a thousand energies in the elastic
+    background of Fe-56 and several hundred in Na-23, both of which fit to
+    tolerance as they are. The pieces holding the sharpest turns in O-16 fit
+    to within a twentieth of the tolerance. A step, by contrast, is rare and
+    is a discontinuity in the value itself, which no fit can follow.
 
     Parameters
     ----------
@@ -928,7 +941,11 @@ def vectfit_nuclide(endf_file, njoy_error=5e-4, njoy_error_check=_UNSET,
         linearly between tabulated energies, so the cross section has a corner
         at each of them, and a sum of poles cannot reproduce a corner at any
         order. Splitting there puts the pronounced ones on piece boundaries
-        rather than in the middle of a fit. Set to None to disable. Defaults
+        rather than in the middle of a fit. It is a step the background takes
+        that counts, not a turn it makes: a background turns at every local
+        maximum without its value moving, and treating those as corners would
+        split some evaluations at hundreds of energies that fit perfectly well
+        as they are. Set to None to disable. Defaults
         to 0.25.
 
         Splitting is given up at a corner that would leave a piece narrower

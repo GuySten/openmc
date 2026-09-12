@@ -402,10 +402,15 @@ so keep it small compared with a mean free path of the surrounding material. A
 radius of zero disables the treatment entirely.
 
 The averaging assumes a single total cross section throughout the sphere, and
-the value used is the one in the cell holding the detector. Choose a radius
-that keeps the sphere inside a single material where you can: a sphere
-straddling a boundary is characterised by whichever material the detector
-itself is in. See :ref:`methods_next_event_estimator` for the details.
+the value used is the one in the cell holding the detector. A sphere reaching
+into a different material is therefore characterised by whichever material the
+detector itself is in, and biased accordingly -- by the *neighbouring*
+material's optical thickness, which the detector's own surroundings give no
+hint of. OpenMC checks each sphere when the model is loaded and warns if it
+cannot establish that the sphere holds a single material; reducing the radius
+below the distance the warning reports resolves it. A boundary between two
+cells of the same material is not a problem and is not reported. See
+:ref:`methods_next_event_estimator` for the details.
 
 Setting up a point detector also assigns the tally the ``next-event``
 estimator, which brings some restrictions with it. A point tally cannot be

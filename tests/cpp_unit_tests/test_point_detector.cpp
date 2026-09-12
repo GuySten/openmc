@@ -23,7 +23,10 @@ namespace {
 //! cell's, and anything beyond r = 3 is outside the model.
 class SphereFixture {
 public:
-  SphereFixture()
+  //! \param outer material outside r = 1
+  //! \param inclusion add a small bounded cell of material 9 at x = 2,
+  //!   far enough out that a small sphere cannot reach its bounding box
+  explicit SphereFixture(int32_t outer = 9, bool inclusion = false)
     : root_universe_ {model::root_universe},
       n_coord_levels_ {model::n_coord_levels}
   {
@@ -33,15 +36,24 @@ public:
 
     add_sphere(1, "0 0 0 1");
     add_sphere(2, "0 0 0 3");
+    if (inclusion)
+      add_sphere(3, "2 0 0 0.3");
 
-    model::cells.push_back(make_cell(1, 0, 1, "-2"));  // root, bounded at r=3
-    model::cells.push_back(make_cell(2, 1, -1, "-1")); // inside r=1
-    model::cells.push_back(make_cell(3, 1, -1, "+1")); // outside r=1
+    // materials: 7 inside r = 1, and either 7 or 9 outside, per the test
+    model::cells.push_back(make_cell(1, 0, 1, "-2"));     // root, r < 3
+    model::cells.push_back(make_cell(2, 1, -1, "-1", 7)); // inside r = 1
+    model::cells.push_back(
+      make_cell(3, 1, -1, inclusion ? "+1 +3" : "+1", outer)); // outside r = 1
+    if (inclusion)
+      model::cells.push_back(make_cell(4, 1, -1, "-3", 9)); // island at x = 2
     for (int i = 0; i < model::cells.size(); ++i)
       model::cell_map[model::cells[i]->id_] = i;
 
     add_universe(0, {0});
-    add_universe(1, {1, 2});
+    if (inclusion)
+      add_universe(1, {1, 2, 3});
+    else
+      add_universe(1, {1, 2});
   }
 
   ~SphereFixture()
@@ -84,7 +96,7 @@ private:
   }
 
   static std::unique_ptr<CSGCell> make_cell(
-    int id, int universe, int fill, const char* region)
+    int id, int universe, int fill, const char* region, int32_t material = -1)
   {
     pugi::xml_document doc;
     auto node = doc.append_child("cell");
@@ -102,6 +114,7 @@ private:
     auto cell = std::make_unique<CSGCell>(node);
     if (fill < 0) {
       cell->type_ = Fill::MATERIAL;
+      cell->material_ = {material};
       cell->sqrtkT_.push_back(0.0);
       cell->density_mult_.push_back(1.0);
     } else {
@@ -117,7 +130,7 @@ private:
 } // anonymous namespace
 
 TEST_CASE_METHOD(
-  SphereFixture, "Exclusion sphere confinement is decided exactly")
+  SphereFixture, "Exclusion sphere material uniformity is decided exactly")
 {
   double nearest = INFTY;
 
@@ -125,14 +138,14 @@ TEST_CASE_METHOD(
   {
     // at the centre: r = 1 is 1.0 away, the root cell's r = 3 is 3.0 away
     REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 0.5, nearest) ==
-            SphereCheck::CONFINED);
+            SphereCheck::SINGLE_MATERIAL);
     REQUIRE(nearest == Catch::Approx(1.0));
   }
 
-  SECTION("a sphere reaching the cell boundary is not confined")
+  SECTION("a sphere reaching a different material is reported")
   {
     REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 2.0, nearest) ==
-            SphereCheck::NOT_CONFINED);
+            SphereCheck::MULTIPLE_MATERIALS);
     REQUIRE(nearest == Catch::Approx(1.0));
   }
 
@@ -140,10 +153,11 @@ TEST_CASE_METHOD(
   {
     // off-centre: nearest boundary is r = 1 at a distance of 0.4
     Position p {0.6, 0.0, 0.0};
-    REQUIRE(check_exclusion_sphere(p, 0.399, nearest) == SphereCheck::CONFINED);
+    REQUIRE(check_exclusion_sphere(p, 0.399, nearest) ==
+            SphereCheck::SINGLE_MATERIAL);
     REQUIRE(nearest == Catch::Approx(0.4));
-    REQUIRE(
-      check_exclusion_sphere(p, 0.401, nearest) == SphereCheck::NOT_CONFINED);
+    REQUIRE(check_exclusion_sphere(p, 0.401, nearest) ==
+            SphereCheck::MULTIPLE_MATERIALS);
   }
 
   SECTION("surfaces from every coordinate level are measured")
@@ -151,14 +165,15 @@ TEST_CASE_METHOD(
     // at r = 1.5 the inner sphere is 0.5 away and the root cell's outer
     // sphere, one level up, is 1.5 away -- the inner one governs
     REQUIRE(check_exclusion_sphere({1.5, 0.0, 0.0}, 0.4, nearest) ==
-            SphereCheck::CONFINED);
+            SphereCheck::SINGLE_MATERIAL);
     REQUIRE(nearest == Catch::Approx(0.5));
 
-    // at r = 2.8 the level-up surface is the closer of the two at 0.2, so a
-    // sphere of 0.4 escapes the root cell even though the level it sits in
-    // has nothing nearer than 1.8
+    // at r = 2.8 the level-up surface is the closer of the two at 0.2, even
+    // though the level the detector sits in has nothing nearer than 1.8. A
+    // sphere of 0.4 can therefore leave the innermost universe, past which
+    // its cells no longer bound where the sphere reaches
     REQUIRE(check_exclusion_sphere({2.8, 0.0, 0.0}, 0.4, nearest) ==
-            SphereCheck::NOT_CONFINED);
+            SphereCheck::UNDECIDABLE);
     REQUIRE(nearest == Catch::Approx(0.2));
   }
 
@@ -167,4 +182,50 @@ TEST_CASE_METHOD(
     REQUIRE(check_exclusion_sphere({0.0, 0.0, 50.0}, 0.1, nearest) ==
             SphereCheck::OUTSIDE_MODEL);
   }
+}
+
+TEST_CASE_METHOD(SphereFixture,
+  "A sphere crossing into the same material is not flagged", "[same]")
+{
+  // This fixture is the default: material 9 outside r = 1, differing from the
+  // 7 inside, so crossing the boundary really does mix materials
+  double nearest = INFTY;
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 2.0, nearest) ==
+          SphereCheck::MULTIPLE_MATERIALS);
+  REQUIRE(nearest == Catch::Approx(1.0));
+}
+
+TEST_CASE("A cell boundary within one material does not matter")
+{
+  // Same geometry, but the surface at r = 1 now merely subdivides a single
+  // material. The sphere still leaves its cell, so a cell-based test would
+  // flag it; a material-based one must not.
+  SphereFixture fixture {7};
+  double nearest = INFTY;
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 2.0, nearest) ==
+          SphereCheck::SINGLE_MATERIAL);
+  REQUIRE(nearest == Catch::Approx(1.0));
+
+  // and one that does not even reach the boundary is still fine
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 0.5, nearest) ==
+          SphereCheck::SINGLE_MATERIAL);
+}
+
+TEST_CASE("Cells out of the sphere's reach are not counted against it")
+{
+  // Material 7 everywhere nearby, plus a small island of material 9 centred
+  // at x = 2 with radius 0.3, so its bounding box starts 1.7 from the origin.
+  SphereFixture fixture {7, true};
+  double nearest = INFTY;
+
+  // A sphere of 1.5 leaves its cell at r = 1 but cannot reach the island, so
+  // every cell it can touch is material 7
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 1.5, nearest) ==
+          SphereCheck::SINGLE_MATERIAL);
+  REQUIRE(nearest == Catch::Approx(1.0));
+
+  // A sphere of 2.0 does reach the island's bounding box, so the answer
+  // changes -- the two differ only in whether that box is within reach
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 2.0, nearest) ==
+          SphereCheck::MULTIPLE_MATERIALS);
 }

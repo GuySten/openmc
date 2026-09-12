@@ -10,35 +10,49 @@ namespace openmc {
 
 class PointFilter;
 
-//! Whether an exclusion sphere could be shown to stay within a single cell
+//! Whether an exclusion sphere could be shown to hold a single material
 enum class SphereCheck {
-  CONFINED,     //!< proven to stay inside one cell
-  NOT_CONFINED, //!< a bounding surface is closer than the radius
-  UNDECIDABLE,  //!< a lattice, or a surface with no closed-form distance
-  OUTSIDE_MODEL //!< the detector could not be located in the geometry
+  SINGLE_MATERIAL,    //!< proven to hold one material throughout
+  MULTIPLE_MATERIALS, //!< a cell of a different material reaches into it
+  UNDECIDABLE,        //!< beyond what this test can establish either way
+  OUTSIDE_MODEL       //!< the detector could not be located in the geometry
 };
 
-//! Test whether a detector's exclusion sphere provably stays in one cell.
+//! Test whether a detector's exclusion sphere provably holds one material.
 //!
-//! Leaving a cell means crossing one of the surfaces of its region, so if
-//! every such surface is farther from the detector than the sphere's radius,
-//! at every level of the coordinate hierarchy, the sphere cannot escape the
-//! cell it starts in. The test uses closed-form point-to-surface distances
-//! rather than sampled directions, so a CONFINED result is exact.
+//! The sphere average assumes a single total cross section throughout, so what
+//! matters is the material, not the cell: a sphere spilling across a boundary
+//! into more of the same material is perfectly fine, and that is the common
+//! case wherever cells subdivide a uniform region.
 //!
-//! It proves safety, not danger: a surface within reach may separate two cells
-//! of the same material, which is harmless for the exclusion sphere. Lattice
-//! element boundaries are not cell surfaces, and the general quadric and the
-//! tori have no closed-form distance to a point, so either makes the answer
-//! UNDECIDABLE rather than wrong.
+//! Two stages, both exact. Leaving a cell means crossing one of the surfaces
+//! of its region, so if every such surface, at every level of the coordinate
+//! hierarchy, is farther away than the radius, the sphere cannot leave the
+//! cell it starts in and a cell holds one material by construction. Failing
+//! that, the sphere is still confined to the universe at its innermost level
+//! provided no surface above that level is within reach; the cells of that
+//! universe whose bounding box the sphere reaches are then the only ones it
+//! can touch, and if they all carry the detector's own material the sphere
+//! holds one material after all. Bounding boxes over-approximate, so this can
+//! only ever consider too many cells, never too few.
+//!
+//! Nothing here is sampled, so SINGLE_MATERIAL is a proof. The converse is
+//! weaker: a cell of another material whose bounding box is in reach may not
+//! really intersect the sphere, so MULTIPLE_MATERIALS means "not proven safe,
+//! and here is why". A lattice, whose element boundaries are not surfaces of
+//! any cell's region, a surface with no closed-form distance to a point, a
+//! neighbouring cell filled by a universe rather than a material, and a sphere
+//! that escapes its innermost universe all give UNDECIDABLE rather than a
+//! result that cannot be trusted.
 //!
 //! \param[in] pos Centre of the sphere
 //! \param[in] r0 Radius of the sphere
-//! \param[out] nearest Distance to the closest bounding surface found, left
-//!   untouched unless the result is CONFINED or NOT_CONFINED
+//! \param[out] nearest Distance to the closest cell boundary found, left
+//!   untouched if the detector could not be located
 SphereCheck check_exclusion_sphere(Position pos, double r0, double& nearest);
 
-//! Warn about every exclusion sphere of a filter that is not provably confined
+//! Warn about every exclusion sphere of a filter not proven to hold one
+//! material
 void check_point_detector_spheres(const PointFilter& filt);
 
 //==============================================================================

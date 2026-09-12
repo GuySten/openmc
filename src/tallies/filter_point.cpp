@@ -6,6 +6,7 @@
 
 #include <fmt/core.h>
 
+#include "openmc/bounding_box.h"
 #include "openmc/cell.h"
 #include "openmc/error.h"
 #include "openmc/geometry.h"
@@ -13,6 +14,7 @@
 #include "openmc/ray.h"
 #include "openmc/simulation.h"
 #include "openmc/surface.h"
+#include "openmc/universe.h"
 #include "openmc/xml_interface.h"
 
 namespace openmc {
@@ -31,6 +33,44 @@ private:
   bool lost_ {false};
 };
 
+//! Shortest distance from a point to an axis-aligned box, zero if inside
+double distance_to_box(const BoundingBox& bb, Position c)
+{
+  double dx = std::max({0.0, bb.min.x - c.x, c.x - bb.max.x});
+  double dy = std::max({0.0, bb.min.y - c.y, c.y - bb.max.y});
+  double dz = std::max({0.0, bb.min.z - c.z, c.z - bb.max.z});
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+//! The one material of a cell, or false if it has several (distribcell may
+//! give each instance its own) and there is no single answer
+bool single_material(const Cell& c, int32_t& mat)
+{
+  if (c.material_.empty())
+    return false;
+  mat = c.material_.front();
+  for (int32_t m : c.material_) {
+    if (m != mat)
+      return false;
+  }
+  return true;
+}
+
+//! Smallest distance from a point to any surface bounding a cell, or a
+//! negative value if one of them has no closed-form distance
+double distance_to_cell_boundary(const Cell& c, Position r)
+{
+  double closest = INFTY;
+  for (int32_t token : c.surfaces()) {
+    const Surface& surf {*model::surfaces[std::abs(token) - 1]};
+    double d = surf.distance_to_point(r);
+    if (d < 0.0)
+      return -1.0;
+    closest = std::min(closest, d);
+  }
+  return closest;
+}
+
 } // namespace
 
 SphereCheck check_exclusion_sphere(Position pos, double r0, double& nearest)
@@ -40,25 +80,65 @@ SphereCheck check_exclusion_sphere(Position pos, double r0, double& nearest)
   if (!exhaustive_find_cell(probe) || probe.lost())
     return SphereCheck::OUTSIDE_MODEL;
 
-  double closest = INFTY;
-  for (int level = 0; level < probe.n_coord(); ++level) {
-    // Lattice element boundaries are not surfaces of the cell's region, so
-    // there is nothing here to measure a distance to
+  const int innermost = probe.n_coord() - 1;
+
+  // Distance to the nearest boundary of the cell at each level. Levels above
+  // the innermost are tracked separately: a sphere reaching one of those can
+  // leave the innermost universe altogether, and the cells of that universe
+  // then no longer bound where it can go.
+  double closest_here = INFTY;
+  double closest_above = INFTY;
+  for (int level = 0; level <= innermost; ++level) {
     if (probe.coord(level).lattice() != C_NONE)
       return SphereCheck::UNDECIDABLE;
 
-    const Cell& c {*model::cells[probe.coord(level).cell()]};
-    for (int32_t token : c.surfaces()) {
-      const Surface& surf {*model::surfaces[std::abs(token) - 1]};
-      double d = surf.distance_to_point(probe.coord(level).r());
-      if (d < 0.0)
-        return SphereCheck::UNDECIDABLE;
-      closest = std::min(closest, d);
+    double d = distance_to_cell_boundary(
+      *model::cells[probe.coord(level).cell()], probe.coord(level).r());
+    if (d < 0.0)
+      return SphereCheck::UNDECIDABLE;
+
+    if (level == innermost) {
+      closest_here = d;
+    } else {
+      closest_above = std::min(closest_above, d);
     }
   }
+  nearest = std::min(closest_here, closest_above);
 
-  nearest = closest;
-  return closest < r0 ? SphereCheck::NOT_CONFINED : SphereCheck::CONFINED;
+  // The sphere never leaves the cell it started in, and a cell is one material
+  if (nearest >= r0)
+    return SphereCheck::SINGLE_MATERIAL;
+
+  // It does leave, so the question is what else it reaches. That can only be
+  // answered within the innermost universe.
+  if (closest_above < r0)
+    return SphereCheck::UNDECIDABLE;
+
+  const int32_t mat = probe.material();
+  const Position local = probe.coord(innermost).r();
+  const Universe& uni {*model::universes[probe.coord(innermost).universe()]};
+  for (int32_t i_cell : uni.cells_) {
+    const Cell& c {*model::cells[i_cell]};
+
+    // Bounding boxes over-approximate the cell, so a sphere that does not
+    // reach the box certainly does not reach the cell
+    if (distance_to_box(c.bounding_box(), local) >= r0)
+      continue;
+
+    // A neighbour filled by a universe or lattice has no single material of
+    // its own to compare against
+    if (c.type_ != Fill::MATERIAL)
+      return SphereCheck::UNDECIDABLE;
+
+    int32_t neighbour_mat;
+    if (!single_material(c, neighbour_mat))
+      return SphereCheck::UNDECIDABLE;
+    if (neighbour_mat != mat)
+      return SphereCheck::MULTIPLE_MATERIALS;
+  }
+
+  // Every cell the sphere can reach carries the detector's own material
+  return SphereCheck::SINGLE_MATERIAL;
 }
 
 void check_point_detector_spheres(const PointFilter& filt)
@@ -69,24 +149,26 @@ void check_point_detector_spheres(const PointFilter& filt)
 
     double nearest = INFTY;
     switch (check_exclusion_sphere(pos, r0, nearest)) {
-    case SphereCheck::CONFINED:
+    case SphereCheck::SINGLE_MATERIAL:
       break;
-    case SphereCheck::NOT_CONFINED:
+    case SphereCheck::MULTIPLE_MATERIALS:
       warning(fmt::format(
-        "Point detector at {} has an exclusion sphere of radius {} but a cell "
-        "boundary only {} away, so the sphere is not confined to one cell. The "
-        "sphere treatment assumes a single total cross section throughout and "
-        "reads it in the cell at the detector, so if the materials differ "
-        "across that boundary the result is biased. Reducing the radius below "
-        "{} removes the doubt.",
+        "Point detector at {} has an exclusion sphere of radius {} that "
+        "reaches a cell of a different material, the nearest cell boundary "
+        "being {} away. The sphere treatment assumes a single total cross "
+        "section throughout and reads it in the cell at the detector, so the "
+        "result is biased -- and by the *neighbouring* material's optical "
+        "thickness, which the detector's own cell gives no hint of. Reducing "
+        "the radius below {} confines the sphere to one cell.",
         pos, r0, nearest, nearest));
       break;
     case SphereCheck::UNDECIDABLE:
       warning(fmt::format(
         "Point detector at {} has an exclusion sphere of radius {} which could "
-        "not be shown to stay within one cell, because it sits in a lattice or "
-        "is bounded by a surface with no closed-form distance to a point. If "
-        "the sphere spans more than one material the treatment is biased.",
+        "not be shown to hold a single material: it sits in a lattice, is "
+        "bounded by a surface with no closed-form distance to a point, or "
+        "reaches a cell that is filled by a universe rather than a material. "
+        "If it does span more than one material the treatment is biased.",
         pos, r0));
       break;
     case SphereCheck::OUTSIDE_MODEL:

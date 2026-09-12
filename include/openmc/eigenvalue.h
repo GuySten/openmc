@@ -42,6 +42,14 @@ void calculate_generation_keff();
 //! generations. It also broadcasts the value from the master process.
 void calculate_average_keff();
 
+//! Whether openmc_get_keff() returns a combination of the three k estimators
+//!
+//! The combination is only defined once MIN_REALIZATIONS_TO_COMBINE active
+//! batches have been accumulated, and the random ray solver produces a single
+//! estimate of k rather than three independent ones. When this returns false,
+//! openmc_get_keff() falls back to the average of k over generations.
+bool keff_combined_available();
+
 //! Calculates a minimum variance estimate of k-effective
 //!
 //! The minimum variance estimate is based on a linear combination of the

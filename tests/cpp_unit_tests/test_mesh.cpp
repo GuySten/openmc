@@ -369,3 +369,179 @@ TEST_CASE("Test regular mesh ray tracing from outside")
   REQUIRE(lengths[0] == Catch::Approx(1.0 / 6.0));
   REQUIRE(lengths[1] == Catch::Approx(1.0 / 6.0));
 }
+
+TEST_CASE("Test direction-aware indexing - regular")
+{
+  // 2 elements per dimension over [-2, 2], so there is an interior grid plane
+  // at 0 in each dimension.
+  std::string xml_string = R"(
+        <mesh id="1">
+            <dimension>2 2 2</dimension>
+            <lower_left>-2 -2 -2</lower_left>
+            <upper_right>2 2 2</upper_right>
+       </mesh>
+    )";
+
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_string(xml_string.c_str());
+  auto mesh = RegularMesh(doc.child("mesh"));
+
+  bool in_mesh;
+
+  // A point on an interior grid plane belongs to the element it is heading
+  // into, in the same way a particle sitting on a CSG surface belongs to the
+  // cell it is heading into.
+  auto ijk = mesh.get_indices(
+    Position {0.0, 0.5, 0.5}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+
+  ijk = mesh.get_indices(
+    Position {0.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+
+  // A direction with no component along the ambiguous axis leaves the point in
+  // the lower-index element, matching get_index_in_direction().
+  ijk = mesh.get_indices(
+    Position {0.0, 0.5, 0.5}, Direction {0.0, 1.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+
+  // The outer boundaries behave the same way: heading inwards puts the point
+  // in the mesh, heading outwards takes it out.
+  ijk = mesh.get_indices(
+    Position {-2.0, 0.5, 0.5}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+
+  ijk = mesh.get_indices(
+    Position {-2.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(!in_mesh);
+
+  ijk = mesh.get_indices(
+    Position {2.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+
+  ijk = mesh.get_indices(
+    Position {2.0, 0.5, 0.5}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(!in_mesh);
+
+  // A point well inside an element is unaffected by the direction of travel.
+  ijk = mesh.get_indices(
+    Position {1.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+
+  // get_bin() agrees with get_indices().
+  REQUIRE(mesh.get_bin(Position {0.0, 0.5, 0.5}, Direction {1.0, 0.0, 0.0}) ==
+          mesh.get_bin_from_indices({2, 2, 2}));
+  REQUIRE(mesh.get_bin(Position {0.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}) ==
+          mesh.get_bin_from_indices({1, 2, 2}));
+  REQUIRE(
+    mesh.get_bin(Position {-2.0, 0.5, 0.5}, Direction {-1.0, 0.0, 0.0}) == -1);
+}
+
+TEST_CASE("Test direction-aware indexing - near but not on a grid boundary")
+{
+  // Displacing the position by TINY_BIT (1e-8) to resolve the element moves a
+  // point that is merely *close* to a grid plane across it. Here the point is
+  // 5e-9 into element 2 and travelling away from the plane at 0, so it must
+  // stay in element 2.
+  std::string xml_string = R"(
+        <mesh id="1">
+            <dimension>2 1 1</dimension>
+            <lower_left>-2 -2 -2</lower_left>
+            <upper_right>2 2 2</upper_right>
+       </mesh>
+    )";
+
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_string(xml_string.c_str());
+  auto mesh = RegularMesh(doc.child("mesh"));
+
+  bool in_mesh;
+  auto ijk = mesh.get_indices(
+    Position {5.0e-9, 0.0, 0.0}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+
+  ijk = mesh.get_indices(
+    Position {-5.0e-9, 0.0, 0.0}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+}
+
+TEST_CASE("Test direction-aware indexing - elements finer than TINY_BIT")
+{
+  // Element width is 1e-9, ten times smaller than TINY_BIT, so displacing the
+  // position by TINY_BIT would skip over the whole mesh.
+  std::string xml_string = R"(
+        <mesh id="1">
+            <dimension>10 1 1</dimension>
+            <lower_left>0 -1 -1</lower_left>
+            <upper_right>1e-8 1 1</upper_right>
+       </mesh>
+    )";
+
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_string(xml_string.c_str());
+  auto mesh = RegularMesh(doc.child("mesh"));
+
+  bool in_mesh;
+
+  // Entering at the lower edge lands in the first element.
+  auto ijk = mesh.get_indices(
+    Position {0.0, 0.0, 0.0}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+
+  // The interior plane at 5e-9 separates elements 5 and 6.
+  ijk = mesh.get_indices(
+    Position {5.0e-9, 0.0, 0.0}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 6);
+
+  ijk = mesh.get_indices(
+    Position {5.0e-9, 0.0, 0.0}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 5);
+}
+
+TEST_CASE("Test direction-aware indexing - rectilinear")
+{
+  std::string xml_string = R"(
+        <mesh id="1" type="rectilinear">
+            <x_grid>-1.0 0.0 2.0</x_grid>
+            <y_grid>-1.0 1.0</y_grid>
+            <z_grid>-1.0 1.0</z_grid>
+        </mesh>
+    )";
+
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_string(xml_string.c_str());
+  auto mesh = RectilinearMesh(doc.child("mesh"));
+
+  bool in_mesh;
+
+  auto ijk = mesh.get_indices(
+    Position {0.0, 0.0, 0.0}, Direction {1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+
+  ijk = mesh.get_indices(
+    Position {0.0, 0.0, 0.0}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 1);
+
+  // Outer boundaries
+  ijk = mesh.get_indices(
+    Position {-1.0, 0.0, 0.0}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(!in_mesh);
+
+  ijk = mesh.get_indices(
+    Position {2.0, 0.0, 0.0}, Direction {-1.0, 0.0, 0.0}, in_mesh);
+  REQUIRE(in_mesh);
+  REQUIRE(ijk[0] == 2);
+}

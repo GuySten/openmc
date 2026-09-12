@@ -1131,6 +1131,35 @@ StructuredMesh::MeshIndex StructuredMesh::get_indices(
   return ijk;
 }
 
+StructuredMesh::MeshIndex StructuredMesh::get_indices_along_axes(
+  Position r, const Direction& u, bool& in_mesh) const
+{
+  MeshIndex ijk;
+  in_mesh = true;
+  for (int i = 0; i < n_dimension_; ++i) {
+    ijk[i] = get_index_in_direction(r[i], i);
+
+    // A coordinate sitting on a grid boundary belongs to the elements on both
+    // sides of it. Assign it to the element the track is heading into, which
+    // is what displacing the position along u used to accomplish, but without
+    // introducing a length scale. Both of the bounding grid surfaces are
+    // tested because rounding can leave the coordinate on either side of the
+    // plane it is meant to lie on.
+    const double tol = GRID_MESH_TOL * (1.0 + std::abs(r[i]));
+    if (u[i] > 0.0 && ijk[i] >= 0 && ijk[i] <= shape_[i] &&
+        std::abs(r[i] - positive_grid_boundary(ijk, i)) < tol) {
+      ijk[i] += 1;
+    } else if (u[i] < 0.0 && ijk[i] >= 1 && ijk[i] <= shape_[i] + 1 &&
+               std::abs(r[i] - negative_grid_boundary(ijk, i)) < tol) {
+      ijk[i] -= 1;
+    }
+
+    if (ijk[i] < 1 || ijk[i] > shape_[i])
+      in_mesh = false;
+  }
+  return ijk;
+}
+
 int StructuredMesh::get_bin_from_indices(const MeshIndex& ijk) const
 {
   switch (n_dimension_) {
@@ -1166,6 +1195,19 @@ int StructuredMesh::get_bin(Position r) const
   // Determine indices
   bool in_mesh;
   MeshIndex ijk = get_indices(r, in_mesh);
+  if (!in_mesh)
+    return -1;
+
+  // Convert indices to bin
+  return get_bin_from_indices(ijk);
+}
+
+int StructuredMesh::get_bin(Position r, const Direction& u) const
+{
+  // Determine indices, resolving grid-boundary ties with the direction of
+  // travel
+  bool in_mesh;
+  MeshIndex ijk = get_indices(r, u, in_mesh);
   if (!in_mesh)
     return -1;
 
@@ -1276,9 +1318,10 @@ void StructuredMesh::raytrace_mesh(
   // Position is r = r0 + u * traveled_distance, start at r0
   double traveled_distance {0.0};
 
-  // Calculate index of current cell. Offset the position a tiny bit in
-  // direction of flight
-  MeshIndex ijk = get_indices(global_r + TINY_BIT * u, in_mesh);
+  // Calculate index of current cell. A start point sitting on a grid
+  // boundary is resolved by the direction of flight rather than by displacing
+  // the position.
+  MeshIndex ijk = get_indices(global_r, u, in_mesh);
 
   // if track is very short, assume that it is completely inside one cell.
   // Only the current cell will score and no surfaces
@@ -1356,7 +1399,7 @@ void StructuredMesh::raytrace_mesh(
 
       // Calculate the new cell index and update all distances to next
       // surfaces.
-      ijk = get_indices(global_r + (traveled_distance + TINY_BIT) * u, in_mesh);
+      ijk = get_indices(global_r + traveled_distance * u, u, in_mesh);
       for (int k = 0; k < n; ++k) {
         distances[k] =
           distance_to_grid_boundary(ijk, k, local_r, u, traveled_distance);

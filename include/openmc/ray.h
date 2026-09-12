@@ -18,7 +18,7 @@ namespace openmc {
 //! a ray without the two meeting at a *virtual* GeometryState base. A virtual
 //! base would put a vtable indirection in front of every geometry access --
 //! r(), u(), coord(), material() -- throughout the transport loop, which is
-//! far too high a price to pay across all of OpenMC for one optional tally.
+//! far too high a price to pay across all of OpenMC for one kind of ray.
 //!
 //! Members are public because trace_ray() drives them directly.
 //==============================================================================
@@ -136,10 +136,9 @@ public:
   //! ParticleData's constructor sizes from the loaded model -- the
   //! microscopic cross section caches, the filter matches, the flux
   //! derivatives -- are left allocated so they can be reused. That is the
-  //! point of resetting rather than constructing: a contribution is evaluated
-  //! for every detector at every collision, and building a fresh ParticleData
-  //! each time would allocate and zero tens of kilobytes inside the transport
-  //! loop.
+  //! point of resetting rather than constructing: a caller that launches many
+  //! rays would otherwise allocate and zero tens of kilobytes apiece, which is
+  //! not affordable anywhere near the transport loop.
   //!
   //! Note that init_from_r_u() clears material(), so the first segment of the
   //! new flight always recomputes cross sections rather than reusing whatever
@@ -190,7 +189,7 @@ public:
 
   void trace(double max_distance = INFTY);
 
-  //! No-op: a ray to a detector has nothing to do at a surface crossing, the
+  //! No-op: a ParticleRay has nothing to do at a surface crossing, since the
   //! optical depth is accumulated in update_distance() instead.
   void on_intersection() {}
 

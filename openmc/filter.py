@@ -787,23 +787,58 @@ class ParticleFilter(Filter):
 
 
 class PointFilter(Filter):
-    """Bins tally events based on point detectors.
+    """Bins tally events by point detector.
+
+    Assigning this filter to a tally estimates the flux at one or more points
+    using a next-event estimator: instead of scoring when a particle passes
+    through a region, a contribution is made at every emission event -- the
+    source, and every scattering or fission collision -- for the fraction of
+    that emission which would reach the detector without colliding on the way.
+    Since every event contributes, a point detector gives an answer where a
+    small volume tally would see too few tracks to be useful.
+
+    Each detector is given as a position together with the radius of an
+    exclusion sphere. The contribution of an emission falls off as
+    :math:`1/R^2` with its distance :math:`R` from the detector, so the
+    estimator has an unbounded variance; within the exclusion sphere it is
+    replaced by its average over the sphere, which is bounded. The radius
+    trades variance against bias, and a value of the order of a mean free path
+    in the surrounding material is a reasonable starting point. Use ``0.0`` to
+    disable the treatment.
+
+    A tally using this filter is restricted in several ways -- among them
+    continuous-energy mode, vacuum outer boundaries, and an independent,
+    non-monodirectional source. The restrictions are listed in
+    :ref:`usersguide_point_detectors` and are checked when the model is loaded.
 
     Parameters
     ----------
     bins : sequence of tuple[tuple[Real, Real, Real], Real]
-        Point detectors positions and exclusion radii.
+        One ``((x, y, z), r0)`` pair per detector, giving its position and the
+        radius of its exclusion sphere, both in [cm]
     filter_id : int
         Unique identifier for the filter
 
     Attributes
     ----------
     bins : sequence of tuple[tuple[Real, Real, Real], Real]
-        Point detectors positions and exclusion radii.
+        Detector positions and exclusion radii
     id : int
         Unique identifier for the filter
     num_bins : Integral
-        The number of filter bins
+        The number of filter bins, one per detector
+
+    Examples
+    --------
+    Two detectors on the z-axis, each with a 1 cm exclusion sphere::
+
+        detectors = openmc.PointFilter([
+            ((0.0, 0.0, 250.0), 1.0),
+            ((0.0, 0.0, 500.0), 1.0),
+        ])
+        tally = openmc.Tally()
+        tally.filters = [detectors]
+        tally.scores = ['flux']
 
     """
 

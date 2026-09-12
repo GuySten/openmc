@@ -22,10 +22,10 @@ __all__ = [
     'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter', 'LegendreFilter',
     'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
-    'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter', 'PointFilter', 'PolarFilter',
-    'ReactionFilter', 'SphericalHarmonicsFilter', 'SpatialLegendreFilter',
-    'SurfaceFilter', 'TimeFilter', 'UniverseFilter', 'WeightFilter', 'ZernikeFilter',
-    'ZernikeRadialFilter', 'filters'
+    'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter',
+    'PointFilter', 'PolarFilter', 'ReactionFilter', 'SphericalHarmonicsFilter',
+    'SpatialLegendreFilter', 'SurfaceFilter', 'TimeFilter', 'UniverseFilter',
+    'WeightFilter', 'ZernikeFilter', 'ZernikeRadialFilter', 'filters'
 ]
 
 # Tally functions
@@ -609,6 +609,13 @@ class ParticleFilter(Filter):
 
 
 class PointFilter(Filter):
+    """Filter for scoring the flux at points with a next-event estimator.
+
+    See :class:`openmc.PointFilter` for a description of the filter and
+    :ref:`usersguide_point_detectors` for how point detectors are used.
+
+    """
+
     filter_type = 'point'
 
 

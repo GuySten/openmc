@@ -2050,7 +2050,7 @@ SourceRegionHandle FlatSourceDomain::get_subdivided_source_region_handle(
     }
   } else {
     Mesh* mesh = model::meshes[mesh_idx].get();
-    int bin_found = mesh->get_bin(r + TINY_BIT * u);
+    int bin_found = mesh->get_bin(r, u);
     if (bin_found != sr_key.mesh_bin) {
       discovered_source_regions_.unlock(sr_key);
       SourceRegionHandle handle;

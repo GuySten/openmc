@@ -12,6 +12,7 @@
 #include "pugixml.hpp"
 
 #include "openmc/bounding_box.h"
+#include "openmc/constants.h"
 #include "openmc/error.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -197,6 +198,25 @@ public:
   //! \return Mesh bin
   virtual int get_bin(Position r) const = 0;
 
+  //! Get bin at a given position for a point travelling in a given direction
+  //
+  //! A point lying on the boundary between two mesh elements belongs to both
+  //! of them. This resolves the ambiguity the same way the CSG ray tracer
+  //! resolves a particle sitting on a surface: the point belongs to the
+  //! element it is travelling into.
+  //
+  //! The base implementation displaces the point by TINY_BIT, which is what
+  //! callers used to do themselves. Meshes that can answer exactly override
+  //! this.
+  //
+  //! \param[in] r Position to get bin for
+  //! \param[in] u Direction of travel
+  //! \return Mesh bin
+  virtual int get_bin(Position r, const Direction& u) const
+  {
+    return get_bin(r + TINY_BIT * u);
+  }
+
   //! Get the number of mesh cells.
   virtual int n_bins() const = 0;
 
@@ -335,6 +355,8 @@ public:
 
   int get_bin(Position r) const override;
 
+  int get_bin(Position r, const Direction& u) const override;
+
   int n_bins() const override;
 
   int n_surface_bins() const override;
@@ -375,6 +397,27 @@ public:
   //! \param[out] in_mesh Whether position is in mesh
   //! \return Array of mesh indices
   virtual MeshIndex get_indices(Position r, bool& in_mesh) const;
+
+  //! Get mesh indices for a position travelling in a given direction
+  //
+  //! A coordinate that lies on a grid boundary belongs to the elements on
+  //! both sides of it. This resolves the ambiguity the same way the CSG ray
+  //! tracer resolves a particle sitting on a surface: the position belongs to
+  //! the element it is travelling into.
+  //
+  //! The base implementation displaces the position by TINY_BIT, which is what
+  //! callers used to do themselves. Meshes whose grid boundaries are planes of
+  //! constant coordinate override this with an exact test.
+  //
+  //! \param[in] r Position to get indices for
+  //! \param[in] u Direction of travel
+  //! \param[out] in_mesh Whether position is in mesh
+  //! \return Array of mesh indices
+  virtual MeshIndex get_indices(
+    Position r, const Direction& u, bool& in_mesh) const
+  {
+    return get_indices(r + TINY_BIT * u, in_mesh);
+  }
 
   //! Get mesh indices corresponding to a mesh bin
   //
@@ -469,6 +512,17 @@ public:
   std::array<int, 3> shape_; //!< Number of mesh elements in each dimension
 
 protected:
+  //! Direction-aware indexing for meshes whose grid boundaries are planes of
+  //! constant coordinate, so that a coordinate can be compared directly
+  //! against positive_grid_boundary() / negative_grid_boundary() and the
+  //! direction of travel in dimension i is simply u[i].
+  //!
+  //! \param[in] r Position to get indices for
+  //! \param[in] u Direction of travel
+  //! \param[out] in_mesh Whether position is in mesh
+  //! \return Array of mesh indices
+  MeshIndex get_indices_along_axes(
+    Position r, const Direction& u, bool& in_mesh) const;
 };
 
 class PeriodicStructuredMesh : public StructuredMesh {
@@ -510,6 +564,15 @@ public:
 
   // Overridden methods
   int get_index_in_direction(double r, int i) const override;
+
+  using StructuredMesh::get_indices;
+
+  //! Resolve grid-boundary ties exactly rather than by displacing the point.
+  MeshIndex get_indices(
+    Position r, const Direction& u, bool& in_mesh) const override
+  {
+    return get_indices_along_axes(r, u, in_mesh);
+  }
 
   virtual std::string get_mesh_type() const override;
 
@@ -564,6 +627,15 @@ public:
   // Overridden methods
   int get_index_in_direction(double r, int i) const override;
 
+  using StructuredMesh::get_indices;
+
+  //! Resolve grid-boundary ties exactly rather than by displacing the point.
+  MeshIndex get_indices(
+    Position r, const Direction& u, bool& in_mesh) const override
+  {
+    return get_indices_along_axes(r, u, in_mesh);
+  }
+
   virtual std::string get_mesh_type() const override;
 
   static const std::string mesh_type;
@@ -605,6 +677,8 @@ public:
   CylindricalMesh(hid_t group);
 
   // Overridden methods
+  using StructuredMesh::get_indices;
+
   virtual MeshIndex get_indices(Position r, bool& in_mesh) const override;
 
   int get_index_in_direction(double r, int i) const override;
@@ -672,6 +746,8 @@ public:
   SphericalMesh(hid_t group);
 
   // Overridden methods
+  using StructuredMesh::get_indices;
+
   virtual MeshIndex get_indices(Position r, bool& in_mesh) const override;
 
   int get_index_in_direction(double r, int i) const override;

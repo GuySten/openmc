@@ -327,8 +327,18 @@ void Particle::event_advance()
     wgt() = 0.0;
   }
 
-  // Clear surface component if distance is long enough
-  if (distance > TINY_BIT)
+  // The surface token records that the particle is sitting exactly on the
+  // surface it last crossed, which is what lets the geometry resolve the
+  // particle's sense without relying on a tolerance. That only holds while the
+  // particle stays there. If this advance stopped short of the boundary -- at a
+  // collision or at the time cutoff -- the token no longer describes where the
+  // particle is, so drop it.
+  //
+  // Dropping it is safe even when the collision site is arbitrarily close to
+  // the surface: Surface::sense() falls back to the direction of travel when a
+  // point is numerically coincident with a surface, and
+  // reconcile_cell_after_collision() repairs the coordinate stack afterwards.
+  if (distance < boundary().distance())
     surface() = SURFACE_NONE;
 }
 

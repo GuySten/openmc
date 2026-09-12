@@ -1587,4 +1587,37 @@ double SurfaceZCone::distance_to_point(Position r) const
   return cone_point_distance(r.z - z0_, std::sqrt(x * x + y * y), radius_sq_);
 }
 
+double SurfaceQuadric::distance_to_point(Position r) const
+{
+  // f is quadratic, so for a step h from r it is exactly
+  //     f(r + h) = f(r) + grad_f(r).h + h^T M h
+  // with M the symmetric matrix of second-order coefficients. Hence
+  //     |f(r + h) - f(r)| <= |grad_f(r)| |h| + ||M|| |h|^2
+  // and no zero of f lies within a distance d of r as long as the right-hand
+  // side stays below |f(r)|. The largest such d is the positive root of
+  //     ||M|| d^2 + |grad_f(r)| d - |f(r)| = 0
+  // which is a rigorous lower bound on the distance to the surface. Any
+  // over-estimate of ||M|| keeps it rigorous, just looser; for a symmetric
+  // matrix the largest absolute row sum bounds the spectral norm and is exact
+  // whenever M is diagonal, which covers the quadrics met in practice.
+  double f = std::abs(evaluate(r));
+  if (f == 0.0)
+    return 0.0;
+
+  double gx = 2.0 * A_ * r.x + D_ * r.y + F_ * r.z + G_;
+  double gy = 2.0 * B_ * r.y + D_ * r.x + E_ * r.z + H_;
+  double gz = 2.0 * C_ * r.z + E_ * r.y + F_ * r.x + J_;
+  double g = std::sqrt(gx * gx + gy * gy + gz * gz);
+
+  double m = std::max({std::abs(A_) + 0.5 * (std::abs(D_) + std::abs(F_)),
+    std::abs(B_) + 0.5 * (std::abs(D_) + std::abs(E_)),
+    std::abs(C_) + 0.5 * (std::abs(E_) + std::abs(F_))});
+
+  if (m == 0.0) {
+    // No second-order terms: this is a plane, and the bound is exact
+    return g > 0.0 ? f / g : -1.0;
+  }
+  return (std::sqrt(g * g + 4.0 * m * f) - g) / (2.0 * m);
+}
+
 } // namespace openmc

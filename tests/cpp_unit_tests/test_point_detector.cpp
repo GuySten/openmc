@@ -229,3 +229,48 @@ TEST_CASE("Cells out of the sphere's reach are not counted against it")
   REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 2.0, nearest) ==
           SphereCheck::MULTIPLE_MATERIALS);
 }
+
+namespace {
+
+//! A cell that reports a non-CSG geometry, standing in for a DAGMC cell. Only
+//! CSGCell overrides Cell::surfaces(), so this inherits the base returning an
+//! empty list -- exactly the shape that would otherwise be read as "nothing
+//! bounds this cell".
+class ForeignCell : public Cell {
+public:
+  bool contains(Position, Direction, int32_t) const override { return true; }
+  std::pair<double, int32_t> distance(
+    Position, Direction, int32_t, GeometryState*) const override
+  {
+    return {INFTY, 0};
+  }
+  void to_hdf5_inner(hid_t) const override {}
+  BoundingBox bounding_box() const override { return {}; }
+  GeometryType geom_type() const override { return GeometryType::DAG; }
+};
+
+} // anonymous namespace
+
+TEST_CASE("A cell that does not expose its surfaces is never certified")
+{
+  SphereFixture fixture {7};
+  double nearest = INFTY;
+
+  // With the real CSG cells the sphere is decided
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 0.5, nearest) ==
+          SphereCheck::SINGLE_MATERIAL);
+
+  // Swap the innermost cell for one whose surfaces() is the inherited empty
+  // list. Reading that as "no boundary is near" would certify any sphere.
+  auto foreign = std::make_unique<ForeignCell>();
+  foreign->id_ = 2;
+  foreign->universe_ = 1;
+  foreign->type_ = Fill::MATERIAL;
+  foreign->material_ = {7};
+  foreign->sqrtkT_ = {0.0};
+  foreign->density_mult_ = {1.0};
+  model::cells[1] = std::move(foreign);
+
+  REQUIRE(check_exclusion_sphere({0.0, 0.0, 0.0}, 0.5, nearest) ==
+          SphereCheck::UNDECIDABLE);
+}

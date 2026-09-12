@@ -252,6 +252,16 @@ double brute_force_distance(const Surface& surf, Position r, double reach)
   return best;
 }
 
+//! A lower bound must never exceed the true distance, and must be useful
+void check_lower_bound(const Surface& surf, Position r, double reach)
+{
+  double bound = surf.distance_to_point(r);
+  REQUIRE(bound > 0.0);
+  double brute = brute_force_distance(surf, r, reach);
+  REQUIRE(brute < INFTY);
+  REQUIRE(bound <= brute + 1e-9);
+}
+
 void check_surface(const Surface& surf, Position r, double reach)
 {
   double exact = surf.distance_to_point(r);
@@ -336,10 +346,40 @@ TEST_CASE("Exact distance from a point to a surface")
     check_surface(*yk, {2.0, 3.0, -1.0}, 30.0);
   }
 
-  SECTION("types without a closed form report it")
+  SECTION("the general quadric gives a rigorous lower bound")
   {
-    auto q = make_surface<SurfaceQuadric>(
+    // A sphere of radius 2 written as a general quadric. The bound is not the
+    // exact distance, but it must never exceed it.
+    auto sphere_q = make_surface<SurfaceQuadric>(
       doc, 12, "quadric", "1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 -4.0");
-    REQUIRE(q->distance_to_point({1.0, 1.0, 1.0}) < 0.0);
+    check_lower_bound(*sphere_q, {4.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*sphere_q, {0.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*sphere_q, {1.0, 1.0, 1.0}, 30.0);
+    // on the surface, the bound is zero
+    REQUIRE(sphere_q->distance_to_point({2.0, 0.0, 0.0}) == Catch::Approx(0.0));
+
+    // an ellipsoid and a hyperboloid of one sheet
+    auto ellipsoid = make_surface<SurfaceQuadric>(
+      doc, 13, "quadric", "1.0 4.0 9.0 0.0 0.0 0.0 0.0 0.0 0.0 -9.0");
+    check_lower_bound(*ellipsoid, {5.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*ellipsoid, {0.0, 2.0, 1.0}, 30.0);
+
+    auto hyperboloid = make_surface<SurfaceQuadric>(
+      doc, 14, "quadric", "1.0 1.0 -1.0 0.0 0.0 0.0 0.0 0.0 0.0 -1.0");
+    check_lower_bound(*hyperboloid, {3.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*hyperboloid, {0.0, 0.0, 4.0}, 30.0);
+
+    // one with cross terms, where the row-sum norm is a genuine over-estimate
+    auto skew = make_surface<SurfaceQuadric>(
+      doc, 15, "quadric", "1.0 1.0 1.0 0.5 0.3 0.2 1.0 -2.0 0.5 -6.0");
+    check_lower_bound(*skew, {3.0, 1.0, -1.0}, 30.0);
+    check_lower_bound(*skew, {0.0, 0.0, 0.0}, 30.0);
+  }
+
+  SECTION("tori still report no closed form")
+  {
+    auto t = make_surface<SurfaceZTorus>(
+      doc, 16, "z-torus", "0.0 0.0 0.0 3.0 1.0 1.0");
+    REQUIRE(t->distance_to_point({1.0, 1.0, 1.0}) < 0.0);
   }
 }

@@ -84,18 +84,22 @@ public:
   //! \return Normal direction
   virtual Direction normal(Position r) const = 0;
 
-  //! Shortest distance from a point to the surface, in any direction.
+  //! A distance no greater than the distance from a point to the surface.
   //!
-  //! Unlike distance(), which follows a given direction, this is the distance
-  //! to the nearest point of the surface, so a sphere of this radius about r
-  //! is guaranteed not to touch the surface. Closed form exists for planes,
-  //! cylinders, spheres and cones; for the general quadric and the tori it
-  //! would mean solving a high-order polynomial, so those return a negative
-  //! value meaning "not available" rather than an answer that cannot be
-  //! trusted. Callers must check the sign.
+  //! Unlike distance(), which follows a given direction, this concerns the
+  //! nearest point of the surface in any direction. The contract is one-sided
+  //! and deliberately so: the result is never an over-estimate, so a sphere of
+  //! the returned radius about r provably does not touch the surface, which is
+  //! the property callers rely on. It is the exact distance for planes,
+  //! cylinders, spheres and cones. For the general quadric the exact nearest
+  //! point needs the root of a degree-six polynomial, and a missed root would
+  //! return too large a distance and wrongly certify a sphere as clear, so a
+  //! rigorous lower bound is returned instead. The tori have neither and
+  //! return a negative value meaning "not available"; callers must check the
+  //! sign.
   //! \param r A 3D Cartesian coordinate
-  //! \return The distance, or a negative value if this surface type does not
-  //!   provide one
+  //! \return A lower bound on the distance, exact where noted above, or a
+  //!   negative value if this surface type does not provide one
   virtual double distance_to_point(Position r) const { return -1.0; }
 
   //! Write all information needed to reconstruct the surface to an HDF5 group.
@@ -344,6 +348,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
 
   // Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fxz + Gx + Hy + Jz + K = 0

@@ -57,9 +57,19 @@ bool single_material(const Cell& c, int32_t& mat)
 }
 
 //! Smallest distance from a point to any surface bounding a cell, or a
-//! negative value if one of them has no closed-form distance
+//! negative value if the cell does not expose the surfaces that bound it or
+//! one of them cannot supply a distance.
+//!
+//! Only CSGCell overrides Cell::surfaces(); every other kind inherits a base
+//! that returns nothing. Reading that as "no surface is in the way" would
+//! certify any sphere in a DAGMC model as clear without having examined
+//! anything, so the geometry type is checked rather than the list's emptiness
+//! -- a CSG cell with no bounding surfaces really is unbounded.
 double distance_to_cell_boundary(const Cell& c, Position r)
 {
+  if (c.geom_type() != GeometryType::CSG)
+    return -1.0;
+
   double closest = INFTY;
   for (int32_t token : c.surfaces()) {
     const Surface& surf {*model::surfaces[std::abs(token) - 1]};

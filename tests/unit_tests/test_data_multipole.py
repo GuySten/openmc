@@ -481,3 +481,39 @@ def test_poles_are_moved_off_the_real_axis():
     # real poles outside the range are left where they are
     out = check([5.0, 25.0, 12.0, 18.0])
     assert 5.0 in out and 25.0 in out
+
+
+def test_windows_keep_the_tightest_tolerance_they_can_reach(endf_data):
+    """Several tolerances may be given, and only the windows that need the
+    looser ones get them.
+
+    Falling back for the whole library instead, as the reference generation
+    scripts do, gives away the accuracy of every window that could have held
+    to the tightest tolerance.
+    """
+    from openmc.data.multipole import vectfit_nuclide
+
+    endf_file = os.path.join(endf_data, 'neutrons', 'n-054_Xe_135.endf')
+    mp = vectfit_nuclide(endf_file, log=0)
+    # one fixed windowing rather than a search, so the comparison is of the
+    # tolerance handling alone and costs one pass each
+    fixed = dict(search=False, log=0, n_cf=3, n_win=110)
+
+    tight = openmc.data.WindowedMultipole.from_multipole(mp, rtol=1e-3,
+                                                         **fixed)
+    laddered = openmc.data.WindowedMultipole.from_multipole(
+        mp, rtol=(1e-3, 5e-3, 1e-2), **fixed)
+
+    # where the tightest tolerance is reachable the ladder changes nothing,
+    # so offering a fallback never costs accuracy
+    assert laddered.n_poles == tight.n_poles
+    assert np.array_equal(laddered.data, tight.data)
+
+    # the tolerances are worked through tightest first however they arrive
+    shuffled = openmc.data.WindowedMultipole.from_multipole(
+        mp, rtol=(1e-2, 1e-3, 5e-3), **fixed)
+    assert np.array_equal(shuffled.data, tight.data)
+
+    # an empty ladder has no tolerance to hold anything to
+    with pytest.raises(ValueError, match='at least one'):
+        openmc.data.WindowedMultipole.from_multipole(mp, rtol=[], **fixed)

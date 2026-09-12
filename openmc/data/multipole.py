@@ -1328,8 +1328,12 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
         Multipole data
     n_cf : int
         Curve fitting order
-    rtol : float, optional
-        Maximum relative error tolerance
+    rtol : float or Iterable of float, optional
+        Maximum relative error tolerance. Several may be given, tightest
+        first: each window is then held to the tightest one it can reach, and
+        only the windows that cannot reach it fall back to the next. Holding
+        the whole nuclide to the loosest instead would cost accuracy over
+        every window that never needed it.
     atol : float, optional
         Minimum absolute error tolerance
     corner_rtol : float, optional
@@ -1350,6 +1354,14 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
         format.
 
     """
+    # A window that cannot reach the tightest tolerance falls back to the next
+    # rather than failing the whole library, so a single nuclide keeps its
+    # accuracy everywhere it can be had. Sorted tightest first, so the first
+    # one a window meets is the best it could have done.
+    rtol_ladder = sorted(np.atleast_1d(np.asarray(rtol, dtype=float)).ravel())
+    if not rtol_ladder:
+        raise ValueError("rtol must give at least one tolerance")
+
     # unpack multipole data
     name = mp_data["name"]
     awr = mp_data["AWR"]
@@ -1424,6 +1436,9 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
     # optimize the windows: the goal is to find the least set of significant
     # consecutive poles and curve fit coefficients to reproduce cross section
     win_data = []
+    # which tolerance each window ended up being held to, so a library
+    # that had to give ground somewhere says where
+    window_rtol = []
     for iw in range(n_win):
         if log >= DETAILED_LOGGING:
             print(f"Processing window {iw + 1}/{n_win}...")
@@ -1505,100 +1520,135 @@ def _windowing(mp_data, n_cf, rtol=1e-3, atol=1e-5, corner_rtol=5e-2,
             # representations differ by a 1j
             xs_ref = evaluate(energy_sqrt, poles, residues*1j) / energy
 
-        # a corner in the background is looser, as in the fitting stage
-        tol = np.full(energy.size, float(rtol))
-        for lo_x, hi_x in relaxed:
-            tol[(energy >= lo_x) & (energy <= hi_x)] = corner_rtol
-        # and the same again for corners the fitting stage did not need to
-        # exempt, to fall back on only once every pole has been tried
-        fallback_tol = tol.copy()
-        for lo_x, hi_x in corner_bands:
-            fallback_tol[(energy >= lo_x) & (energy <= hi_x)] = corner_rtol
-        if np.array_equal(fallback_tol, tol):
-            fallback_tol = None
-
         # curve fit matrix
         matrix = np.vstack([energy**(0.5*i - 1) for i in range(n_cf + 1)]).T
 
-        # start from 0 poles, initialize pointers to the center nearest pole
+        # the pole nearest the middle of the window, which the search grows out
+        # from so that a window uses the fewest poles it can
         center_pole_ind = np.argmin((np.fabs(poles.real - incenter)))
-        lp = rp = center_pole_ind
-        while True:
-            if log >= DETAILED_LOGGING:
-                print(f"Trying poles {lp} to {rp}")
 
-            # calculate the cross sections contributed by the windowed poles
-            if rp > lp:
-                xs_wp = evaluate(energy_sqrt, poles[lp:rp],
-                                    residues[:, lp:rp]*1j) / energy
-            else:
-                xs_wp = np.zeros_like(xs_ref)
+        # Work down the ladder of tolerances. A window that cannot be held to
+        # the tightest one is held to the next rather than failing the whole
+        # library, and because the search starts over at each tolerance the
+        # window is still built from the fewest poles that reach it.
+        for level in rtol_ladder:
+            # a corner in the background is looser, as in the fitting stage
+            tol = np.full(energy.size, float(level))
+            for lo_x, hi_x in relaxed:
+                tol[(energy >= lo_x) & (energy <= hi_x)] = max(corner_rtol,
+                                                               level)
+            # and the same again for corners the fitting stage did not need to
+            # exempt, to fall back on only once every pole has been tried
+            fallback_tol = tol.copy()
+            for lo_x, hi_x in corner_bands:
+                fallback_tol[(energy >= lo_x)
+                             & (energy <= hi_x)] = max(corner_rtol, level)
+            if np.array_equal(fallback_tol, tol):
+                fallback_tol = None
 
-            # Do least square curve fit on the remains, weighted by the
-            # inverse cross section so that it minimizes relative rather than
-            # absolute deviation, as the tolerance below is relative. A window
-            # spanning a resonance and its wing covers orders of magnitude, and
-            # an unweighted fit trades error at the bottom of that range for
-            # error at the top. Points below atol are not scored, so they are
-            # not allowed to dominate the weighting either.
-            coefs = np.empty((n_cf + 1, xs_ref.shape[0]))
-            for i_mt in range(xs_ref.shape[0]):
-                w = 1.0/np.maximum(np.abs(xs_ref[i_mt]), atol)
-                coefs[:, i_mt] = np.linalg.lstsq(
-                    matrix*w[:, np.newaxis], (xs_ref[i_mt] - xs_wp[i_mt])*w,
-                    rcond=None)[0]
-            xs_fit = (matrix @ coefs).T
+            # start from 0 poles, at the center nearest pole
+            lp = rp = center_pole_ind
+            met = False
+            while True:
+                if log >= DETAILED_LOGGING:
+                    print(f"Trying poles {lp} to {rp}")
 
-            # assess the result
-            abserr = np.abs(xs_fit + xs_wp - xs_ref)
-            with np.errstate(invalid='ignore', divide='ignore'):
-                relerr = abserr / xs_ref
-            if not np.any(np.isnan(abserr)):
-                scored = np.where(abserr > atol, relerr, 0.0)
-                # every point in the window must be within its own tolerance
-                if np.max(scored/tol) <= 1.0:
-                    # meet tolerances
-                    if log >= DETAILED_LOGGING:
-                        print("Accuracy satisfied.")
+                # calculate the cross sections contributed by the windowed
+                # poles
+                if rp > lp:
+                    xs_wp = evaluate(energy_sqrt, poles[lp:rp],
+                                     residues[:, lp:rp]*1j) / energy
+                else:
+                    xs_wp = np.zeros_like(xs_ref)
+
+                # Do least square curve fit on the remains, weighted by the
+                # inverse cross section so that it minimizes relative rather
+                # than absolute deviation, as the tolerance below is relative.
+                # A window spanning a resonance and its wing covers orders of
+                # magnitude, and an unweighted fit trades error at the bottom
+                # of that range for error at the top. Points below atol are
+                # not scored, so they are not allowed to dominate the
+                # weighting either.
+                coefs = np.empty((n_cf + 1, xs_ref.shape[0]))
+                for i_mt in range(xs_ref.shape[0]):
+                    w = 1.0/np.maximum(np.abs(xs_ref[i_mt]), atol)
+                    coefs[:, i_mt] = np.linalg.lstsq(
+                        matrix*w[:, np.newaxis],
+                        (xs_ref[i_mt] - xs_wp[i_mt])*w, rcond=None)[0]
+                xs_fit = (matrix @ coefs).T
+
+                # assess the result
+                abserr = np.abs(xs_fit + xs_wp - xs_ref)
+                with np.errstate(invalid='ignore', divide='ignore'):
+                    relerr = abserr / xs_ref
+                if not np.any(np.isnan(abserr)):
+                    scored = np.where(abserr > atol, relerr, 0.0)
+                    # every point in the window must be within its own
+                    # tolerance
+                    if np.max(scored/tol) <= 1.0:
+                        # meet tolerances
+                        if log >= DETAILED_LOGGING:
+                            print("Accuracy satisfied.")
+                        met = True
+                        break
+                    # With every pole of the piece already in, a polynomial is
+                    # all that is left to add, and it cannot follow a corner
+                    # either. Exempt the corners as the fitting stage does
+                    # rather than abandon a windowing that is otherwise within
+                    # tolerance.
+                    if (fallback_tol is not None and lp <= 0 and rp >= n_poles
+                            and np.max(scored/fallback_tol) <= 1.0):
+                        if log >= DETAILED_LOGGING:
+                            print("Accuracy satisfied outside the corners.")
+                        met = True
+                        break
+
+                # try to include one more pole (next center nearest). The
+                # first window is no different: a window near E_min has its
+                # curve fit left unbroadened, since broadening it would reach
+                # below the bottom of the library, but its poles are still
+                # broadened through the Faddeeva form like any other window's,
+                # and nothing in the format or the evaluation treats window
+                # zero specially. Requiring it to be a pure curve fit only
+                # made generation fail for nuclides whose lowest window a
+                # polynomial cannot describe on its own.
+                if lp <= 0 and rp >= n_poles:
+                    # every pole of the piece is in and the window still
+                    # misses, so this tolerance is out of reach here
                     break
-                # With every pole of the piece already in, a polynomial is all
-                # that is left to add, and it cannot follow a corner either.
-                # Exempt the corners as the fitting stage does rather than
-                # abandon a windowing that is otherwise within tolerance.
-                if (fallback_tol is not None and lp <= 0 and rp >= n_poles
-                        and np.max(scored/fallback_tol) <= 1.0):
-                    if log >= DETAILED_LOGGING:
-                        print("Accuracy satisfied outside the corners.")
-                    break
+                if rp >= n_poles:
+                    lp -= 1
+                elif lp <= 0 or poles[rp] - incenter <= incenter - poles[lp-1]:
+                    rp += 1
+                else:
+                    lp -= 1
 
-            # try to include one more pole (next center nearest). The first
-            # window is no different: a window near E_min has its curve fit
-            # left unbroadened, since broadening it would reach below the
-            # bottom of the library, but its poles are still broadened through
-            # the Faddeeva form like any other window's, and nothing in the
-            # format or the evaluation treats window zero specially. Requiring
-            # it to be a pure curve fit only made generation fail for nuclides
-            # whose lowest window a polynomial cannot describe on its own.
-            if lp <= 0 and rp >= n_poles:
-                # every pole of the piece is already in and the window still
-                # misses; against evaluated data this is reachable, so stop
-                raise RuntimeError(
-                    f'Window {iw + 1} of {n_win} covering {e_start:.4g} to '
-                    f'{e_end:.4g} eV cannot reach the tolerance with all '
-                    f'{n_poles} poles of its piece and a curve fit of order '
-                    f'{n_cf}.')
-            if rp >= n_poles:
-                lp -= 1
-            elif lp <= 0 or poles[rp] - incenter <= incenter - poles[lp - 1]:
-                rp += 1
-            else:
-                lp -= 1
+            if met:
+                window_rtol.append(level)
+                if level > rtol_ladder[0] and log >= DETAILED_LOGGING:
+                    print(f"Held to {level:.3g} rather than "
+                          f"{rtol_ladder[0]:.3g}.")
+                break
+        else:
+            # not even the loosest tolerance on the ladder is reachable
+            raise RuntimeError(
+                f'Window {iw + 1} of {n_win} covering {e_start:.4g} to '
+                f'{e_end:.4g} eV cannot reach the tolerance with all '
+                f'{n_poles} poles of its piece and a curve fit of order '
+                f'{n_cf}.')
 
         # save data for this window
         win_data.append((i_piece, lp, rp, coefs))
 
         # mark the windowed poles as used poles
         poles_unused[i_piece][lp:rp] = 0
+
+    if log and len(rtol_ladder) > 1:
+        for level in rtol_ladder:
+            n = window_rtol.count(level)
+            if n:
+                print(f"  {n} of {len(window_rtol)} windows held to "
+                      f"{level:.3g}")
 
     # flatten and shrink by removing unused poles
     data = []  # used poles and residues

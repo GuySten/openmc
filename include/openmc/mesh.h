@@ -184,12 +184,19 @@ public:
 
   //! Determine which surface bins were crossed by a particle
   //
+  //! A mesh surface coincident with r1 is crossed only if the particle
+  //! carries on through it, which is what \p end states. A surface
+  //! coincident with r0 is never crossed by this segment: the particle is
+  //! leaving it, and the segment that arrived there has already accounted
+  //! for it.
+  //
   //! \param[in] r0 Previous position of the particle
   //! \param[in] r1 Current position of the particle
   //! \param[in] u Particle direction
   //! \param[out] bins Surface bins that were crossed
-  virtual void surface_bins_crossed(
-    Position r0, Position r1, const Direction& u, vector<int>& bins) const = 0;
+  //! \param[in] end What becomes of the particle at r1
+  virtual void surface_bins_crossed(Position r0, Position r1,
+    const Direction& u, vector<int>& bins, TrackEnd end) const = 0;
 
   //! Get bin at a given position in space
   //
@@ -343,7 +350,7 @@ public:
     vector<int>& bins, vector<double>& lengths) const override;
 
   void surface_bins_crossed(Position r0, Position r1, const Direction& u,
-    vector<int>& bins) const override;
+    vector<int>& bins, TrackEnd end) const override;
 
   //! Determine which cell or surface bins were crossed by a particle
   //
@@ -351,9 +358,11 @@ public:
   //! \param[in] r1 Current position of the particle
   //! \param[in] u Particle direction
   //! \param[in] tally Functor that eventually stores the tally data
+  //! \param[in] end What becomes of the particle at r1, which decides
+  //!   whether a grid surface coincident with r1 is crossed
   template<class T>
-  void raytrace_mesh(
-    Position r0, Position r1, const Direction& u, T tally) const;
+  void raytrace_mesh(Position r0, Position r1, const Direction& u, T tally,
+    TrackEnd end = TrackEnd::STOPS) const;
 
   //! Count number of bank sites in each mesh bin / energy bin
   //
@@ -750,7 +759,7 @@ public:
   // Overridden Methods
 
   void surface_bins_crossed(Position r0, Position r1, const Direction& u,
-    vector<int>& bins) const override;
+    vector<int>& bins, TrackEnd end) const override;
 
   void to_hdf5_inner(hid_t group) const override;
 

@@ -2613,9 +2613,15 @@ void score_collision_tally(Particle& p)
     match.bins_present_ = false;
 }
 
-void score_meshsurface_tally(Particle& p, const vector<int>& tallies)
+void score_meshsurface_tally(
+  Particle& p, const vector<int>& tallies, TrackEnd end)
 {
   double current = p.wgt_last();
+
+  // MeshSurfaceFilter reconstructs the crossings from the segment end points,
+  // which is ambiguous when an end point sits on a mesh surface. Record what
+  // transport knows about the end of the segment so the filter can resolve it.
+  p.track_end() = end;
 
   for (auto i_tally : tallies) {
     auto& tally {*model::tallies[i_tally]};

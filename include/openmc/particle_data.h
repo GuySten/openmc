@@ -358,6 +358,13 @@ public:
   Position& r_last_current() { return r_last_current_; }
   const Position& r_last_current() const { return r_last_current_; }
 
+  // What becomes of the particle at the end of the track segment being
+  // scored, which decides whether a mesh surface coincident with r() counts
+  // as crossed. Set by score_meshsurface_tally() from what transport knows;
+  // read by MeshSurfaceFilter.
+  TrackEnd& track_end() { return track_end_; }
+  const TrackEnd& track_end() const { return track_end_; }
+
   // Previous direction and spatial coordinates before a collision
   Position& r_last() { return r_last_; }
   const Position& r_last() const { return r_last_; }
@@ -432,6 +439,10 @@ private:
                             //!< current tallies
   Position r_last_;         //!< previous coordinates
   Direction u_last_;        //!< previous direction coordinates
+
+  //! what becomes of the particle at the end of the track segment being
+  //! scored to mesh surface tallies
+  TrackEnd track_end_ {TrackEnd::STOPS};
 
   int surface_ {
     SURFACE_NONE}; //!< surface token for surface the particle is currently on

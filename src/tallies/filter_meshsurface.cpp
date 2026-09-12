@@ -18,7 +18,8 @@ void MeshSurfaceFilter::get_all_bins(
   }
 
   Direction u = p.u();
-  model::meshes[mesh_]->surface_bins_crossed(r0, r1, u, match.bins_);
+  model::meshes[mesh_]->surface_bins_crossed(
+    r0, r1, u, match.bins_, p.track_end());
   for (auto b : match.bins_)
     match.weights_.push_back(1.0);
 }

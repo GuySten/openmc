@@ -369,3 +369,105 @@ TEST_CASE("Test regular mesh ray tracing from outside")
   REQUIRE(lengths[0] == Catch::Approx(1.0 / 6.0));
   REQUIRE(lengths[1] == Catch::Approx(1.0 / 6.0));
 }
+
+TEST_CASE("Test mesh surface tally track end semantics")
+{
+  // 2 elements per dimension over [-2, 2]: interior grid planes at 0, outer
+  // boundaries at +/-2.
+  std::string xml_string = R"(
+        <mesh id="1">
+            <dimension>2 2 2</dimension>
+            <lower_left>-2 -2 -2</lower_left>
+            <upper_right>2 2 2</upper_right>
+       </mesh>
+    )";
+
+  pugi::xml_document doc;
+  pugi::xml_parse_result result = doc.load_string(xml_string.c_str());
+  auto mesh = RegularMesh(doc.child("mesh"));
+
+  // Surface bin layout, mirroring StructuredMesh::surface_bins_crossed.
+  auto surf_bin = [&mesh](StructuredMesh::MeshIndex ijk, int axis, bool max,
+                    bool inward) {
+    return 4 * mesh.n_dimension_ * mesh.get_bin_from_indices(ijk) + 4 * axis +
+           (max ? 2 : 0) + (inward ? 1 : 0);
+  };
+
+  const Direction u {1.0, 0.0, 0.0};
+  vector<int> bins;
+
+  SECTION("track ending on an interior grid plane")
+  {
+    // Ends exactly on the plane at x = 0, between elements 1 and 2.
+    const Position r0 {-1.0, 0.5, 0.5};
+    const Position r1 {0.0, 0.5, 0.5};
+
+    // The particle stops there (a collision, or a reflective or periodic
+    // boundary coincident with the plane). It touched the plane but did not
+    // pass through it, so nothing is crossed.
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::STOPS);
+    REQUIRE(bins.empty());
+
+    // The particle carries on through. The crossing is scored once, as an
+    // outgoing current from the element it left and an inward current into
+    // the element it entered.
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::THROUGH);
+    REQUIRE(bins == vector<int> {surf_bin({1, 2, 2}, 0, true, false),
+                      surf_bin({2, 2, 2}, 0, false, true)});
+  }
+
+  SECTION("track ending on the outer mesh boundary")
+  {
+    // Ends exactly on the outer boundary at x = 2, as a particle leaking
+    // through a vacuum boundary coincident with the mesh edge does.
+    const Position r0 {1.0, 0.5, 0.5};
+    const Position r1 {2.0, 0.5, 0.5};
+
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::STOPS);
+    REQUIRE(bins.empty());
+
+    // Leaving the mesh: an outgoing current only, with no element beyond to
+    // score an inward current to.
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::THROUGH);
+    REQUIRE(bins == vector<int> {surf_bin({2, 2, 2}, 0, true, false)});
+  }
+
+  SECTION("track starting on a grid plane is not a crossing")
+  {
+    // A segment that begins on a plane -- the continuation of a reflection, or
+    // the segment after a collision on the plane -- is leaving that plane. The
+    // segment that arrived there has already accounted for it.
+    const Position r0 {0.0, 0.5, 0.5};
+    const Position r1 {1.0, 0.5, 0.5};
+
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::STOPS);
+    REQUIRE(bins.empty());
+
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::THROUGH);
+    REQUIRE(bins.empty());
+  }
+
+  SECTION("a crossing strictly inside the track is always scored")
+  {
+    // The end semantics must not affect crossings away from the end point.
+    const Position r0 {-1.0, 0.5, 0.5};
+    const Position r1 {1.0, 0.5, 0.5};
+
+    const vector<int> expected {
+      surf_bin({1, 2, 2}, 0, true, false), surf_bin({2, 2, 2}, 0, false, true)};
+
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::STOPS);
+    REQUIRE(bins == expected);
+
+    bins.clear();
+    mesh.surface_bins_crossed(r0, r1, u, bins, TrackEnd::THROUGH);
+    REQUIRE(bins == expected);
+  }
+}

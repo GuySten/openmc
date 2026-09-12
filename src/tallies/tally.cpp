@@ -561,6 +561,7 @@ void Tally::set_scores(const vector<std::string>& scores)
   bool cell_present = false;
   bool cellfrom_present = false;
   bool point_present = false;
+  const PointFilter* point_filter = nullptr;
   bool material_present = false;
   bool materialfrom_present = false;
   bool surface_present = false;
@@ -593,6 +594,7 @@ void Tally::set_scores(const vector<std::string>& scores)
       material_present = true;
     } else if (filt->type() == FilterType::POINT) {
       point_present = true;
+      point_filter = dynamic_cast<const PointFilter*>(filt);
       type_ = TallyType::POINT;
       estimator_ = TallyEstimator::NEXT_EVENT;
     } else if (filt->type() == FilterType::SURFACE) {
@@ -650,6 +652,8 @@ void Tally::set_scores(const vector<std::string>& scores)
           "density along the line back from the detector rather than by "
           "evaluating an angular density, which is not implemented.");
     }
+    if (point_filter)
+      check_point_detector_spheres(*point_filter);
     if (legendre_present)
       fatal_error("Cannot use LegendreFilter with PointFilter.");
     if (energyout_present)

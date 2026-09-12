@@ -8,6 +8,39 @@
 
 namespace openmc {
 
+class PointFilter;
+
+//! Whether an exclusion sphere could be shown to stay within a single cell
+enum class SphereCheck {
+  CONFINED,     //!< proven to stay inside one cell
+  NOT_CONFINED, //!< a bounding surface is closer than the radius
+  UNDECIDABLE,  //!< a lattice, or a surface with no closed-form distance
+  OUTSIDE_MODEL //!< the detector could not be located in the geometry
+};
+
+//! Test whether a detector's exclusion sphere provably stays in one cell.
+//!
+//! Leaving a cell means crossing one of the surfaces of its region, so if
+//! every such surface is farther from the detector than the sphere's radius,
+//! at every level of the coordinate hierarchy, the sphere cannot escape the
+//! cell it starts in. The test uses closed-form point-to-surface distances
+//! rather than sampled directions, so a CONFINED result is exact.
+//!
+//! It proves safety, not danger: a surface within reach may separate two cells
+//! of the same material, which is harmless for the exclusion sphere. Lattice
+//! element boundaries are not cell surfaces, and the general quadric and the
+//! tori have no closed-form distance to a point, so either makes the answer
+//! UNDECIDABLE rather than wrong.
+//!
+//! \param[in] pos Centre of the sphere
+//! \param[in] r0 Radius of the sphere
+//! \param[out] nearest Distance to the closest bounding surface found, left
+//!   untouched unless the result is CONFINED or NOT_CONFINED
+SphereCheck check_exclusion_sphere(Position pos, double r0, double& nearest);
+
+//! Warn about every exclusion sphere of a filter that is not provably confined
+void check_point_detector_spheres(const PointFilter& filt);
+
 //==============================================================================
 //! Bins tally by point detectors
 //==============================================================================

@@ -1490,4 +1490,101 @@ void free_memory_surfaces()
   model::surface_map.clear();
 }
 
+//==============================================================================
+// Shortest distance from a point to a surface
+//
+// Each of these is the exact nearest-point distance, not an approximation: a
+// sphere of the returned radius about r provably does not touch the surface.
+// SurfaceQuadric and the tori inherit the base class's negative return, since
+// their nearest point needs the root of a high-order polynomial.
+//
+// The cones reduce exactly: a surface of revolution seen in the half-plane of
+// (axial offset from the apex, radial distance from the axis) is the pair of
+// lines rho = +/- s*a, and folding on |a| leaves a single ray whose projection
+// of the point is never negative, so the perpendicular distance always applies.
+//==============================================================================
+
+namespace {
+
+//! Distance from a point to a cone, given its offset along the axis from the
+//! apex, its distance from the axis, and the square of the cone's slope.
+double cone_point_distance(double axial, double radial, double slope_sq)
+{
+  double slope = std::sqrt(slope_sq);
+  return std::abs(slope * std::abs(axial) - radial) / std::sqrt(1.0 + slope_sq);
+}
+
+} // namespace
+
+double SurfaceXPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.x - x0_);
+}
+
+double SurfaceYPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.y - y0_);
+}
+
+double SurfaceZPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.z - z0_);
+}
+
+double SurfacePlane::distance_to_point(Position r) const
+{
+  return std::abs(A_ * r.x + B_ * r.y + C_ * r.z - D_) /
+         std::sqrt(A_ * A_ + B_ * B_ + C_ * C_);
+}
+
+double SurfaceXCylinder::distance_to_point(Position r) const
+{
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(y * y + z * z) - radius_);
+}
+
+double SurfaceYCylinder::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(x * x + z * z) - radius_);
+}
+
+double SurfaceZCylinder::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  return std::abs(std::sqrt(x * x + y * y) - radius_);
+}
+
+double SurfaceSphere::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(x * x + y * y + z * z) - radius_);
+}
+
+double SurfaceXCone::distance_to_point(Position r) const
+{
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return cone_point_distance(r.x - x0_, std::sqrt(y * y + z * z), radius_sq_);
+}
+
+double SurfaceYCone::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double z = r.z - z0_;
+  return cone_point_distance(r.y - y0_, std::sqrt(x * x + z * z), radius_sq_);
+}
+
+double SurfaceZCone::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  return cone_point_distance(r.z - z0_, std::sqrt(x * x + y * y), radius_sq_);
+}
+
 } // namespace openmc

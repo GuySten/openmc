@@ -1,16 +1,102 @@
 #include "openmc/tallies/filter_point.h"
 #include "openmc/tallies/tally_scoring.h"
 
-#include <cmath> // for exp
+#include <algorithm> // for min
+#include <cmath>     // for exp, abs
 
 #include <fmt/core.h>
 
+#include "openmc/cell.h"
+#include "openmc/error.h"
+#include "openmc/geometry.h"
 #include "openmc/math_functions.h"
 #include "openmc/ray.h"
 #include "openmc/simulation.h"
+#include "openmc/surface.h"
 #include "openmc/xml_interface.h"
 
 namespace openmc {
+
+namespace {
+
+//! A geometry state that reports a failure to locate itself instead of
+//! aborting, so a detector outside the model is a warning not a fatal error.
+class DetectorProbe : public GeometryState {
+public:
+  void mark_as_lost(const char*) override { lost_ = true; }
+  using GeometryState::mark_as_lost;
+  bool lost() const { return lost_; }
+
+private:
+  bool lost_ {false};
+};
+
+} // namespace
+
+SphereCheck check_exclusion_sphere(Position pos, double r0, double& nearest)
+{
+  DetectorProbe probe;
+  probe.init_from_r_u(pos, {0.0, 0.0, 1.0});
+  if (!exhaustive_find_cell(probe) || probe.lost())
+    return SphereCheck::OUTSIDE_MODEL;
+
+  double closest = INFTY;
+  for (int level = 0; level < probe.n_coord(); ++level) {
+    // Lattice element boundaries are not surfaces of the cell's region, so
+    // there is nothing here to measure a distance to
+    if (probe.coord(level).lattice() != C_NONE)
+      return SphereCheck::UNDECIDABLE;
+
+    const Cell& c {*model::cells[probe.coord(level).cell()]};
+    for (int32_t token : c.surfaces()) {
+      const Surface& surf {*model::surfaces[std::abs(token) - 1]};
+      double d = surf.distance_to_point(probe.coord(level).r());
+      if (d < 0.0)
+        return SphereCheck::UNDECIDABLE;
+      closest = std::min(closest, d);
+    }
+  }
+
+  nearest = closest;
+  return closest < r0 ? SphereCheck::NOT_CONFINED : SphereCheck::CONFINED;
+}
+
+void check_point_detector_spheres(const PointFilter& filt)
+{
+  for (const auto& [pos, r0] : filt.detectors()) {
+    if (r0 <= 0.0)
+      continue;
+
+    double nearest = INFTY;
+    switch (check_exclusion_sphere(pos, r0, nearest)) {
+    case SphereCheck::CONFINED:
+      break;
+    case SphereCheck::NOT_CONFINED:
+      warning(fmt::format(
+        "Point detector at {} has an exclusion sphere of radius {} but a cell "
+        "boundary only {} away, so the sphere is not confined to one cell. The "
+        "sphere treatment assumes a single total cross section throughout and "
+        "reads it in the cell at the detector, so if the materials differ "
+        "across that boundary the result is biased. Reducing the radius below "
+        "{} removes the doubt.",
+        pos, r0, nearest, nearest));
+      break;
+    case SphereCheck::UNDECIDABLE:
+      warning(fmt::format(
+        "Point detector at {} has an exclusion sphere of radius {} which could "
+        "not be shown to stay within one cell, because it sits in a lattice or "
+        "is bounded by a surface with no closed-form distance to a point. If "
+        "the sphere spans more than one material the treatment is biased.",
+        pos, r0));
+      break;
+    case SphereCheck::OUTSIDE_MODEL:
+      warning(fmt::format("Point detector at {} is outside the geometry; its "
+                          "exclusion sphere could not be checked.",
+        pos));
+      break;
+    }
+  }
+}
 
 void PointFilter::from_xml(pugi::xml_node node)
 {

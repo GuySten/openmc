@@ -15,6 +15,9 @@ void Ray::compute_distance()
 
 void Ray::trace(double max_distance)
 {
+  // Clear anything left over from a previous trace on this object.
+  reset_trace_state();
+
   // To trace the ray from its origin all the way through the model, we have
   // to proceed in two phases. In the first, the ray may or may not be found
   // inside the model. If the ray is already in the model, phase one can be
@@ -26,6 +29,7 @@ void Ray::trace(double max_distance)
   // After phase one is done, we can starting tracing from cell to cell within
   // the model. This step can use neighbor lists to accelerate the ray tracing.
 
+  // Remaining distance budget
   double max = max_distance;
 
   bool inside_cell;
@@ -51,6 +55,30 @@ void Ray::trace(double max_distance)
   // Advance to the boundary of the model
   while (!inside_cell) {
     advance_to_boundary_from_void();
+
+    // Flight through void is real flight: it has to be charged against the
+    // distance budget, otherwise max_distance ends up being measured from the
+    // point where the ray entered the model rather than from its origin. It
+    // is accumulated into total_distance_ only -- traversal_distance_ stays
+    // zero until the model is reached.
+    if (boundary().surface() != SURFACE_NONE && boundary().distance() < INFTY) {
+      // advance_to_boundary_from_void() has already moved the ray to the
+      // boundary plus the TINY_BIT of padding, so that is the distance to
+      // account for.
+      double advance = boundary().distance() + TINY_BIT;
+
+      if (advance >= max) {
+        // The budget runs out before the ray even reaches the model. Back it
+        // up so the net movement is exactly max.
+        move_distance(max - advance);
+        update_distance(max);
+        completed_ = true;
+        return;
+      }
+      update_distance(advance);
+      max -= advance;
+    }
+
     inside_cell = exhaustive_find_cell(*this, settings::verbosity >= 10);
 
     // If true this means no surface was intersected. See cell.cpp and search
@@ -71,10 +99,14 @@ void Ray::trace(double max_distance)
 
     event_counter_++;
     if (event_counter_ > MAX_INTERSECTIONS) {
-      warning("Likely infinite loop in ray traced plot");
+      warning("Likely infinite loop while ray tracing");
       return;
     }
   }
+
+  // From here on the ray is inside the model, so its flight counts toward
+  // traversal_distance_ as well as total_distance_.
+  in_model_ = true;
 
   // Call the specialized logic for this type of ray. This is for the
   // intersection for the first intersection if we had one.
@@ -111,38 +143,29 @@ void Ray::trace(double max_distance)
       return;
     }
 
+    // Distance from the ray's current position to the next surface.
+    const double surface_distance = boundary().distance();
+
     // See below comment where call_on_intersection is checked in an
     // if statement for an explanation of this.
-    bool call_on_intersection {true};
-    if (boundary().distance() < 10 * TINY_BIT) {
-      call_on_intersection = false;
-    }
+    bool call_on_intersection {surface_distance >= 10 * TINY_BIT};
 
     // DAGMC surfaces expect us to go a little bit further than the advance
     // distance to properly check cell inclusion.
-    boundary().distance() += TINY_BIT;
+    double advance = surface_distance + TINY_BIT;
 
-    double distance = std::min(boundary().distance(), max);
-
-    // Advance particle, prepare for next intersection
-    for (int lev = 0; lev < n_coord(); ++lev) {
-      coord(lev).r() += distance * coord(lev).u();
-    }
-
-    max -= distance;
-
-    if (max == 0.0) {
-      // The ray stopped part-way through this segment, so only the truncated
-      // distance was actually travelled. update_distance() accumulates
-      // boundary().distance() into traversal_distance_ and traversal_mfp_,
-      // so it has to see the truncated value -- otherwise the remainder of
-      // the segment (out to the next surface) is counted, which over-states
-      // the optical depth for anything that stops inside a cell.
-      boundary().distance() = distance;
-      update_distance();
+    if (advance >= max) {
+      // The ray runs out of budget inside this cell, so no surface is
+      // crossed. Only the truncated distance was actually travelled.
+      move_distance(max);
+      update_distance(max);
       completed_ = true;
-      break;
+      return;
     }
+
+    move_distance(advance);
+
+    max -= advance;
 
     surface() = boundary().surface();
     // Initialize last cells from the current cell, because the cell() variable
@@ -158,7 +181,9 @@ void Ray::trace(double max_distance)
       cross_lattice(*this, boundary(), settings::verbosity >= 10);
     }
 
-    update_distance();
+    // Accumulate before the cell search, while material() still refers to the
+    // cell the ray just crossed.
+    update_distance(advance);
 
     inside_cell = neighbor_list_find_cell(*this, settings::verbosity >= 10);
 
@@ -181,25 +206,60 @@ void Ray::trace(double max_distance)
 
     event_counter_++;
     if (event_counter_ > MAX_INTERSECTIONS) {
-      warning("Likely infinite loop in ray traced plot");
+      warning("Likely infinite loop while ray tracing");
       return;
     }
   }
 }
 
-void Ray::update_distance()
+void Ray::update_distance(double distance)
 {
-  // Record how far the ray has traveled
-  traversal_distance_ += boundary().distance();
+  total_distance_ += distance;
+  if (in_model_) {
+    traversal_distance_ += distance;
+  }
+}
+
+void ParticleRay::init_physics(ParticleType type_, double time_, double E_)
+{
+  type() = type_;
+  time() = time_;
+  time_start_ = time_;
+
+  E() = E_;
+  E_last() = E_;
+
+  // In multigroup mode the physics is driven by the group index rather than
+  // the energy. Particle::from_source() takes the group straight from the
+  // source site; here it has to be derived from the energy, otherwise every
+  // ray silently uses group 0.
+  if (!settings::run_CE) {
+    g() = data::mg.get_group_index(E_);
+    g_last() = g();
+    E() = data::mg.energy_bin_avg_[g()];
+    E_last() = E();
+  }
+
+  // MacroXS has no default member initializers, and the void branch of
+  // update_distance() only writes four of its fields.
+  macro_xs() = {};
+}
+
+void ParticleRay::mark_as_lost(const char* message)
+{
+  if (settings::verbosity >= 10) {
+    warning(message);
+  }
+  stop();
 }
 
 void ParticleRay::on_intersection() {}
 
-void ParticleRay::update_distance()
+void ParticleRay::update_distance(double distance)
 {
-  Ray::update_distance();
+  Ray::update_distance(distance);
 
-  time() += boundary().distance() / speed();
+  time() += distance / speed();
 
   // Calculate microscopic and macroscopic cross sections
   if (material() != MATERIAL_VOID) {
@@ -221,13 +281,10 @@ void ParticleRay::update_distance()
       g_last() = g();
     }
   } else {
-    macro_xs().total = 0.0;
-    macro_xs().absorption = 0.0;
-    macro_xs().fission = 0.0;
-    macro_xs().nu_fission = 0.0;
+    macro_xs() = {};
   }
 
-  traversal_mfp_ += macro_xs().total * boundary().distance();
+  traversal_mfp_ += macro_xs().total * distance;
 }
 
 } // namespace openmc

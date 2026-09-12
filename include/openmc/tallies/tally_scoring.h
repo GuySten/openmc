@@ -105,7 +105,16 @@ void score_timed_tracklength_tally(Particle& p, double total_distance);
 //
 //! \param p The particle being tracked
 //! \param tallies A vector of the indices of the tallies to score to
-void score_meshsurface_tally(Particle& p, const vector<int>& tallies);
+//! Score mesh surface current tallies for the track segment ending at the
+//! particle's current position.
+//
+//! \param[in,out] p Particle
+//! \param[in] tallies Indices of the active mesh surface tallies
+//! \param[in] end What becomes of the particle at the end of the segment. A
+//!   mesh surface coincident with the end point is crossed only if the
+//!   particle carries on through it along u.
+void score_meshsurface_tally(
+  Particle& p, const vector<int>& tallies, TrackEnd end);
 
 //! Score surface tallies for particle currents.
 //

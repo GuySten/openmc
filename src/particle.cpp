@@ -407,7 +407,8 @@ void Particle::event_collide()
   // pre-collision direction to figure out what mesh surfaces were crossed
 
   if (!model::active_meshsurf_tallies.empty())
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
+    score_meshsurface_tally(
+      *this, model::active_meshsurf_tallies, TrackEnd::STOPS);
 
   // Preserve whether the particle is still associated with a recently crossed
   // surface so that a direction change during a near-surface collision can be
@@ -739,11 +740,8 @@ void Particle::cross_vacuum_bc(const Surface& surf)
   // still processed
 
   if (!model::active_meshsurf_tallies.empty()) {
-    // TODO: Find a better solution to score surface currents than
-    // physically moving the particle forward slightly
-
-    r() += TINY_BIT * u();
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
+    score_meshsurface_tally(
+      *this, model::active_meshsurf_tallies, TrackEnd::THROUGH);
   }
 
   // Score to global leakage tally
@@ -781,10 +779,8 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
   }
 
   if (!model::active_meshsurf_tallies.empty()) {
-    Position r {this->r()};
-    this->r() -= TINY_BIT * u();
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
-    this->r() = r;
+    score_meshsurface_tally(
+      *this, model::active_meshsurf_tallies, TrackEnd::STOPS);
   }
 
   // Set the new particle direction
@@ -806,8 +802,10 @@ void Particle::cross_reflective_bc(const Surface& surf, Direction new_u)
     return;
   }
 
-  // Set previous coordinate going slightly past surface crossing
-  r_last_current() = r() + TINY_BIT * u();
+  // The next track segment starts exactly on the surface just crossed. A mesh
+  // surface coincident with it is not crossed by that segment -- the particle
+  // is leaving it, travelling into the element on the far side.
+  r_last_current() = r();
 
   // Diagnostic message
   if (settings::verbosity >= 10 || trace()) {
@@ -831,10 +829,8 @@ void Particle::cross_periodic_bc(
   // particle to change -- artificially move the particle slightly back in
   // case the surface crossing is coincident with a mesh boundary
   if (!model::active_meshsurf_tallies.empty()) {
-    Position r {this->r()};
-    this->r() -= TINY_BIT * u();
-    score_meshsurface_tally(*this, model::active_meshsurf_tallies);
-    this->r() = r;
+    score_meshsurface_tally(
+      *this, model::active_meshsurf_tallies, TrackEnd::STOPS);
   }
 
   // Adjust the particle's location and direction.
@@ -854,8 +850,10 @@ void Particle::cross_periodic_bc(
     return;
   }
 
-  // Set previous coordinate going slightly past surface crossing
-  r_last_current() = r() + TINY_BIT * u();
+  // The next track segment starts exactly on the surface just crossed. A mesh
+  // surface coincident with it is not crossed by that segment -- the particle
+  // is leaving it, travelling into the element on the far side.
+  r_last_current() = r();
 
   // Diagnostic message
   if (settings::verbosity >= 10 || trace()) {

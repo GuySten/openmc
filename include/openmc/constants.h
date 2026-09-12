@@ -57,6 +57,11 @@ constexpr double FP_COINCIDENT {1e-12};
 // Coincidence tolerances
 constexpr double TORUS_TOL {1e-10};
 constexpr double RADIAL_MESH_TOL {1e-10};
+// Relative tolerance for deciding that a track ends exactly on a mesh grid
+// surface rather than just short of or just past one. Applied as
+// TRACK_END_TOL * (1 + track length), so it tracks the rounding error in the
+// end point handed to the mesh rather than assuming a length scale.
+constexpr double TRACK_END_TOL {1e-10};
 
 // Tolerance on the normalized normal of a general plane for treating that
 // plane as axis-aligned when computing a bounding box. Matches the value of
@@ -305,6 +310,18 @@ enum class TallyType { VOLUME, MESH_SURFACE, SURFACE, PULSE_HEIGHT };
 enum class TallyEstimator { ANALOG, TRACKLENGTH, COLLISION };
 
 enum class TallyEvent { SURFACE, LATTICE, KILL, SCATTER, ABSORB };
+
+//! What becomes of a particle at the end of a track segment.
+//
+//! A mesh surface that coincides with the end of a track is crossed only if
+//! the particle carries on through it. Geometry alone cannot answer that --
+//! a particle leaking through a vacuum boundary and one turned around by a
+//! reflective boundary reach the same point travelling the same way -- so
+//! transport states it explicitly.
+enum class TrackEnd {
+  THROUGH, //!< particle carries on past the end point along u
+  STOPS    //!< particle stops, turns around, or is moved elsewhere
+};
 
 // Tally score type -- if you change these, make sure you also update the
 // _SCORES dictionary in openmc/lib/tally.py

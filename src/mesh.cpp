@@ -1026,8 +1026,8 @@ std::string UnstructuredMesh::get_mesh_type() const
   return mesh_type;
 }
 
-void UnstructuredMesh::surface_bins_crossed(
-  Position r0, Position r1, const Direction& u, vector<int>& bins) const
+void UnstructuredMesh::surface_bins_crossed(Position r0, Position r1,
+  const Direction& u, vector<int>& bins, TrackEnd end) const
 {
   fatal_error("Unstructured mesh surface tallies are not implemented.");
 }
@@ -1250,7 +1250,7 @@ tensor::Tensor<double> StructuredMesh::count_sites(
 // eliminate that call entirely.
 template<class T>
 void StructuredMesh::raytrace_mesh(
-  Position r0, Position r1, const Direction& u, T tally) const
+  Position r0, Position r1, const Direction& u, T tally, TrackEnd end) const
 {
   // TODO: when c++-17 is available, use "if constexpr ()" to compile-time
   // enable/disable tally calls for now, T template type needs to provide both
@@ -1275,6 +1275,10 @@ void StructuredMesh::raytrace_mesh(
 
   // Position is r = r0 + u * traveled_distance, start at r0
   double traveled_distance {0.0};
+
+  // How close a grid crossing has to be to the end of the track for it to
+  // count as coincident with it
+  const double end_tol = TRACK_END_TOL * (1.0 + total_distance);
 
   // Calculate index of current cell. Offset the position a tiny bit in
   // direction of flight
@@ -1309,10 +1313,24 @@ void StructuredMesh::raytrace_mesh(
         (std::min(distances[k].distance, total_distance) - traveled_distance) /
           total_distance);
 
+      // Does the track finish on this grid surface rather than short of it or
+      // beyond it? Rounding in the position that transport handed us can leave
+      // the end point on either side of a surface it is meant to sit exactly
+      // on, so this is a coincidence test rather than an equality.
+      const bool ends_on_surface =
+        std::abs(distances[k].distance - total_distance) <= end_tol;
+
       // update position and leave, if we have reached end position
       traveled_distance = distances[k].distance;
-      if (traveled_distance >= total_distance)
+      if (ends_on_surface) {
+        // The particle reached this surface and went no further along u --
+        // it was turned around by a reflective boundary, moved by a periodic
+        // one, or scattered. Nothing crosses.
+        if (end == TrackEnd::STOPS)
+          return;
+      } else if (traveled_distance >= total_distance) {
         return;
+      }
 
       // If we have not reached r1, we have hit a surface. Tally outward
       // current
@@ -1331,6 +1349,11 @@ void StructuredMesh::raytrace_mesh(
       // cell
       if (in_mesh)
         tally.surface(ijk, k, !distances[k].max_surface, true);
+
+      // The track ended on the surface we just crossed, so there is nothing
+      // left of it to trace.
+      if (ends_on_surface)
+        return;
 
     } else { // not inside mesh
 
@@ -1397,8 +1420,8 @@ void StructuredMesh::bins_crossed(Position r0, Position r1, const Direction& u,
   raytrace_mesh(r0, r1, u, TrackAggregator(this, bins, lengths));
 }
 
-void StructuredMesh::surface_bins_crossed(
-  Position r0, Position r1, const Direction& u, vector<int>& bins) const
+void StructuredMesh::surface_bins_crossed(Position r0, Position r1,
+  const Direction& u, vector<int>& bins, TrackEnd end) const
 {
 
   // Helper tally class.
@@ -1425,7 +1448,7 @@ void StructuredMesh::surface_bins_crossed(
   };
 
   // Perform the mesh raytrace with the helper class.
-  raytrace_mesh(r0, r1, u, SurfaceAggregator(this, bins));
+  raytrace_mesh(r0, r1, u, SurfaceAggregator(this, bins), end);
 }
 
 //==============================================================================

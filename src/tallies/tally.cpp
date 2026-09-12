@@ -625,11 +625,30 @@ void Tally::set_scores(const vector<std::string>& scores)
                   "secondary photon production, so photon results would be "
                   "silently incomplete.");
     for (const auto& src : model::external_sources) {
-      if (!dynamic_cast<const IndependentSource*>(src.get()))
+      const auto* indep {dynamic_cast<const IndependentSource*>(src.get())};
+      if (!indep)
         fatal_error("Point detectors require independent sources. The "
                     "next-event estimator needs to evaluate the source angular "
                     "density toward each detector, which is only available for "
                     "an independent source.");
+
+      // A monodirectional source has a delta-function angular distribution, so
+      // there is no angular density to evaluate: sampling a position and then
+      // asking for the density toward the detector returns zero for almost
+      // every history, while the true uncollided flux is not zero. Getting it
+      // right means resolving the delta against the spatial distribution
+      // instead -- substituting r = D - s*u0 turns the contribution into
+      // integral ds f(D - s*u0) exp(-tau(s)), a line integral of the spatial
+      // source density back along the beam, in which the 1/distance^2 has
+      // cancelled against the volume element. That is not implemented, so
+      // refuse rather than quietly drop the uncollided term.
+      if (dynamic_cast<const Monodirectional*>(indep->angle()))
+        fatal_error(
+          "Point detectors do not support monodirectional sources. Such a "
+          "source has a delta-function angular distribution, whose "
+          "contribution has to be found by integrating the spatial source "
+          "density along the line back from the detector rather than by "
+          "evaluating an angular density, which is not implemented.");
     }
     if (legendre_present)
       fatal_error("Cannot use LegendreFilter with PointFilter.");

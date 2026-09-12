@@ -354,6 +354,26 @@ def test_point_detector_allows_neutron_only_with_photon_transport(run_in_tmpdir)
     model.run()  # must not raise
 
 
+def test_point_detector_rejects_monodirectional_source(run_in_tmpdir):
+    """A delta-function angular distribution has no density to evaluate.
+
+    Sampling a position and then asking for the angular density toward the
+    detector gives zero for almost every history, while the true uncollided
+    flux is not zero: substituting r = D - s*u0 turns the contribution into
+    the line integral of the spatial source density back along the beam, the
+    1/distance^2 having cancelled against the volume element. Until that is
+    implemented the run has to stop rather than drop the uncollided term.
+    """
+    model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point(),
+        angle=openmc.stats.Monodirectional((1.0, 0.0, 0.0)),
+        energy=openmc.stats.delta_function(1.0e6))
+
+    with pytest.raises(RuntimeError, match='monodirectional'):
+        model.run()
+
+
 def test_point_detector_rejects_non_independent_source(run_in_tmpdir):
     """Only an independent source has an angular density to evaluate."""
     model, _ = _hydrogen_model([DETECTOR], particles=10, batches=2)

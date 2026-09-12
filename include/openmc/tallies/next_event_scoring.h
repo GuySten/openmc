@@ -7,6 +7,7 @@
 #include <initializer_list> // for initializer_list
 
 #include "openmc/nuclide.h"
+#include "openmc/openmp_interface.h"
 #include "openmc/particle.h"
 #include "openmc/random_lcg.h"
 #include "openmc/ray.h"
@@ -14,8 +15,21 @@
 #include "openmc/tallies/tally.h"
 #include "openmc/tallies/tally_scoring.h"
 #include "openmc/thermal.h"
+#include "openmc/vector.h"
 
 namespace openmc {
+
+namespace simulation {
+
+//! One reusable scratch ray per thread, indexed by thread_num().
+//!
+//! Sized by setup_active_tallies() whenever point tallies are active, and
+//! released by free_memory_tally(), so the rays always match the model that
+//! is currently loaded. Reusing them keeps ParticleData's allocations out of
+//! the transport loop; see ParticleRay::reset().
+extern vector<ParticleRay> point_detector_rays;
+
+} // namespace simulation
 
 //! FNV-1a over the bit patterns of a set of doubles.
 inline uint64_t point_detector_hash(std::initializer_list<double> values)
@@ -113,6 +127,9 @@ void score_point_tally_impl(const Position r, const ParticleType type,
   // preceding detectors happened to consume.
   const uint64_t seed_start = *seed;
 
+  // Reused across every detector and every event on this thread
+  ParticleRay& p = simulation::point_detector_rays[thread_num()];
+
   for (auto& det : model::active_point_detectors) {
     *seed = seed_start;
     advance_prn_seed(point_detector_substream_offset(det), seed);
@@ -124,7 +141,7 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     double pdf = pdffunc(u, E);
     if (pdf == 0.0)
       continue;
-    auto p = ParticleRay(r, u, type, time, E);
+    p.reset(r, u, type, time, E);
 
     // The ray needs a defined RNG state of its own: calculate_xs() reaches
     // Nuclide::calculate_urr_xs() for any nuclide with probability tables, and
@@ -139,7 +156,7 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     }
     p.stream() = STREAM_TRACKING;
 
-    p.Ray::trace(total_distance);
+    p.trace(total_distance);
     // The ray left the model before reaching the detector
     if (!p.completed())
       continue;
@@ -167,10 +184,8 @@ void score_point_tally_impl(const Position r, const ParticleType type,
 
   // Advance the base substream by a single step so that the next event draws
   // from fresh substreams, again independently of the number of detectors.
-  if (seed != nullptr) {
-    *seed = seed_start;
-    advance_prn_seed(1, seed);
-  }
+  *seed = seed_start;
+  advance_prn_seed(1, seed);
 }
 
 } // namespace openmc

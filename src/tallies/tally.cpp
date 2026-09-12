@@ -37,6 +37,7 @@
 #include "openmc/tallies/filter_sph_harm.h"
 #include "openmc/tallies/filter_surface.h"
 #include "openmc/tallies/filter_time.h"
+#include "openmc/tallies/next_event_scoring.h"
 #include "openmc/xml_interface.h"
 
 #include "openmc/tensor.h"
@@ -100,6 +101,7 @@ std::set<Position> active_point_detectors;
 namespace simulation {
 tensor::StaticTensor2D<double, N_GLOBAL_TALLIES, 3> global_tallies;
 int32_t n_realizations {0};
+vector<ParticleRay> point_detector_rays;
 } // namespace simulation
 
 double global_tally_absorption;
@@ -1315,6 +1317,16 @@ void setup_active_tallies()
       }
     }
   }
+
+  // Give each thread a scratch ray to trace toward the detectors with. They
+  // are rebuilt rather than kept, because ParticleData's constructor sizes its
+  // caches from the model that is loaded now -- nuclide and filter counts can
+  // both differ from the previous simulation in the same process. Building
+  // them once per batch is irrelevant next to allocating one per contribution.
+  simulation::point_detector_rays.clear();
+  if (!model::active_point_tallies.empty()) {
+    simulation::point_detector_rays.resize(num_threads());
+  }
 }
 
 void free_memory_tally()
@@ -1338,6 +1350,7 @@ void free_memory_tally()
   model::active_point_tallies.clear();
   model::active_point_detectors.clear();
   model::time_grid.clear();
+  simulation::point_detector_rays.clear();
 
   model::tally_map.clear();
 }

@@ -69,7 +69,8 @@ void PointFilter::get_all_bins(
   // rather than reconstructed: the distance was measured as the ray flew it,
   // and the optical depth was accumulated segment by segment.
   const double distance = ray.total_distance();
-  const double attenuation = std::exp(-ray.traversal_mfp());
+  const double optical_depth = ray.traversal_mfp();
+  const double attenuation = std::exp(-optical_depth);
 
   // The ray says which detector it was aimed at, so bins are selected by
   // comparing indices. This used to compare the ray's end position against
@@ -92,8 +93,18 @@ void PointFilter::get_all_bins(
     } else {
       // Inside the exclusion sphere the 1/distance^2 singularity is replaced
       // by its average over a uniform isotropic source in a sphere of radius
-      // r, which is 3 (1 - exp(-Sigma_t r)) / (Sigma_t r^3)
-      weight = 3.0 * exprel(-ray.macro_xs().total * r) / (r * r);
+      // r, which is 3 (1 - exp(-Sigma_t r)) / (Sigma_t r^3).
+      //
+      // That average assumes one Sigma_t across the whole sphere, so which
+      // value to use is a choice. Take the mean along the flight just traced,
+      // tau/R, in preference to the value in the cell holding the detector:
+      // the two agree exactly when the sphere is homogeneous, and when it is
+      // not, what the contribution actually flew through characterises the
+      // sphere better than a reading at one end of it. Both numbers are
+      // already in hand, so this costs nothing.
+      const double sigma_eff =
+        (distance > 0.0) ? optical_depth / distance : ray.macro_xs().total;
+      weight = 3.0 * exprel(-sigma_eff * r) / (r * r);
     }
 
     match.bins_.push_back(bin);

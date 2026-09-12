@@ -286,9 +286,27 @@ distance to the detector for a uniform source is :math:`3R^2/R_0^3`, and so
 which is finite, and tends to :math:`3/R_0^2` as
 :math:`\Sigma_t R_0 \rightarrow 0`. The result is a biased but bounded estimate
 for events near the detector; the bias shrinks with :math:`R_0`, while the
-variance grows, so :math:`R_0` trades one against the other. Choosing
-:math:`R_0` comparable to a mean free path of the surrounding material is a
-common starting point, and :math:`R_0 = 0` recovers the unmodified estimator.
+variance grows, so :math:`R_0` trades one against the other. Keeping
+:math:`R_0` small compared with a mean free path of the surrounding material
+keeps the bias small, and :math:`R_0 = 0` recovers the unmodified estimator.
+
+Equation :eq:`next-event-exclusion-sphere` assumes a single :math:`\Sigma_t`
+across the sphere, so which value to use is a choice. Rather than reading it
+from the cell holding the detector, OpenMC takes the mean along the flight
+just traced, :math:`\tau_i / R_i`, which the estimator has already computed on
+its way to the detector. The two are identical when the sphere is homogeneous,
+and when it is not, what the contribution actually flew through characterises
+the sphere better than a reading at one end of it. How much this matters
+depends on the optical thickness of the sphere: for :math:`\Sigma_t R_0`
+around :math:`0.1` even a large error in :math:`\Sigma_t` moves the weight by
+a few percent, whereas at :math:`\Sigma_t R_0 \approx 1` a factor of two in
+:math:`\Sigma_t` moves it by about a third --- another reason to keep the
+sphere optically thin.
+
+The assumption that emission sites are distributed *uniformly* through the
+sphere is left untouched by this, and is generally the larger of the two
+approximations: emission actually follows the collision density, which is not
+uniform.
 
 Applicability
 -------------

@@ -398,9 +398,14 @@ a single nearby collision can dominate the tally. The exclusion sphere is what
 keeps this in check: within it, the estimator is replaced by its average over
 the sphere, which is bounded. Its radius trades variance against bias --- a
 larger sphere is better behaved but smears the result over a bigger region ---
-and a value of the order of a mean free path in the surrounding material is a
-reasonable starting point. A radius of zero disables the treatment entirely.
-See :ref:`methods_next_event_estimator` for the details.
+so keep it small compared with a mean free path of the surrounding material. A
+radius of zero disables the treatment entirely.
+
+The averaging assumes a single total cross section throughout the sphere. It is
+therefore worth choosing a radius that keeps the sphere inside one material
+where you can, though the estimator uses the mean cross section along each
+contribution's flight rather than a single cell's value, which limits the error
+when it cannot. See :ref:`methods_next_event_estimator` for the details.
 
 Setting up a point detector also assigns the tally the ``next-event``
 estimator, which brings some restrictions with it. A point tally cannot be

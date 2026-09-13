@@ -91,12 +91,14 @@ public:
   //! and deliberately so: the result is never an over-estimate, so a sphere of
   //! the returned radius about r provably does not touch the surface, which is
   //! the property callers rely on. It is the exact distance for planes,
-  //! cylinders, spheres and cones. For the general quadric the exact nearest
-  //! point needs the root of a degree-six polynomial, and a missed root would
-  //! return too large a distance and wrongly certify a sphere as clear, so a
-  //! rigorous lower bound is returned instead. The tori have neither and
-  //! return a negative value meaning "not available"; callers must check the
-  //! sign.
+  //! cylinders, spheres, cones and tori. For the general quadric the exact
+  //! nearest point needs the root of a degree-six polynomial, and a missed
+  //! root would return too large a distance and wrongly certify a sphere as
+  //! clear, so a rigorous lower bound is returned instead.
+  //!
+  //! The base implementation returns a negative value meaning "not
+  //! available", so that a surface type added later is excluded from any such
+  //! certification until it provides its own. Callers must check the sign.
   //! \param r A 3D Cartesian coordinate
   //! \return A lower bound on the distance, exact where noted above, or a
   //!   negative value if this surface type does not provide one
@@ -367,6 +369,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -385,6 +388,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -403,6 +407,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 

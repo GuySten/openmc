@@ -1,5 +1,6 @@
 #include "openmc/surface.h"
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <initializer_list>
@@ -1495,8 +1496,8 @@ void free_memory_surfaces()
 //
 // Each of these is the exact nearest-point distance, not an approximation: a
 // sphere of the returned radius about r provably does not touch the surface.
-// SurfaceQuadric and the tori inherit the base class's negative return, since
-// their nearest point needs the root of a high-order polynomial.
+// SurfaceQuadric is the one exception and returns a rigorous lower bound,
+// since its nearest point needs the root of a degree-six polynomial.
 //
 // The cones reduce exactly: a surface of revolution seen in the half-plane of
 // (axial offset from the apex, radial distance from the axis) is the pair of
@@ -1512,6 +1513,108 @@ double cone_point_distance(double axial, double radial, double slope_sq)
 {
   double slope = std::sqrt(slope_sq);
   return std::abs(slope * std::abs(axial) - radial) / std::sqrt(1.0 + slope_sq);
+}
+
+//! Distance from a point to an origin-centred, axis-aligned ellipse.
+//!
+//! The ellipse is p^2/ep^2 + q^2/eq^2 = 1. Reflecting into the first quadrant
+//! and ordering the semi-axes, the closest point is (ep^2 p/(s + ep^2),
+//! eq^2 q/(s + eq^2)) for the unique s > -eq^2 that puts it back on the
+//! ellipse. Written in the normalised variables below that condition is
+//! strictly decreasing in s, so the root is bracketed and bisected rather
+//! than found from the quartic, which keeps it robust for every aspect ratio
+//! and every position of the point.
+double ellipse_point_distance(double p, double q, double ep, double eq)
+{
+  // A circular cross section needs no iteration
+  if (ep == eq)
+    return std::abs(std::sqrt(p * p + q * q) - ep);
+
+  // Reflect into the first quadrant and put the major semi-axis first
+  p = std::abs(p);
+  q = std::abs(q);
+  if (ep < eq) {
+    std::swap(p, q);
+    std::swap(ep, eq);
+  }
+
+  if (q == 0.0) {
+    // On the major axis. Inside the evolute the nearest point leaves the
+    // axis; outside it the vertex itself is nearest.
+    double numer = ep * p;
+    double denom = ep * ep - eq * eq;
+    if (numer < denom) {
+      double ratio = numer / denom;
+      double x = ep * ratio;
+      double y = eq * std::sqrt(std::max(0.0, 1.0 - ratio * ratio));
+      return std::sqrt((x - p) * (x - p) + y * y);
+    }
+    return std::abs(p - ep);
+  }
+
+  if (p == 0.0) {
+    // On the minor axis, where the vertex is always nearest
+    return std::abs(q - eq);
+  }
+
+  double z0 = p / ep;
+  double z1 = q / eq;
+  double g = z0 * z0 + z1 * z1 - 1.0;
+  if (g == 0.0)
+    return 0.0;
+
+  // Bracket the root of g(s) = (r0 z0/(s + r0))^2 + (z1/(s + 1))^2 - 1. An
+  // interior point (g < 0) has its root at s <= 0, an exterior point above it.
+  double r0 = (ep / eq) * (ep / eq);
+  double n0 = r0 * z0;
+  double s0 = z1 - 1.0;
+  double s1 = (g < 0.0) ? 0.0 : std::sqrt(n0 * n0 + z1 * z1) - 1.0;
+
+  double s = 0.5 * (s0 + s1);
+  // Bisection on a double exhausts the mantissa in at most ~64 halvings; the
+  // loop bound is a backstop and the s == s0 || s == s1 test is what ends it.
+  for (int i = 0; i < 100; ++i) {
+    s = 0.5 * (s0 + s1);
+    if (s == s0 || s == s1)
+      break;
+    double ratio0 = n0 / (s + r0);
+    double ratio1 = z1 / (s + 1.0);
+    double gs = ratio0 * ratio0 + ratio1 * ratio1 - 1.0;
+    if (gs > 0.0) {
+      s0 = s;
+    } else if (gs < 0.0) {
+      s1 = s;
+    } else {
+      break;
+    }
+  }
+
+  double x = r0 * p / (s + r0);
+  double y = q / (s + 1.0);
+  return std::sqrt((x - p) * (x - p) + (y - q) * (y - q));
+}
+
+//! Distance from a point to a torus, given the point's offset along the axis
+//! of revolution from the torus centre and its distance from that axis.
+//!
+//! A torus is a surface of revolution, so the nearest surface point lies in
+//! the half-plane spanned by the query point and the axis: for a surface
+//! point at azimuth phi out of that half-plane the squared distance depends
+//! on phi only through a -2 * radial * rho * cos(phi) term, and radial and
+//! rho are both non-negative, so phi = 0 always minimises it. What remains is
+//! the distance in that half-plane to the generating ellipse, which is
+//! centred at (axial 0, radial A) with semi-axis B along the axis and C
+//! across it.
+//!
+//! For a proper torus, A > C, the whole generating ellipse sits at positive
+//! radius and the result is exact. A degenerate A <= C puts part of the
+//! ellipse at negative radius, where it is not a point of the surface;
+//! minimising over those as well can only return something smaller, so the
+//! result remains a valid lower bound.
+double torus_point_distance(
+  double axial, double radial, double A, double B, double C)
+{
+  return ellipse_point_distance(axial, radial - A, B, C);
 }
 
 } // namespace
@@ -1618,6 +1721,27 @@ double SurfaceQuadric::distance_to_point(Position r) const
     return g > 0.0 ? f / g : -1.0;
   }
   return (std::sqrt(g * g + 4.0 * m * f) - g) / (2.0 * m);
+}
+
+double SurfaceXTorus::distance_to_point(Position r) const
+{
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return torus_point_distance(r.x - x0_, std::sqrt(y * y + z * z), A_, B_, C_);
+}
+
+double SurfaceYTorus::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double z = r.z - z0_;
+  return torus_point_distance(r.y - y0_, std::sqrt(x * x + z * z), A_, B_, C_);
+}
+
+double SurfaceZTorus::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  return torus_point_distance(r.z - z0_, std::sqrt(x * x + y * y), A_, B_, C_);
 }
 
 } // namespace openmc

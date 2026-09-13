@@ -376,10 +376,74 @@ TEST_CASE("Exact distance from a point to a surface")
     check_lower_bound(*skew, {0.0, 0.0, 0.0}, 30.0);
   }
 
-  SECTION("tori still report no closed form")
+  SECTION("tori with a circular cross section")
   {
-    auto t = make_surface<SurfaceZTorus>(
+    // Ring of major radius 3, tube radius 1, about the z axis
+    auto zt = make_surface<SurfaceZTorus>(
       doc, 16, "z-torus", "0.0 0.0 0.0 3.0 1.0 1.0");
-    REQUIRE(t->distance_to_point({1.0, 1.0, 1.0}) < 0.0);
+    // On the axis of revolution: 3 out to the tube centre circle, less 1
+    REQUIRE(zt->distance_to_point({0.0, 0.0, 0.0}) == Catch::Approx(2.0));
+    // Directly outside the tube in the midplane
+    REQUIRE(zt->distance_to_point({7.0, 0.0, 0.0}) == Catch::Approx(3.0));
+    // At the tube centre, every direction is one tube radius away
+    REQUIRE(zt->distance_to_point({3.0, 0.0, 0.0}) == Catch::Approx(1.0));
+    // Through the hole, above the midplane
+    REQUIRE(zt->distance_to_point({0.0, 0.0, 4.0}) ==
+            Catch::Approx(std::sqrt(3.0 * 3.0 + 4.0 * 4.0) - 1.0));
+    check_surface(*zt, {0.0, 0.0, 0.0}, 30.0);
+    check_surface(*zt, {7.0, 0.0, 0.0}, 30.0);
+    check_surface(*zt, {0.0, 0.0, 4.0}, 30.0);
+    check_surface(*zt, {2.0, 1.5, 0.7}, 30.0);
+
+    auto xt = make_surface<SurfaceXTorus>(
+      doc, 17, "x-torus", "1.0 -1.0 2.0 4.0 1.5 1.5");
+    check_surface(*xt, {1.0, -1.0, 2.0}, 30.0);
+    check_surface(*xt, {3.0, 2.0, 5.0}, 30.0);
+
+    auto yt = make_surface<SurfaceYTorus>(
+      doc, 18, "y-torus", "0.0 0.0 0.0 5.0 2.0 2.0");
+    check_surface(*yt, {1.0, 3.0, -2.0}, 40.0);
+    check_surface(*yt, {8.0, 0.0, 0.0}, 40.0);
+  }
+
+  SECTION("tori with an elliptical cross section")
+  {
+    // B is the semi-axis along the axis of revolution, C the one across it
+    auto tall = make_surface<SurfaceZTorus>(
+      doc, 19, "z-torus", "0.0 0.0 0.0 4.0 2.0 1.0");
+    // In the midplane the cross section reaches C = 1 across the axis
+    REQUIRE(tall->distance_to_point({0.0, 0.0, 0.0}) == Catch::Approx(3.0));
+    REQUIRE(tall->distance_to_point({9.0, 0.0, 0.0}) == Catch::Approx(4.0));
+    // On the axis of revolution the nearest point is the inner equator
+    check_surface(*tall, {0.0, 0.0, 0.0}, 40.0);
+    check_surface(*tall, {9.0, 0.0, 0.0}, 40.0);
+    // Above the tube centre, inside the evolute of the cross section
+    check_surface(*tall, {4.0, 0.0, 0.5}, 40.0);
+    check_surface(*tall, {4.0, 0.0, 3.0}, 40.0);
+    check_surface(*tall, {2.5, 2.5, -1.0}, 40.0);
+
+    // The other aspect ratio, so the swap of the semi-axes is exercised
+    auto wide = make_surface<SurfaceXTorus>(
+      doc, 20, "x-torus", "0.0 0.0 0.0 6.0 1.0 3.0");
+    check_surface(*wide, {0.0, 0.0, 0.0}, 40.0);
+    check_surface(*wide, {0.5, 6.0, 0.0}, 40.0);
+    check_surface(*wide, {2.0, 1.0, 1.0}, 40.0);
+    check_surface(*wide, {0.0, 11.0, 0.0}, 40.0);
+  }
+
+  SECTION("a degenerate torus still gives a valid lower bound")
+  {
+    // A <= C, so the generating ellipse crosses the axis of revolution and
+    // the surface self-intersects. The result must not over-estimate.
+    auto spindle = make_surface<SurfaceZTorus>(
+      doc, 21, "z-torus", "0.0 0.0 0.0 1.0 1.0 2.0");
+    for (Position r : {Position {0.0, 0.0, 0.0}, Position {5.0, 0.0, 0.0},
+           Position {0.0, 0.0, 3.0}, Position {1.5, 1.5, 1.0}}) {
+      double bound = spindle->distance_to_point(r);
+      REQUIRE(bound >= 0.0);
+      double brute = brute_force_distance(*spindle, r, 30.0);
+      REQUIRE(brute < INFTY);
+      REQUIRE(bound <= brute + 1e-9);
+    }
   }
 }

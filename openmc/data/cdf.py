@@ -76,7 +76,7 @@ class TabulatedCDFMixin:
         # values are passed through rather than rejected so that libraries
         # which OpenMC reads today keep working
         if np.any(c[1:] < c[:-1]):
-            warn('Tabulated CDF is not non-decreasing.')
+            warn('Tabulated CDF decreases.')
 
         self._tabulated_cdf = c
 

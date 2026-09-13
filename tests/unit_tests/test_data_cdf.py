@@ -50,7 +50,7 @@ def test_tabulated_cdf_wrong_length():
 def test_tabulated_cdf_decreasing_warns():
     """Bad data is warned about but still passed through."""
     c = [0.0, 0.5, 0.2]
-    with pytest.warns(UserWarning, match='non-decreasing'):
+    with pytest.warns(UserWarning, match='decreases'):
         d = TabularCDF([0.0, 1.0, 2.0], [0.1, 0.4, 0.1], tabulated_cdf=c)
     assert np.array_equal(cdf_values(d), c)
 

@@ -90,11 +90,12 @@ public:
   //! nearest point of the surface in any direction. The contract is one-sided
   //! and deliberately so: the result is never an over-estimate, so a sphere of
   //! the returned radius about r provably does not touch the surface, which is
-  //! the property callers rely on. It is the exact distance for planes,
-  //! cylinders, spheres, cones and tori. For the general quadric the exact
-  //! nearest point needs the root of a degree-six polynomial, and a missed
-  //! root would return too large a distance and wrongly certify a sphere as
-  //! clear, so a rigorous lower bound is returned instead.
+  //! the property callers rely on. It is the exact distance for every surface
+  //! type, the general quadric included, whose nearest point comes from the
+  //! real roots of a degree-six polynomial. A quadric with no real points, or
+  //! a degenerate one whose gradient vanishes along the surface itself, has
+  //! no exact answer to give and falls back to a rigorous lower bound, which
+  //! honours the same one-sided contract.
   //!
   //! The base implementation returns a negative value meaning "not
   //! available", so that a surface type added later is excluded from any such

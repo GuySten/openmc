@@ -1496,8 +1496,9 @@ void free_memory_surfaces()
 //
 // Each of these is the exact nearest-point distance, not an approximation: a
 // sphere of the returned radius about r provably does not touch the surface.
-// SurfaceQuadric is the one exception and returns a rigorous lower bound,
-// since its nearest point needs the root of a degree-six polynomial.
+// The one exception is a quadric that admits no exact answer at all -- one
+// with no real points, or a repeated plane, whose gradient vanishes along the
+// surface -- which falls back to a bound that still never over-estimates.
 //
 // The cones reduce exactly: a surface of revolution seen in the half-plane of
 // (axial offset from the apex, radial distance from the axis) is the pair of
@@ -1592,6 +1593,454 @@ double ellipse_point_distance(double p, double q, double ep, double eq)
   double x = r0 * p / (s + r0);
   double y = q / (s + 1.0);
   return std::sqrt((x - p) * (x - p) + (y - q) * (y - q));
+}
+
+//==============================================================================
+// Exact nearest point on a general quadric
+//
+// Re-centre the quadric on the query point, so we look for the offset y that
+// minimises |y| subject to y^T M y + g.y + q = 0, with M the matrix of
+// second-order coefficients, g the gradient at the query point and q the
+// quadric evaluated there. At the nearest point the surface normal is parallel
+// to y, so for some multiplier lambda
+//
+//     (I + lambda M) y = -lambda g / 2
+//
+// Rotating into the eigenbasis of M decouples that into three scalar
+// equations, (1 + lambda d_i) y_i = -lambda b_i / 2, and the decoupled form is
+// what makes the degenerate cases visible rather than silently lost:
+//
+//   * where 1 + lambda d_i != 0 the component is determined, y_i =
+//     -lambda b_i / (2 (1 + lambda d_i));
+//   * where 1 + lambda d_i == 0 the equation reads 0 = -lambda b_i / 2, so it
+//     admits a solution only when b_i == 0, and then leaves y_i FREE, pinned
+//     only by the surface equation itself.
+//
+// That second case is not an edge case to be waved at. It is exactly what
+// happens whenever the query point lies on a symmetry plane of the quadric --
+// a point on the axis of an ellipsoid, say -- which is the common situation in
+// a reactor model, and it is usually where the true minimum lives. Solving the
+// system by Cramer's rule instead and clearing the denominator, as one would
+// to get a single sextic in lambda, drops precisely these solutions: their
+// multiplier is a pole of y = u/det. So the free directions are carried
+// explicitly below.
+//
+// Substituting the determined components into the surface equation and
+// multiplying by prod_i (1 + lambda d_i)^2 leaves a sextic whose real roots
+// are the non-degenerate critical points. Completeness is the whole game
+// here -- a missed root returns too large a distance and would wrongly certify
+// a sphere as clear, which is the one failure this routine must not have -- so
+// the candidate multipliers are every real root of that sextic, every real
+// root of its derivative (a tangency shows up as a double root, which has no
+// sign change to bracket), and every pole -1/d_i. Each candidate is then
+// checked against the surface equation, so a spurious one is discarded rather
+// than believed.
+//==============================================================================
+
+//! A polynomial in the Lagrange multiplier, ascending powers. Six is the
+//! highest degree the construction above can produce.
+struct LambdaPoly {
+  static constexpr int MAX_DEGREE = 6;
+  double c[MAX_DEGREE + 1] {};
+};
+
+LambdaPoly poly_add(const LambdaPoly& a, const LambdaPoly& b)
+{
+  LambdaPoly r;
+  for (int i = 0; i <= LambdaPoly::MAX_DEGREE; ++i)
+    r.c[i] = a.c[i] + b.c[i];
+  return r;
+}
+
+LambdaPoly poly_mul(const LambdaPoly& a, const LambdaPoly& b)
+{
+  LambdaPoly r;
+  for (int i = 0; i <= LambdaPoly::MAX_DEGREE; ++i) {
+    if (a.c[i] == 0.0)
+      continue;
+    for (int j = 0; i + j <= LambdaPoly::MAX_DEGREE; ++j)
+      r.c[i + j] += a.c[i] * b.c[j];
+  }
+  return r;
+}
+
+LambdaPoly poly_scale(double s, const LambdaPoly& a)
+{
+  LambdaPoly r;
+  for (int i = 0; i <= LambdaPoly::MAX_DEGREE; ++i)
+    r.c[i] = s * a.c[i];
+  return r;
+}
+
+//! Horner evaluation of a polynomial given in ascending powers
+double poly_eval(const double* c, int n, double x)
+{
+  double v = c[n];
+  for (int i = n - 1; i >= 0; --i)
+    v = v * x + c[i];
+  return v;
+}
+
+//! Refine a root already bracketed by a sign change over [lo, hi].
+double poly_bisect(const double* c, int n, double lo, double hi)
+{
+  double flo = poly_eval(c, n, lo);
+  while (true) {
+    double mid = 0.5 * (lo + hi);
+    if (mid <= lo || mid >= hi)
+      return mid;
+    double fmid = poly_eval(c, n, mid);
+    if (fmid == 0.0)
+      return mid;
+    if ((fmid > 0.0) == (flo > 0.0)) {
+      lo = mid;
+      flo = fmid;
+    } else {
+      hi = mid;
+    }
+  }
+}
+
+//! Every real root of a polynomial, written to `out` in ascending order.
+//!
+//! Complete for simple roots by construction, which is the property the caller
+//! depends on: the real roots of the derivative split the line into intervals
+//! on which the polynomial is monotone, so each interval holds at most one
+//! root and a sign change at its ends brackets it for bisection. Recursing on
+//! the derivative bottoms out at a linear polynomial, and Cauchy's bound
+//! closes off the two outer intervals. A root of even multiplicity has no sign
+//! change and is not found here; the caller covers that by also trying the
+//! roots of the derivative, which is where such a root also lies.
+//! \return the number of roots written
+int poly_real_roots(const double* c, int n, double* out)
+{
+  // Work with the true degree. A vanishing leading coefficient is routine
+  // here, since the sextic degenerates whenever M is singular.
+  while (n > 0 && c[n] == 0.0)
+    --n;
+  if (n < 1)
+    return 0;
+  if (n == 1) {
+    out[0] = -c[0] / c[1];
+    return 1;
+  }
+
+  double deriv[LambdaPoly::MAX_DEGREE + 1];
+  for (int i = 1; i <= n; ++i)
+    deriv[i - 1] = i * c[i];
+  double crit[LambdaPoly::MAX_DEGREE + 1];
+  int n_crit = poly_real_roots(deriv, n - 1, crit);
+
+  // Cauchy's bound: every real root is smaller than this in modulus
+  double largest = 0.0;
+  for (int i = 0; i < n; ++i)
+    largest = std::max(largest, std::abs(c[i]));
+  double limit = 1.0 + largest / std::abs(c[n]);
+
+  double ends[LambdaPoly::MAX_DEGREE + 3];
+  int n_ends = 0;
+  ends[n_ends++] = -limit;
+  for (int i = 0; i < n_crit; ++i) {
+    if (crit[i] > ends[n_ends - 1] && crit[i] < limit)
+      ends[n_ends++] = crit[i];
+  }
+  ends[n_ends++] = limit;
+
+  int n_roots = 0;
+  for (int i = 0; i + 1 < n_ends; ++i) {
+    double flo = poly_eval(c, n, ends[i]);
+    double fhi = poly_eval(c, n, ends[i + 1]);
+    if (flo == 0.0) {
+      out[n_roots++] = ends[i];
+    } else if (fhi == 0.0) {
+      out[n_roots++] = ends[i + 1];
+    } else if ((flo > 0.0) != (fhi > 0.0)) {
+      out[n_roots++] = poly_bisect(c, n, ends[i], ends[i + 1]);
+    }
+  }
+  return n_roots;
+}
+
+//! Eigenvalues and orthonormal eigenvectors of a symmetric 3x3 matrix, by
+//! cyclic Jacobi rotations. Preferred over the closed form because it stays
+//! accurate for repeated and near-repeated eigenvalues, which are the rule
+//! rather than the exception here: every sphere, cylinder, cone and surface
+//! of revolution has them.
+//! \param[out] value the three eigenvalues
+//! \param[out] basis columns are the corresponding unit eigenvectors
+void symmetric_eigen(const double in[3][3], double value[3], double basis[3][3])
+{
+  double a[3][3];
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      a[i][j] = in[i][j];
+      basis[i][j] = (i == j) ? 1.0 : 0.0;
+    }
+  }
+
+  for (int sweep = 0; sweep < 50; ++sweep) {
+    if (std::abs(a[0][1]) + std::abs(a[0][2]) + std::abs(a[1][2]) == 0.0)
+      break;
+    for (int p = 0; p < 2; ++p) {
+      for (int r = p + 1; r < 3; ++r) {
+        if (a[p][r] == 0.0)
+          continue;
+        double theta = 0.5 * (a[r][r] - a[p][p]) / a[p][r];
+        double t = (theta >= 0.0 ? 1.0 : -1.0) /
+                   (std::abs(theta) + std::sqrt(theta * theta + 1.0));
+        double c = 1.0 / std::sqrt(t * t + 1.0);
+        double s = t * c;
+        for (int k = 0; k < 3; ++k) {
+          double akp = a[k][p], akr = a[k][r];
+          a[k][p] = c * akp - s * akr;
+          a[k][r] = s * akp + c * akr;
+        }
+        for (int k = 0; k < 3; ++k) {
+          double apk = a[p][k], ark = a[r][k];
+          a[p][k] = c * apk - s * ark;
+          a[r][k] = s * apk + c * ark;
+        }
+        for (int k = 0; k < 3; ++k) {
+          double vkp = basis[k][p], vkr = basis[k][r];
+          basis[k][p] = c * vkp - s * vkr;
+          basis[k][r] = s * vkp + c * vkr;
+        }
+      }
+    }
+  }
+  for (int i = 0; i < 3; ++i)
+    value[i] = a[i][i];
+}
+
+// Everything below works on a quadric normalised so that no coefficient
+// exceeds one in magnitude, which lets these be plain absolute tolerances.
+// Eigenvalues closer than this are treated as one repeated eigenvalue.
+constexpr double QUADRIC_EIGEN_TOL = 1e-10;
+// Below this, a gradient component is taken to be absent, which is what lets
+// an eigenspace go free. Larger components are handled by the ordinary roots.
+constexpr double QUADRIC_POLE_TOL = 1e-10;
+// How far the surface equation may miss zero before a candidate point is
+// judged not to lie on the surface at all. Loose next to the precision a
+// polished multiplier actually reaches, because its only job is to separate
+// genuine roots from the spurious candidates tried alongside them, and those
+// miss by many orders of magnitude rather than by a few digits.
+constexpr double QUADRIC_SURFACE_TOL = 1e-6;
+
+//! A Lagrange multiplier, held as an offset from one eigenspace's pole.
+//!
+//! The multipliers that matter cluster around the poles -1/d_G, and the
+//! denominator 1 + lambda d_G is then a difference of two nearly equal
+//! numbers: forming it directly throws away exactly the digits the answer
+//! depends on, which shows up as a distance that is slightly too large --
+//! precisely the direction distance_to_point promises never to err in. Naming
+//! the pole and carrying the offset instead lets that denominator be built as
+//! d_G * offset, with no cancellation at all. Newton then converges on the
+//! offset, so the lost digits are not merely avoided but recovered: the fixed
+//! point is set by the equation, not by the starting value.
+struct Multiplier {
+  int pole {-1};       //!< eigenspace whose denominator vanishes, or -1
+  double offset {0.0}; //!< the multiplier itself when pole is -1
+};
+
+double multiplier_value(const Multiplier& mu, const double dg[3])
+{
+  return mu.pole < 0 ? mu.offset : mu.offset - 1.0 / dg[mu.pole];
+}
+
+//! The denominator 1 + lambda d_i, built without cancellation at the pole
+double multiplier_denominator(const Multiplier& mu, int i, const double dg[3])
+{
+  if (i == mu.pole)
+    return dg[i] * mu.offset;
+  return 1.0 + multiplier_value(mu, dg) * dg[i];
+}
+
+//! The surface equation as a function of the multiplier, and its derivative
+//! with respect to the offset.
+//!
+//! With the determined components substituted the surface equation becomes
+//!
+//!     F = q - sum_G b_G^2 (lambda/4)(d_G lambda + 2) / (1 + lambda d_G)^2
+//!
+//! whose derivative collapses, once the numerator algebra cancels, to
+//!
+//!     F' = -sum_G b_G^2 / (2 (1 + lambda d_G)^3)
+//!
+//! and the offset differs from lambda only by a constant, so the two
+//! derivatives coincide.
+void quadric_equation(const Multiplier& mu, const double dg[3],
+  const double bsq[3], int n_group, double q, double& f, double& df)
+{
+  double lambda = multiplier_value(mu, dg);
+  f = q;
+  df = 0.0;
+  for (int i = 0; i < n_group; ++i) {
+    double s = multiplier_denominator(mu, i, dg);
+    double s2 = s * s;
+    f -= bsq[i] * (0.25 * lambda) * (dg[i] * lambda + 2.0) / s2;
+    df -= 0.5 * bsq[i] / (s2 * s);
+  }
+}
+
+//! Newton refinement of a multiplier on the surface equation itself.
+//!
+//! The polynomial is formed by clearing the denominators, which near a pole
+//! multiplies the equation by something vanishingly small and leaves its root
+//! poorly resolved -- and the roots that matter are the ones near poles. The
+//! surface equation has no such problem: it is steep exactly where the
+//! polynomial is flat. Steps are clamped to the pole-free interval the
+//! starting point lies in, so the iteration cannot cross to another root.
+Multiplier quadric_polish(
+  Multiplier mu, const double dg[3], const double bsq[3], int n_group, double q)
+{
+  // The offsets at which a neighbouring eigenspace's denominator vanishes
+  double base = multiplier_value(mu, dg) - mu.offset;
+  double lo = -INFTY;
+  double hi = INFTY;
+  for (int i = 0; i < n_group; ++i) {
+    if (dg[i] == 0.0)
+      continue;
+    double edge = -1.0 / dg[i] - base;
+    if (edge < mu.offset)
+      lo = std::max(lo, edge);
+    else if (edge > mu.offset)
+      hi = std::min(hi, edge);
+  }
+
+  double f, df;
+  quadric_equation(mu, dg, bsq, n_group, q, f, df);
+  Multiplier best = mu;
+  double best_f = std::abs(f);
+  for (int it = 0; it < 60; ++it) {
+    if (df == 0.0 || !std::isfinite(f) || !std::isfinite(df))
+      break;
+    double next = mu.offset - f / df;
+    if (!(next > lo && next < hi) || next == mu.offset || !std::isfinite(next))
+      break;
+    mu.offset = next;
+    quadric_equation(mu, dg, bsq, n_group, q, f, df);
+    if (std::abs(f) < best_f) {
+      best_f = std::abs(f);
+      best = mu;
+    }
+  }
+  return best;
+}
+
+//! Squared distance to the surface point produced by one candidate multiplier.
+//!
+//! \param mu the trial multiplier
+//! \param dg the distinct eigenvalues of the (normalised) second-order matrix
+//! \param bsq for each, the squared length of the (normalised) gradient's
+//!   component in that eigenspace -- all the geometry that survives, since
+//!   nothing here depends on the individual directions within an eigenspace
+//! \param n_group how many distinct eigenvalues there are
+//! \param q the (normalised) quadric evaluated at the query point
+//! \return the squared distance, or a negative value if this multiplier does
+//!   not correspond to a point of the surface
+double quadric_candidate(
+  Multiplier mu, const double dg[3], const double bsq[3], int n_group, double q)
+{
+  // A multiplier sitting exactly on a pole is the free-eigenspace case, which
+  // the surface equation cannot refine; anything else is polished first
+  bool on_pole = mu.pole >= 0 && mu.offset == 0.0;
+  if (!on_pole)
+    mu = quadric_polish(mu, dg, bsq, n_group, q);
+
+  double lambda = multiplier_value(mu, dg);
+  double fixed_sq = 0.0;
+  double rest = q;
+  double rest_scale = std::abs(q);
+  int n_free = 0;
+  double d_free = 0.0;
+
+  for (int i = 0; i < n_group; ++i) {
+    double s = multiplier_denominator(mu, i, dg);
+    if (s == 0.0) {
+      // This eigenspace's equation has collapsed to 0 = -lambda b_G / 2. It
+      // is satisfiable only if the gradient has no component here, and then
+      // the component of y in this eigenspace is free, pinned only by the
+      // surface equation itself.
+      if (bsq[i] > QUADRIC_POLE_TOL * QUADRIC_POLE_TOL)
+        return -1.0;
+      d_free = dg[i];
+      ++n_free;
+      continue;
+    }
+    double factor = -0.5 * lambda / s;
+    double y_sq = factor * factor * bsq[i];
+    fixed_sq += y_sq;
+    rest += dg[i] * y_sq + factor * bsq[i];
+    rest_scale = std::max(
+      rest_scale, std::max(std::abs(dg[i] * y_sq), std::abs(factor * bsq[i])));
+  }
+
+  if (n_free == 0) {
+    // `rest` is the surface equation evaluated at y, which a genuine critical
+    // point drives to zero
+    if (std::abs(rest) > QUADRIC_SURFACE_TOL * std::max(1.0, rest_scale))
+      return -1.0;
+    return fixed_sq;
+  }
+
+  if (d_free == 0.0)
+    return -1.0;
+  double free_sq = -rest / d_free;
+  if (free_sq < 0.0)
+    return -1.0;
+  return fixed_sq + free_sq;
+}
+
+//! Turn a bare multiplier into one held against whichever pole it is nearest,
+//! so that the denominator it makes small is never formed by cancellation.
+Multiplier quadric_anchor(double lambda, const double dg[3], int n_group)
+{
+  Multiplier mu;
+  mu.offset = lambda;
+  double closest = INFTY;
+  for (int i = 0; i < n_group; ++i) {
+    if (dg[i] == 0.0)
+      continue;
+    double s = std::abs(1.0 + lambda * dg[i]);
+    if (s < 0.5 && s < closest) {
+      closest = s;
+      mu.pole = i;
+      mu.offset = lambda + 1.0 / dg[i];
+    }
+  }
+  return mu;
+}
+
+//! A rigorous lower bound on the distance from a point to a quadric.
+//!
+//! Used where the exact solve has nothing to return: a quadric with no real
+//! points, or a degenerate one whose gradient vanishes along the surface
+//! itself -- a repeated plane, say -- so that no Lagrange multiplier exists
+//! for any surface point. Since f is quadratic, a step h from r satisfies
+//!
+//!     |f(r + h) - f(r)| <= |grad f(r)| |h| + ||M|| |h|^2
+//!
+//! so no zero of f lies within a distance d of r while the right-hand side
+//! stays below |f(r)|. The largest such d is the positive root of
+//! ||M|| d^2 + |grad f(r)| d - |f(r)| = 0. Over-estimating ||M|| keeps the
+//! bound rigorous and merely loosens it, so the largest absolute row sum
+//! stands in for the spectral norm; the two agree whenever M is diagonal.
+double quadric_lower_bound(const double m[3][3], const double g[3], double q)
+{
+  double f = std::abs(q);
+  if (f == 0.0)
+    return 0.0;
+  double grad = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+  double norm = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    double row = 0.0;
+    for (int j = 0; j < 3; ++j)
+      row += std::abs(m[i][j]);
+    norm = std::max(norm, row);
+  }
+  if (norm == 0.0)
+    return grad > 0.0 ? f / grad : -1.0;
+  return (std::sqrt(grad * grad + 4.0 * norm * f) - grad) / (2.0 * norm);
 }
 
 //! Distance from a point to a torus, given the point's offset along the axis
@@ -1692,35 +2141,146 @@ double SurfaceZCone::distance_to_point(Position r) const
 
 double SurfaceQuadric::distance_to_point(Position r) const
 {
-  // f is quadratic, so for a step h from r it is exactly
-  //     f(r + h) = f(r) + grad_f(r).h + h^T M h
-  // with M the symmetric matrix of second-order coefficients. Hence
-  //     |f(r + h) - f(r)| <= |grad_f(r)| |h| + ||M|| |h|^2
-  // and no zero of f lies within a distance d of r as long as the right-hand
-  // side stays below |f(r)|. The largest such d is the positive root of
-  //     ||M|| d^2 + |grad_f(r)| d - |f(r)| = 0
-  // which is a rigorous lower bound on the distance to the surface. Any
-  // over-estimate of ||M|| keeps it rigorous, just looser; for a symmetric
-  // matrix the largest absolute row sum bounds the spectral norm and is exact
-  // whenever M is diagonal, which covers the quadrics met in practice.
-  double f = std::abs(evaluate(r));
-  if (f == 0.0)
+  // Re-express the quadric about r, so we solve for the offset y = x - r:
+  //     y^T m y + g.y + q = 0
+  // Centring on the query point is what keeps the coefficients in a sane
+  // range: they then describe the local geometry rather than the surface's
+  // distance from the global origin.
+  double m[3][3] = {{A_, 0.5 * D_, 0.5 * F_}, {0.5 * D_, B_, 0.5 * E_},
+    {0.5 * F_, 0.5 * E_, C_}};
+  double g[3] = {2.0 * A_ * r.x + D_ * r.y + F_ * r.z + G_,
+    2.0 * B_ * r.y + D_ * r.x + E_ * r.z + H_,
+    2.0 * C_ * r.z + E_ * r.y + F_ * r.x + J_};
+  double q = evaluate(r);
+
+  if (q == 0.0)
     return 0.0;
 
-  double gx = 2.0 * A_ * r.x + D_ * r.y + F_ * r.z + G_;
-  double gy = 2.0 * B_ * r.y + D_ * r.x + E_ * r.z + H_;
-  double gz = 2.0 * C_ * r.z + E_ * r.y + F_ * r.x + J_;
-  double g = std::sqrt(gx * gx + gy * gy + gz * gz);
-
-  double m = std::max({std::abs(A_) + 0.5 * (std::abs(D_) + std::abs(F_)),
-    std::abs(B_) + 0.5 * (std::abs(D_) + std::abs(E_)),
-    std::abs(C_) + 0.5 * (std::abs(E_) + std::abs(F_))});
-
-  if (m == 0.0) {
-    // No second-order terms: this is a plane, and the bound is exact
-    return g > 0.0 ? f / g : -1.0;
+  // Dividing the equation through by a constant changes neither the surface
+  // nor the answer, only the scale of the multiplier
+  double scale = std::abs(q);
+  for (int i = 0; i < 3; ++i) {
+    scale = std::max(scale, std::abs(g[i]));
+    for (int j = 0; j < 3; ++j)
+      scale = std::max(scale, std::abs(m[i][j]));
   }
-  return (std::sqrt(g * g + 4.0 * m * f) - g) / (2.0 * m);
+  if (scale == 0.0)
+    return -1.0;
+  for (int i = 0; i < 3; ++i) {
+    g[i] /= scale;
+    for (int j = 0; j < 3; ++j)
+      m[i][j] /= scale;
+  }
+  q /= scale;
+
+  double d[3];
+  double basis[3][3];
+  symmetric_eigen(m, d, basis);
+
+  // The gradient in the eigenbasis
+  double b[3];
+  for (int i = 0; i < 3; ++i)
+    b[i] = basis[0][i] * g[0] + basis[1][i] * g[1] + basis[2][i] * g[2];
+
+  // Collect repeated eigenvalues into one eigenspace each. Only the
+  // eigenvalue and the squared length of the gradient's component in the
+  // eigenspace ever matter, never the individual directions within it, and
+  // grouping is what keeps the common surfaces conditioned: a sphere, a
+  // cylinder, a cone or any surface of revolution has a repeated eigenvalue,
+  // which left ungrouped would raise the polynomial's degree and stack
+  // several of its roots on the same point, where they cannot be resolved.
+  double dg[3];
+  double bsq[3] {};
+  int n_group = 0;
+  double d_scale =
+    std::max({std::abs(d[0]), std::abs(d[1]), std::abs(d[2]), 1.0});
+  for (int i = 0; i < 3; ++i) {
+    int group = -1;
+    for (int k = 0; k < n_group; ++k)
+      if (std::abs(d[i] - dg[k]) <= QUADRIC_EIGEN_TOL * d_scale)
+        group = k;
+    if (group < 0) {
+      dg[n_group] = d[i];
+      group = n_group++;
+    }
+    bsq[group] += b[i] * b[i];
+  }
+
+  // The surface equation with the determined components substituted,
+  // multiplied through by prod_G (1 + lambda d_G)^2:
+  //     q prod_G (1 + lambda d_G)^2
+  //       - sum_G b_G^2 (lambda/4)(d_G lambda + 2) prod_{H != G} (...)^2
+  LambdaPoly squared[3];
+  for (int i = 0; i < n_group; ++i) {
+    LambdaPoly linear;
+    linear.c[0] = 1.0;
+    linear.c[1] = dg[i];
+    squared[i] = poly_mul(linear, linear);
+  }
+
+  LambdaPoly all;
+  all.c[0] = 1.0;
+  for (int i = 0; i < n_group; ++i)
+    all = poly_mul(all, squared[i]);
+
+  LambdaPoly poly = poly_scale(q, all);
+  for (int i = 0; i < n_group; ++i) {
+    if (bsq[i] == 0.0)
+      continue;
+    LambdaPoly others;
+    others.c[0] = 1.0;
+    for (int j = 0; j < n_group; ++j)
+      if (j != i)
+        others = poly_mul(others, squared[j]);
+    LambdaPoly factor;
+    factor.c[1] = -0.5;
+    factor.c[2] = -0.25 * dg[i];
+    poly = poly_add(poly, poly_scale(bsq[i], poly_mul(factor, others)));
+  }
+
+  // Candidate multipliers: every real root of that polynomial, every real
+  // root of its derivative so that a tangency appearing as a root of even
+  // multiplicity is not passed over, and every pole, which is where an
+  // eigenspace goes free. Each is checked against the surface equation
+  // afterwards, so offering too many costs nothing but offering too few would
+  // return a distance that is too large.
+  double roots[2 * LambdaPoly::MAX_DEGREE + 4];
+  int n = poly_real_roots(poly.c, LambdaPoly::MAX_DEGREE, roots);
+
+  double deriv[LambdaPoly::MAX_DEGREE + 1];
+  for (int i = 1; i <= LambdaPoly::MAX_DEGREE; ++i)
+    deriv[i - 1] = i * poly.c[i];
+  n += poly_real_roots(deriv, LambdaPoly::MAX_DEGREE - 1, roots + n);
+
+  Multiplier candidates[3 * LambdaPoly::MAX_DEGREE + 8];
+  int n_cand = 0;
+  for (int k = 0; k < n; ++k)
+    candidates[n_cand++] = quadric_anchor(roots[k], dg, n_group);
+  for (int i = 0; i < n_group; ++i) {
+    if (dg[i] == 0.0)
+      continue;
+    Multiplier at_pole;
+    at_pole.pole = i;
+    at_pole.offset = 0.0;
+    candidates[n_cand++] = at_pole;
+  }
+
+  double best_sq = INFTY;
+  for (int k = 0; k < n_cand; ++k) {
+    double d_sq = quadric_candidate(candidates[k], dg, bsq, n_group, q);
+    if (d_sq >= 0.0 && std::isfinite(d_sq))
+      best_sq = std::min(best_sq, d_sq);
+  }
+
+  if (best_sq < INFTY)
+    return std::sqrt(best_sq);
+
+  // Nothing satisfied the surface equation. Either the quadric has no real
+  // points, or it is degenerate in a way that admits no multiplier anywhere
+  // on the surface -- a repeated plane, whose gradient vanishes along the
+  // surface itself. Neither leaves an exact distance to report, so fall back
+  // to a bound that is still guaranteed not to over-estimate.
+  return quadric_lower_bound(m, g, q);
 }
 
 double SurfaceXTorus::distance_to_point(Position r) const

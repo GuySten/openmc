@@ -18,6 +18,7 @@ from . import HDF5_VERSION, HDF5_VERSION_MAJOR, endf
 from .data import K_BOLTZMANN, ATOMIC_SYMBOL, EV_PER_MEV, isotopes
 from .ace import Table, get_table, Library
 from .angle_energy import AngleEnergy
+from .cdf import DiscreteCDF, TabularCDF
 from .function import Tabulated1D, Function1D, Sum
 from .njoy import make_ace_thermal
 from .thermal_angle_energy import (CoherentElasticAE, IncoherentElasticAE,
@@ -823,8 +824,8 @@ class ThermalScattering(EqualityMixin):
                             n_mu + 3]/EV_PER_MEV
                 c = ace.xss[idx + 3:idx + 3 + n_energy_out[i]*(n_mu + 3):
                             n_mu + 3]
-                eout_i = Tabular(e, p, 'linear-linear', ignore_negative=True)
-                eout_i.c = c
+                eout_i = TabularCDF(e, p, 'linear-linear',
+                                    ignore_negative=True, tabulated_cdf=c)
 
                 # Outgoing angle distribution for each
                 # (incoming, outgoing) energy pair
@@ -847,8 +848,8 @@ class ThermalScattering(EqualityMixin):
                              'interval [-1, 1].')
 
                     p_mu = 1. / n_mu * np.ones(n_mu)
-                    mu_ij = Discrete(mu, p_mu)
-                    mu_ij.c = np.cumsum(p_mu)
+                    mu_ij = DiscreteCDF(mu, p_mu,
+                                        tabulated_cdf=np.cumsum(p_mu))
                     mu_i.append(mu_ij)
                     idx += 3 + n_mu
 
@@ -858,18 +859,16 @@ class ThermalScattering(EqualityMixin):
                 # the outgoing energy. From Eq. 7.6 of the ENDF manual, we can
                 # add an outgoing energy 0 eV that has a PDF of 0 (and of
                 # course, a CDF of 0 as well).
-                if eout_i.c[0] > 0.:
-                    eout_i._x = np.insert(eout_i.x, 0, 0.)
-                    eout_i._p = np.insert(eout_i.p, 0, 0.)
-                    eout_i.c = np.insert(eout_i.c, 0, 0.)
+                if eout_i.tabulated_cdf[0] > 0.:
+                    eout_i.prepend(0., p=0., c=0.)
 
                     # For this added outgoing energy (of 0 eV) we add a set of
                     # isotropic discrete angles.
                     dmu = 2. / n_mu
                     mu = np.linspace(-1. + 0.5*dmu, 1. - 0.5*dmu, n_mu)
                     p_mu = 1. / n_mu * np.ones(n_mu)
-                    mu_0 = Discrete(mu, p_mu)
-                    mu_0.c = np.cumsum(p_mu)
+                    mu_0 = DiscreteCDF(mu, p_mu,
+                                       tabulated_cdf=np.cumsum(p_mu))
                     mu_i.insert(0, mu_0)
                 # We don't worry about renormalizing the outgoing energy PDF/CDF
                 # after this manipulation, because it never seems to be

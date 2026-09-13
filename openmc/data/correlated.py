@@ -7,6 +7,7 @@ import numpy as np
 import openmc.checkvalue as cv
 from openmc.stats import Tabular, Univariate, Discrete, Mixture, \
     Uniform, Legendre
+from .cdf import DiscreteCDF, TabularCDF, cdf_values
 from .function import INTERPOLATION_SCHEME
 from .angle_energy import AngleEnergy
 from .data import EV_PER_MEV
@@ -152,10 +153,10 @@ class CorrelatedAngleEnergy(AngleEnergy):
                 interpolation[i] = 1 if continuous.interpolation == 'histogram' else 2
                 eout[0, offset_e:offset_e+m] = discrete.x
                 eout[1, offset_e:offset_e+m] = discrete.p
-                eout[2, offset_e:offset_e+m] = discrete.c
+                eout[2, offset_e:offset_e+m] = cdf_values(discrete)
                 eout[0, offset_e+m:offset_e+n] = continuous.x
                 eout[1, offset_e+m:offset_e+n] = continuous.p
-                eout[2, offset_e+m:offset_e+n] = continuous.c
+                eout[2, offset_e+m:offset_e+n] = cdf_values(continuous)
             else:
                 if isinstance(d, Tabular):
                     n_discrete_lines[i] = 0
@@ -169,7 +170,7 @@ class CorrelatedAngleEnergy(AngleEnergy):
                         'correlated angle-energy: {}'.format(d))
                 eout[0, offset_e:offset_e+n] = d.x
                 eout[1, offset_e:offset_e+n] = d.p
-                eout[2, offset_e:offset_e+n] = d.c
+                eout[2, offset_e:offset_e+n] = cdf_values(d)
 
             for j, mu_ij in enumerate(mu_tabular[i]):
                 if isinstance(mu_ij, Discrete):
@@ -181,7 +182,7 @@ class CorrelatedAngleEnergy(AngleEnergy):
                 n_mu = len(mu_ij)
                 mu[0, offset_mu:offset_mu+n_mu] = mu_ij.x
                 mu[1, offset_mu:offset_mu+n_mu] = mu_ij.p
-                mu[2, offset_mu:offset_mu+n_mu] = mu_ij.c
+                mu[2, offset_mu:offset_mu+n_mu] = cdf_values(mu_ij)
 
                 offset_mu += n_mu
 
@@ -242,9 +243,9 @@ class CorrelatedAngleEnergy(AngleEnergy):
             if m > 0:
                 x = dset_eout[0, offset_e:offset_e+m]
                 p = dset_eout[1, offset_e:offset_e+m]
-                eout_discrete = Discrete(x, p)
-                eout_discrete.c = dset_eout[2, offset_e:offset_e+m]
-                p_discrete = eout_discrete.c[-1]
+                eout_discrete = DiscreteCDF(
+                    x, p, tabulated_cdf=dset_eout[2, offset_e:offset_e+m])
+                p_discrete = eout_discrete.tabulated_cdf[-1]
 
             # Create continuous distribution
             if m < n:
@@ -252,8 +253,9 @@ class CorrelatedAngleEnergy(AngleEnergy):
 
                 x = dset_eout[0, offset_e+m:offset_e+n]
                 p = dset_eout[1, offset_e+m:offset_e+n]
-                eout_continuous = Tabular(x, p, interp, ignore_negative=True)
-                eout_continuous.c = dset_eout[2, offset_e+m:offset_e+n]
+                eout_continuous = TabularCDF(
+                    x, p, interp, ignore_negative=True,
+                    tabulated_cdf=dset_eout[2, offset_e+m:offset_e+n])
 
             # If both continuous and discrete are present, create a mixture
             # distribution
@@ -284,11 +286,10 @@ class CorrelatedAngleEnergy(AngleEnergy):
                 c = dset_mu[2, offset_mu:offset_mu+n_mu]
 
                 if interp_code == 0:
-                    mu_ij = Discrete(x, p)
+                    mu_ij = DiscreteCDF(x, p, tabulated_cdf=c)
                 else:
-                    mu_ij = Tabular(x, p, INTERPOLATION_SCHEME[interp_code],
-                                    ignore_negative=True)
-                mu_ij.c = c
+                    mu_ij = TabularCDF(x, p, INTERPOLATION_SCHEME[interp_code],
+                                       ignore_negative=True, tabulated_cdf=c)
                 mu_i.append(mu_ij)
 
                 offset_mu += n_mu
@@ -364,20 +365,22 @@ class CorrelatedAngleEnergy(AngleEnergy):
             data[0,:] *= EV_PER_MEV
 
             # Create continuous distribution
-            eout_continuous = Tabular(data[0][n_discrete_lines:],
-                                      data[1][n_discrete_lines:]/EV_PER_MEV,
-                                      INTERPOLATION_SCHEME[intt],
-                                      ignore_negative=True)
-            eout_continuous.c = data[2][n_discrete_lines:]
+            eout_continuous = TabularCDF(
+                data[0][n_discrete_lines:],
+                data[1][n_discrete_lines:]/EV_PER_MEV,
+                INTERPOLATION_SCHEME[intt],
+                ignore_negative=True,
+                tabulated_cdf=data[2][n_discrete_lines:])
             if np.any(data[1][n_discrete_lines:] < 0.0):
                 warn("Correlated angle-energy distribution has negative "
                      "probabilities.")
 
             # If discrete lines are present, create a mixture distribution
             if n_discrete_lines > 0:
-                eout_discrete = Discrete(data[0][:n_discrete_lines],
-                                         data[1][:n_discrete_lines])
-                eout_discrete.c = data[2][:n_discrete_lines]
+                eout_discrete = DiscreteCDF(
+                    data[0][:n_discrete_lines],
+                    data[1][:n_discrete_lines],
+                    tabulated_cdf=data[2][:n_discrete_lines])
                 if n_discrete_lines == n_energy_out:
                     eout_i = eout_discrete
                 else:
@@ -402,8 +405,9 @@ class CorrelatedAngleEnergy(AngleEnergy):
                     data = ace.xss[idx + 2:idx + 2 + 3*n_cosine]
                     data = data.reshape(3, n_cosine)
 
-                    mu_ij = Tabular(data[0], data[1], INTERPOLATION_SCHEME[intt])
-                    mu_ij.c = data[2]
+                    mu_ij = TabularCDF(data[0], data[1],
+                                       INTERPOLATION_SCHEME[intt],
+                                       tabulated_cdf=data[2])
                 else:
                     # Isotropic distribution
                     mu_ij = Uniform(-1., 1.)

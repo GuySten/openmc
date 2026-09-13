@@ -274,9 +274,11 @@ void Particle::event_advance()
   // Find the distance to the nearest boundary
   boundary() = distance_to_boundary(*this);
 
-  // Sample a distance to collision
-  if (type() == ParticleType::electron() ||
-      type() == ParticleType::positron() && !settings::electron_transport) {
+  // Sample a distance to collision. Without electron transport, charged
+  // particles are slowed down in place at their point of birth, so the
+  // collision distance is zero whenever they are in a material.
+  if (!settings::electron_transport && (type() == ParticleType::electron() ||
+                                         type() == ParticleType::positron())) {
     collision_distance() = material() == MATERIAL_VOID ? INFINITY : 0.0;
   } else if (macro_xs().total == 0.0) {
     collision_distance() = INFINITY;

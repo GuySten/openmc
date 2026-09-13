@@ -84,6 +84,24 @@ public:
   //! \return Normal direction
   virtual Direction normal(Position r) const = 0;
 
+  //! A distance no greater than the distance from a point to the surface.
+  //!
+  //! Unlike distance(), which follows a given direction, this concerns the
+  //! nearest point of the surface in any direction. The contract is one-sided
+  //! and deliberately so: the result is never an over-estimate, so a sphere of
+  //! the returned radius about r provably does not touch the surface, which is
+  //! the property callers rely on. It is the exact distance for planes,
+  //! cylinders, spheres and cones. For the general quadric the exact nearest
+  //! point needs the root of a degree-six polynomial, and a missed root would
+  //! return too large a distance and wrongly certify a sphere as clear, so a
+  //! rigorous lower bound is returned instead. The tori have neither and
+  //! return a negative value meaning "not available"; callers must check the
+  //! sign.
+  //! \param r A 3D Cartesian coordinate
+  //! \return A lower bound on the distance, exact where noted above, or a
+  //!   negative value if this surface type does not provide one
+  virtual double distance_to_point(Position r) const { return -1.0; }
+
   //! Write all information needed to reconstruct the surface to an HDF5 group.
   //! \param group_id An HDF5 group id.
   void to_hdf5(hid_t group_id) const;
@@ -116,6 +134,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -134,6 +153,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -152,6 +172,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -170,6 +191,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -189,6 +211,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -208,6 +231,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -227,6 +251,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -246,6 +271,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
   BoundingBox bounding_box(bool pos_side) const override;
 
@@ -265,6 +291,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
 
   double x0_, y0_, z0_, radius_sq_;
@@ -283,6 +310,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
 
   double x0_, y0_, z0_, radius_sq_;
@@ -301,6 +329,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
 
   double x0_, y0_, z0_, radius_sq_;
@@ -319,6 +348,7 @@ public:
   double evaluate(Position r) const override;
   double distance(Position r, Direction u, bool coincident) const override;
   Direction normal(Position r) const override;
+  double distance_to_point(Position r) const override;
   void to_hdf5_inner(hid_t group_id) const override;
 
   // Ax^2 + By^2 + Cz^2 + Dxy + Eyz + Fxz + Gx + Hy + Jz + K = 0

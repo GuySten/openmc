@@ -1490,4 +1490,134 @@ void free_memory_surfaces()
   model::surface_map.clear();
 }
 
+//==============================================================================
+// Shortest distance from a point to a surface
+//
+// Each of these is the exact nearest-point distance, not an approximation: a
+// sphere of the returned radius about r provably does not touch the surface.
+// SurfaceQuadric and the tori inherit the base class's negative return, since
+// their nearest point needs the root of a high-order polynomial.
+//
+// The cones reduce exactly: a surface of revolution seen in the half-plane of
+// (axial offset from the apex, radial distance from the axis) is the pair of
+// lines rho = +/- s*a, and folding on |a| leaves a single ray whose projection
+// of the point is never negative, so the perpendicular distance always applies.
+//==============================================================================
+
+namespace {
+
+//! Distance from a point to a cone, given its offset along the axis from the
+//! apex, its distance from the axis, and the square of the cone's slope.
+double cone_point_distance(double axial, double radial, double slope_sq)
+{
+  double slope = std::sqrt(slope_sq);
+  return std::abs(slope * std::abs(axial) - radial) / std::sqrt(1.0 + slope_sq);
+}
+
+} // namespace
+
+double SurfaceXPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.x - x0_);
+}
+
+double SurfaceYPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.y - y0_);
+}
+
+double SurfaceZPlane::distance_to_point(Position r) const
+{
+  return std::abs(r.z - z0_);
+}
+
+double SurfacePlane::distance_to_point(Position r) const
+{
+  return std::abs(A_ * r.x + B_ * r.y + C_ * r.z - D_) /
+         std::sqrt(A_ * A_ + B_ * B_ + C_ * C_);
+}
+
+double SurfaceXCylinder::distance_to_point(Position r) const
+{
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(y * y + z * z) - radius_);
+}
+
+double SurfaceYCylinder::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(x * x + z * z) - radius_);
+}
+
+double SurfaceZCylinder::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  return std::abs(std::sqrt(x * x + y * y) - radius_);
+}
+
+double SurfaceSphere::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return std::abs(std::sqrt(x * x + y * y + z * z) - radius_);
+}
+
+double SurfaceXCone::distance_to_point(Position r) const
+{
+  double y = r.y - y0_;
+  double z = r.z - z0_;
+  return cone_point_distance(r.x - x0_, std::sqrt(y * y + z * z), radius_sq_);
+}
+
+double SurfaceYCone::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double z = r.z - z0_;
+  return cone_point_distance(r.y - y0_, std::sqrt(x * x + z * z), radius_sq_);
+}
+
+double SurfaceZCone::distance_to_point(Position r) const
+{
+  double x = r.x - x0_;
+  double y = r.y - y0_;
+  return cone_point_distance(r.z - z0_, std::sqrt(x * x + y * y), radius_sq_);
+}
+
+double SurfaceQuadric::distance_to_point(Position r) const
+{
+  // f is quadratic, so for a step h from r it is exactly
+  //     f(r + h) = f(r) + grad_f(r).h + h^T M h
+  // with M the symmetric matrix of second-order coefficients. Hence
+  //     |f(r + h) - f(r)| <= |grad_f(r)| |h| + ||M|| |h|^2
+  // and no zero of f lies within a distance d of r as long as the right-hand
+  // side stays below |f(r)|. The largest such d is the positive root of
+  //     ||M|| d^2 + |grad_f(r)| d - |f(r)| = 0
+  // which is a rigorous lower bound on the distance to the surface. Any
+  // over-estimate of ||M|| keeps it rigorous, just looser; for a symmetric
+  // matrix the largest absolute row sum bounds the spectral norm and is exact
+  // whenever M is diagonal, which covers the quadrics met in practice.
+  double f = std::abs(evaluate(r));
+  if (f == 0.0)
+    return 0.0;
+
+  double gx = 2.0 * A_ * r.x + D_ * r.y + F_ * r.z + G_;
+  double gy = 2.0 * B_ * r.y + D_ * r.x + E_ * r.z + H_;
+  double gz = 2.0 * C_ * r.z + E_ * r.y + F_ * r.x + J_;
+  double g = std::sqrt(gx * gx + gy * gy + gz * gz);
+
+  double m = std::max({std::abs(A_) + 0.5 * (std::abs(D_) + std::abs(F_)),
+    std::abs(B_) + 0.5 * (std::abs(D_) + std::abs(E_)),
+    std::abs(C_) + 0.5 * (std::abs(E_) + std::abs(F_))});
+
+  if (m == 0.0) {
+    // No second-order terms: this is a plane, and the bound is exact
+    return g > 0.0 ? f / g : -1.0;
+  }
+  return (std::sqrt(g * g + 4.0 * m * f) - g) / (2.0 * m);
+}
+
 } // namespace openmc

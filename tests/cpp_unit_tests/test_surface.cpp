@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <memory>
 
 #include <catch2/catch_approx.hpp>
@@ -203,5 +205,181 @@ TEST_CASE("Torus bounding box")
     CHECK(in.max.y == Catch::Approx(7.25));
 
     CHECK(t->bounding_box(true).min.z == -INFTY);
+  }
+}
+
+//==============================================================================
+// Surface::distance_to_point
+//
+// Each closed form is checked against a brute-force search: sample the surface
+// densely by ray-casting from far outside in many directions, and take the
+// smallest distance found. The search can only ever overestimate, so the
+// closed form is verified to be exactly the minimum rather than merely
+// self-consistent.
+//==============================================================================
+
+namespace {
+
+//! Smallest |q - r| over points q found on the surface by casting rays from a
+//! sphere of radius `reach` around r in many directions.
+double brute_force_distance(const Surface& surf, Position r, double reach)
+{
+  constexpr int N = 40000;
+  double best = INFTY;
+  // Deterministic near-uniform directions via the golden-angle spiral
+  const double golden = PI * (3.0 - std::sqrt(5.0));
+  for (int i = 0; i < N; ++i) {
+    double z = 1.0 - 2.0 * (i + 0.5) / N;
+    double rho = std::sqrt(std::max(0.0, 1.0 - z * z));
+    double phi = golden * i;
+    Direction u {rho * std::cos(phi), rho * std::sin(phi), z};
+
+    // March along the ray, taking every crossing it finds
+    Position p = r;
+    double travelled = 0.0;
+    for (int hop = 0; hop < 8; ++hop) {
+      double d = surf.distance(p, u, false);
+      if (d == INFTY || travelled + d > reach)
+        break;
+      travelled += d;
+      p = r + travelled * u;
+      best = std::min(best, travelled);
+      // step past the crossing just found
+      travelled += 1e-9;
+      p = r + travelled * u;
+    }
+  }
+  return best;
+}
+
+//! A lower bound must never exceed the true distance, and must be useful
+void check_lower_bound(const Surface& surf, Position r, double reach)
+{
+  double bound = surf.distance_to_point(r);
+  REQUIRE(bound > 0.0);
+  double brute = brute_force_distance(surf, r, reach);
+  REQUIRE(brute < INFTY);
+  REQUIRE(bound <= brute + 1e-9);
+}
+
+void check_surface(const Surface& surf, Position r, double reach)
+{
+  double exact = surf.distance_to_point(r);
+  REQUIRE(exact >= 0.0);
+  double brute = brute_force_distance(surf, r, reach);
+  REQUIRE(brute < INFTY);
+  // The ray search samples directions, so it can only overshoot
+  REQUIRE(exact <= brute + 1e-9);
+  REQUIRE(exact == Catch::Approx(brute).epsilon(2e-3));
+}
+
+} // anonymous namespace
+
+TEST_CASE("Exact distance from a point to a surface")
+{
+  pugi::xml_document doc;
+
+  SECTION("planes")
+  {
+    auto xp = make_surface<SurfaceXPlane>(doc, 1, "x-plane", "3.0");
+    REQUIRE(xp->distance_to_point({-1.0, 5.0, 7.0}) == Catch::Approx(4.0));
+    REQUIRE(xp->distance_to_point({3.0, 0.0, 0.0}) == Catch::Approx(0.0));
+    check_surface(*xp, {-1.0, 5.0, 7.0}, 20.0);
+
+    auto yp = make_surface<SurfaceYPlane>(doc, 2, "y-plane", "-2.0");
+    check_surface(*yp, {1.0, 4.0, -3.0}, 20.0);
+
+    auto zp = make_surface<SurfaceZPlane>(doc, 3, "z-plane", "0.5");
+    check_surface(*zp, {1.0, 4.0, -3.0}, 20.0);
+
+    // 3x + 4y + 0z = 10, so the normal has length 5
+    auto pl = make_surface<SurfacePlane>(doc, 4, "plane", "3.0 4.0 0.0 10.0");
+    REQUIRE(pl->distance_to_point({0.0, 0.0, 0.0}) == Catch::Approx(2.0));
+    check_surface(*pl, {0.0, 0.0, 0.0}, 20.0);
+    check_surface(*pl, {-4.0, 3.0, 6.0}, 20.0);
+  }
+
+  SECTION("cylinders")
+  {
+    auto xc =
+      make_surface<SurfaceXCylinder>(doc, 5, "x-cylinder", "0.0 0.0 2.0");
+    REQUIRE(xc->distance_to_point({9.0, 3.0, 4.0}) == Catch::Approx(3.0));
+    check_surface(*xc, {9.0, 3.0, 4.0}, 20.0);
+    // inside the cylinder
+    REQUIRE(xc->distance_to_point({1.0, 0.5, 0.0}) == Catch::Approx(1.5));
+    check_surface(*xc, {1.0, 0.5, 0.0}, 20.0);
+
+    auto yc =
+      make_surface<SurfaceYCylinder>(doc, 6, "y-cylinder", "1.0 -1.0 3.0");
+    check_surface(*yc, {5.0, 2.0, 4.0}, 30.0);
+
+    auto zc =
+      make_surface<SurfaceZCylinder>(doc, 7, "z-cylinder", "0.0 0.0 1.5");
+    check_surface(*zc, {0.4, -0.3, 8.0}, 20.0);
+  }
+
+  SECTION("sphere")
+  {
+    auto sp = make_surface<SurfaceSphere>(doc, 8, "sphere", "1.0 2.0 3.0 4.0");
+    REQUIRE(sp->distance_to_point({1.0, 2.0, 3.0}) == Catch::Approx(4.0));
+    REQUIRE(sp->distance_to_point({1.0, 2.0, 12.0}) == Catch::Approx(5.0));
+    check_surface(*sp, {1.0, 2.0, 12.0}, 30.0);
+    check_surface(*sp, {2.0, 3.0, 4.0}, 30.0);
+  }
+
+  SECTION("cones")
+  {
+    // 45 degree cone about the z axis through the origin
+    auto zk = make_surface<SurfaceZCone>(doc, 9, "z-cone", "0.0 0.0 0.0 1.0");
+    // a point on the axis one unit from the apex is 1/sqrt(2) from the cone
+    REQUIRE(zk->distance_to_point({0.0, 0.0, 1.0}) ==
+            Catch::Approx(1.0 / std::sqrt(2.0)));
+    REQUIRE(zk->distance_to_point({0.0, 0.0, 0.0}) == Catch::Approx(0.0));
+    check_surface(*zk, {0.0, 0.0, 1.0}, 20.0);
+    check_surface(*zk, {3.0, 0.0, 1.0}, 20.0);
+    check_surface(*zk, {0.5, 0.5, -4.0}, 20.0);
+
+    auto xk = make_surface<SurfaceXCone>(doc, 10, "x-cone", "1.0 0.0 0.0 0.25");
+    check_surface(*xk, {4.0, 2.0, 1.0}, 30.0);
+
+    auto yk = make_surface<SurfaceYCone>(doc, 11, "y-cone", "0.0 1.0 0.0 4.0");
+    check_surface(*yk, {2.0, 3.0, -1.0}, 30.0);
+  }
+
+  SECTION("the general quadric gives a rigorous lower bound")
+  {
+    // A sphere of radius 2 written as a general quadric. The bound is not the
+    // exact distance, but it must never exceed it.
+    auto sphere_q = make_surface<SurfaceQuadric>(
+      doc, 12, "quadric", "1.0 1.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 -4.0");
+    check_lower_bound(*sphere_q, {4.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*sphere_q, {0.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*sphere_q, {1.0, 1.0, 1.0}, 30.0);
+    // on the surface, the bound is zero
+    REQUIRE(sphere_q->distance_to_point({2.0, 0.0, 0.0}) == Catch::Approx(0.0));
+
+    // an ellipsoid and a hyperboloid of one sheet
+    auto ellipsoid = make_surface<SurfaceQuadric>(
+      doc, 13, "quadric", "1.0 4.0 9.0 0.0 0.0 0.0 0.0 0.0 0.0 -9.0");
+    check_lower_bound(*ellipsoid, {5.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*ellipsoid, {0.0, 2.0, 1.0}, 30.0);
+
+    auto hyperboloid = make_surface<SurfaceQuadric>(
+      doc, 14, "quadric", "1.0 1.0 -1.0 0.0 0.0 0.0 0.0 0.0 0.0 -1.0");
+    check_lower_bound(*hyperboloid, {3.0, 0.0, 0.0}, 30.0);
+    check_lower_bound(*hyperboloid, {0.0, 0.0, 4.0}, 30.0);
+
+    // one with cross terms, where the row-sum norm is a genuine over-estimate
+    auto skew = make_surface<SurfaceQuadric>(
+      doc, 15, "quadric", "1.0 1.0 1.0 0.5 0.3 0.2 1.0 -2.0 0.5 -6.0");
+    check_lower_bound(*skew, {3.0, 1.0, -1.0}, 30.0);
+    check_lower_bound(*skew, {0.0, 0.0, 0.0}, 30.0);
+  }
+
+  SECTION("tori still report no closed form")
+  {
+    auto t = make_surface<SurfaceZTorus>(
+      doc, 16, "z-torus", "0.0 0.0 0.0 3.0 1.0 1.0");
+    REQUIRE(t->distance_to_point({1.0, 1.0, 1.0}) < 0.0);
   }
 }

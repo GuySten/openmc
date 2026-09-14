@@ -180,3 +180,35 @@ def test_multigroup_rejected(photon_only_xs):
 
     with pytest.raises(RuntimeError, match='multigroup mode'):
         model.run()
+
+
+def test_particle_restart_without_neutron_data(photon_only_xs):
+    """A photon can be restarted from a run that read no neutron data.
+
+    The restart file is produced by OpenMC rather than written here, since
+    losing a particle is the only thing that makes OpenMC write one.
+    """
+    model, mat = aluminum_photon_model()
+    model.settings.neutron_transport = False
+
+    # Leave a gap between the material and the rest of the world, so that every
+    # photon leaving the material is lost and one of them is written out
+    inner = openmc.Sphere(r=5.0)
+    gap = openmc.Sphere(r=6.0)
+    boundary = openmc.Sphere(r=100.0, boundary_type='vacuum')
+    model.geometry = openmc.Geometry([
+        openmc.Cell(fill=mat, region=-inner),
+        openmc.Cell(region=+gap & -boundary),
+    ])
+
+    # Losing particles is the point here, not a failure
+    model.settings.max_lost_particles = 10 * model.settings.particles
+    model.settings.max_write_lost_particles = 1
+    model.run()
+
+    # How many files get written depends on the thread count, so take any one
+    restart_files = sorted(Path.cwd().glob('particle_*.h5'))
+    assert restart_files
+
+    # Restarting reads the same data the original run did, none of it neutron
+    openmc.run(restart_file=restart_files[0])

@@ -60,8 +60,43 @@ AngleDistribution::AngleDistribution(
     Tabular* mudist =
       new Tabular {x.data(), p.data(), n, int2interp(interp[i]), c.data()};
 
+    // First moment of this table, for mean_deflection(). Integrating mu over
+    // the tabulated CDF is exactly what sampling the CDF produces, so this is
+    // the mean the transport sees rather than an independent estimate of it.
+    double mean_mu = 0.0;
+    for (int k = 0; k < n - 1; ++k) {
+      mean_mu += (c[k + 1] - c[k]) * 0.5 * (x[k] + x[k + 1]);
+    }
+    mean_deflection_.push_back(1.0 - mean_mu);
+
     distribution_.emplace_back(mudist);
   }
+}
+
+double AngleDistribution::mean_deflection(double E) const
+{
+  auto n = energy_.size();
+  if (n == 0)
+    return 0.0;
+  if (n == 1)
+    return mean_deflection_[0];
+
+  int i;
+  double r;
+  get_energy_index(energy_, E, i, r);
+
+  if (interp_ == AngleEnergyInterp::log_correlated) {
+    double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
+    f = std::max(0.0, std::min(1.0, f));
+    double d_low = mean_deflection_[i];
+    double d_high = mean_deflection_[i + 1];
+    if (d_low > 0.0 && d_high > 0.0)
+      return std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high));
+    return (1.0 - f) * d_low + f * d_high;
+  }
+
+  // Choosing a table at random gives the linear average of the two
+  return (1.0 - r) * mean_deflection_[i] + r * mean_deflection_[i + 1];
 }
 
 double AngleDistribution::sample(double E, uint64_t* seed) const

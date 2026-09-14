@@ -71,6 +71,10 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read elastic scattering
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
+  has_elastic_transport_ = object_exists(rgroup, "xs_transport");
+  if (has_elastic_transport_) {
+    read_dataset(rgroup, "xs_transport", elastic_transport_);
+  }
   hid_t dist_group = open_group(rgroup, "distribution");
   // Elastic angular data is tabulated on a sparse, geometric energy grid --
   // for aluminium there is no table between 256 keV and 10 MeV, an interval
@@ -207,9 +211,66 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  return elastic_angle_.sample(E, seed);
+  double mu = elastic_angle_.sample(E, seed);
+  if (!has_elastic_transport_)
+    return mu;
+
+  // The angular tables are spaced far too sparsely to interpolate between:
+  // for aluminium there is none between 256 keV and 10 MeV, an interval across
+  // which 1-<mu> falls by a factor of 35. Whatever is done with them, the mean
+  // deflection in that gap is a guess.
+  //
+  // It does not have to be. EPRDATA14 tabulates the transport-corrected
+  // elastic cross section on the same 373-point grid as the cross sections,
+  // and its ratio to the total elastic cross section is exactly 1-<mu>. Use it
+  // to set the mean deflection and let the tables supply only the shape, by
+  // scaling the sampled deflection to the tabulated first moment.
+  //
+  // The first moment is what governs multiple scattering, so getting it right
+  // matters far more than the detail of the shape between tables. Where a
+  // table does exist the two agree to better than 2%, so this leaves the
+  // sampling essentially untouched there and corrects it only in the gaps.
+  double target = this->mean_deflection(E);
+  if (target <= 0.0)
+    return mu;
+  double sampled = elastic_angle_.mean_deflection(E);
+  if (sampled <= 0.0)
+    return mu;
+
+  double deflection = (1.0 - mu) * (target / sampled);
+  // 1-mu cannot exceed 2; a rescaling that overshoots means exact backscatter
+  return 1.0 - std::min(2.0, deflection);
 }
 
+//! Mean deflection 1-<mu> from the transport-corrected cross section
+double ElectronInteraction::mean_deflection(double E) const
+{
+  int n = energy_.size();
+  if (E <= energy_[0])
+    return elastic_(0) > 0.0 ? elastic_transport_(0) / elastic_(0) : 0.0;
+  if (E >= energy_(n - 1))
+    return elastic_(n - 1) > 0.0 ? elastic_transport_(n - 1) / elastic_(n - 1)
+                                 : 0.0;
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return elastic_(i) > 0.0 ? elastic_transport_(i) / elastic_(i) : 0.0;
+
+  double r0 = elastic_(i) > 0.0 ? elastic_transport_(i) / elastic_(i) : 0.0;
+  double r1 =
+    elastic_(i + 1) > 0.0 ? elastic_transport_(i + 1) / elastic_(i + 1) : 0.0;
+
+  // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
+  // logarithmically; a linear interpolation would badly overshoot in between.
+  if (r0 > 0.0 && r1 > 0.0) {
+    double f = std::log(E / e0) / std::log(e1 / e0);
+    return std::exp((1.0 - f) * std::log(r0) + f * std::log(r1));
+  }
+  double f = (E - e0) / (e1 - e0);
+  return (1.0 - f) * r0 + f * r1;
+}
 double ElectronInteraction::excitation(double E) const
 {
   return E - excitation_energy_loss_(E);

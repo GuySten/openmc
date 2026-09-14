@@ -44,6 +44,7 @@ class IncidentElectron:
         self.energy_grid = None
         self.elastic_xs = None
         self.elastic_dist = None
+        self.elastic_transport_xs = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_dist = None
         self.excitation_xs = None
@@ -140,6 +141,23 @@ class IncidentElectron:
         # with these angular tables would double count the small-angle
         # treatment.
         data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
+
+        # EPRDATA14 adds the transport-corrected elastic cross section at
+        # JXS(27), on this same dense energy grid, followed by a copy of the
+        # total elastic cross section above. Its ratio to the total is the mean
+        # deflection 1-<mu>, and it agrees with the first moment of the ELAS
+        # angular tables to better than 2% at every energy where a table exists.
+        #
+        # It is worth carrying because the angular tables are tabulated far too
+        # sparsely to interpolate: for aluminium there is no table between
+        # 256 keV and 10 MeV, and 1-<mu> falls by a factor of 35 across that
+        # gap. This gives the correct value on the 373-point grid instead of
+        # requiring it to be guessed between two distant tables.
+        if format_flag == 3:
+            j_transport = ace.jxs[27]
+            if j_transport > 0:
+                data.elastic_transport_xs = ace.xss[
+                    j_transport : j_transport + n_energy]
         data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
         data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
 
@@ -241,6 +259,9 @@ class IncidentElectron:
             
             elastic_group = group.create_group("elastic")
             elastic_group.create_dataset("xs", data=self.elastic_xs)
+            if self.elastic_transport_xs is not None:
+                elastic_group.create_dataset(
+                    "xs_transport", data=self.elastic_transport_xs)
             self.elastic_dist.to_hdf5(elastic_group.create_group("distribution"))
             
             excitation_group = group.create_group("excitation")

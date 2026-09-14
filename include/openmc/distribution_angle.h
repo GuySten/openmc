@@ -56,6 +56,17 @@ public:
   //! \return Probability density for the scattering cosine
   double evaluate(double E, double mu) const;
 
+  //! Mean deflection 1-<mu> that sample() actually produces at this energy
+  //
+  // Interpolated between the tabulated distributions the same way sample()
+  // combines them, so it describes the sampler rather than the underlying
+  // data. Lets a caller that knows the correct first moment from elsewhere
+  // correct for however coarsely the tables are spaced.
+  //
+  //! \param[in] E Particle energy in [eV]
+  //! \return Mean of 1-mu, or 0 if the distribution is empty
+  double mean_deflection(double E) const;
+
   //! Determine whether angle distribution is empty
   //! \return Whether distribution is empty
   bool empty() const { return energy_.empty(); }
@@ -63,6 +74,7 @@ public:
 private:
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;
+  vector<double> mean_deflection_; //!< 1-<mu> of each tabulated distribution
   AngleEnergyInterp interp_ = AngleEnergyInterp::linear_stochastic;
 };
 

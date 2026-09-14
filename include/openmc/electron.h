@@ -31,6 +31,10 @@ public:
 
   double elastic_scatter(double E, uint64_t* seed) const;
 
+  //! Mean deflection 1-<mu> at a given energy, from the transport-corrected
+  //! elastic cross section. Only meaningful when the library provides it.
+  double mean_deflection(double E) const;
+
   double excitation(double E) const;
 
   void ionization(Particle& p, int i_shell) const;
@@ -54,6 +58,11 @@ public:
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
   tensor::Tensor<double> elastic_;
+  //! Transport-corrected elastic cross section, if the library provides it.
+  //! Its ratio to elastic_ is the mean deflection 1-<mu> on the dense energy
+  //! grid, which the sparse angular tables cannot supply between themselves.
+  tensor::Tensor<double> elastic_transport_;
+  bool has_elastic_transport_ = false;
   AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;

@@ -313,6 +313,7 @@ list(APPEND libopenmc_SOURCES
   src/angle_energy.cpp
   src/atomic_mass.cpp
   src/bank.cpp
+  src/buildup.cpp
   src/boundary_condition.cpp
   src/bremsstrahlung.cpp
   src/cell.cpp

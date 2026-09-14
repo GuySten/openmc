@@ -58,18 +58,42 @@ void validate_particle_type(ParticleType type, const std::string& context)
       type.str(), type.pdg_number(), context));
 }
 
-//! Turn on transport of a source particle type so that the cross sections it
-//! needs are loaded. Electrons and positrons are handled as part of photon
-//! transport.
+//! Whether the run mode samples the external source at all
+bool samples_external_source()
+{
+  return settings::run_mode == RunMode::EIGENVALUE ||
+         settings::run_mode == RunMode::FIXED_SOURCE;
+}
+
+//! Turn on photon transport if a source emits photons, so that the cross
+//! sections it needs are loaded. Electrons and positrons are transported as
+//! part of photon transport.
+//
+//! There is no neutron counterpart: photon transport is off by default, so
+//! turning it on fills in something the user did not specify, whereas neutron
+//! transport is only ever off because the user asked for it. Overriding that
+//! would quietly change which particles a calculation transports, so a source
+//! that emits neutrons is rejected instead -- see check_neutron_source.
 void enable_transport(ParticleType type)
 {
-  if (type == ParticleType::neutron()) {
-    settings::neutron_transport = true;
-  } else if (type == ParticleType::photon() ||
-             type == ParticleType::electron() ||
-             type == ParticleType::positron()) {
+  if (type == ParticleType::photon() || type == ParticleType::electron() ||
+      type == ParticleType::positron()) {
     settings::photon_transport = true;
   }
+}
+
+//! Reject a source that emits neutrons when neutron transport is turned off
+void check_neutron_source(ParticleType type, const std::string& context)
+{
+  if (settings::neutron_transport || !type.is_neutron())
+    return;
+  if (!samples_external_source())
+    return;
+
+  fatal_error(fmt::format("{} emits neutrons, but neutron transport is turned "
+                          "off. Either turn it back on or give a source that "
+                          "does not emit neutrons.",
+    context));
 }
 
 } // namespace
@@ -337,6 +361,7 @@ IndependentSource::IndependentSource(pugi::xml_node node) : Source(node)
     particle_ = ParticleType(temp_str);
   }
   validate_particle_type(particle_, "IndependentSource");
+  check_neutron_source(particle_, "A source");
   enable_transport(particle_);
 
   // Check for external source file
@@ -545,6 +570,7 @@ void FileSource::load_sites_from_file(const std::string& path)
   // of each type so that the appropriate cross sections are loaded
   for (const auto& site : this->sites_) {
     validate_particle_type(site.particle, "FileSource");
+    check_neutron_source(site.particle, fmt::format("Source file '{}'", path));
     enable_transport(site.particle);
   }
 }

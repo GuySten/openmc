@@ -60,6 +60,14 @@ Material::Material(pugi::xml_node node)
   }
 
   if (check_for_node(node, "cfg")) {
+    // NCrystal configures neutron scattering, so like S(a,b) data it has no
+    // bearing on a calculation that transports no neutrons
+    if (!settings::neutron_transport) {
+      fatal_error("An NCrystal configuration was given for material " +
+                  std::to_string(id_) +
+                  ", but neutron transport is turned off.");
+    }
+
     auto cfg = get_node_value(node, "cfg");
     write_message(
       5, "NCrystal config string for material #{}: '{}'", this->id(), cfg);

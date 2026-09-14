@@ -66,13 +66,26 @@ TEST_CASE("Nuclide constructed without cross section data")
     }
   }
 
+  SECTION("an elemental evaluation carries the natural atomic weight")
+  {
+    // Some libraries provide C0 in place of C12 and C13
+    Nuclide nuc {"C0"};
+    REQUIRE(nuc.Z_ == 6);
+    REQUIRE(nuc.A_ == 0);
+
+    // Natural carbon, not C12
+    REQUIRE(nuc.awr_ == Approx(11.9079).epsilon(1.0e-5));
+    REQUIRE(nuc.awr_ > atomic_mass(6, 12) / MASS_NEUTRON);
+  }
+
   SECTION("names that carry no usable mass are rejected")
   {
-    // Elemental evaluations have no mass in a table of nuclides
-    REQUIRE_THROWS_AS(Nuclide {"C0"}, std::runtime_error);
     REQUIRE_THROWS_AS(Nuclide {"not a nuclide"}, std::runtime_error);
 
+    // Tc has no naturally occurring isotopes, so no elemental weight either
+    REQUIRE_THROWS_AS(Nuclide {"Tc0"}, std::runtime_error);
+
     // A rejected name leaves nothing registered behind
-    REQUIRE(data::nuclide_map.find("C0") == data::nuclide_map.end());
+    REQUIRE(data::nuclide_map.find("Tc0") == data::nuclide_map.end());
   }
 }

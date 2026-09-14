@@ -92,20 +92,20 @@ def test_neutron_data_still_required_by_default(photon_only_xs):
         model.run()
 
 
-def test_neutron_source_turns_neutron_transport_back_on(photon_only_xs, capsys):
-    """A neutron source overrides the setting, as a photon source does."""
+def test_neutron_source_rejected(photon_only_xs):
+    """A source emitting neutrons contradicts the setting and is rejected.
+
+    Turning neutron transport back on instead would quietly change which
+    particles the calculation transports, and would report the resulting
+    missing data rather than the source that caused it.
+    """
     model, _ = aluminum_photon_model()
     model.settings.neutron_transport = False
     model.settings.source = openmc.IndependentSource(
         space=openmc.stats.Point(), particle='neutron')
 
-    # Neutron data is needed again, rather than neutrons being transported
-    # without any data to transport them with
-    with pytest.raises(RuntimeError, match='Al27'):
+    with pytest.raises(RuntimeError, match='emits neutrons'):
         model.run()
-
-    # Overriding what the user asked for is not done silently
-    assert 'turned back on' in capsys.readouterr().out
 
 
 def test_no_source_reports_the_missing_source(photon_only_xs):
@@ -243,3 +243,40 @@ def test_micro_tally_outside_the_material(photon_only_xs):
     model.tallies = openmc.Tallies([tally])
 
     model.run()
+
+
+def test_elemental_evaluation(photon_only_xs):
+    """Some libraries provide an element in place of its isotopes.
+
+    A material carried over from a calculation that used a neutron library may
+    hold one, so its mass has to come from the natural-abundance-weighted
+    atomic weight rather than from a table of nuclides.
+    """
+    openmc.reset_auto_ids()
+
+    mat = openmc.Material()
+    mat.add_nuclide('C0', 1.0)
+    mat.set_density('g/cm3', 1.7)
+
+    sphere = openmc.Sphere(r=5.0, boundary_type='vacuum')
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([openmc.Cell(fill=mat, region=-sphere)])
+    model.settings.run_mode = 'fixed source'
+    model.settings.photon_transport = True
+    model.settings.neutron_transport = False
+    model.settings.particles = 50
+    model.settings.batches = 2
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point(),
+        energy=openmc.stats.Discrete([1.0e6], [1.0]),
+        particle='photon')
+    model.run()
+
+    with h5py.File('summary.h5', 'r') as f:
+        awrs = f['nuclides']['awrs'][()]
+        atom_density = f['materials'][f'material {mat.id}']['atom_density'][()]
+
+    mass = openmc.data.atomic_mass('C0')
+    assert awrs[0] == pytest.approx(mass / openmc.data.NEUTRON_MASS, rel=1e-8)
+    assert atom_density == pytest.approx(
+        1.0e-24 * 1.7 * openmc.data.AVOGADRO / mass, rel=1e-8)

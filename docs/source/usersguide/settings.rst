@@ -712,26 +712,27 @@ Materials are still defined in terms of nuclides, and
 photon data does not distinguish isotopes, elements are expanded using natural
 abundances.
 
-Because a nuclide's mass is looked up by its atomic and mass number, elemental
-evaluations such as ``C0`` cannot be used. Materials built against a photon-only
-library never produce these, but one carried over from a calculation that used a
-neutron library may contain them, since several common libraries provide carbon,
-vanadium, zinc and tungsten in elemental form. Add the isotopes of such an
-element individually, or leave neutron transport on.
+Elemental evaluations such as ``C0``, which several libraries provide in place
+of the individual isotopes of carbon, vanadium, zinc, platinum, osmium, thallium
+and tungsten, are supported: their mass is the natural-abundance-weighted atomic
+weight, which is what such an evaluation reports as its atomic weight ratio.
 
-Just as a photon source turns photon transport on, a source that emits neutrons
-turns neutron transport back on, so a model is never left transporting particles
-for which no data was read. A warning is issued when this overrides what was
-asked for. A model that specifies no source at all falls back to OpenMC's
-default source, which emits neutrons; rather than quietly reading neutron data
-for it, OpenMC reports that a source has to be given explicitly.
+A photon source turns photon transport on, since that setting is off by default
+and a source saying it emits photons settles what was never specified. Neutron
+transport has no counterpart, because it is only ever off because it was asked
+for: a source that emits neutrons is reported as an error instead of quietly
+turning it back on, which would change which particles the calculation
+transports and would surface later as missing data rather than as the source
+that caused it. A model specifying no source at all falls back to OpenMC's
+default source, which emits neutrons, and is reported the same way.
 
-Other run modes behave the same way. A stochastic volume calculation samples no
-source and transports nothing, so it reports its nuclide inventories without
-reading any data at all; plotting reads none either. A particle restart
-transports whatever the restart file holds, and since the particle's type is
-only known once that file is read, a restarted neutron is reported as an error
-rather than transported with no data.
+Only eigenvalue and fixed source calculations sample the external source, so
+sources are not checked for the other run modes. A stochastic volume calculation
+samples no source and transports nothing, reporting its nuclide inventories
+without reading any data at all; plotting reads none either. A particle restart
+transports whatever the restart file holds, and a source written in a plugin can
+emit anything at all; neither type is known ahead of time, so both are checked
+when the particle appears.
 
 The photon transport step of an :ref:`R2S calculation <usersguide_decay_sources>`
 is a natural fit for this setting: its source comes from the decay of activated
@@ -741,8 +742,9 @@ produced by neutron reactions; :attr:`Settings.use_decay_photons` is therefore
 rejected here rather than silently producing no photons at all.
 
 Turning neutron transport off is likewise not compatible with eigenvalue
-calculations, multi-group mode, thermal scattering data, resonance scattering,
-or multipole data, each of which is rejected with an error rather than silently
+calculations, multi-group mode, thermal scattering data, NCrystal
+configurations, resonance scattering, or multipole data, each of which is
+rejected with an error rather than silently
 ignored. The random ray solver requires multi-group mode, so it is covered by
 that restriction.
 

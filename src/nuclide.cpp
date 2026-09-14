@@ -23,8 +23,9 @@
 
 #include <algorithm> // for sort, min_element
 #include <cassert>
-#include <stdexcept> // for invalid_argument
+#include <stdexcept> // for invalid_argument, runtime_error
 #include <string>    // for to_string, stoi
+#include <string_view>
 
 namespace openmc {
 
@@ -357,35 +358,67 @@ Nuclide::Nuclide(hid_t group, const vector<double>& temperature)
   this->create_derived(prompt_photons_.get(), delayed_photons_.get());
 }
 
+namespace {
+
+//! Atomic number of an elemental evaluation such as "C0", or zero
+//
+//! Some data libraries provide an element as a single evaluation standing in
+//! for all of its naturally occurring isotopes. Such a name is not a nuclide
+//! name, so it has to be recognized separately.
+int elemental_atomic_number(const std::string& name)
+{
+  if (name.size() < 2 || name.back() != '0')
+    return 0;
+  std::string_view symbol {name};
+  symbol.remove_suffix(1);
+  return atomic_number_from_symbol(symbol);
+}
+
+} // namespace
+
 Nuclide::Nuclide(const std::string& name)
 {
   // Without a data library, the only information about the nuclide is what can
   // be inferred from its name. Everything is validated before any global state
   // is touched, so that a bad name leaves nothing half-registered behind.
-  ParticleType type;
+  int Z = 0;
+  int A = 0;
+  int metastable = 0;
+  double mass = 0.0;
+
   try {
-    type = ParticleType {name};
+    ParticleType type {name};
+    if (!type.is_nucleus()) {
+      throw std::runtime_error {
+        fmt::format("'{}' does not name a nuclide.", name)};
+    }
+
+    // The proton has its own PDG code rather than the H1 nuclear one
+    int32_t pdg = type.pdg_number();
+    if (pdg == PDG_PROTON)
+      pdg = ParticleType {1, 1}.pdg_number();
+
+    Z = (pdg / 10000) % 1000;
+    A = (pdg / 10) % 1000;
+    metastable = pdg % 10;
+
+    // Use the tabulated atomic mass in place of the atomic weight ratio that
+    // would otherwise come from the neutron data library
+    mass = atomic_mass_from_pdg(pdg);
+
   } catch (const std::invalid_argument&) {
-    throw std::runtime_error {fmt::format(
-      "'{}' could not be interpreted as a nuclide name. With neutron transport "
-      "turned off, nuclide properties come from the name alone, so elemental "
-      "data such as C0 cannot be used. Either give the isotopes of the element "
-      "individually or leave neutron transport on.",
-      name)};
-  }
-  if (!type.is_nucleus()) {
-    throw std::runtime_error {
-      fmt::format("'{}' does not name a nuclide.", name)};
+    // An elemental evaluation names an element rather than a nuclide, and its
+    // atomic weight ratio is the natural-abundance-weighted atomic mass
+    Z = elemental_atomic_number(name);
+    if (Z == 0) {
+      throw std::runtime_error {fmt::format(
+        "'{}' could not be interpreted as a nuclide name. With neutron "
+        "transport turned off, nuclide properties come from the name alone.",
+        name)};
+    }
+    mass = atomic_weight(Z);
   }
 
-  // The proton has its own PDG code rather than the H1 nuclear one
-  int32_t pdg = type.pdg_number();
-  if (pdg == PDG_PROTON)
-    pdg = ParticleType {1, 1}.pdg_number();
-
-  // Use the tabulated atomic mass in place of the atomic weight ratio that
-  // would otherwise come from the neutron data library
-  double mass = atomic_mass_from_pdg(pdg);
   if (mass <= 0.0) {
     throw std::runtime_error {fmt::format(
       "No tabulated atomic mass is available for {}, which is needed to "
@@ -393,9 +426,9 @@ Nuclide::Nuclide(const std::string& name)
       name)};
   }
 
-  Z_ = (pdg / 10000) % 1000;
-  A_ = (pdg / 10) % 1000;
-  metastable_ = pdg % 10;
+  Z_ = Z;
+  A_ = A;
+  metastable_ = metastable;
   awr_ = mass / MASS_NEUTRON;
 
   // No reaction data exists, so every lookup has to miss

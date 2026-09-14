@@ -516,19 +516,21 @@ sampled independently:
 
     \mu = \left[\frac{T'(T + 2m_ec^2)}{T(T' + 2m_ec^2)}\right]^{1/2},
     \quad
-    \mu_{\text{k}} = \left[\frac{T_{\text{k}}(T + 2m_ec^2)}
-    {T(T_{\text{k}} + 2m_ec^2)}\right]^{1/2}.
+    \mu_{\text{k}} = \left[\frac{W(T + 2m_ec^2)}
+    {T(W + 2m_ec^2)}\right]^{1/2}, \quad W = T_{\text{k}} + B.
 
 The two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
-This pair conserves momentum exactly only for :math:`B = 0`. For a bound
-electron the binding energy is given to the atom while no momentum is, and the
-primary is deflected according to its true residual energy :math:`T'` while the
-knock-on is deflected according to its kinetic energy :math:`T_{\text{k}}`
-rather than the full energy transfer :math:`T_{\text{k}} + B`, so the balance
-is approximate. The residual grows with :math:`B/T`: below one percent for an
-outer shell of a light element at 1 MeV, but reaching tens of percent for a
-deep shell ionised close to its threshold. The vacancy is passed to the atomic
-relaxation model, which follows the full cascade.
+Both deflections are set by the energy the primary transferred, :math:`W`, and
+not by the kinetic energy the knock-on is left with: the atom absorbs the
+binding energy :math:`B` but carries away negligible momentum, so it is
+:math:`W` that fixes the recoil direction. This is the convention PENELOPE
+uses. Deflecting the knock-on by :math:`T_{\text{k}}` instead would eject it
+too far sideways, by 22% of the incident momentum for a tantalum K shell
+ionised at 100 keV. The pair is still not exactly momentum-conserving, since
+the knock-on leaves with the momentum of :math:`T_{\text{k}}` rather than of
+:math:`W`; no free-electron model of a bound target can conserve both. The
+vacancy is passed to the atomic relaxation model, which follows the full
+cascade.
 
 .. _bremsstrahlung_angle:
 

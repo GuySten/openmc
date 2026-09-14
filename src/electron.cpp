@@ -378,8 +378,17 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
       name_, i_shell, p.E(), E_knock, e_b));
   }
 
+  // The knock-on is deflected according to the energy the primary actually
+  // transferred, not the kinetic energy it is left with. The two differ by the
+  // binding energy, which the atom absorbs: the momentum transfer that set the
+  // recoil direction corresponds to E_knock + e_b, so using E_knock alone
+  // ejects the electron too far sideways -- by 22% of the incident momentum
+  // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
+  // makes the two polar angles the consistent free binary-collision pair for a
+  // transfer of E_knock + e_b.
+  double E_transfer = E_knock + e_b;
   double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_knock));
+                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_transfer));
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
   p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
 

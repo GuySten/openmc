@@ -239,7 +239,8 @@ void PointFilter::get_all_bins(
   // over the ParticleRay it just traced. Keying on the estimator makes that
   // invariant explicit here instead of assumed, and leaves the filter inert
   // if it is ever reached any other way.
-  if (estimator != TallyEstimator::NEXT_EVENT)
+  if (estimator != TallyEstimator::NEXT_EVENT &&
+      estimator != TallyEstimator::UNCOLLIDED)
     return;
   const auto& ray = static_cast<const ParticleRay&>(p);
 

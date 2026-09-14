@@ -49,7 +49,8 @@ void score_point_tally_elastic(
     }
   };
   score_point_tally_impl(
-    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf);
+    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf,
+    model::active_point_collision_tallies);
 }
 
 void score_point_tally_inelastic(
@@ -70,7 +71,8 @@ void score_point_tally_inelastic(
            (2.0 * PI) * yield;
   };
   score_point_tally_impl(
-    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf);
+    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf,
+    model::active_point_collision_tallies);
 }
 
 void score_point_tally_fission(
@@ -101,7 +103,8 @@ void score_point_tally_fission(
   // and the two differ whenever the collision weight is not unity (survival
   // biasing, weight windows, uniform fission site weighting).
   score_point_tally_impl(
-    site.r, site.particle, site.time, site.wgt, p.current_seed(), pdf);
+    site.r, site.particle, site.time, site.wgt, p.current_seed(), pdf,
+    model::active_point_collision_tallies);
 }
 
 void score_point_tally_sab(Particle& p, int i_nuclide, const ThermalData& sab,
@@ -120,7 +123,8 @@ void score_point_tally_sab(Particle& p, int i_nuclide, const ThermalData& sab,
            (2.0 * PI);
   };
   score_point_tally_impl(
-    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf);
+    p.r(), p.type(), p.time(), p.wgt(), p.current_seed(), pdf,
+    model::active_point_collision_tallies);
 }
 
 void score_point_tally_source(
@@ -146,7 +150,8 @@ void score_point_tally_source(
   // correlating the URR realization along every uncollided path.
   uint64_t ray_seed = *seed;
   score_point_tally_impl(
-    site.r, site.particle, site.time, site.wgt, &ray_seed, pdf);
+    site.r, site.particle, site.time, site.wgt, &ray_seed, pdf,
+    model::active_point_tallies);
 }
 
 } // namespace openmc

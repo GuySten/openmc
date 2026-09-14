@@ -302,7 +302,17 @@ enum class TallyResult { VALUE, SUM, SUM_SQ, SUM_THIRD, SUM_FOURTH };
 
 enum class TallyType { VOLUME, MESH_SURFACE, SURFACE, PULSE_HEIGHT, POINT };
 
-enum class TallyEstimator { ANALOG, TRACKLENGTH, COLLISION, NEXT_EVENT };
+// UNCOLLIDED is a next-event estimator restricted to source emissions: it
+// scores the flux that reaches the detector without ever colliding, and
+// deliberately omits the scattered component. See Tally::set_strides() and
+// model::active_point_collision_tallies.
+enum class TallyEstimator {
+  ANALOG,
+  TRACKLENGTH,
+  COLLISION,
+  NEXT_EVENT,
+  UNCOLLIDED
+};
 
 enum class TallyEvent { SURFACE, LATTICE, KILL, SCATTER, ABSORB };
 

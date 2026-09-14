@@ -90,6 +90,7 @@ vector<int> active_tracklength_tallies;
 vector<int> active_timed_tracklength_tallies;
 vector<int> active_collision_tallies;
 vector<int> active_point_tallies;
+vector<int> active_point_collision_tallies;
 vector<int> active_meshsurf_tallies;
 vector<int> active_surface_tallies;
 vector<int> active_pulse_height_tallies;
@@ -376,8 +377,44 @@ Tally::Tally(pugi::xml_node node)
   // Check if user specified estimator
   if (check_for_node(node, "estimator")) {
     std::string est = get_node_value(node, "estimator");
+    // A PointFilter has already put this tally on the next-event estimator,
+    // and none of the volume estimators can produce what it measures. Saying
+    // so beats silently overwriting the estimator and tallying nothing.
+    if (estimator_ == TallyEstimator::NEXT_EVENT && est != "uncollided" &&
+        est != "next-event" && est != "nextevent") {
+      throw std::runtime_error {fmt::format(
+        "Cannot use the '{}' estimator for tally {}: it has a point filter, "
+        "which requires the next-event estimator. The only choice a point "
+        "tally offers is 'uncollided', which keeps the source term and drops "
+        "the scattered one.",
+        est, id_)};
+    }
+
     if (est == "analog") {
       estimator_ = TallyEstimator::ANALOG;
+    } else if (est == "next-event" || est == "nextevent") {
+      if (estimator_ != TallyEstimator::NEXT_EVENT) {
+        throw std::runtime_error {fmt::format(
+          "Tally {} asks for the next-event estimator but has no point "
+          "filter. The estimator scores toward a detector position, which is "
+          "what an openmc.PointFilter supplies.",
+          id_)};
+      }
+    } else if (est == "uncollided") {
+      // Keep only the source term of the next-event estimator: the flux that
+      // reaches the detector without ever colliding. What it drops -- the
+      // scattered component -- is exactly what a buildup factor supplies, so
+      // this is the tally half of a point-kernel calculation. It is also the
+      // one form of point tally that is well defined with photon transport
+      // on, since no photon collision goes unscored.
+      if (estimator_ != TallyEstimator::NEXT_EVENT) {
+        throw std::runtime_error {fmt::format(
+          "Tally {} asks for the uncollided estimator but has no point "
+          "filter. Uncollided flux is scored toward a detector position, "
+          "which is what an openmc.PointFilter supplies.",
+          id_)};
+      }
+      estimator_ = TallyEstimator::UNCOLLIDED;
     } else if (est == "tracklength" || est == "track-length" ||
                est == "pathlength" || est == "path-length") {
       // If the estimator was set to an analog estimator, this means the
@@ -567,16 +604,8 @@ void Tally::set_scores(const vector<std::string>& scores)
   bool surface_present = false;
   bool meshsurface_present = false;
   bool non_cell_energy_present = false;
-  bool neutrons_only = false;
   for (auto i_filt : filters_) {
     const auto* filt {model::tally_filters[i_filt].get()};
-    if (const auto* pf {dynamic_cast<const ParticleFilter*>(filt)}) {
-      const auto& particles {pf->particles()};
-      neutrons_only =
-        !particles.empty() &&
-        std::all_of(particles.begin(), particles.end(),
-          [](ParticleType t) { return t == ParticleType::neutron(); });
-    }
     // Checking for only cell and energy filters for pulse-height tally
     if (!(filt->type() == FilterType::CELL ||
           filt->type() == FilterType::ENERGY)) {
@@ -615,17 +644,10 @@ void Tally::set_scores(const vector<std::string>& scores)
     if (has_nonvacuum_boundary())
       fatal_error(
         "Cannot use point detectors with non-vacuum boundary conditions.");
-    // The estimator has scoring hooks in the neutron collision physics only,
-    // so nothing a photon does on its way to a detector is ever counted. A
-    // tally restricted to neutrons is still correct -- enabling photon
-    // transport does not change the neutron random walk -- so only reject the
-    // cases whose results would be silently incomplete.
-    if (settings::photon_transport && !neutrons_only)
-      fatal_error("Cannot use point detectors with photon transport unless the "
-                  "tally is restricted to neutrons with a ParticleFilter. The "
-                  "next-event estimator does not score photon collisions or "
-                  "secondary photon production, so photon results would be "
-                  "silently incomplete.");
+    // The photon-transport restriction is checked in setup_active_tallies()
+    // rather than here. It turns on the estimator, and the estimator is not
+    // final until the tally's <estimator> node has been read -- which happens
+    // after this function runs.
     for (const auto& src : model::external_sources) {
       const auto* indep {dynamic_cast<const IndependentSource*>(src.get())};
       if (!indep)
@@ -1285,6 +1307,7 @@ void setup_active_tallies()
   model::active_surface_tallies.clear();
   model::active_pulse_height_tallies.clear();
   model::active_point_tallies.clear();
+  model::active_point_collision_tallies.clear();
   model::active_point_detectors.clear();
   model::time_grid.clear();
 
@@ -1330,6 +1353,8 @@ void setup_active_tallies()
 
       case TallyType::POINT:
         model::active_point_tallies.push_back(i);
+        if (tally.estimator_ == TallyEstimator::NEXT_EVENT)
+          model::active_point_collision_tallies.push_back(i);
         // Populate the set of unique detector positions from PointFilter
         if (auto pf = tally.get_filter<PointFilter>()) {
           for (const auto& [pos, r0] : pf->detectors()) {
@@ -1338,6 +1363,44 @@ void setup_active_tallies()
         }
         break;
       }
+    }
+  }
+
+  // The next-event estimator has scoring hooks in the neutron collision
+  // physics only, so nothing a photon does on its way to a detector is ever
+  // counted. A tally restricted to neutrons is still correct -- enabling
+  // photon transport does not change the neutron random walk -- so only the
+  // cases whose results would be silently incomplete are rejected.
+  //
+  // An uncollided tally is never one of them, and that is why this is checked
+  // against active_point_collision_tallies rather than against every point
+  // tally: asking for the source term alone means the collisions the
+  // estimator cannot score are ones the tally was never going to count, so
+  // the result is complete by construction whatever particle it follows. That
+  // is what makes a photon point-kernel possible here -- the scattered
+  // component left out is exactly the part a buildup factor puts back.
+  //
+  // Checked here rather than in set_scores() because the estimator is not
+  // final until the tally's <estimator> node has been read, and every way of
+  // building a tally arrives here.
+  if (settings::photon_transport) {
+    for (auto i : model::active_point_collision_tallies) {
+      const auto& tally {*model::tallies[i]};
+      bool neutrons_only = false;
+      if (auto pf = tally.get_filter<ParticleFilter>()) {
+        const auto& particles {pf->particles()};
+        neutrons_only = !particles.empty() &&
+                        std::all_of(particles.begin(), particles.end(),
+                          [](ParticleType t) { return t.is_neutron(); });
+      }
+      if (!neutrons_only)
+        fatal_error(fmt::format(
+          "Cannot use point detectors with photon transport unless tally {} "
+          "is restricted to neutrons with a ParticleFilter, or uses the "
+          "'uncollided' estimator. The next-event estimator does not score "
+          "photon collisions or secondary photon production, so photon "
+          "results would otherwise be silently incomplete.",
+          tally.id_));
     }
   }
 
@@ -1385,6 +1448,7 @@ void free_memory_tally()
   model::active_surface_tallies.clear();
   model::active_pulse_height_tallies.clear();
   model::active_point_tallies.clear();
+  model::active_point_collision_tallies.clear();
   model::active_point_detectors.clear();
   model::time_grid.clear();
   simulation::point_detector_rays.clear();

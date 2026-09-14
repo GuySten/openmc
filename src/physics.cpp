@@ -158,7 +158,7 @@ void sample_neutron_reaction(Particle& p)
   // exiting neutron
   const auto& ncrystal_mat = model::materials[p.material()]->ncrystal_mat();
   if (ncrystal_mat && p.E() < NCRYSTAL_MAX_ENERGY) {
-    if (!model::active_point_tallies.empty())
+    if (!model::active_point_collision_tallies.empty())
       fatal_error("Next-Event estimator does not support ncrystal materials");
     ncrystal_mat.scatter(p);
   } else {
@@ -282,7 +282,7 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
     // rejected site is never born and must not contribute. The emitted
     // particle is the site, not the colliding neutron, so it carries the
     // site's weight and (for delayed neutrons) its precursor decay time.
-    if (!model::active_point_tallies.empty()) {
+    if (!model::active_point_collision_tallies.empty()) {
       score_point_tally_fission(p, i_nuclide, rx, site);
     }
   }
@@ -826,7 +826,7 @@ void elastic_scatter(int i_nuclide, const Reaction& rx, double kT, Particle& p)
   // Find speed of neutron in CM
   vel = v_n.norm();
 
-  if (!model::active_point_tallies.empty()) {
+  if (!model::active_point_collision_tallies.empty()) {
     score_point_tally_elastic(p, i_nuclide, rx, 0, v_t);
   }
 
@@ -879,7 +879,7 @@ void sab_scatter(int i_nuclide, int i_sab, Particle& p)
   double E_out;
   auto& sab = data::thermal_scatt[i_sab]->data_[i_temp];
 
-  if (!model::active_point_tallies.empty()) {
+  if (!model::active_point_collision_tallies.empty()) {
     score_point_tally_sab(p, i_nuclide, sab, micro);
   }
 
@@ -1188,7 +1188,7 @@ void inelastic_scatter(int i_nuclide, const Reaction& rx, Particle& p)
 
   double yield = (*rx.products_[0].yield_)(E_in);
 
-  if (!model::active_point_tallies.empty()) {
+  if (!model::active_point_collision_tallies.empty()) {
     score_point_tally_inelastic(p, i_nuclide, rx, 0, yield);
   }
 

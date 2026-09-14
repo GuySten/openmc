@@ -112,10 +112,17 @@ void score_point_tally_source(
 //!   pdffunc that draws no random numbers needs this to seed the ray.
 //! \param[in] pdffunc Returns the emission density per steradian toward a
 //!   given direction, and sets the outgoing energy
+//! \param[in] tallies Which tallies to score to. Source emissions go to every
+//!   point tally; a collision goes only to those that asked for the scattered
+//!   component, i.e. model::active_point_collision_tallies.
 template<typename PDF>
 void score_point_tally_impl(const Position r, const ParticleType type,
-  const double time, const double wgt, uint64_t* seed, PDF pdffunc)
+  const double time, const double wgt, uint64_t* seed, PDF pdffunc,
+  const vector<int>& tallies)
 {
+  if (tallies.empty())
+    return;
+
   // A particle carrying no weight makes no contribution, and would divide by
   // zero in PointFilter::get_all_bins
   if (wgt == 0.0)
@@ -177,7 +184,7 @@ void score_point_tally_impl(const Position r, const ParticleType type,
     p.wgt_last() = wgt;
 
     double flux = wgt * pdf;
-    score_tracklength_tally_general(p, flux, model::active_point_tallies);
+    score_tracklength_tally_general(p, flux, tallies);
   }
 
   // Advance the base substream by a single step so that the next event draws

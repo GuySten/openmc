@@ -210,7 +210,16 @@ extern vector<int> active_analog_tallies;
 extern vector<int> active_tracklength_tallies;
 extern vector<int> active_timed_tracklength_tallies;
 extern vector<int> active_collision_tallies;
+//! Every tally with a PointFilter. Source emissions score to all of them.
 extern vector<int> active_point_tallies;
+
+//! The subset of active_point_tallies that also scores at collisions, i.e.
+//! those whose estimator is NEXT_EVENT rather than UNCOLLIDED. An
+//! uncollided tally wants only the source term, so the collision hooks in
+//! physics.cpp are driven by this list and skipped entirely when it is
+//! empty -- which is also what lets an uncollided tally run with photon
+//! transport, since there is then no unscored collision to be wrong about.
+extern vector<int> active_point_collision_tallies;
 extern vector<int> active_meshsurf_tallies;
 extern vector<int> active_surface_tallies;
 extern vector<int> active_pulse_height_tallies;

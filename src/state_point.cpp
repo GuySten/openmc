@@ -223,6 +223,8 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
           write_dataset(tally_group, "estimator", "collision");
         } else if (tally->estimator_ == TallyEstimator::NEXT_EVENT) {
           write_dataset(tally_group, "estimator", "next-event");
+        } else if (tally->estimator_ == TallyEstimator::UNCOLLIDED) {
+          write_dataset(tally_group, "estimator", "uncollided");
         }
 
         write_dataset(tally_group, "n_realizations", tally->n_realizations_);

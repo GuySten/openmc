@@ -714,14 +714,13 @@ abundances.
 
 Just as a photon source turns photon transport on, a source that emits neutrons
 turns neutron transport back on, so a model is never left transporting particles
-for which no data was read.
+for which no data was read. Note that a model with no source at all falls back
+to OpenMC's default neutron source, which will turn neutron transport back on;
+a photon-only calculation therefore has to specify its source explicitly.
 
-Because neutron transport cannot be turned off without something else to
-transport, ``neutron_transport = False`` requires photon transport to be enabled
-(either explicitly or by the source). It is not compatible with eigenvalue
-calculations, multi-group mode, thermal scattering data, resonance scattering,
-or decay photon sources, each of which is rejected with an error rather than
-silently ignored.
+Turning neutron transport off is not compatible with eigenvalue calculations,
+multi-group mode, thermal scattering data, resonance scattering, or decay photon
+sources, each of which is rejected with an error rather than silently ignored.
 
 --------------------------
 Generation of Output Files

@@ -554,11 +554,13 @@ taken from AME2020 rather than from the atomic weight ratios in the data
 library.
 
 A source that emits neutrons turns neutron transport back on, in the same way
-that a photon source turns photon transport on.
+that a photon source turns photon transport on. This includes the default source
+used when no source is given, so a calculation without neutrons has to specify
+its source.
 
-Turning neutron transport off requires photon transport to be enabled and is not
-compatible with eigenvalue calculations, multi-group mode, thermal scattering
-data, resonance scattering, or decay photon sources.
+Turning neutron transport off is not compatible with eigenvalue calculations,
+multi-group mode, thermal scattering data, resonance scattering, or decay photon
+sources.
 
   *Default*: true
 

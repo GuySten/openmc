@@ -1383,13 +1383,6 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
-  // Sources can turn transport of a particle type back on, so this is only
-  // settled once they have all been read
-  if (!neutron_transport && !photon_transport) {
-    fatal_error("Neutron transport is turned off but photon transport is not "
-                "turned on, so no particles would be transported.");
-  }
-
   // Reject options that act on neutron data, which is not read when neutrons
   // are not transported, rather than silently ignoring them
   if (!neutron_transport) {

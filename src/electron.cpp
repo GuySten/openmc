@@ -276,12 +276,16 @@ double peak_mean_deflection(int Z, double E)
                (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
 
   // <1-mu> = a(1+u)g(u)/u, with a = 2*eta, u = X0/a and g = ln(1+u) - u/(1+u).
-  // For u small the peak is far narrower than the cutoff and the deflection
-  // tends to X0/2, but g loses every significant digit to cancellation there,
-  // so use its series instead.
+  //
+  // log1p keeps the logarithm itself accurate, but g is a difference of two
+  // quantities that are both u to leading order and is only u^2/2, so it still
+  // loses about u of its precision: the relative error of the direct form is
+  // ~2*eps/u, against ~1.6*u^2 for the two-term series. They cross near
+  // u = 3e-6; switching at 1e-5 holds the whole range to 1.2e-10. Both regimes
+  // are reached, from u = 3e-10 (Am at 12 eV) to u = 1e9 (H at 100 GeV).
   double a = 2.0 * eta;
   double u = X0 / a;
-  double g = (u < 1.0e-4) ? 0.5 * u * u * (1.0 - 4.0 * u / 3.0)
+  double g = (u < 1.0e-5) ? 0.5 * u * u * (1.0 - 4.0 * u / 3.0)
                           : std::log1p(u) - u / (1.0 + u);
   return a * (1.0 + u) * g / u;
 }

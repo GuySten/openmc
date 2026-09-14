@@ -277,16 +277,27 @@ double peak_mean_deflection(int Z, double E)
 
   // <1-mu> = a(1+u)g(u)/u, with a = 2*eta, u = X0/a and g = ln(1+u) - u/(1+u).
   //
-  // log1p keeps the logarithm itself accurate, but g is a difference of two
-  // quantities that are both u to leading order and is only u^2/2, so it still
-  // loses about u of its precision: the relative error of the direct form is
-  // ~2*eps/u, against ~1.6*u^2 for the two-term series. They cross near
-  // u = 3e-6; switching at 1e-5 holds the whole range to 1.2e-10. Both regimes
-  // are reached, from u = 3e-10 (Am at 12 eV) to u = 1e9 (H at 100 GeV).
+  // g is log1pmx in disguise -- exactly -log1pmx(-w) for w = u/(1+u) -- and
+  // shares its problem: log1p keeps the logarithm accurate, but g subtracts
+  // two quantities that are both u to leading order and is itself only u^2/2,
+  // so it sheds about u of its precision however the terms are computed.
+  // Rewriting it does not help; log1p(u)/u, the substitution above and the
+  // expm1 form all relocate the cancellation rather than remove it, and all
+  // three degrade as ~2*eps/u. That is why no libm carries log1pmx and why
+  // every implementation of it splits into a series near zero.
+  //
+  // The series below is carried far enough that the split stops being a tuned
+  // parameter: at the handover its truncation error is 5e-13 and the direct
+  // form's rounding error is 4.7e-13, so neither branch limits the other and
+  // the worst error over the whole range, 4.7e-13, belongs to the direct form.
+  // Both branches are used: u runs from 3.4e-10 (Am at 12 eV) to 1e9 (H at
+  // 100 GeV).
   double a = 2.0 * eta;
   double u = X0 / a;
-  double g = (u < 1.0e-5) ? 0.5 * u * u * (1.0 - 4.0 * u / 3.0)
-                          : std::log1p(u) - u / (1.0 + u);
+  double g = (u < 5.0e-4)
+               ? 0.5 * u * u *
+                   (1.0 + u * (-4.0 / 3.0 + u * (3.0 / 2.0 - 8.0 * u / 5.0)))
+               : std::log1p(u) - u / (1.0 + u);
   return a * (1.0 + u) * g / u;
 }
 

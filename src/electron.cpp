@@ -73,6 +73,7 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   read_dataset(rgroup, "xs", elastic_);
   read_dataset(rgroup, "xs_transport", elastic_transport_);
   read_dataset(rgroup, "xs_total", elastic_total_);
+  this->compute_mean_deflection();
   hid_t dist_group = open_group(rgroup, "distribution");
   // Interpolate between the tabulated distributions log-log in energy rather
   // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
@@ -275,30 +276,17 @@ double peak_mean_deflection(int Z, double E)
   double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
                (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
 
-  // <1-mu> = a(1+u)g(u)/u, with a = 2*eta, u = X0/a and g = ln(1+u) - u/(1+u).
-  //
-  // g is log1pmx in disguise -- exactly -log1pmx(-w) for w = u/(1+u) -- and
-  // shares its problem: log1p keeps the logarithm accurate, but g subtracts
-  // two quantities that are both u to leading order and is itself only u^2/2,
-  // so it sheds about u of its precision however the terms are computed.
-  // Rewriting it does not help; log1p(u)/u, the substitution above and the
-  // expm1 form all relocate the cancellation rather than remove it, and all
-  // three degrade as ~2*eps/u. That is why no libm carries log1pmx and why
-  // every implementation of it splits into a series near zero.
-  //
-  // The series below is carried far enough that the split stops being a tuned
-  // parameter: at the handover its truncation error is 5e-13 and the direct
-  // form's rounding error is 4.7e-13, so neither branch limits the other and
-  // the worst error over the whole range, 4.7e-13, belongs to the direct form.
-  // Both branches are used: u runs from 3.4e-10 (Am at 12 eV) to 1e9 (H at
-  // 100 GeV).
+  // Integrating the peak gives <1-mu> = -a*(a+X0)*log1pmx(-w)/X0, with
+  // a = 2*eta the screened-Rutherford width and w = X0/(a+X0). The whole
+  // expression is a log1pmx: written out it is a difference of two terms that
+  // are both X0/a to leading order and is itself only half its square, so
+  // subtracting them directly would shed about X0/a of the precision. The peak
+  // is much narrower than the cutoff at the low-energy end of the grid -- w
+  // reaches 3e-10 for americium at 12 eV -- and much wider at the high-energy
+  // end, where w approaches 1 (hydrogen at 100 GeV).
   double a = 2.0 * eta;
-  double u = X0 / a;
-  double g = (u < 5.0e-4)
-               ? 0.5 * u * u *
-                   (1.0 + u * (-4.0 / 3.0 + u * (3.0 / 2.0 - 8.0 * u / 5.0)))
-               : std::log1p(u) - u / (1.0 + u);
-  return a * (1.0 + u) * g / u;
+  double w = X0 / (a + X0);
+  return -a * (a + X0) * log1pmx(-w) / X0;
 }
 
 } // namespace
@@ -313,33 +301,39 @@ double peak_mean_deflection(int Z, double E)
 //! 23% at 66 MeV. Below the energy at which the peak opens up the correction
 //! is identically zero, the evaluation having sigma_total == sigma_elastic
 //! there.
-double ElectronInteraction::transport_ratio(int i) const
+void ElectronInteraction::compute_mean_deflection()
 {
-  if (elastic_(i) <= 0.0)
-    return 0.0;
-  double peak = elastic_total_(i) - elastic_(i);
-  double moment = elastic_transport_(i);
-  if (peak > 0.0)
-    moment -= peak * peak_mean_deflection(Z_, energy_(i));
-  return moment > 0.0 ? moment / elastic_(i) : 0.0;
+  int n = energy_.size();
+  elastic_deflection_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    if (elastic_(i) <= 0.0) {
+      elastic_deflection_[i] = 0.0;
+      continue;
+    }
+    double peak = elastic_total_(i) - elastic_(i);
+    double moment = elastic_transport_(i);
+    if (peak > 0.0)
+      moment -= peak * peak_mean_deflection(Z_, energy_(i));
+    elastic_deflection_[i] = moment > 0.0 ? moment / elastic_(i) : 0.0;
+  }
 }
 
 double ElectronInteraction::mean_deflection(double E) const
 {
   int n = energy_.size();
   if (E <= energy_[0])
-    return this->transport_ratio(0);
+    return elastic_deflection_[0];
   if (E >= energy_(n - 1))
-    return this->transport_ratio(n - 1);
+    return elastic_deflection_[n - 1];
 
   int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
   double e0 = energy_(i);
   double e1 = energy_(i + 1);
   if (e1 <= e0)
-    return this->transport_ratio(i);
+    return elastic_deflection_[i];
 
-  double r0 = this->transport_ratio(i);
-  double r1 = this->transport_ratio(i + 1);
+  double r0 = elastic_deflection_[i];
+  double r1 = elastic_deflection_[i + 1];
 
   // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
   // logarithmically; a linear interpolation would badly overshoot in between.

@@ -35,8 +35,9 @@ public:
   //! elastic cross section with the in-peak contribution removed.
   double mean_deflection(double E) const;
 
-  //! Mean deflection 1-<mu> of the large-angle distribution at grid point i
-  double transport_ratio(int i) const;
+  //! Tabulate the mean deflection of the large-angle distribution on the
+  //! energy grid. Called once, from the constructor.
+  void compute_mean_deflection();
 
   double excitation(double E) const;
 
@@ -72,6 +73,11 @@ public:
   //! elastic_ below the energy at which the peak opens up (1.75 MeV in Al, 3
   //! MeV in Fe, 8 MeV in U).
   tensor::Tensor<double> elastic_total_;
+  //! Mean deflection 1-<mu> of the tabulated large-angle distribution, on the
+  //! energy grid: the transport cross section less the forward peak's share of
+  //! it, over the large-angle cross section. Built once by
+  //! compute_mean_deflection() rather than per collision.
+  vector<double> elastic_deflection_;
   AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;

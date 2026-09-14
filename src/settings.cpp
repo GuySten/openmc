@@ -1411,8 +1411,10 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Resonance scattering requires neutron transport.");
     }
     if (use_decay_photons) {
-      fatal_error("Decay photon sources are produced by neutron activation "
-                  "and require neutron transport.");
+      fatal_error("The D1S method replaces the photons produced in neutron "
+                  "reactions with decay photons, so it requires neutron "
+                  "transport. A photon calculation driven by a decay source, "
+                  "as in the R2S method, does not use this setting.");
     }
   }
 }

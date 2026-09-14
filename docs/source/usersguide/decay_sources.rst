@@ -1,4 +1,4 @@
-.. usersguide_decay_sources:
+.. _usersguide_decay_sources:
 
 =============
 Decay Sources

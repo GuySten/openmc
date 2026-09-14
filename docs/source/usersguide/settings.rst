@@ -726,11 +726,18 @@ transports whatever the restart file holds, and since the particle's type is
 only known once that file is read, a restarted neutron is reported as an error
 rather than transported with no data.
 
-Turning neutron transport off is not compatible with eigenvalue calculations,
-multi-group mode, thermal scattering data, resonance scattering, or decay photon
-sources, each of which is rejected with an error rather than silently ignored.
-The random ray solver requires multi-group mode, so it is covered by that
-restriction.
+The photon transport step of an :ref:`R2S calculation <usersguide_decay_sources>`
+is a natural fit for this setting: its source comes from the decay of activated
+materials, so it transports no neutrons of its own. The D1S method is not, since
+it is a single coupled neutron--photon calculation in which the photons are
+produced by neutron reactions; :attr:`Settings.use_decay_photons` is therefore
+rejected here rather than silently producing no photons at all.
+
+Turning neutron transport off is likewise not compatible with eigenvalue
+calculations, multi-group mode, thermal scattering data, or resonance
+scattering, each of which is rejected with an error rather than silently
+ignored. The random ray solver requires multi-group mode, so it is covered by
+that restriction.
 
 --------------------------
 Generation of Output Files

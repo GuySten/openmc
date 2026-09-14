@@ -561,7 +561,10 @@ source; leaving it out is an error rather than a silent fallback.
 
 Turning neutron transport off is not compatible with eigenvalue calculations,
 multi-group mode (and therefore the random ray solver), thermal scattering data,
-resonance scattering, or decay photon sources.
+resonance scattering, or ``<use_decay_photons>``, which drives the D1S method
+from neutron reactions. A photon calculation whose source comes from the decay
+of activated materials, as in the R2S method, does not set that element and is
+unaffected.
 
   *Default*: true
 

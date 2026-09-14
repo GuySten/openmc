@@ -76,6 +76,11 @@ ElectronInteraction::ElectronInteraction(hid_t group)
     read_dataset(rgroup, "xs_transport", elastic_transport_);
   }
   hid_t dist_group = open_group(rgroup, "distribution");
+  // Interpolate between the tabulated distributions log-log in energy rather
+  // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
+  // this TAB2, but that rule assumes the tables are close enough together for
+  // a linear blend of them to mean something, and here they are not.
+  //
   // Elastic angular data is tabulated on a sparse, geometric energy grid --
   // for aluminium there is no table between 256 keV and 10 MeV, an interval
   // across which 1-<mu> falls by a factor of 35. The default linear stochastic
@@ -84,7 +89,7 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // stopping power and CSDA range correct, so a range check passes, but stops
   // electrons penetrating and drives depth-deposition profiles far too shallow.
   elastic_angle_ =
-    AngleDistribution {dist_group, AngleEnergyInterp::log_correlated};
+    AngleDistribution {dist_group, Interpolation::log_log};
   close_group(dist_group);
   close_group(rgroup);
 

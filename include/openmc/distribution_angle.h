@@ -12,24 +12,6 @@
 namespace openmc {
 
 //==============================================================================
-//! How to interpolate between the tabulated incident energies
-//==============================================================================
-
-enum class AngleEnergyInterp {
-  //! Choose one bracketing table at random, with a probability linear in
-  //! energy. Correct where the tables are closely spaced and the distribution
-  //! varies slowly between them, which is the case for neutron data.
-  linear_stochastic,
-
-  //! Sample both bracketing tables at a common quantile and interpolate the
-  //! deflection geometrically, with a fraction linear in the logarithm of the
-  //! energy. For tables spaced geometrically and sparsely, whose width follows
-  //! a power of the energy, linear_stochastic is heavily biased toward the
-  //! low-energy table across the whole interval; this is not.
-  log_correlated,
-};
-
-//==============================================================================
 //! Angle distribution that depends on incident particle energy
 //==============================================================================
 
@@ -38,11 +20,12 @@ public:
   AngleDistribution() = default;
 
   //! \param[in] group HDF5 group to read the distribution from
-  //! \param[in] interp How to interpolate between tabulated incident energies.
-  //!   Defaults to the historical behaviour, so existing data and every
-  //!   existing caller are unaffected.
-  explicit AngleDistribution(hid_t group,
-    AngleEnergyInterp energy_interp = AngleEnergyInterp::linear_stochastic);
+  //! \param[in] energy_interp ENDF interpolation rule to apply between the
+  //!   tabulated incident energies -- the TAB2 rule, distinct from the rule
+  //!   used within each distribution. lin_lin is the default and reproduces
+  //!   the historical behaviour, so existing data and callers are unaffected.
+  explicit AngleDistribution(
+    hid_t group, Interpolation energy_interp = Interpolation::lin_lin);
 
   //! Sample an angle given an incident particle energy
   //! \param[in] E Particle energy in [eV]
@@ -75,7 +58,7 @@ private:
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;
   vector<double> mean_deflection_; //!< 1-<mu> of each tabulated distribution
-  AngleEnergyInterp interp_ = AngleEnergyInterp::linear_stochastic;
+  Interpolation energy_interp_ = Interpolation::lin_lin;
 };
 
 } // namespace openmc

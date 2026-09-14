@@ -17,9 +17,8 @@ namespace openmc {
 // AngleDistribution implementation
 //==============================================================================
 
-AngleDistribution::AngleDistribution(
-  hid_t group, AngleEnergyInterp energy_interp)
-  : interp_ {energy_interp}
+AngleDistribution::AngleDistribution(hid_t group, Interpolation energy_interp)
+  : energy_interp_ {energy_interp}
 {
   // Get incoming energies
   read_dataset(group, "energy", energy_);
@@ -85,7 +84,7 @@ double AngleDistribution::mean_deflection(double E) const
   double r;
   get_energy_index(energy_, E, i, r);
 
-  if (interp_ == AngleEnergyInterp::log_correlated) {
+  if (energy_interp_ == Interpolation::log_log) {
     double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
     f = std::max(0.0, std::min(1.0, f));
     double d_low = mean_deflection_[i];
@@ -95,7 +94,8 @@ double AngleDistribution::mean_deflection(double E) const
     return (1.0 - f) * d_low + f * d_high;
   }
 
-  // Choosing a table at random gives the linear average of the two
+  // lin_lin and anything else: choosing a table at random gives the linear
+  // average of the two distributions, so the linear average of their means.
   return (1.0 - r) * mean_deflection_[i] + r * mean_deflection_[i + 1];
 }
 
@@ -107,7 +107,7 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
   get_energy_index(energy_, E, i, r);
 
   double mu;
-  if (interp_ == AngleEnergyInterp::log_correlated && energy_.size() > 1) {
+  if (energy_interp_ == Interpolation::log_log && energy_.size() > 1) {
     // Fraction in log-energy, which is the variable these tables are spaced
     // on. A linear fraction is close to meaningless across an interval that
     // spans a decade or more.
@@ -117,6 +117,11 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
     // Sample both bracketing tables at the SAME quantile. Sampling each
     // independently would interpolate between two unrelated points of the two
     // distributions rather than between corresponding ones.
+    //
+    // lin_lin, the default, is approximated the way OpenMC always has: choose
+    // one table at random with a probability linear in energy. That reproduces
+    // the linear average of the two distributions, which is adequate where
+    // they are closely spaced.
     double xi = prn(seed);
     double mu_low = distribution_[i]->sample_at(xi);
     double mu_high = distribution_[i + 1]->sample_at(xi);

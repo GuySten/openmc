@@ -38,6 +38,7 @@ tensor::Tensor<double> compton_profile_pz;
 
 std::unordered_map<std::string, int> element_map;
 vector<unique_ptr<PhotonInteraction>> elements;
+vector<int> nuclide_to_element;
 
 } // namespace data
 
@@ -1120,6 +1121,7 @@ std::pair<double, double> klein_nishina(double alpha, uint64_t* seed)
 void free_memory_photon()
 {
   data::elements.clear();
+  data::nuclide_to_element.clear();
   data::compton_profile_pz.resize({0});
   data::ttb_e_grid.resize({0});
   data::ttb_k_grid.resize({0});

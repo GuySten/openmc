@@ -986,6 +986,16 @@ void Particle::update_neutron_xs(
   }
 }
 
+void Particle::update_photon_xs(int i_element)
+{
+  assert(type().is_photon());
+
+  // If the cache doesn't match, recalculate micro xs
+  if (this->E() != this->photon_xs(i_element).last_E) {
+    data::elements[i_element]->calculate_xs(*this);
+  }
+}
+
 //==============================================================================
 // Non-method functions
 //==============================================================================

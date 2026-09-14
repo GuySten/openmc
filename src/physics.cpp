@@ -105,7 +105,8 @@ void collision(Particle& p)
         // a positron still annihilates at rest, and dropping the pair would
         // discard 2 m_e c^2 that has nothing to do with the transport cutoff.
         Direction u = isotropic_direction(p.current_seed());
-        p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.create_secondary(
+          p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
         p.create_secondary(
           p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
       }

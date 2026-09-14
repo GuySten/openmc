@@ -87,8 +87,7 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // across that gap, over-scattering by a factor of about 3.5. That leaves the
   // stopping power and CSDA range correct, so a range check passes, but stops
   // electrons penetrating and drives depth-deposition profiles far too shallow.
-  elastic_angle_ =
-    AngleDistribution {dist_group, Interpolation::log_log};
+  elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
   close_group(dist_group);
   close_group(rgroup);
 

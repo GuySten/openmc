@@ -426,7 +426,8 @@ TEST_CASE("Test log1pmx")
   REQUIRE_THAT(log1pmx(1.0e-9), WithinRel(-4.9999999966666667e-19, 1e-14));
 
   // Continuity across the internal handovers at |x| = 1e-2 and x = -0.79149064
-  for (double x : {-0.79149064, -0.7914906, -1.0e-2, -9.99e-3, 1.0e-2, 9.99e-3}) {
+  for (double x :
+    {-0.79149064, -0.7914906, -1.0e-2, -9.99e-3, 1.0e-2, 9.99e-3}) {
     REQUIRE_THAT(log1pmx(x), WithinRel(std::log1p(x) - x, 1e-7));
   }
 }

@@ -61,7 +61,8 @@ public:
   //! mean_deflection(), or it corrects against the wrong denominator.
   //!
   //! Evaluated by quadrature over the quantile, so it is for load-time use.
-  double sampled_mean_deflection(double E, int n_quantile = 1024) const;
+  //! \param[in] refine subdivisions per CDF breakpoint interval
+  double sampled_mean_deflection(double E, int refine = 4) const;
 
   //! Determine whether angle distribution is empty
   //! \return Whether distribution is empty

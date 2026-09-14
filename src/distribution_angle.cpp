@@ -1,6 +1,7 @@
 #include "openmc/distribution_angle.h"
 
-#include <cmath> // for abs, copysign
+#include <algorithm> // for sort, unique
+#include <cmath>     // for abs, copysign
 
 #include "openmc/tensor.h"
 
@@ -99,8 +100,7 @@ double AngleDistribution::mean_deflection(double E) const
   return (1.0 - r) * mean_deflection_[i] + r * mean_deflection_[i + 1];
 }
 
-double AngleDistribution::sampled_mean_deflection(
-  double E, int n_quantile) const
+double AngleDistribution::sampled_mean_deflection(double E, int refine) const
 {
   auto n = energy_.size();
   if (n == 0)
@@ -117,19 +117,46 @@ double AngleDistribution::sampled_mean_deflection(
   double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
   f = std::max(0.0, std::min(1.0, f));
 
-  // Midpoint rule over the quantile, reproducing sample() node for node.
+  // Quadrature nodes are the union of the two tables' own CDF breakpoints,
+  // subdivided. A uniform grid in the quantile is hopeless here: the mean is
+  // carried almost entirely by the wide-angle tail, which occupies a quantile
+  // range of order 1e-4, so a uniform grid of 1024 nodes puts a tenth of a
+  // node where all the weight is and comes out 20% low. Between its own
+  // breakpoints each table is a simple interpolant, so these nodes land
+  // exactly where the integrand bends. 153 of them match a million uniform
+  // ones to 0.04% for aluminium at 1 MeV.
+  const auto& c_low = distribution_[i]->c();
+  const auto& c_high = distribution_[i + 1]->c();
+  vector<double> nodes;
+  nodes.reserve(c_low.size() + c_high.size() + 2);
+  nodes.push_back(0.0);
+  nodes.push_back(1.0);
+  for (double v : c_low) {
+    if (v > 0.0 && v < 1.0)
+      nodes.push_back(v);
+  }
+  for (double v : c_high) {
+    if (v > 0.0 && v < 1.0)
+      nodes.push_back(v);
+  }
+  std::sort(nodes.begin(), nodes.end());
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+
   double sum = 0.0;
-  for (int j = 0; j < n_quantile; ++j) {
-    double xi = (j + 0.5) / n_quantile;
-    double d_low = 1.0 - distribution_[i]->sample_at(xi);
-    double d_high = 1.0 - distribution_[i + 1]->sample_at(xi);
-    if (d_low > 0.0 && d_high > 0.0) {
-      sum += std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high));
-    } else {
-      sum += (1.0 - f) * d_low + f * d_high;
+  for (size_t k = 0; k + 1 < nodes.size(); ++k) {
+    double width = (nodes[k + 1] - nodes[k]) / refine;
+    for (int j = 0; j < refine; ++j) {
+      double xi = nodes[k] + (j + 0.5) * width;
+      double d_low = 1.0 - distribution_[i]->sample_at(xi);
+      double d_high = 1.0 - distribution_[i + 1]->sample_at(xi);
+      double d =
+        (d_low > 0.0 && d_high > 0.0)
+          ? std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high))
+          : (1.0 - f) * d_low + f * d_high;
+      sum += width * d;
     }
   }
-  return sum / n_quantile;
+  return sum;
 }
 
 double AngleDistribution::sample(double E, uint64_t* seed) const

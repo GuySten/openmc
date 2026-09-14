@@ -210,6 +210,30 @@ public:
   // Records how many mean free paths the ray traveled
   double traversal_mfp() const { return traversal_mfp_; }
 
+  //! Optical depth accumulated with coherent scattering left out of the
+  //! total, for a photon ray; identical to traversal_mfp() for anything else.
+  //!
+  //! This is a bookkeeping quantity, not a physical one. Coherent scattering
+  //! really does deflect photons out of an uncollided beam, so the true
+  //! uncollided flux attenuates on traversal_mfp(). But the classic
+  //! point-kernel buildup factors (Hubbell, NSRDS-NBS 29) are tabulated
+  //! against an attenuation coefficient that excludes it -- coherent
+  //! scattering is small-angle, and the convention folds it into the buildup
+  //! factor rather than out of the beam. A buildup factor on that convention
+  //! has to be looked up at the depth on that convention, or the two
+  //! disagree by exp of the difference, which reaches 10% of the total
+  //! attenuation coefficient for iron near 100 keV.
+  //!
+  //! Kept alongside rather than instead of traversal_mfp_ because the two
+  //! answer different questions and a run may want both: whatever convention
+  //! a buildup factor is written in, the attenuation an actual photon
+  //! experiences includes coherent scattering, so PointFilter's exp(-tau) and
+  //! everything about the collided estimator must stay on traversal_mfp().
+  double traversal_mfp_excluding_coherent() const
+  {
+    return traversal_mfp_no_coherent_;
+  }
+
   //! Which entry of model::active_point_detectors this flight is aimed at, or
   //! C_NONE for a ray that is not headed for a detector. PointFilter uses it
   //! to pick the bin without having to recognise the detector by position.
@@ -221,12 +245,16 @@ public:
     reset_ray_state();
     boundary().reset();
     traversal_mfp_ = 0.0;
+    traversal_mfp_no_coherent_ = 0.0;
     time() = time_start_;
   }
 
 protected:
   // Records how much mean free paths the ray traveled
   double traversal_mfp_ {0.0};
+
+  // The same, with coherent scattering excluded from the total
+  double traversal_mfp_no_coherent_ {0.0};
 
   int detector_index_ {C_NONE};
 

@@ -27,6 +27,12 @@ namespace openmc {
 //! same reason.
 //==============================================================================
 
+//! Which attenuation coefficient the binned depth is measured with
+enum class OpticalDepthBasis {
+  TOTAL,          //!< the transport total, coherent scattering included
+  NO_COHERENT     //!< the total less coherent scattering
+};
+
 class OpticalDepthFilter : public Filter {
 public:
   //----------------------------------------------------------------------------
@@ -56,12 +62,23 @@ public:
 
   const vector<double>& bins() const { return bins_; }
 
+  OpticalDepthBasis basis() const { return basis_; }
+  void set_basis(OpticalDepthBasis basis) { basis_ = basis; }
+
 protected:
   //----------------------------------------------------------------------------
   // Data members
 
   //! Bin edges in mean free paths, monotonically increasing
   vector<double> bins_;
+
+  //! Default TOTAL: the depth an actual photon attenuates on. NO_COHERENT is
+  //! for reading a buildup factor written in the classic point-kernel
+  //! convention, which excludes coherent scattering from the attenuation
+  //! coefficient and folds it into the buildup factor instead. It changes
+  //! only what this filter bins -- PointFilter's exp(-tau), and everything
+  //! the collided estimator does, stay on the physical total.
+  OpticalDepthBasis basis_ {OpticalDepthBasis::TOTAL};
 };
 
 } // namespace openmc

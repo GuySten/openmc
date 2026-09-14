@@ -13,6 +13,20 @@ void OpticalDepthFilter::from_xml(pugi::xml_node node)
 {
   auto bins = get_node_array<double>(node, "bins");
   this->set_bins(bins);
+
+  if (check_for_node(node, "attenuation")) {
+    std::string basis = get_node_value(node, "attenuation", true, true);
+    if (basis == "total") {
+      basis_ = OpticalDepthBasis::TOTAL;
+    } else if (basis == "no-coherent") {
+      basis_ = OpticalDepthBasis::NO_COHERENT;
+    } else {
+      throw std::runtime_error {fmt::format(
+        "Unknown attenuation basis '{}' on optical depth filter {}. Use "
+        "'total' or 'no-coherent'.",
+        basis, id())};
+    }
+  }
 }
 
 void OpticalDepthFilter::set_bins(span<double> bins)
@@ -55,7 +69,9 @@ void OpticalDepthFilter::get_all_bins(
 
   // Accumulated segment by segment as the ray flew, so it is read back rather
   // than reconstructed from the end points.
-  const double tau = ray.traversal_mfp();
+  const double tau = (basis_ == OpticalDepthBasis::NO_COHERENT)
+                       ? ray.traversal_mfp_excluding_coherent()
+                       : ray.traversal_mfp();
 
   // A contribution outside the binned range is dropped, as it is by any other
   // filter. That is worth watching in a buildup calculation, where the dropped
@@ -72,12 +88,16 @@ void OpticalDepthFilter::to_statepoint(hid_t filter_group) const
 {
   Filter::to_statepoint(filter_group);
   write_dataset(filter_group, "bins", bins_);
+  write_dataset(filter_group, "attenuation",
+    basis_ == OpticalDepthBasis::NO_COHERENT ? "no-coherent" : "total");
 }
 
 std::string OpticalDepthFilter::text_label(int bin) const
 {
+  const char* basis =
+    (basis_ == OpticalDepthBasis::NO_COHERENT) ? ", no coherent" : "";
   return fmt::format(
-    "Optical Depth [{}, {}) mfp", bins_[bin], bins_[bin + 1]);
+    "Optical Depth [{}, {}) mfp{}", bins_[bin], bins_[bin + 1], basis);
 }
 
 } // namespace openmc

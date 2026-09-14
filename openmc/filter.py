@@ -2557,11 +2557,20 @@ class OpticalDepthFilter(RealFilter):
     flux silently missing from the folded result -- compare against the same
     tally without this filter to check the range covers the problem.
 
-    The optical depth is measured with the transport cross section OpenMC
-    itself uses, coherent scattering included. A buildup factor tabulated
-    against a different attenuation coefficient -- the classic compilations
-    exclude coherent scattering -- has to be looked up at the depth on *its*
-    basis, not this one.
+    By default the depth is measured with the transport cross section OpenMC
+    itself uses, coherent scattering included -- the attenuation an actual
+    photon experiences. The classic point-kernel buildup factors (Hubbell,
+    NSRDS-NBS 29) are instead tabulated against a coefficient that *excludes*
+    coherent scattering, on the grounds that it is small-angle, folding it
+    into the buildup factor rather than out of the beam. Reading such a
+    buildup factor at a depth on the other convention is an error of exp of
+    the difference, and the difference reaches 10% of the total attenuation
+    coefficient for iron near 100 keV. Pass ``attenuation='no-coherent'`` to
+    bin on that convention.
+
+    This choice affects only what this filter bins. The attenuation applied by
+    :class:`openmc.PointFilter`, and everything the collided next-event
+    estimator does, stay on the physical total either way.
 
     .. versionadded:: 0.15.3
 
@@ -2569,6 +2578,9 @@ class OpticalDepthFilter(RealFilter):
     ----------
     values : Iterable of Real
         Bin edges in mean free paths. Successive pairs constitute a bin.
+    attenuation : {'total', 'no-coherent'}
+        Which attenuation coefficient the depth is measured with. Defaults to
+        ``'total'``, the transport cross section.
     filter_id : int
         Unique identifier for the filter
 
@@ -2602,10 +2614,53 @@ class OpticalDepthFilter(RealFilter):
 
     units = 'mfp'
 
+    def __init__(self, values, attenuation='total', filter_id=None):
+        super().__init__(values, filter_id)
+        self.attenuation = attenuation
+
+    @property
+    def attenuation(self):
+        return self._attenuation
+
+    @attenuation.setter
+    def attenuation(self, attenuation):
+        cv.check_value('attenuation', attenuation, {'total', 'no-coherent'})
+        self._attenuation = attenuation
+
+    def __eq__(self, other):
+        return (super().__eq__(other)
+                and self.attenuation == other.attenuation)
+
+    def __hash__(self):
+        return hash((type(self).__name__, self.attenuation,
+                     tuple(np.ravel(self.values))))
+
     def check_bins(self, bins):
         super().check_bins(bins)
         for x in np.ravel(bins):
             cv.check_greater_than('filter value', x, 0.0, equality=True)
+
+    def to_xml_element(self):
+        element = super().to_xml_element()
+        if self.attenuation != 'total':
+            subelement = ET.SubElement(element, 'attenuation')
+            subelement.text = self.attenuation
+        return element
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        filt = super().from_xml_element(elem, **kwargs)
+        attenuation = elem.find('attenuation')
+        if attenuation is not None:
+            filt.attenuation = attenuation.text.strip()
+        return filt
+
+    @classmethod
+    def from_hdf5(cls, group, **kwargs):
+        filt = super().from_hdf5(group, **kwargs)
+        if 'attenuation' in group:
+            filt.attenuation = group['attenuation'][()].decode()
+        return filt
 
 
 class MuSurfaceFilter(MuFilter):

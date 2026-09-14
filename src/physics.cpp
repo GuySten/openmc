@@ -110,6 +110,7 @@ void collision(Particle& p)
           p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
         p.create_secondary(
           p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.event_mt() = POSITRON_ANNIHILATION;
       }
       p.E() = 0.0;
       p.event() = TallyEvent::ABSORB;
@@ -647,6 +648,7 @@ void sample_positron_reaction(Particle& p)
     p.E() = 0.0;
     p.wgt() = 0.0;
     p.event() = TallyEvent::ABSORB;
+    p.event_mt() = POSITRON_ANNIHILATION;
     return;
   }
 

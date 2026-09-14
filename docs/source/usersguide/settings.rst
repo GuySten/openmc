@@ -719,9 +719,18 @@ asked for. A model that specifies no source at all falls back to OpenMC's
 default source, which emits neutrons; rather than quietly reading neutron data
 for it, OpenMC reports that a source has to be given explicitly.
 
+Other run modes behave the same way. A stochastic volume calculation samples no
+source and transports nothing, so it reports its nuclide inventories without
+reading any data at all; plotting reads none either. A particle restart
+transports whatever the restart file holds, and since the particle's type is
+only known once that file is read, a restarted neutron is reported as an error
+rather than transported with no data.
+
 Turning neutron transport off is not compatible with eigenvalue calculations,
 multi-group mode, thermal scattering data, resonance scattering, or decay photon
 sources, each of which is rejected with an error rather than silently ignored.
+The random ray solver requires multi-group mode, so it is covered by that
+restriction.
 
 --------------------------
 Generation of Output Files

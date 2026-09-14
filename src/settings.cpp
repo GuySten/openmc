@@ -707,17 +707,15 @@ void read_settings_xml(pugi::xml_node root)
   // Watt spectrum. No default source is needed in random ray mode.
   if (model::external_sources.empty() &&
       settings::solver_type != SolverType::RANDOM_RAY) {
-    // The default source emits neutrons, so there is nothing for a calculation
-    // that turned neutron transport off to fall back on
+    // The default source emits neutrons, so a fixed source calculation that
+    // turned neutron transport off has nothing it can fall back on. Eigenvalue
+    // mode cannot reach this, having already been rejected above, and the
+    // remaining run modes never sample the external source.
     if (!neutron_transport && run_mode == RunMode::FIXED_SOURCE) {
       fatal_error("Neutron transport is turned off, but no source was "
                   "specified. The default source emits neutrons, so a source "
                   "has to be given explicitly.");
     }
-
-    // Otherwise it turns neutron transport on, as an explicit neutron source
-    // would
-    neutron_transport = true;
 
     double T[] {0.0};
     double p[] {1.0};

@@ -560,8 +560,8 @@ is given emits neutrons, so a calculation without neutrons has to specify its
 source; leaving it out is an error rather than a silent fallback.
 
 Turning neutron transport off is not compatible with eigenvalue calculations,
-multi-group mode, thermal scattering data, resonance scattering, or decay photon
-sources.
+multi-group mode (and therefore the random ray solver), thermal scattering data,
+resonance scattering, or decay photon sources.
 
   *Default*: true
 

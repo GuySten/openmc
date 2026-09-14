@@ -45,6 +45,7 @@ class IncidentElectron:
         self.elastic_xs = None
         self.elastic_dist = None
         self.elastic_transport_xs = None
+        self.elastic_total_xs = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_dist = None
         self.excitation_xs = None
@@ -97,14 +98,16 @@ class IncidentElectron:
         data = cls(Z)
 
         # Check the format flag. NXS(6) == 1 is EPRDATA12; 3 is EPRDATA14 and
-        # later. Nothing read below moved between those versions, but a future
-        # format could shift these blocks and misparse silently.
+        # later. EPRDATA12 is rejected because it has no JXS(27) block, and
+        # without the transport-corrected and total elastic cross sections
+        # stored there the elastic scattering cannot be sampled correctly.
         format_flag = ace.nxs[6]
-        if format_flag not in (1, 3):
+        if format_flag != 3:
             raise ValueError(
-                f'Unrecognized electron-photon-relaxation format flag '
-                f'NXS(6)={format_flag} in table {ace.name}. Supported values '
-                'are 1 (EPRDATA12) and 3 (EPRDATA14 and later).')
+                f'Unsupported electron-photon-relaxation format flag '
+                f'NXS(6)={format_flag} in table {ace.name}. EPRDATA14 or later '
+                '(NXS(6)=3) is required for the elastic cross sections at '
+                'JXS(27).')
 
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
@@ -142,22 +145,28 @@ class IncidentElectron:
         # treatment.
         data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
 
-        # EPRDATA14 adds the transport-corrected elastic cross section at
-        # JXS(27), on this same dense energy grid, followed by a copy of the
-        # total elastic cross section above. Its ratio to the total is the mean
-        # deflection 1-<mu>, and it agrees with the first moment of the ELAS
-        # angular tables to better than 2% at every energy where a table exists.
+        # EPRDATA14 adds a block at JXS(27) holding, on this same dense energy
+        # grid, the transport-corrected elastic cross section followed by the
+        # total elastic cross section. The transport cross section is the first
+        # moment of the total, so its ratio to the total is the mean deflection
+        # 1-<mu>; where an angular table exists the two agree to better than 4%.
         #
-        # It is worth carrying because the angular tables are tabulated far too
-        # sparsely to interpolate: for aluminium there is no table between
+        # Both are worth carrying because the angular tables are tabulated far
+        # too sparsely to interpolate: for aluminium there is no table between
         # 256 keV and 10 MeV, and 1-<mu> falls by a factor of 35 across that
         # gap. This gives the correct value on the 373-point grid instead of
-        # requiring it to be guessed between two distant tables.
-        if format_flag == 3:
-            j_transport = ace.jxs[27]
-            if j_transport > 0:
-                data.elastic_transport_xs = ace.xss[
-                    j_transport : j_transport + n_energy]
+        # requiring it to be guessed between two distant tables. The total is
+        # needed alongside it to separate the forward peak, which the angular
+        # tables do not cover, from the large-angle part that they do.
+        j_transport = ace.jxs[27]
+        if j_transport <= 0:
+            raise ValueError(
+                f'Table {ace.name} declares the EPRDATA14 format but has no '
+                'JXS(27) elastic cross section block.')
+        data.elastic_transport_xs = ace.xss[
+            j_transport : j_transport + n_energy]
+        data.elastic_total_xs = ace.xss[
+            j_transport + n_energy : j_transport + 2 * n_energy]
         data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
         data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
 
@@ -225,6 +234,17 @@ class IncidentElectron:
             start = j_elastic_tab + offsets[i]
             cos = ace.xss[start:start + le[i]]
             c = ace.xss[start + le[i]:start + 2*le[i]]
+            # The evaluation stops the tabulated distribution at 1 - 1e-6 and
+            # leaves the forward peak beyond it to an analytic screened
+            # Rutherford form. The transport code assumes that cutoff when it
+            # subtracts the peak's contribution from the transport cross
+            # section, so a table that ended anywhere else would be silently
+            # mistreated.
+            if abs(cos[-1] - (1.0 - 1.0e-6)) > 1.0e-9:
+                raise ValueError(
+                    f'Elastic angular table {i} of {ace.name} ends at '
+                    f'mu={cos[-1]!r}, not at the 1-1e-6 cutoff the elastic '
+                    'peak treatment assumes.')
             mu.append(_tabular_from_cdf(cos, c, f'elastic angular table {i}'))
         
         data.elastic_dist = AngleDistribution(energy, mu)
@@ -259,9 +279,10 @@ class IncidentElectron:
             
             elastic_group = group.create_group("elastic")
             elastic_group.create_dataset("xs", data=self.elastic_xs)
-            if self.elastic_transport_xs is not None:
-                elastic_group.create_dataset(
-                    "xs_transport", data=self.elastic_transport_xs)
+            elastic_group.create_dataset(
+                "xs_transport", data=self.elastic_transport_xs)
+            elastic_group.create_dataset(
+                "xs_total", data=self.elastic_total_xs)
             self.elastic_dist.to_hdf5(elastic_group.create_group("distribution"))
             
             excitation_group = group.create_group("excitation")

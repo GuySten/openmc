@@ -71,10 +71,8 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read elastic scattering
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
-  has_elastic_transport_ = object_exists(rgroup, "xs_transport");
-  if (has_elastic_transport_) {
-    read_dataset(rgroup, "xs_transport", elastic_transport_);
-  }
+  read_dataset(rgroup, "xs_transport", elastic_transport_);
+  read_dataset(rgroup, "xs_total", elastic_total_);
   hid_t dist_group = open_group(rgroup, "distribution");
   // Interpolate between the tabulated distributions log-log in energy rather
   // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
@@ -217,8 +215,6 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
   double mu = elastic_angle_.sample(E, seed);
-  if (!has_elastic_transport_)
-    return mu;
 
   // The angular tables are spaced far too sparsely to interpolate between:
   // for aluminium there is none between 256 keV and 10 MeV, an interval across
@@ -227,7 +223,7 @@ double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
   //
   // It does not have to be. EPRDATA14 tabulates the transport-corrected
   // elastic cross section on the same 373-point grid as the cross sections,
-  // and its ratio to the total elastic cross section is exactly 1-<mu>. Use it
+  // and it gives the first moment of the angular distribution directly. Use it
   // to set the mean deflection and let the tables supply only the shape, by
   // scaling the sampled deflection to the tabulated first moment.
   //
@@ -247,25 +243,88 @@ double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
   return 1.0 - std::min(2.0, deflection);
 }
 
-//! Mean deflection 1-<mu> from the transport-corrected cross section
+namespace {
+
+//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
+//
+//! The evaluation tabulates the angular distribution only out to
+//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
+//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
+//! angle eta. The first moment of that form over the peak depends only on eta
+//! and the cutoff -- the normalization C cancels -- so it can be evaluated
+//! without reference to the tables the peak is missing from.
+double peak_mean_deflection(int Z, double E)
+{
+  // 1-mu at the upper end of the tabulated angular distributions. Verified
+  // against every table of every element when the library is converted; see
+  // openmc/data/electron.py.
+  constexpr double X0 {1.0e-6};
+
+  double e_total = E + MASS_ELECTRON_EV;
+  double pc =
+    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
+  if (pc <= 0.0)
+    return 0.5 * X0;
+  double tau = E / MASS_ELECTRON_EV;
+  double beta = pc / e_total;
+
+  // Moliere's screening angle with the low-energy correction Seltzer
+  // recommends, the same form ITS and MCNP use for this peak.
+  double screen = FINE_STRUCTURE * MASS_ELECTRON_EV / (0.885 * pc);
+  double coulomb = FINE_STRUCTURE * Z / beta;
+  double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
+               (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
+
+  // <1-mu> = a(1+u)g(u)/u, with a = 2*eta, u = X0/a and g = ln(1+u) - u/(1+u).
+  // For u small the peak is far narrower than the cutoff and the deflection
+  // tends to X0/2, but g loses every significant digit to cancellation there,
+  // so use its series instead.
+  double a = 2.0 * eta;
+  double u = X0 / a;
+  double g = (u < 1.0e-4) ? 0.5 * u * u * (1.0 - 4.0 * u / 3.0)
+                          : std::log1p(u) - u / (1.0 + u);
+  return a * (1.0 + u) * g / u;
+}
+
+} // namespace
+
+//! Mean deflection 1-<mu> of the tabulated large-angle distribution
+//
+//! The transport-corrected cross section is the first moment of the *total*
+//! elastic cross section, peak included, while the angular tables describe
+//! only the large-angle part. Take the peak's contribution back out before
+//! forming the ratio, or the deflection is overstated wherever the peak
+//! carries appreciable cross section: by 2% at 10 MeV in aluminium, rising to
+//! 23% at 66 MeV. Below the energy at which the peak opens up the correction
+//! is identically zero, the evaluation having sigma_total == sigma_elastic
+//! there.
+double ElectronInteraction::transport_ratio(int i) const
+{
+  if (elastic_(i) <= 0.0)
+    return 0.0;
+  double peak = elastic_total_(i) - elastic_(i);
+  double moment = elastic_transport_(i);
+  if (peak > 0.0)
+    moment -= peak * peak_mean_deflection(Z_, energy_(i));
+  return moment > 0.0 ? moment / elastic_(i) : 0.0;
+}
+
 double ElectronInteraction::mean_deflection(double E) const
 {
   int n = energy_.size();
   if (E <= energy_[0])
-    return elastic_(0) > 0.0 ? elastic_transport_(0) / elastic_(0) : 0.0;
+    return this->transport_ratio(0);
   if (E >= energy_(n - 1))
-    return elastic_(n - 1) > 0.0 ? elastic_transport_(n - 1) / elastic_(n - 1)
-                                 : 0.0;
+    return this->transport_ratio(n - 1);
 
   int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
   double e0 = energy_(i);
   double e1 = energy_(i + 1);
   if (e1 <= e0)
-    return elastic_(i) > 0.0 ? elastic_transport_(i) / elastic_(i) : 0.0;
+    return this->transport_ratio(i);
 
-  double r0 = elastic_(i) > 0.0 ? elastic_transport_(i) / elastic_(i) : 0.0;
-  double r1 =
-    elastic_(i + 1) > 0.0 ? elastic_transport_(i + 1) / elastic_(i + 1) : 0.0;
+  double r0 = this->transport_ratio(i);
+  double r1 = this->transport_ratio(i + 1);
 
   // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
   // logarithmically; a linear interpolation would badly overshoot in between.

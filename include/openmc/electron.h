@@ -32,8 +32,11 @@ public:
   double elastic_scatter(double E, uint64_t* seed) const;
 
   //! Mean deflection 1-<mu> at a given energy, from the transport-corrected
-  //! elastic cross section. Only meaningful when the library provides it.
+  //! elastic cross section with the in-peak contribution removed.
   double mean_deflection(double E) const;
+
+  //! Mean deflection 1-<mu> of the large-angle distribution at grid point i
+  double transport_ratio(int i) const;
 
   double excitation(double E) const;
 
@@ -58,11 +61,17 @@ public:
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
   tensor::Tensor<double> elastic_;
-  //! Transport-corrected elastic cross section, if the library provides it.
-  //! Its ratio to elastic_ is the mean deflection 1-<mu> on the dense energy
-  //! grid, which the sparse angular tables cannot supply between themselves.
+  //! Transport-corrected elastic cross section, on the dense energy grid the
+  //! sparse angular tables cannot supply between themselves. This is the first
+  //! moment of the *total* elastic cross section, so the in-peak part has to be
+  //! taken back out of it before it describes the tabulated large-angle
+  //! distribution -- see mean_deflection().
   tensor::Tensor<double> elastic_transport_;
-  bool has_elastic_transport_ = false;
+  //! Total elastic cross section: the tabulated large-angle part in elastic_
+  //! plus the forward peak the evaluation leaves to an analytic form. Equal to
+  //! elastic_ below the energy at which the peak opens up (1.75 MeV in Al, 3
+  //! MeV in Fe, 8 MeV in U).
+  tensor::Tensor<double> elastic_total_;
   AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;

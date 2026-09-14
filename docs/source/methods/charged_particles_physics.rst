@@ -507,8 +507,9 @@ probability. As with the angular tables, the incident-energy grids are sparse
 -- aluminium's K shell jumps from 15.8 keV to 501 keV -- and are interpolated
 logarithmically.
 
-The polar deflections of both electrons follow from conservation of momentum
-and are not sampled independently:
+The polar deflections of both electrons are taken from the free
+binary-collision relation applied to each electron's own energy, and are not
+sampled independently:
 
 .. math::
     :label: ionization-angles
@@ -519,8 +520,15 @@ and are not sampled independently:
     {T(T_{\text{k}} + 2m_ec^2)}\right]^{1/2}.
 
 The two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
-The vacancy is passed to the atomic relaxation model, which follows the full
-cascade.
+This pair conserves momentum exactly only for :math:`B = 0`. For a bound
+electron the binding energy is given to the atom while no momentum is, and the
+primary is deflected according to its true residual energy :math:`T'` while the
+knock-on is deflected according to its kinetic energy :math:`T_{\text{k}}`
+rather than the full energy transfer :math:`T_{\text{k}} + B`, so the balance
+is approximate. The residual grows with :math:`B/T`: below one percent for an
+outer shell of a light element at 1 MeV, but reaching tens of percent for a
+deep shell ionised close to its threshold. The vacancy is passed to the atomic
+relaxation model, which follows the full cascade.
 
 .. _bremsstrahlung_angle:
 

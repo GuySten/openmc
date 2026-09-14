@@ -276,17 +276,25 @@ double peak_mean_deflection(int Z, double E)
   double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
                (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
 
-  // Integrating the peak gives <1-mu> = -a*(a+X0)*log1pmx(-w)/X0, with
-  // a = 2*eta the screened-Rutherford width and w = X0/(a+X0). The whole
-  // expression is a log1pmx: written out it is a difference of two terms that
-  // are both X0/a to leading order and is itself only half its square, so
-  // subtracting them directly would shed about X0/a of the precision. The peak
-  // is much narrower than the cutoff at the low-energy end of the grid -- w
-  // reaches 3e-10 for americium at 12 eV -- and much wider at the high-energy
-  // end, where w approaches 1 (hydrogen at 100 GeV).
+  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
+  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
+  // L is a difference of two terms that are both X0/a to leading order and is
+  // itself only half its square, which is why it is left to log1pmx.
+  //
+  // Both ends of the grid are extreme: the peak is far narrower than the
+  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
+  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
+  // accurate throughout, but a double approaching 1 stops carrying its
+  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
+  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
+  // So pass the complement in directly once w is large, where log(q) + w has
+  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
+  // exact to rounding on its own side of the handover.
   double a = 2.0 * eta;
   double w = X0 / (a + X0);
-  return -a * (a + X0) * log1pmx(-w) / X0;
+  double q = a / (a + X0);
+  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
+  return -a * (a + X0) * L / X0;
 }
 
 } // namespace

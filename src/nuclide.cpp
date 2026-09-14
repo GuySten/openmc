@@ -56,6 +56,10 @@ Nuclide::Nuclide(hid_t group, const vector<double>& temperature)
   // Set index of nuclide in global vector
   index_ = data::nuclides.size();
 
+  // create_derived() fills this in, but it is not reached when returning early
+  // for a volume calculation
+  reaction_index_.fill(C_NONE);
+
   // Get name of nuclide from group, removing leading '/'
   name_ = object_name(group).substr(1);
   data::nuclide_map[name_] = index_;
@@ -355,24 +359,23 @@ Nuclide::Nuclide(hid_t group, const vector<double>& temperature)
 
 Nuclide::Nuclide(const std::string& name)
 {
-  // Set index of nuclide in global vector
-  index_ = data::nuclides.size();
-  name_ = name;
-  data::nuclide_map[name_] = index_;
-
   // Without a data library, the only information about the nuclide is what can
-  // be inferred from its name
+  // be inferred from its name. Everything is validated before any global state
+  // is touched, so that a bad name leaves nothing half-registered behind.
   ParticleType type;
   try {
     type = ParticleType {name};
   } catch (const std::invalid_argument&) {
-    fatal_error(fmt::format("'{}' could not be interpreted as a nuclide name. "
-                            "When neutron transport is turned off, nuclide "
-                            "properties are determined from the name alone.",
-      name));
+    throw std::runtime_error {fmt::format(
+      "'{}' could not be interpreted as a nuclide name. With neutron transport "
+      "turned off, nuclide properties come from the name alone, so elemental "
+      "data such as C0 cannot be used. Either give the isotopes of the element "
+      "individually or leave neutron transport on.",
+      name)};
   }
   if (!type.is_nucleus()) {
-    fatal_error(fmt::format("'{}' does not name a nuclide.", name));
+    throw std::runtime_error {
+      fmt::format("'{}' does not name a nuclide.", name)};
   }
 
   // The proton has its own PDG code rather than the H1 nuclear one
@@ -380,20 +383,28 @@ Nuclide::Nuclide(const std::string& name)
   if (pdg == PDG_PROTON)
     pdg = ParticleType {1, 1}.pdg_number();
 
-  Z_ = (pdg / 10000) % 1000;
-  A_ = (pdg / 10) % 1000;
-  metastable_ = pdg % 10;
-
   // Use the tabulated atomic mass in place of the atomic weight ratio that
   // would otherwise come from the neutron data library
   double mass = atomic_mass_from_pdg(pdg);
   if (mass <= 0.0) {
-    fatal_error(fmt::format(
+    throw std::runtime_error {fmt::format(
       "No tabulated atomic mass is available for {}, which is needed to "
       "determine material densities when neutron transport is turned off.",
-      name));
+      name)};
   }
+
+  Z_ = (pdg / 10000) % 1000;
+  A_ = (pdg / 10) % 1000;
+  metastable_ = pdg % 10;
   awr_ = mass / MASS_NEUTRON;
+
+  // No reaction data exists, so every lookup has to miss
+  reaction_index_.fill(C_NONE);
+
+  // Set index of nuclide in global vector
+  index_ = data::nuclides.size();
+  name_ = name;
+  data::nuclide_map[name_] = index_;
 }
 
 Nuclide::~Nuclide()
@@ -1188,7 +1199,12 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
     } else {
       // Neutrons are not transported, so no neutron data is needed. Only the
       // identity of the nuclide and its atomic weight ratio are determined.
-      data::nuclides.push_back(make_unique<Nuclide>(std::string {name}));
+      try {
+        data::nuclides.push_back(make_unique<Nuclide>(std::string {name}));
+      } catch (const std::runtime_error& e) {
+        set_errmsg(e.what());
+        return OPENMC_E_DATA;
+      }
     }
 
     // Read elemental data, if necessary

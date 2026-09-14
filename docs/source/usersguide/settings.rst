@@ -712,6 +712,13 @@ Materials are still defined in terms of nuclides, and
 photon data does not distinguish isotopes, elements are expanded using natural
 abundances.
 
+Because a nuclide's mass is looked up by its atomic and mass number, elemental
+evaluations such as ``C0`` cannot be used. Materials built against a photon-only
+library never produce these, but one carried over from a calculation that used a
+neutron library may contain them, since several common libraries provide carbon,
+vanadium, zinc and tungsten in elemental form. Add the isotopes of such an
+element individually, or leave neutron transport on.
+
 Just as a photon source turns photon transport on, a source that emits neutrons
 turns neutron transport back on, so a model is never left transporting particles
 for which no data was read. A warning is issued when this overrides what was
@@ -734,8 +741,8 @@ produced by neutron reactions; :attr:`Settings.use_decay_photons` is therefore
 rejected here rather than silently producing no photons at all.
 
 Turning neutron transport off is likewise not compatible with eigenvalue
-calculations, multi-group mode, thermal scattering data, or resonance
-scattering, each of which is rejected with an error rather than silently
+calculations, multi-group mode, thermal scattering data, resonance scattering,
+or multipole data, each of which is rejected with an error rather than silently
 ignored. The random ray solver requires multi-group mode, so it is covered by
 that restriction.
 

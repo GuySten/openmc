@@ -1410,6 +1410,10 @@ void read_settings_xml(pugi::xml_node root)
     if (res_scat_on) {
       fatal_error("Resonance scattering requires neutron transport.");
     }
+    if (temperature_multipole) {
+      fatal_error("Multipole data is neutron data and requires neutron "
+                  "transport.");
+    }
     if (use_decay_photons) {
       fatal_error("The D1S method replaces the photons produced in neutron "
                   "reactions with decay photons, so it requires neutron "
@@ -1428,7 +1432,6 @@ void free_memory_settings()
   settings::track_identifiers.clear();
   settings::ifp_delayed_group_on = false;
   settings::ifp_lifetime_on = false;
-  settings::neutron_transport = true;
 }
 
 //==============================================================================

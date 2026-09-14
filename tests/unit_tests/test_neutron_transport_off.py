@@ -178,6 +178,10 @@ def test_multigroup_rejected(photon_only_xs):
     model.settings.neutron_transport = False
     model.settings.energy_mode = 'multi-group'
 
+    # Multi-group also rejects photon transport, so leave that off to be sure
+    # of which error is being tested
+    model.settings.photon_transport = False
+
     with pytest.raises(RuntimeError, match='multigroup mode'):
         model.run()
 
@@ -212,3 +216,30 @@ def test_particle_restart_without_neutron_data(photon_only_xs):
 
     # Restarting reads the same data the original run did, none of it neutron
     openmc.run(restart_file=restart_files[0])
+
+
+def test_micro_tally_outside_the_material(photon_only_xs):
+    """A nuclide-filtered micro tally reaches for neutron cross sections.
+
+    With multiply_density off, a tally region where the nuclide is absent takes
+    a branch that fills the neutron micro cross section cache, regardless of
+    what kind of particle is being scored. There is no neutron data to fill it
+    from here, and none of it is wanted for a photon anyway.
+    """
+    model, mat = aluminum_photon_model()
+    model.settings.neutron_transport = False
+
+    inner = openmc.Sphere(r=3.0)
+    outer = openmc.Sphere(r=10.0, boundary_type='vacuum')
+    void = openmc.Cell(region=+inner & -outer)
+    model.geometry = openmc.Geometry(
+        [openmc.Cell(fill=mat, region=-inner), void])
+
+    tally = openmc.Tally()
+    tally.filters = [openmc.CellFilter([void])]
+    tally.nuclides = ['Al27']
+    tally.scores = ['total']
+    tally.multiply_density = False
+    model.tallies = openmc.Tallies([tally])
+
+    model.run()

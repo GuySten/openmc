@@ -168,6 +168,18 @@ void Particle::from_source(const SourceSite* src)
 
   // Copy attributes from source bank site
   type() = src->particle;
+
+  // Sources OpenMC cannot inspect up front, such as a compiled source, may
+  // produce a neutron after the decision of which data to read has been made.
+  // Every thread reaches this at once, so serialize the exit rather than
+  // letting them race through it.
+  if (!settings::neutron_transport && type().is_neutron()) {
+#pragma omp critical(NeutronTransportOff)
+    {
+      fatal_error("A source produced a neutron, but neutron transport is "
+                  "turned off, so no neutron data was read.");
+    }
+  }
   wgt() = src->wgt;
   wgt_last() = src->wgt;
   r() = src->r;

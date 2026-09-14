@@ -17,7 +17,9 @@ namespace openmc {
 // AngleDistribution implementation
 //==============================================================================
 
-AngleDistribution::AngleDistribution(hid_t group)
+AngleDistribution::AngleDistribution(
+  hid_t group, AngleEnergyInterp energy_interp)
+  : interp_ {energy_interp}
 {
   // Get incoming energies
   read_dataset(group, "energy", energy_);
@@ -69,66 +71,45 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
   double r;
   get_energy_index(energy_, E, i, r);
 
-  // Sample between the ith and (i+1)th bin
-  if (r > prn(seed))
-    ++i;
+  double mu;
+  if (interp_ == AngleEnergyInterp::log_correlated && energy_.size() > 1) {
+    // Fraction in log-energy, which is the variable these tables are spaced
+    // on. A linear fraction is close to meaningless across an interval that
+    // spans a decade or more.
+    double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
+    f = std::max(0.0, std::min(1.0, f));
 
-  // Sample i-th distribution
-  double mu = distribution_[i]->sample(seed).first;
+    // Sample both bracketing tables at the SAME quantile. Sampling each
+    // independently would interpolate between two unrelated points of the two
+    // distributions rather than between corresponding ones.
+    double xi = prn(seed);
+    double mu_low = distribution_[i]->sample_at(xi);
+    double mu_high = distribution_[i + 1]->sample_at(xi);
+
+    // Interpolate the deflection 1-mu geometrically: that is the quantity
+    // following a power of the energy, so this reproduces the trend exactly
+    // where the two tables share a shape. Interpolating mu linearly would not,
+    // and choosing one table at random reproduces the linear average of the
+    // two distributions, which a power law dominates from its low end.
+    double d_low = 1.0 - mu_low;
+    double d_high = 1.0 - mu_high;
+    if (d_low > 0.0 && d_high > 0.0) {
+      mu = 1.0 - std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high));
+    } else {
+      // A sample landed exactly forward, leaving nothing to interpolate
+      // geometrically.
+      mu = (1.0 - f) * mu_low + f * mu_high;
+    }
+  } else {
+    // Sample between the ith and (i+1)th bin
+    if (r > prn(seed))
+      ++i;
+
+    // Sample i-th distribution
+    mu = distribution_[i]->sample(seed).first;
+  }
 
   // Make sure mu is in range [-1,1] and return
-  if (std::abs(mu) > 1.0)
-    mu = std::copysign(1.0, mu);
-  return mu;
-}
-
-double AngleDistribution::sample_log_interp(double E, uint64_t* seed) const
-{
-  auto n = energy_.size();
-  if (n == 1)
-    return distribution_[0]->sample_at(prn(seed));
-
-  // Bracket the energy without the interpolation factor sample() would use
-  int i;
-  if (E <= energy_[0]) {
-    i = 0;
-  } else if (E >= energy_[n - 1]) {
-    i = n - 2;
-  } else {
-    i = lower_bound_index(energy_.begin(), energy_.end(), E);
-  }
-
-  // Fraction in log-energy, which is the variable these tables are actually
-  // spaced on -- they step geometrically, so a linear fraction is meaningless
-  // across a decade-wide interval.
-  double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
-  f = std::max(0.0, std::min(1.0, f));
-
-  // Sample BOTH bracketing tables at the same quantile and interpolate the
-  // result, rather than picking one table at random. Choosing a table with
-  // probability f reproduces the linear average of the two distributions; for
-  // elastic scattering the deflection scales roughly as 1/E between tables, so
-  // the linear average is dominated by the low-energy table right across the
-  // interval and over-scatters by a large factor.
-  double xi = prn(seed);
-  double mu_low = distribution_[i]->sample_at(xi);
-  double mu_high = distribution_[i + 1]->sample_at(xi);
-
-  // Interpolate the deflection (1-mu) geometrically. That is the quantity with
-  // the power-law energy dependence, so a geometric interpolation of it
-  // reproduces the trend exactly when the two tables share a shape; a linear
-  // interpolation of mu would not.
-  double d_low = 1.0 - mu_low;
-  double d_high = 1.0 - mu_high;
-  double mu;
-  if (d_low > 0.0 && d_high > 0.0) {
-    mu = 1.0 - std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high));
-  } else {
-    // One of the samples is exactly forward; nothing to interpolate
-    // geometrically, so fall back to a linear blend.
-    mu = (1.0 - f) * mu_low + f * mu_high;
-  }
-
   if (std::abs(mu) > 1.0)
     mu = std::copysign(1.0, mu);
   return mu;

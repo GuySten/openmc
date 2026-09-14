@@ -72,7 +72,15 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
   hid_t dist_group = open_group(rgroup, "distribution");
-  elastic_angle_ = AngleDistribution {dist_group};
+  // Elastic angular data is tabulated on a sparse, geometric energy grid --
+  // for aluminium there is no table between 256 keV and 10 MeV, an interval
+  // across which 1-<mu> falls by a factor of 35. The default linear stochastic
+  // interpolation picks the low-energy, wide-angle table 92% of the time right
+  // across that gap, over-scattering by a factor of about 3.5. That leaves the
+  // stopping power and CSDA range correct, so a range check passes, but stops
+  // electrons penetrating and drives depth-deposition profiles far too shallow.
+  elastic_angle_ =
+    AngleDistribution {dist_group, AngleEnergyInterp::log_correlated};
   close_group(dist_group);
   close_group(rgroup);
 
@@ -199,16 +207,7 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  // Interpolate between the tabulated angular distributions in log-energy
-  // rather than taking AngleDistribution::sample's linear stochastic choice
-  // between them. The elastic tables are spaced geometrically and are sparse
-  // -- for aluminium there is nothing between 256 keV and 10 MeV, across which
-  // 1-<mu> falls by a factor of 35 -- so a linear interpolation factor is
-  // ~0.08 at 1 MeV and the low-energy, wide-angle table is chosen 92% of the
-  // time throughout the gap. That over-scatters by a factor of about 3.5,
-  // which leaves the stopping power and CSDA range correct but stops electrons
-  // penetrating: depth-deposition profiles peak far too shallow.
-  return elastic_angle_.sample_log_interp(E, seed);
+  return elastic_angle_.sample(E, seed);
 }
 
 double ElectronInteraction::excitation(double E) const

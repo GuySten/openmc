@@ -22,7 +22,8 @@ __all__ = [
     'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter', 'LegendreFilter',
     'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
-    'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter',
+    'OpticalDepthFilter', 'ParentNuclideFilter', 'ParticleFilter',
+    'ParticleProductionFilter',
     'PointFilter', 'PolarFilter', 'ReactionFilter', 'SphericalHarmonicsFilter',
     'SpatialLegendreFilter', 'SurfaceFilter', 'TimeFilter', 'UniverseFilter',
     'WeightFilter', 'ZernikeFilter', 'ZernikeRadialFilter', 'filters'
@@ -593,6 +594,10 @@ class MuSurfaceFilter(Filter):
     filter_type = 'musurface'
 
 
+class OpticalDepthFilter(Filter):
+    filter_type = 'opticaldepth'
+
+
 class ParentNuclideFilter(Filter):
     filter_type = 'parentnuclide'
 
@@ -741,6 +746,7 @@ _FILTER_TYPE_MAP = {
     'meshsurface': MeshSurfaceFilter,
     'mu': MuFilter,
     'musurface': MuSurfaceFilter,
+    'opticaldepth': OpticalDepthFilter,
     'parentnuclide': ParentNuclideFilter,
     'particle': ParticleFilter,
     'particleproduction': ParticleProductionFilter,

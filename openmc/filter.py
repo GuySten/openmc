@@ -26,7 +26,8 @@ _FILTER_TYPES = (
     'energyout', 'mu', 'musurface', 'polar', 'azimuthal', 'distribcell',
     'delayedgroup', 'energyfunction', 'cellfrom', 'materialfrom', 'legendre',
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
-    'particleproduction', 'point', 'cellinstance', 'collision', 'time', 'parentnuclide',
+    'particleproduction', 'point', 'opticaldepth', 'cellinstance', 'collision', 'time',
+    'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
 )
 
@@ -2531,6 +2532,138 @@ class MuFilter(RealFilter):
                 cv.check_greater_than('filter value', x, -1., equality=True)
             if not np.isclose(x, 1.):
                 cv.check_less_than('filter value', x, 1., equality=True)
+
+
+class OpticalDepthFilter(Filter):
+    """Weights next-event contributions by the optical depth they flew through.
+
+    One bin, and it weights rather than selects. A tally carrying this filter
+    scores the sum of each contribution times the optical depth it traversed;
+    divided by the same tally without it, that is the flux-weighted mean
+    optical depth to the detector.
+
+    It exists for point-kernel buildup with a source that is not a point. A
+    buildup factor is a function of the depth traversed, and a distributed
+    source offers no single one. Recovering a depth from the uncollided flux
+    instead assumes a point source, and on an extended one reads the
+    ``1/R**2`` spread as attenuation. The mean is enough: folding it is
+    accurate to 0.4% for a line source four times the standoff distance, where
+    recovering the depth is 8.5% wrong.
+
+    It is also the only way to get the depth at all when the geometry contains
+    voids, where the optical depth is not an attenuation coefficient times a
+    distance.
+
+    Use it with an :class:`openmc.PointFilter` on a tally scored with
+    ``estimator='uncollided'``; under any other estimator there is no flight
+    and the filter matches nothing.
+
+    .. versionadded:: 0.15.3
+
+    Parameters
+    ----------
+    attenuation : {'total', 'no-coherent'}
+        Which attenuation coefficient the depth is measured with. Defaults to
+        ``'total'``, the attenuation a photon actually experiences. The classic
+        point-kernel buildup factors exclude coherent scattering; reading one
+        of those at a depth on the other convention is wrong by exp of the
+        difference, which reaches 10% of the total attenuation coefficient for
+        iron near 100 keV.
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    attenuation : str
+        Which attenuation coefficient the depth is measured with
+    id : int
+        Unique identifier for the filter
+    num_bins : Integral
+        Always one
+
+    Examples
+    --------
+    The mean depth is the ratio of two tallies::
+
+        detector = openmc.PointFilter([((0., 0., 250.), 0.0)])
+        energy = openmc.EnergyFilter(source_lines)
+
+        flux = openmc.Tally(name='uncollided')
+        flux.filters = [detector, energy]
+        flux.scores = ['flux']
+        flux.estimator = 'uncollided'
+
+        weighted = openmc.Tally(name='uncollided x depth')
+        weighted.filters = [detector, energy, openmc.OpticalDepthFilter()]
+        weighted.scores = ['flux']
+        weighted.estimator = 'uncollided'
+
+        # mean_depth = weighted.mean / flux.mean
+
+    """
+
+    def __init__(self, attenuation='total', filter_id=None):
+        self.attenuation = attenuation
+        self.id = filter_id
+        self._bins = np.zeros(1)
+
+    @property
+    def attenuation(self):
+        return self._attenuation
+
+    @attenuation.setter
+    def attenuation(self, attenuation):
+        cv.check_value('attenuation', attenuation, {'total', 'no-coherent'})
+        self._attenuation = attenuation
+
+    @property
+    def num_bins(self):
+        return 1
+
+    def __eq__(self, other):
+        return (type(self) is type(other)
+                and self.attenuation == other.attenuation)
+
+    def __hash__(self):
+        return hash((type(self).__name__, self.attenuation))
+
+    def __repr__(self):
+        return (type(self).__name__ + "\n"
+                + "{: <16}=\t{}\n".format("\tAttenuation", self.attenuation)
+                + "{: <16}=\t{}\n".format("\tID", self.id))
+
+    def can_merge(self, other):
+        return False
+
+    def to_xml_element(self):
+        element = ET.Element('filter')
+        element.set('id', str(self.id))
+        element.set('type', self.short_name.lower())
+        if self.attenuation != 'total':
+            subelement = ET.SubElement(element, 'attenuation')
+            subelement.text = self.attenuation
+        return element
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        filt = cls(filter_id=int(get_text(elem, 'id')))
+        attenuation = elem.find('attenuation')
+        if attenuation is not None:
+            filt.attenuation = attenuation.text.strip()
+        return filt
+
+    @classmethod
+    def from_hdf5(cls, group, **kwargs):
+        filter_id = int(group.name.split('/')[-1].lstrip('filter '))
+        filt = cls(filter_id=filter_id)
+        if 'attenuation' in group:
+            filt.attenuation = group['attenuation'][()].decode()
+        return filt
+
+    def get_pandas_dataframe(self, data_size, stride, **kwargs):
+        filter_bins = np.repeat(['mean optical depth'], stride)
+        filter_bins = np.tile(filter_bins, data_size // len(filter_bins))
+        return pd.DataFrame({self.short_name.lower(): filter_bins})
 
 
 class MuSurfaceFilter(MuFilter):

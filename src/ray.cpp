@@ -296,6 +296,13 @@ void ParticleRay::update_distance(double distance)
   }
 
   traversal_mfp_ += macro_xs().total * distance;
+
+  // macro_xs().coherent is written only by Material::calculate_photon_xs(),
+  // so for any other particle it still holds whatever the last photon lookup
+  // left there. Reading it unguarded would subtract a stale cross section
+  // from a neutron's optical depth.
+  const double coherent = type().is_photon() ? macro_xs().coherent : 0.0;
+  traversal_mfp_no_coherent_ += (macro_xs().total - coherent) * distance;
 }
 
 // Explicit instantiations: the two kinds of ray that share the tracing loop

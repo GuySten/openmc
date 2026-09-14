@@ -327,9 +327,7 @@ IndependentSource::IndependentSource(
   UPtrSpace space, UPtrAngle angle, UPtrDist energy, UPtrDist time)
   : space_ {std::move(space)}, angle_ {std::move(angle)},
     energy_ {std::move(energy)}, time_ {std::move(time)}
-{
-  enable_transport(particle_);
-}
+{}
 
 IndependentSource::IndependentSource(pugi::xml_node node) : Source(node)
 {

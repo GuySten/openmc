@@ -705,6 +705,10 @@ void read_settings_xml(pugi::xml_node root)
   // Watt spectrum. No default source is needed in random ray mode.
   if (model::external_sources.empty() &&
       settings::solver_type != SolverType::RANDOM_RAY) {
+    // The default source emits neutrons, so it turns neutron transport on in
+    // the same way an explicit neutron source would
+    neutron_transport = true;
+
     double T[] {0.0};
     double p[] {1.0};
     model::external_sources.push_back(make_unique<IndependentSource>(

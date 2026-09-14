@@ -26,7 +26,7 @@ _FILTER_TYPES = (
     'energyout', 'mu', 'musurface', 'polar', 'azimuthal', 'distribcell',
     'delayedgroup', 'energyfunction', 'cellfrom', 'materialfrom', 'legendre',
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
-    'particleproduction', 'point', 'opticaldepth', 'cellinstance', 'collision', 'time',
+    'particleproduction', 'point', 'opticaldepthweight', 'cellinstance', 'collision', 'time',
     'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
 )
@@ -2534,10 +2534,12 @@ class MuFilter(RealFilter):
                 cv.check_less_than('filter value', x, 1., equality=True)
 
 
-class OpticalDepthFilter(Filter):
+class OpticalDepthWeightFilter(Filter):
     """Weights next-event contributions by the optical depth they flew through.
 
-    One bin, and it weights rather than selects. A tally carrying this filter
+    One bin, and it weights rather than selects -- which is what the name
+    says, rather than naming it for a binning it does not do. A filter that
+    bins by optical depth is a different thing. A tally carrying this filter
     scores the sum of each contribution times the optical depth it traversed;
     divided by the same tally without it, that is the flux-weighted mean
     optical depth to the detector.
@@ -2594,7 +2596,7 @@ class OpticalDepthFilter(Filter):
         flux.estimator = 'uncollided'
 
         weighted = openmc.Tally(name='uncollided x depth')
-        weighted.filters = [detector, energy, openmc.OpticalDepthFilter()]
+        weighted.filters = [detector, energy, openmc.OpticalDepthWeightFilter()]
         weighted.scores = ['flux']
         weighted.estimator = 'uncollided'
 

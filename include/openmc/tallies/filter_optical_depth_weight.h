@@ -1,5 +1,5 @@
-#ifndef OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_H
-#define OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_H
+#ifndef OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_WEIGHT_H
+#define OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_WEIGHT_H
 
 #include "openmc/tallies/filter.h"
 
@@ -14,7 +14,12 @@ enum class OpticalDepthBasis {
 //==============================================================================
 //! Weights a next-event contribution by the optical depth it flew through.
 //!
-//! One bin, and it does not select -- it weights.  A tally carrying this
+//! One bin, and it weights rather than selects -- hence the name, which says
+//! what it does to a contribution rather than what it bins it by.  A filter
+//! that bins by optical depth is a different thing and is free to take the
+//! plainer name.  Weighting through a filter is not a stretch of the
+//! mechanism: filter bins carry weights, and PointFilter applies
+//! exp(-tau)/R^2 through exactly this route.  A tally carrying this
 //! filter scores sum_i c_i tau_i, where c_i is what the contribution would
 //! have scored on its own.  Divided by the same tally without the filter,
 //! that is the flux-weighted mean optical depth: one number, not a
@@ -37,12 +42,12 @@ enum class OpticalDepthBasis {
 //! same reason.
 //==============================================================================
 
-class OpticalDepthFilter : public Filter {
+class OpticalDepthWeightFilter : public Filter {
 public:
-  ~OpticalDepthFilter() = default;
+  ~OpticalDepthWeightFilter() = default;
 
-  std::string type_str() const override { return "opticaldepth"; }
-  FilterType type() const override { return FilterType::OPTICAL_DEPTH; }
+  std::string type_str() const override { return "opticaldepthweight"; }
+  FilterType type() const override { return FilterType::OPTICAL_DEPTH_WEIGHT; }
 
   void from_xml(pugi::xml_node node) override;
 
@@ -66,4 +71,4 @@ private:
 };
 
 } // namespace openmc
-#endif // OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_H
+#endif // OPENMC_TALLIES_FILTER_OPTICAL_DEPTH_WEIGHT_H

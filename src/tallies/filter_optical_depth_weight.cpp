@@ -1,4 +1,4 @@
-#include "openmc/tallies/filter_optical_depth.h"
+#include "openmc/tallies/filter_optical_depth_weight.h"
 
 #include <fmt/core.h>
 
@@ -8,7 +8,7 @@
 
 namespace openmc {
 
-void OpticalDepthFilter::from_xml(pugi::xml_node node)
+void OpticalDepthWeightFilter::from_xml(pugi::xml_node node)
 {
   n_bins_ = 1;
   if (check_for_node(node, "attenuation")) {
@@ -26,7 +26,7 @@ void OpticalDepthFilter::from_xml(pugi::xml_node node)
   }
 }
 
-void OpticalDepthFilter::get_all_bins(
+void OpticalDepthWeightFilter::get_all_bins(
   const Particle& p, TallyEstimator estimator, FilterMatch& match) const
 {
   // The optical depth of a flight is only defined for a flight, and the only
@@ -48,14 +48,14 @@ void OpticalDepthFilter::get_all_bins(
   match.weights_.push_back(tau);
 }
 
-void OpticalDepthFilter::to_statepoint(hid_t filter_group) const
+void OpticalDepthWeightFilter::to_statepoint(hid_t filter_group) const
 {
   Filter::to_statepoint(filter_group);
   write_dataset(filter_group, "attenuation",
     basis_ == OpticalDepthBasis::NO_COHERENT ? "no-coherent" : "total");
 }
 
-std::string OpticalDepthFilter::text_label(int bin) const
+std::string OpticalDepthWeightFilter::text_label(int bin) const
 {
   return basis_ == OpticalDepthBasis::NO_COHERENT
            ? "Optical Depth weight (no coherent)"

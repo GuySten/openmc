@@ -12,7 +12,6 @@
 #include "openmc/math_functions.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
-#include "openmc/search.h"
 
 namespace openmc {
 
@@ -182,13 +181,18 @@ double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
   discrete = (k < n_discrete);
 
   double E_l_k = d.e_out[k];
+
+  // A discrete line is returned as it stands. Falling through to the
+  // continuous branches would read e_out[k + 1] and interpolate across the gap
+  // to the next line, which is meaningless for a delta function.
+  if (discrete)
+    return E_l_k;
+
   double p_l_k = d.p[k];
-  double E_out = E_l_k;
+  double E_out;
 
   if (d.interpolation == Interpolation::histogram) {
-    if (p_l_k > 0.0 && k >= n_discrete) {
-      E_out = E_l_k + (r1 - c_k) / p_l_k;
-    }
+    E_out = (p_l_k > 0.0) ? E_l_k + (r1 - c_k) / p_l_k : E_l_k;
 
   } else if (d.interpolation == Interpolation::lin_lin) {
     double E_l_k1 = d.e_out[k + 1];
@@ -205,6 +209,8 @@ double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
             p_l_k) /
             frac;
       }
+    } else {
+      E_out = E_l_k;
     }
   } else {
     throw std::runtime_error {"Unexpected interpolation for continuous energy "
@@ -232,25 +238,17 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   auto n_energy_in = energy_.size();
   int i;
   double r;
-  if (E < energy_[0]) {
-    i = 0;
-    r = 0.0;
-  } else if (E > energy_[n_energy_in - 1]) {
-    i = n_energy_in - 2;
-    r = 1.0;
-  } else {
-    i = lower_bound_index(energy_.begin(), energy_.end(), E);
-    // With log-log interpolation the incident energy fraction is taken
-    // logarithmically. This matters when the incident energy grid is sparse:
-    // the EEDL-derived bremsstrahlung tables span ten decades in as few as ten
-    // points, where a linear fraction places essentially all the weight on the
-    // lower table.
-    if (loglog_interp && E > 0.0 && energy_[i] > 0.0 &&
-        energy_[i + 1] > energy_[i]) {
-      r = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
-    } else {
-      r = (E - energy_[i]) / (energy_[i + 1] - energy_[i]);
-    }
+  get_energy_index(energy_, E, i, r);
+
+  // With log-log interpolation the incident energy fraction is taken
+  // logarithmically. This matters when the incident energy grid is sparse: the
+  // EEDL-derived bremsstrahlung tables span ten decades in as few as ten
+  // points, where a linear fraction places essentially all the weight on the
+  // lower table. The bounds that get_energy_index returns for an energy off
+  // either end of the grid are left alone.
+  if (loglog_interp && r > 0.0 && r < 1.0 && E > 0.0 && energy_[i] > 0.0 &&
+      energy_[i + 1] > energy_[i]) {
+    r = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
   }
 
   double r1 = prn(seed);

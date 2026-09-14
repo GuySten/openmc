@@ -73,7 +73,6 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   read_dataset(rgroup, "xs", elastic_);
   read_dataset(rgroup, "xs_transport", elastic_transport_);
   read_dataset(rgroup, "xs_total", elastic_total_);
-  this->compute_mean_deflection();
   hid_t dist_group = open_group(rgroup, "distribution");
   // Interpolate between the tabulated distributions log-log in energy rather
   // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
@@ -90,6 +89,10 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
   close_group(dist_group);
   close_group(rgroup);
+
+  // Must follow elastic_angle_: the rescale factor is measured against the
+  // mean that distribution actually samples.
+  this->compute_mean_deflection();
 
   // Read excitation
   rgroup = open_group(group, "excitation");
@@ -222,23 +225,31 @@ double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
   // deflection in that gap is a guess.
   //
   // It does not have to be. EPRDATA14 tabulates the transport-corrected
-  // elastic cross section on the same 373-point grid as the cross sections,
-  // and it gives the first moment of the angular distribution directly. Use it
-  // to set the mean deflection and let the tables supply only the shape, by
-  // scaling the sampled deflection to the tabulated first moment.
+  // elastic cross section on the same dense grid as the cross sections, and it
+  // gives the first moment of the angular distribution directly. Use it to set
+  // the mean deflection and let the tables supply only the shape, by scaling
+  // the sampled deflection to the tabulated first moment.
   //
   // The first moment is what governs multiple scattering, so getting it right
-  // matters far more than the detail of the shape between tables. Where a
-  // table does exist the two agree to better than 2%, so this leaves the
-  // sampling essentially untouched there and corrects it only in the gaps.
-  double target = this->mean_deflection(E);
-  if (target <= 0.0)
-    return mu;
-  double sampled = elastic_angle_.mean_deflection(E);
-  if (sampled <= 0.0)
-    return mu;
-
-  double deflection = (1.0 - mu) * (target / sampled);
+  // matters far more than the detail of the shape between tables. That the
+  // target is trustworthy has been checked against partial-wave theory: EEDL's
+  // transport cross section for iron agrees with NIST SRD 64 (ELSEPA) to a
+  // median of 0.5% from 1 keV to 300 keV, and the tabulated angular
+  // distribution reproduces both the first and second moments there to 0.3%.
+  //
+  // The size of the correction varies far more than an earlier version of this
+  // comment claimed. At and below a few hundred keV, where the tables are
+  // closely spaced, the factor sits within about 1% of unity and the sampling
+  // is left essentially untouched. Deep inside a sparse interval it does real
+  // work: without it the first moment for tantalum at 1 MeV is 19% below the
+  // tabulated transport cross section, and for beryllium 19% above.
+  //
+  // The cost is the shape: this is an affine stretch of 1-mu, so the second
+  // moment moves as the square of the factor. That is a deliberate trade --
+  // PENELOPE avoids it by fitting a DCS to match both moments, but that needs
+  // a second transport cross section, which EPICS does not tabulate.
+  double factor = this->elastic_rescale(E);
+  double deflection = (1.0 - mu) * factor;
   // 1-mu cannot exceed 2; a rescaling that overshoots means exact backscatter
   return 1.0 - std::min(2.0, deflection);
 }
@@ -323,6 +334,44 @@ void ElectronInteraction::compute_mean_deflection()
       moment -= peak * peak_mean_deflection(Z_, energy_(i));
     elastic_deflection_[i] = moment > 0.0 ? moment / elastic_(i) : 0.0;
   }
+
+  // Factor that puts the sampled deflection onto the tabulated transport cross
+  // section. The denominator is the mean sample() actually produces, not
+  // mean_deflection(): see AngleDistribution::sampled_mean_deflection. Using
+  // the latter left the first moment up to 9% short of its own target deep
+  // inside a sparse interval, and for iron at 1 MeV pushed it the wrong way.
+  //
+  // Computed here, once, because the quadrature behind it is far too expensive
+  // to repeat per collision.
+  elastic_rescale_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    double target = elastic_deflection_[i];
+    double sampled = elastic_angle_.sampled_mean_deflection(energy_(i));
+    elastic_rescale_[i] =
+      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
+  }
+}
+
+double ElectronInteraction::elastic_rescale(double E) const
+{
+  int n = energy_.size();
+  if (n == 0)
+    return 1.0;
+  if (E <= energy_[0])
+    return elastic_rescale_[0];
+  if (E >= energy_(n - 1))
+    return elastic_rescale_[n - 1];
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return elastic_rescale_[i];
+
+  // The factor is of order one and varies smoothly, so a linear blend in
+  // log-energy is plenty -- unlike 1-<mu> itself, which spans decades.
+  double f = std::log(E / e0) / std::log(e1 / e0);
+  return (1.0 - f) * elastic_rescale_[i] + f * elastic_rescale_[i + 1];
 }
 
 double ElectronInteraction::mean_deflection(double E) const

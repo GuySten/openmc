@@ -99,6 +99,39 @@ double AngleDistribution::mean_deflection(double E) const
   return (1.0 - r) * mean_deflection_[i] + r * mean_deflection_[i + 1];
 }
 
+double AngleDistribution::sampled_mean_deflection(
+  double E, int n_quantile) const
+{
+  auto n = energy_.size();
+  if (n == 0)
+    return 0.0;
+  if (n == 1 || energy_interp_ != Interpolation::log_log) {
+    // With one table, or under the lin_lin rule where sample() picks a table
+    // at random, the mean of what is sampled IS the interpolated mean.
+    return this->mean_deflection(E);
+  }
+
+  int i;
+  double r;
+  get_energy_index(energy_, E, i, r);
+  double f = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
+  f = std::max(0.0, std::min(1.0, f));
+
+  // Midpoint rule over the quantile, reproducing sample() node for node.
+  double sum = 0.0;
+  for (int j = 0; j < n_quantile; ++j) {
+    double xi = (j + 0.5) / n_quantile;
+    double d_low = 1.0 - distribution_[i]->sample_at(xi);
+    double d_high = 1.0 - distribution_[i + 1]->sample_at(xi);
+    if (d_low > 0.0 && d_high > 0.0) {
+      sum += std::exp((1.0 - f) * std::log(d_low) + f * std::log(d_high));
+    } else {
+      sum += (1.0 - f) * d_low + f * d_high;
+    }
+  }
+  return sum / n_quantile;
+}
+
 double AngleDistribution::sample(double E, uint64_t* seed) const
 {
   // Find energy bin and calculate interpolation factor

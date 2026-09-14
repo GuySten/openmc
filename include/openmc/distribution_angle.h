@@ -50,6 +50,19 @@ public:
   //! \return Mean of 1-mu, or 0 if the distribution is empty
   double mean_deflection(double E) const;
 
+  //! Mean deflection 1-<mu> that sample() actually produces at this energy.
+  //
+  //! Not the same as mean_deflection(). Under log-log energy interpolation
+  //! sample() interpolates the two tables' QUANTILES geometrically, while
+  //! mean_deflection() interpolates their MEANS geometrically, and the mean of
+  //! a geometric interpolation is not the geometric interpolation of the means
+  //! -- Jensen. The gap reaches 10% deep inside a sparse interval. Anything
+  //! rescaling the sampled deflection has to divide by this, not by
+  //! mean_deflection(), or it corrects against the wrong denominator.
+  //!
+  //! Evaluated by quadrature over the quantile, so it is for load-time use.
+  double sampled_mean_deflection(double E, int n_quantile = 1024) const;
+
   //! Determine whether angle distribution is empty
   //! \return Whether distribution is empty
   bool empty() const { return energy_.empty(); }

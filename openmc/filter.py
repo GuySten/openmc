@@ -26,7 +26,8 @@ _FILTER_TYPES = (
     'energyout', 'mu', 'musurface', 'polar', 'azimuthal', 'distribcell',
     'delayedgroup', 'energyfunction', 'cellfrom', 'materialfrom', 'legendre',
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
-    'particleproduction', 'point', 'cellinstance', 'collision', 'time', 'parentnuclide',
+    'particleproduction', 'point', 'opticaldepth', 'cellinstance', 'collision', 'time',
+    'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
 )
 
@@ -2531,6 +2532,80 @@ class MuFilter(RealFilter):
                 cv.check_greater_than('filter value', x, -1., equality=True)
             if not np.isclose(x, 1.):
                 cv.check_less_than('filter value', x, 1., equality=True)
+
+
+class OpticalDepthFilter(RealFilter):
+    """Bins next-event contributions by the optical depth they flew through.
+
+    A point detector measures the flux at a point by adding, at every emission
+    event, the fraction of that emission which would reach the detector without
+    colliding. Each of those contributions travels a known number of mean free
+    paths, and this filter bins them by it.
+
+    It exists for point-kernel buildup. A buildup factor is a function of the
+    optical depth traversed and grows steeply with it, so folding a tally that
+    has already collapsed contributions of very different depth into one number
+    is not the same as folding each depth separately -- the difference is the
+    curvature of :math:`B` across the spread of depths in the source region.
+    Binning in optical depth makes the bin width, rather than the size of the
+    source, the thing that sets the error.
+
+    The quantity is only produced by the next-event estimator, so this filter
+    must be used together with an :class:`openmc.PointFilter`; under any other
+    estimator it matches nothing. Contributions falling outside the binned range
+    are dropped, as with any other filter, which in a buildup calculation means
+    flux silently missing from the folded result -- compare against the same
+    tally without this filter to check the range covers the problem.
+
+    The optical depth is measured with the transport cross section OpenMC
+    itself uses, coherent scattering included. A buildup factor tabulated
+    against a different attenuation coefficient -- the classic compilations
+    exclude coherent scattering -- has to be looked up at the depth on *its*
+    basis, not this one.
+
+    .. versionadded:: 0.15.3
+
+    Parameters
+    ----------
+    values : Iterable of Real
+        Bin edges in mean free paths. Successive pairs constitute a bin.
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    values : numpy.ndarray
+        Bin edges in mean free paths
+    id : int
+        Unique identifier for the filter
+    bins : numpy.ndarray
+        An array of shape (N, 2) where each row is a pair of optical depths
+        bounding a single filter bin
+    num_bins : Integral
+        The number of filter bins
+
+    Examples
+    --------
+    Twenty logarithmic bins from 0.1 to 100 mean free paths, alongside the
+    detector and an energy filter::
+
+        tally = openmc.Tally()
+        tally.filters = [
+            openmc.PointFilter([((0.0, 0.0, 250.0), 1.0)]),
+            openmc.OpticalDepthFilter(np.logspace(-1, 2, 21)),
+            openmc.EnergyFilter(source_energy_bins),
+        ]
+        tally.scores = ['flux']
+        tally.estimator = 'uncollided'
+
+    """
+
+    units = 'mfp'
+
+    def check_bins(self, bins):
+        super().check_bins(bins)
+        for x in np.ravel(bins):
+            cv.check_greater_than('filter value', x, 0.0, equality=True)
 
 
 class MuSurfaceFilter(MuFilter):

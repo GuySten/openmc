@@ -30,6 +30,7 @@
 #include "openmc/tallies/filter_mu.h"
 #include "openmc/tallies/filter_musurface.h"
 #include "openmc/tallies/filter_parent_nuclide.h"
+#include "openmc/tallies/filter_optical_depth.h"
 #include "openmc/tallies/filter_particle.h"
 #include "openmc/tallies/filter_particle_production.h"
 #include "openmc/tallies/filter_point.h"
@@ -145,6 +146,8 @@ Filter* Filter::create(const std::string& type, int32_t id)
     return Filter::create<MuFilter>(id);
   } else if (type == "musurface") {
     return Filter::create<MuSurfaceFilter>(id);
+  } else if (type == "opticaldepth") {
+    return Filter::create<OpticalDepthFilter>(id);
   } else if (type == "parentnuclide") {
     return Filter::create<ParentNuclideFilter>(id);
   } else if (type == "particle") {

@@ -409,6 +409,7 @@ list(APPEND libopenmc_SOURCES
   src/tallies/filter_parent_nuclide.cpp
   src/tallies/filter_particle.cpp
   src/tallies/filter_particle_production.cpp
+  src/tallies/filter_optical_depth.cpp
   src/tallies/filter_point.cpp
   src/tallies/filter_polar.cpp
   src/tallies/filter_reaction.cpp

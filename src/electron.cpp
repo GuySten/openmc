@@ -418,11 +418,95 @@ int ElectronInteraction::sample_ionization_shell(Particle& p) const
   fatal_error("Did not sample any electron shell during electro-ionization.");
 }
 
+namespace {
+
+//! Polar angle of a bremsstrahlung photon, from Koch and Motz formula 2BS
+//
+//! EPICS carries no angular information for this channel -- the evaluation
+//! states outright that the direction is left to the transport code -- so an
+//! analytic form is the only option. This is the screened Schiff/Bethe-Heitler
+//! shape, sampled by rejection in the reduced angle y = gamma*theta following
+//! the formulation in EGSnrc, which uses it as its default for all energies.
+//!
+//! The emitting electron's direction is deliberately left alone. PENELOPE,
+//! EGSnrc and MCNP all do the same, on the grounds that elastic scattering
+//! governs the electron's deflection and the radiative recoil is negligible
+//! beside it.
+//!
+//! \param Z Atomic number of the target
+//! \param E Kinetic energy of the electron before emission [eV]
+//! \param E_photon Energy of the emitted photon [eV]
+//! \param seed Pseudorandom number seed pointer
+//! \return Cosine of the angle between the photon and the electron
+double bremsstrahlung_cos_theta(
+  int Z, double E, double E_photon, uint64_t* seed)
+{
+  // (Zeff/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
+  // electron-electron contribution. 1/111^2 = 8.116224e-5.
+  double z_screen = 8.116224e-5 * std::cbrt(static_cast<double>(Z) * (Z + 1));
+  double log_z_screen = -std::log(z_screen);
+
+  double e_total = E + MASS_ELECTRON_EV;
+  double e_final = e_total - E_photon;
+  if (E_photon <= 0.0 || e_final <= MASS_ELECTRON_EV)
+    return 1.0;
+
+  double gamma = e_total / MASS_ELECTRON_EV;
+  double beta = std::sqrt((gamma - 1.0) * (gamma + 1.0)) / gamma;
+  double y2_max = 2.0 * beta * (1.0 + beta) * gamma * gamma;
+  if (y2_max <= 0.0)
+    return 1.0;
+  double y2_max_inv = 1.0 / y2_max;
+  double z2_max_sqrt = std::sqrt(y2_max + 1.0);
+
+  double ratio = (e_final / MASS_ELECTRON_EV) / gamma;
+  double arg1 = 1.0 + ratio * ratio;
+  double arg2 = arg1 + 2.0 * ratio;
+
+  // (2*E_final*gamma/k)^2, the argument of the screening logarithm
+  double aux = 2.0 * e_final * gamma / E_photon;
+  aux *= aux;
+  double aux1 = aux * z_screen;
+  double arg3 = (aux1 > 10.0) ? log_z_screen + (1.0 - aux1) / (aux1 * aux1)
+                              : std::log(aux / (1.0 + aux1));
+
+  double rej_max = arg1 * arg3 - arg2;
+  if (!(rej_max > 0.0))
+    return 1.0;
+
+  // Rejection loop. The trial variable is drawn from the leading term and
+  // rejected against the screened shape; it converges in a few iterations, but
+  // cap it so that a pathological energy cannot hang a history.
+  double y2 = 0.0;
+  for (int iter = 0; iter < 1000; ++iter) {
+    double xi = prn(seed);
+    double test = prn(seed);
+    double aux3 = z2_max_sqrt / (xi + (1.0 - xi) * z2_max_sqrt);
+    test *= aux3 * rej_max;
+    y2 = aux3 * aux3 - 1.0;
+    double aux3_4 = aux3 * aux3 * aux3 * aux3;
+    double y2s = ratio * y2 / aux3_4;
+    double aux4 = 16.0 * y2s - arg2;
+    double aux5 = arg1 - 4.0 * y2s;
+    if (test < aux4 + aux5 * arg3)
+      break;
+    double aux2 = std::log(aux / (1.0 + aux1 / aux3_4));
+    if (test < aux4 + aux5 * aux2)
+      break;
+  }
+
+  return std::max(-1.0, std::min(1.0, 1.0 - 2.0 * y2 * y2_max_inv));
+}
+
+} // namespace
+
 void ElectronInteraction::bremsstrahlung(Particle& p) const
 {
   double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
+  double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
+  Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;
-  p.create_secondary(p.wgt(), p.u(), E_photon, ParticleType::photon());
+  p.create_secondary(p.wgt(), u, E_photon, ParticleType::photon());
 }
 
 //==============================================================================

@@ -1,5 +1,7 @@
 #include "openmc/particle.h"
 
+#include <cassert>
+
 #include <algorithm> // copy, min
 #include <cmath>     // log, abs
 
@@ -964,6 +966,8 @@ void Particle::write_restart() const
 void Particle::update_neutron_xs(
   int i_nuclide, int i_grid, int i_sab, double sab_frac, double ncrystal_xs)
 {
+  assert(type().is_neutron());
+
   // Get microscopic cross section cache
   auto& micro = this->neutron_xs(i_nuclide);
 

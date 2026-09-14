@@ -1,5 +1,7 @@
 #include "openmc/photon.h"
 
+#include <cassert>
+
 #include "openmc/array.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
@@ -710,6 +712,8 @@ void PhotonInteraction::compton_doppler(
 
 void PhotonInteraction::calculate_xs(Particle& p) const
 {
+  assert(p.type().is_photon());
+
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
   int n_grid = energy_.size();

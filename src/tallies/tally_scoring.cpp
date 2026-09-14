@@ -2447,14 +2447,19 @@ void score_tracklength_tally_general(
             if (!tally.multiply_density())
               atom_density = 1.0;
           } else if (!tally.multiply_density()) {
-            // Determine log union grid index
-            if (i_log_union == C_NONE) {
-              int neutron = ParticleType::neutron().transport_index();
-              i_log_union = std::log(p.E() / data::energy_min[neutron]) /
-                            simulation::log_spacing;
+            // The cache being filled here holds neutron cross sections, and is
+            // only ever read back by neutron scoring, so there is nothing to
+            // update for any other kind of particle
+            if (p.type().is_neutron()) {
+              // Determine log union grid index
+              if (i_log_union == C_NONE) {
+                int neutron = ParticleType::neutron().transport_index();
+                i_log_union = std::log(p.E() / data::energy_min[neutron]) /
+                              simulation::log_spacing;
+              }
+              // Update micro xs cache
+              p.update_neutron_xs(i_nuclide, i_log_union);
             }
-            // Update micro xs cache
-            p.update_neutron_xs(i_nuclide, i_log_union);
             atom_density = 1.0;
           }
         }
@@ -2577,14 +2582,19 @@ void score_collision_tally(Particle& p)
             if (!tally.multiply_density())
               atom_density = 1.0;
           } else if (!tally.multiply_density()) {
-            // Determine log union grid index
-            if (i_log_union == C_NONE) {
-              int neutron = ParticleType::neutron().transport_index();
-              i_log_union = std::log(p.E() / data::energy_min[neutron]) /
-                            simulation::log_spacing;
+            // The cache being filled here holds neutron cross sections, and is
+            // only ever read back by neutron scoring, so there is nothing to
+            // update for any other kind of particle
+            if (p.type().is_neutron()) {
+              // Determine log union grid index
+              if (i_log_union == C_NONE) {
+                int neutron = ParticleType::neutron().transport_index();
+                i_log_union = std::log(p.E() / data::energy_min[neutron]) /
+                              simulation::log_spacing;
+              }
+              // Update micro xs cache
+              p.update_neutron_xs(i_nuclide, i_log_union);
             }
-            // Update micro xs cache
-            p.update_neutron_xs(i_nuclide, i_log_union);
             atom_density = 1.0;
           }
         }

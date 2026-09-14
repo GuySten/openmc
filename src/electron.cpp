@@ -199,7 +199,16 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  return elastic_angle_.sample(E, seed);
+  // Interpolate between the tabulated angular distributions in log-energy
+  // rather than taking AngleDistribution::sample's linear stochastic choice
+  // between them. The elastic tables are spaced geometrically and are sparse
+  // -- for aluminium there is nothing between 256 keV and 10 MeV, across which
+  // 1-<mu> falls by a factor of 35 -- so a linear interpolation factor is
+  // ~0.08 at 1 MeV and the low-energy, wide-angle table is chosen 92% of the
+  // time throughout the gap. That over-scatters by a factor of about 3.5,
+  // which leaves the stopping power and CSDA range correct but stops electrons
+  // penetrating: depth-deposition profiles peak far too shallow.
+  return elastic_angle_.sample_log_interp(E, seed);
 }
 
 double ElectronInteraction::excitation(double E) const

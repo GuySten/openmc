@@ -26,6 +26,18 @@ public:
   //! \return Cosine of the angle in the range [-1,1]
   double sample(double E, uint64_t* seed) const;
 
+  //! Sample an angle, interpolating between tables in log-energy
+  //
+  // For a distribution tabulated on a sparse, geometric energy grid whose
+  // width varies as a power of the energy, sample() is badly biased -- see
+  // the implementation. Used for electron elastic scattering; neutron data is
+  // tabulated densely enough that sample() is fine and keeps using it.
+  //
+  //! \param[in] E Particle energy in [eV]
+  //! \param[inout] seed pseudorandom number seed pointer
+  //! \return Cosine of the angle in the range [-1,1]
+  double sample_log_interp(double E, uint64_t* seed) const;
+
   //! Evaluate the angular PDF at a given energy and cosine
   //! \param[in] E Particle energy in [eV]
   //! \param[in] mu Cosine of the scattering angle

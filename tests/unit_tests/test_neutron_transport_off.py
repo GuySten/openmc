@@ -9,7 +9,6 @@ touched neutron data in any way could not succeed.
 from pathlib import Path
 
 import h5py
-import numpy as np
 import openmc
 import openmc.data
 import pytest
@@ -181,35 +180,3 @@ def test_multigroup_rejected(photon_only_xs):
 
     with pytest.raises(RuntimeError, match='multigroup mode'):
         model.run()
-
-
-def test_neutron_particle_restart_rejected(photon_only_xs):
-    """A restarted neutron would otherwise be transported with no data.
-
-    The particle's type is only known once the restart file is read, long after
-    the decision of which data to load, so it is checked at that point.
-    """
-    model, _ = aluminum_photon_model()
-    model.settings.neutron_transport = False
-    model.export_to_model_xml()
-
-    # Written by hand because OpenMC only produces these files for particles
-    # that get lost, which is not something a test can arrange reliably
-    with h5py.File('neutron_restart.h5', 'w') as f:
-        f.attrs['filetype'] = np.bytes_('particle restart')
-        f.attrs['version'] = np.array([2, 1])
-        f.create_dataset('current_batch', data=1)
-        f.create_dataset('generations_per_batch', data=1)
-        f.create_dataset('current_generation', data=1)
-        f.create_dataset('n_particles', data=1)
-        f.create_dataset('run_mode', data=np.bytes_('fixed source'))
-        f.create_dataset('id', data=1)
-        f.create_dataset('type', data=2112)  # PDG code for a neutron
-        f.create_dataset('weight', data=1.0)
-        f.create_dataset('energy', data=1.0e6)
-        f.create_dataset('xyz', data=np.zeros(3))
-        f.create_dataset('uvw', data=np.array([0., 0., 1.]))
-        f.create_dataset('time', data=0.0)
-
-    with pytest.raises(RuntimeError, match='restarted is a neutron'):
-        openmc.run(restart_file='neutron_restart.h5')

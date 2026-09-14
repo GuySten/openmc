@@ -4,12 +4,23 @@
 Charged Particle Physics
 ========================
 
-OpenMC neglects the spatial transport of charged particles (electrons and
-positrons), assuming they deposit all their energy locally and produce
-bremsstrahlung photons at their birth location. This approximation, called
-thick-target bremsstrahlung (TTB) approximation is justified by the fact that
-charged particles have much shorter stopping ranges compared to neutrons and
-photons, especially in high-density materials.
+Charged particles (electrons and positrons) can be treated in two ways. By
+default OpenMC neglects their spatial transport, assuming they deposit all
+their energy locally and produce bremsstrahlung photons at their birth
+location. This approximation, called the thick-target bremsstrahlung (TTB)
+approximation, is justified by the fact that charged particles have much
+shorter stopping ranges compared to neutrons and photons, especially in
+high-density materials.
+
+When electron transport is enabled, electrons and positrons are instead
+transported explicitly by an analog single-event scheme, described in
+:ref:`electron_transport` below. Every elastic, excitation, electroionization
+and bremsstrahlung interaction is sampled individually; there is no
+condensed-history step and no multiple-scattering theory. This is far more
+expensive -- a 1 MeV electron undergoes on the order of :math:`10^5`
+interactions before it ranges out -- but it makes no assumption about the step
+length and remains valid where condensed-history schemes break down, which is
+generally below about 1 keV.
 
 -----------------------------
 Charged Particle Interactions
@@ -332,8 +343,9 @@ photons are produced in the same location that the charged particle was
 created. The direction of the photons is assumed to be the same as the
 direction of the incident charged particle, which is a reasonable approximation
 at higher energies when the bremsstrahlung radiation is emitted at small
-angles.
-
+angles. This is an approximation of the TTB model specifically; when electrons
+are transported, the emission angle is sampled from the distribution given in
+:ref:`bremsstrahlung_angle`.
 
 Electron-Positron Annihilation
 ------------------------------
@@ -354,6 +366,211 @@ an electron which is free and at rest. Two photons with energy equal to the
 electron rest mass energy :math:`m_e c^2 = 0.511` MeV are emitted isotropically
 in opposite directions.
 
+
+
+.. _electron_transport:
+
+------------------
+Electron Transport
+------------------
+
+When electron transport is enabled, electrons and positrons are transported by
+an analog single-event scheme. The distance to the next interaction is sampled
+from the total electroatomic cross section, one of the four channels below is
+selected in proportion to its cross section, and that interaction is sampled in
+full. Nothing is condensed into a step: there is no multiple-scattering
+distribution, no substep energy loss, and no path-length correction.
+
+The interaction data are those of the EPICS evaluated libraries, in particular
+the Evaluated Electron Data Library (EEDL), read from the eprdata ACE format.
+For each element the library supplies the four cross sections on a common dense
+energy grid, the elastic angular distributions, the average energy loss to
+excitation, the electroionization spectra for each subshell, and the
+bremsstrahlung photon spectra.
+
+Elastic Scattering
+------------------
+
+Elastic scattering changes the direction of the electron without transferring
+energy to the atom. It is by a wide margin the most frequent interaction, and
+the accumulation of many small deflections is what limits how deeply electrons
+penetrate.
+
+The evaluation splits the angular distribution in two. A tabulated distribution
+covers scattering away from the forward direction, out to a cutoff at
+:math:`\mu_{\text{max}} = 1 - 10^{-6}`, about 1.4 mrad from forward; the
+narrow peak beyond that cutoff is left to an analytic screened-Rutherford form
+
+.. math::
+    :label: elastic-peak
+
+    f(\mu) \propto \frac{1}{(2\eta + 1 - \mu)^2},
+
+with Molière's screening angle carrying the low-energy correction
+recommended by Seltzer,
+
+.. math::
+    :label: elastic-screening
+
+    \eta = \frac{1}{4}\left(\frac{\alpha m_e c}{0.885\,p}\right)^2
+    Z^{2/3} \left[1.13 + 3.76 \left(\frac{\alpha Z}{\beta}\right)^2
+    \sqrt{\frac{\tau}{\tau + 1}}\right],
+
+where :math:`\tau = T/m_ec^2`. The cross section that accompanies the
+tabulated distribution is the large-angle cross section
+:math:`\sigma_{\text{el}}`, not the total; pairing the total with these tables
+would count the peak twice.
+
+The angular tables are given at only 14 to 16 energies per element, spanning
+ten decades. For aluminium there is no table between 256 keV and 10 MeV, an
+interval across which the mean deflection falls by a factor of 35, so the
+tables cannot simply be interpolated. Two things follow. First, the tables are
+interpolated logarithmically in energy, with both bracketing distributions
+sampled at the same cumulative probability and the resulting deflections
+combined geometrically; a linear rule places essentially all of the weight on
+the lower table across a gap of that size. Second, the mean deflection is not
+taken from the tables at all. The library tabulates a transport-corrected
+elastic cross section :math:`\sigma_{\text{tr}}` on the same dense grid as the
+cross sections, and its first moment gives the mean deflection directly:
+
+.. math::
+    :label: mean-deflection
+
+    \langle 1 - \mu \rangle = \frac{\sigma_{\text{tr}} -
+    \sigma_{\text{peak}} \langle 1 - \mu \rangle_{\text{peak}}}
+    {\sigma_{\text{el}}},
+
+where :math:`\sigma_{\text{peak}}` is the difference between the total and
+large-angle cross sections. The subtraction is needed because
+:math:`\sigma_{\text{tr}}` is the first moment of the *total* distribution,
+peak included, while the tables describe only the large-angle part. Integrating
+:eq:`elastic-peak` over the peak gives its contribution in closed form,
+
+.. math::
+    :label: peak-moment
+
+    \langle 1 - \mu \rangle_{\text{peak}} =
+    -\frac{a(a + x_0)}{x_0}\left[\ln(1 - w) + w\right], \quad
+    a = 2\eta,\quad x_0 = 1 - \mu_{\text{max}},\quad
+    w = \frac{x_0}{a + x_0}.
+
+The bracketed term is :math:`\ln(1+x) - x` at :math:`x = -w`. Both of its
+terms approach :math:`-w` while their difference is only :math:`w^2/2`, so it
+is evaluated by a dedicated routine rather than by subtracting them directly.
+
+Below the energy at which the peak opens up -- 1.75 MeV in aluminium, 3 MeV in
+iron, 8 MeV in uranium -- the evaluation gives
+:math:`\sigma_{\text{tot}} = \sigma_{\text{el}}` and the correction vanishes
+identically.
+
+Each sampled deflection is then scaled so that its mean matches
+:eq:`mean-deflection`, leaving the tables to supply the shape and the dense
+grid to supply the first moment.
+
+Atomic Excitation
+-----------------
+
+An excitation event raises a bound electron to a higher state without ionizing
+the atom. The evaluation tabulates only the average energy loss
+:math:`\Delta(T)`, so the incident electron loses that average,
+
+.. math::
+    :label: excitation-loss
+
+    T' = T - \Delta(T),
+
+and continues undeflected with no secondary particle produced. There is no
+straggling within an event, because the evaluation provides no distribution to
+sample; fluctuation in the total excitation loss arises only from the number of
+events. This matches the treatment in MCNP's single-event mode.
+
+Electroionization
+-----------------
+
+Electroionization ejects a bound electron. The subshell is sampled in
+proportion to the subshell ionization cross sections, and the kinetic energy
+:math:`T_{\text{k}}` of the ejected knock-on electron is sampled from the
+spectrum tabulated for that subshell. The incident electron loses the knock-on
+energy together with the binding energy :math:`B` of the vacated subshell,
+
+.. math::
+    :label: ionization-loss
+
+    T' = T - T_{\text{k}} - B.
+
+Each spectrum ends exactly at the kinematic limit
+:math:`(T - B)/2`, which is affine in :math:`T`, and the spectra are anchored
+at the low end near the binding energy rather than scaling with :math:`T`.
+They are therefore not self-similar and are sampled without unit-base scaling,
+with the two bracketing tables combined geometrically at matched cumulative
+probability. As with the angular tables, the incident-energy grids are sparse
+-- aluminium's K shell jumps from 15.8 keV to 501 keV -- and are interpolated
+logarithmically.
+
+The polar deflections of both electrons follow from conservation of momentum
+and are not sampled independently:
+
+.. math::
+    :label: ionization-angles
+
+    \mu = \left[\frac{T'(T + 2m_ec^2)}{T(T' + 2m_ec^2)}\right]^{1/2},
+    \quad
+    \mu_{\text{k}} = \left[\frac{T_{\text{k}}(T + 2m_ec^2)}
+    {T(T_{\text{k}} + 2m_ec^2)}\right]^{1/2}.
+
+The two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
+The vacancy is passed to the atomic relaxation model, which follows the full
+cascade.
+
+.. _bremsstrahlung_angle:
+
+Bremsstrahlung Emission
+-----------------------
+
+The photon energy is sampled from the spectra tabulated in the library, whose
+incident-energy grids are again sparse and are interpolated logarithmically,
+with unit-base scaling because the spectrum is self-similar: its upper endpoint
+is the incident energy itself.
+
+The evaluation carries no angular information for this channel at all, so the
+emission angle must come from a model. OpenMC samples it from formula 2BS of
+Koch_ and Motz, the screened Schiff form of the Bethe-Heitler cross section,
+using rejection in the reduced angle :math:`y = \gamma\theta` where
+:math:`\gamma` is the Lorentz factor of the incident electron. The screening
+enters through
+
+.. math::
+    :label: brems-screening
+
+    Z_{\text{s}} = \left(\frac{Z_{\text{eff}}}{111}\right)^2, \quad
+    Z_{\text{eff}}^2 = Z(Z+1),
+
+in which the factor :math:`(Z+1)` accounts for electron-electron
+bremsstrahlung. The emission is confined to a cone of order :math:`1/\gamma`
+at relativistic energies and becomes broad as the electron energy falls.
+
+The emitting electron is left undeflected. Its direction is governed by elastic
+scattering, beside which the recoil from radiative emission is negligible; the
+same choice is made in PENELOPE, EGSnrc and MCNP.
+
+Energy Cutoff
+-------------
+
+Transport stops when the kinetic energy falls below the electron or positron
+cutoff. The residual kinetic energy is deposited at that point rather than
+discarded, so that energy is conserved exactly regardless of where the cutoff
+is placed. A positron reaching the cutoff annihilates first, emitting two
+photons of :math:`m_ec^2` isotropically in opposite directions, as described in
+`Electron-Positron Annihilation`_.
+
+A practical caution applies at the very bottom of the range. Elastic scattering
+transfers no energy, electroionization stops once the incident energy falls
+below the binding energy of the least-bound shell, and excitation can also
+vanish at some energy above 10 eV depending on the element. Between those
+thresholds an electron can take a very large number of elastic steps without
+losing energy. Setting the cutoff no lower than about 12 eV avoids this.
+
+.. _Koch: https://doi.org/10.1103/RevModPhys.31.920
 
 .. _Kaltiaisenaho: https://aaltodoc.aalto.fi/bitstream/handle/123456789/21004/master_Kaltiaisenaho_Toni_2016.pdf
 

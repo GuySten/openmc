@@ -92,7 +92,7 @@ def test_neutron_data_still_required_by_default(photon_only_xs):
         model.run()
 
 
-def test_neutron_source_turns_neutron_transport_back_on(photon_only_xs):
+def test_neutron_source_turns_neutron_transport_back_on(photon_only_xs, capsys):
     """A neutron source overrides the setting, as a photon source does."""
     model, _ = aluminum_photon_model()
     model.settings.neutron_transport = False
@@ -102,6 +102,22 @@ def test_neutron_source_turns_neutron_transport_back_on(photon_only_xs):
     # Neutron data is needed again, rather than neutrons being transported
     # without any data to transport them with
     with pytest.raises(RuntimeError, match='Al27'):
+        model.run()
+
+    # Overriding what the user asked for is not done silently
+    assert 'turned back on' in capsys.readouterr().out
+
+
+def test_no_source_reports_the_missing_source(photon_only_xs):
+    """The default source emits neutrons, so its absence is the real problem.
+
+    Reporting missing neutron data here would point at the wrong thing.
+    """
+    model, _ = aluminum_photon_model()
+    model.settings.neutron_transport = False
+    model.settings.source = []
+
+    with pytest.raises(RuntimeError, match='no source was specified'):
         model.run()
 
 

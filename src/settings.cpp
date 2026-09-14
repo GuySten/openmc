@@ -630,8 +630,10 @@ void read_settings_xml(pugi::xml_node root)
   }
 
   // Check for neutron transport
+  bool neutron_transport_turned_off = false;
   if (check_for_node(root, "neutron_transport")) {
     neutron_transport = get_node_value_bool(root, "neutron_transport");
+    neutron_transport_turned_off = !neutron_transport;
 
     if (!run_CE && !neutron_transport) {
       fatal_error("Neutron transport cannot be turned off in multigroup mode.");
@@ -705,8 +707,16 @@ void read_settings_xml(pugi::xml_node root)
   // Watt spectrum. No default source is needed in random ray mode.
   if (model::external_sources.empty() &&
       settings::solver_type != SolverType::RANDOM_RAY) {
-    // The default source emits neutrons, so it turns neutron transport on in
-    // the same way an explicit neutron source would
+    // The default source emits neutrons, so there is nothing for a calculation
+    // that turned neutron transport off to fall back on
+    if (!neutron_transport && run_mode == RunMode::FIXED_SOURCE) {
+      fatal_error("Neutron transport is turned off, but no source was "
+                  "specified. The default source emits neutrons, so a source "
+                  "has to be given explicitly.");
+    }
+
+    // Otherwise it turns neutron transport on, as an explicit neutron source
+    // would
     neutron_transport = true;
 
     double T[] {0.0};
@@ -1385,6 +1395,15 @@ void read_settings_xml(pugi::xml_node root)
     } else if (run_mode == RunMode::FIXED_SOURCE) {
       settings::use_shared_secondary_bank = true;
     }
+  }
+
+  // Sources turn transport of the particle types they emit back on, so tell the
+  // user when that has overridden what they asked for. Plotting reads no data,
+  // so the setting has no bearing on it either way.
+  if (neutron_transport_turned_off && neutron_transport && mpi::master &&
+      run_mode != RunMode::PLOTTING) {
+    warning("Neutron transport was turned off, but a source emits neutrons, so "
+            "it has been turned back on and neutron data will be read.");
   }
 
   // Reject options that act on neutron data, which is not read when neutrons

@@ -144,20 +144,28 @@ class Element(str):
         if cross_sections is not None:
             library_nuclides = set()
             has_neutron_data = False
+            has_photon_data = False
             tree = ET.parse(cross_sections)
             root = tree.getroot()
             for child in root.findall('library'):
-                if child.get('type') != 'neutron':
-                    continue
-                has_neutron_data = True
-                nuclide = child.attrib['materials']
-                if re.match(r'{}\d+'.format(self), nuclide):
-                    library_nuclides.add(nuclide)
+                materials = child.attrib['materials']
+                data_type = child.get('type')
+                if data_type == 'photon':
+                    has_photon_data |= materials == str(self)
+                elif data_type == 'neutron':
+                    has_neutron_data = True
+                    if re.match(r'{}\d+'.format(self), materials):
+                        library_nuclides.add(materials)
 
-            # A library with no neutron data at all -- as used for a
-            # photon-only calculation -- says nothing about which isotopes are
-            # available, so fall back to expanding by natural abundance
-            if not has_neutron_data:
+            # A library holding no neutron data for this element says nothing
+            # about which of its isotopes are available, so expand by natural
+            # abundance rather than refusing. That is so of a library with no
+            # neutron data at all, as a photon-only calculation uses, and of
+            # one whose photon data covers an element its neutron data does
+            # not -- which is how a photon shielding calculation runs on an
+            # element the configured library has no neutron evaluation for.
+            if not library_nuclides and (not has_neutron_data
+                                         or has_photon_data):
                 library_nuclides = None
 
         if library_nuclides is not None:
@@ -210,7 +218,7 @@ class Element(str):
                               'the isotopes of this element individually.'
                         raise ValueError(msg)
 
-        # If no neutron data library is available, expand the element into its
+        # If no neutron data is available for this element, expand it into its
         # natural nuclides
         else:
             for nuclide in sorted(natural_nuclides, key=zam):

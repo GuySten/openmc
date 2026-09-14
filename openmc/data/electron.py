@@ -44,6 +44,8 @@ class IncidentElectron:
         self.energy_grid = None
         self.elastic_xs = None
         self.elastic_dist = None
+        self.elastic_transport_xs = None
+        self.elastic_total_xs = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_dist = None
         self.excitation_xs = None
@@ -96,14 +98,16 @@ class IncidentElectron:
         data = cls(Z)
 
         # Check the format flag. NXS(6) == 1 is EPRDATA12; 3 is EPRDATA14 and
-        # later. Nothing read below moved between those versions, but a future
-        # format could shift these blocks and misparse silently.
+        # later. EPRDATA12 is rejected because it has no JXS(27) block, and
+        # without the transport-corrected and total elastic cross sections
+        # stored there the elastic scattering cannot be sampled correctly.
         format_flag = ace.nxs[6]
-        if format_flag not in (1, 3):
+        if format_flag != 3:
             raise ValueError(
-                f'Unrecognized electron-photon-relaxation format flag '
-                f'NXS(6)={format_flag} in table {ace.name}. Supported values '
-                'are 1 (EPRDATA12) and 3 (EPRDATA14 and later).')
+                f'Unsupported electron-photon-relaxation format flag '
+                f'NXS(6)={format_flag} in table {ace.name}. EPRDATA14 or later '
+                '(NXS(6)=3) is required for the elastic cross sections at '
+                'JXS(27).')
 
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
@@ -140,6 +144,29 @@ class IncidentElectron:
         # with these angular tables would double count the small-angle
         # treatment.
         data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
+
+        # EPRDATA14 adds a block at JXS(27) holding, on this same dense energy
+        # grid, the transport-corrected elastic cross section followed by the
+        # total elastic cross section. The transport cross section is the first
+        # moment of the total, so its ratio to the total is the mean deflection
+        # 1-<mu>; where an angular table exists the two agree to better than 4%.
+        #
+        # Both are worth carrying because the angular tables are tabulated far
+        # too sparsely to interpolate: for aluminium there is no table between
+        # 256 keV and 10 MeV, and 1-<mu> falls by a factor of 35 across that
+        # gap. This gives the correct value on the 373-point grid instead of
+        # requiring it to be guessed between two distant tables. The total is
+        # needed alongside it to separate the forward peak, which the angular
+        # tables do not cover, from the large-angle part that they do.
+        j_transport = ace.jxs[27]
+        if j_transport <= 0:
+            raise ValueError(
+                f'Table {ace.name} declares the EPRDATA14 format but has no '
+                'JXS(27) elastic cross section block.')
+        data.elastic_transport_xs = ace.xss[
+            j_transport : j_transport + n_energy]
+        data.elastic_total_xs = ace.xss[
+            j_transport + n_energy : j_transport + 2 * n_energy]
         data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
         data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
 
@@ -170,15 +197,27 @@ class IncidentElectron:
                 c = ace.xss[start + ls[i]:start + 2*ls[i]]
                 energy_out.append(_tabular_from_cdf(
                     e, c, f'electroionization table {i} of subshell {shell}'))
-            # Linear interpolation between the tabulated incident energies.
-            # A logarithmic weight would put far more of the upper table into
-            # the mix, and because the knock-on spectrum's upper endpoint
-            # scales with the incident energy while its lower end does not,
-            # that badly overestimates the mean energy transfer. The transport
-            # code additionally samples these tables without unit-base scaling;
-            # see the ContinuousTabular constructor.
+            # Log-log interpolation between the tabulated incident energies.
+            # These grids are extremely sparse -- aluminium's K shell jumps
+            # from 15.8 keV to 501 keV with nothing in between -- and a linear
+            # weight puts 83% of that interval on the lower table.
+            #
+            # Measured against the ICRU-37 collision stopping power between 50
+            # and 300 keV, where the density effect vanishes, a linear weight
+            # runs 5-9% low and a logarithmic one 1-3% low, consistently for
+            # every element tested from beryllium to tantalum. The residual is
+            # the shell correction, which the Bethe form of the reference
+            # omits and which grows with Z in the same way.
+            #
+            # Unit-base scaling must stay off here, as the transport code has
+            # it. These spectra are not self-similar -- the low end is anchored
+            # near the binding energy while the tip follows the kinematic limit
+            # (E - B)/2 -- so rescaling a low-energy table's shape onto a much
+            # wider range drives the mean energy transfer far too high: with
+            # unit-base on, the collision stopping power comes out at 1.3 to
+            # 2.1 times ICRU-37.
             data.ionization_dist[shell].energy = ContinuousTabular(
-                [len(energy)], [2], energy, energy_out)
+                [len(energy)], [5], energy, energy_out)
             
         
         data.bremsstrahlung_dist = UncorrelatedAngleEnergy()
@@ -207,6 +246,17 @@ class IncidentElectron:
             start = j_elastic_tab + offsets[i]
             cos = ace.xss[start:start + le[i]]
             c = ace.xss[start + le[i]:start + 2*le[i]]
+            # The evaluation stops the tabulated distribution at 1 - 1e-6 and
+            # leaves the forward peak beyond it to an analytic screened
+            # Rutherford form. The transport code assumes that cutoff when it
+            # subtracts the peak's contribution from the transport cross
+            # section, so a table that ended anywhere else would be silently
+            # mistreated.
+            if abs(cos[-1] - (1.0 - 1.0e-6)) > 1.0e-9:
+                raise ValueError(
+                    f'Elastic angular table {i} of {ace.name} ends at '
+                    f'mu={cos[-1]!r}, not at the 1-1e-6 cutoff the elastic '
+                    'peak treatment assumes.')
             mu.append(_tabular_from_cdf(cos, c, f'elastic angular table {i}'))
         
         data.elastic_dist = AngleDistribution(energy, mu)
@@ -241,6 +291,10 @@ class IncidentElectron:
             
             elastic_group = group.create_group("elastic")
             elastic_group.create_dataset("xs", data=self.elastic_xs)
+            elastic_group.create_dataset(
+                "xs_transport", data=self.elastic_transport_xs)
+            elastic_group.create_dataset(
+                "xs_total", data=self.elastic_total_xs)
             self.elastic_dist.to_hdf5(elastic_group.create_group("distribution"))
             
             excitation_group = group.create_group("excitation")

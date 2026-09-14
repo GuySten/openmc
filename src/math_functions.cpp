@@ -946,6 +946,84 @@ double log1prel(double x)
   }
 }
 
+namespace {
+
+//! Sum of x^k/(i + k*d) for k >= 0, by its continued fraction
+//
+//! Converges in under a dozen iterations for the |x| < 0.5 that log1pmx asks
+//! of it, where the series itself would need tens of terms.
+double logcf(double x, double i, double d, double eps)
+{
+  // Rescaling threshold, large enough that the convergents only need it in
+  // the extreme tails
+  constexpr double scale {1.157920892373162e77}; // 2^256
+
+  double c1 = 2.0 * d;
+  double c2 = i + d;
+  double c4 = c2 + d;
+  double a1 = c2;
+  double b1 = i * (c2 - i * x);
+  double b2 = d * d * x;
+  double a2 = c4 * c2 - b2;
+  b2 = c4 * b1 - i * b2;
+
+  while (std::abs(a2 * b1 - a1 * b2) > std::abs(eps * b1 * b2)) {
+    double c3 = c2 * c2 * x;
+    c2 += d;
+    c4 += d;
+    a1 = c4 * a2 - c3 * a1;
+    b1 = c4 * b2 - c3 * b1;
+
+    c3 = c1 * c1 * x;
+    c1 += d;
+    c4 += d;
+    a2 = c4 * a1 - c3 * a2;
+    b2 = c4 * b1 - c3 * b2;
+
+    if (std::abs(b2) > scale) {
+      a1 /= scale;
+      b1 /= scale;
+      a2 /= scale;
+      b2 /= scale;
+    } else if (std::abs(b2) < 1.0 / scale) {
+      a1 *= scale;
+      b1 *= scale;
+      a2 *= scale;
+      b2 *= scale;
+    }
+  }
+  return a2 / b2;
+}
+
+} // namespace
+
+double log1pmx(double x)
+{
+  // Away from zero the two terms differ enough that subtracting them costs
+  // nothing, and the series below would converge too slowly to be worth it.
+  constexpr double lower {-0.79149064};
+  if (x > 1.0 || x < lower)
+    return std::log1p(x) - x;
+
+  // log(1+x) = 2*atanh(r) with r = x/(2+x), so that
+  //
+  //   log(1+x) - x = r*(2*y*S(y) - x),   y = r^2,  S(y) = sum y^k/(2k+3),
+  //
+  // in which nothing cancels: 2*y*S(y) is O(x^2) against an O(x) second term,
+  // and the O(x^2) result comes out of the product with r rather than out of a
+  // subtraction of two O(x) logarithms.
+  double r = x / (2.0 + x);
+  double y = r * r;
+  if (std::abs(x) < 1e-2) {
+    // Four terms of S carry this interval to full precision
+    constexpr double two {2.0};
+    return r *
+           ((((two / 9 * y + two / 7) * y + two / 5) * y + two / 3) * y - x);
+  }
+  constexpr double tol {1e-14};
+  return r * (2.0 * y * logcf(y, 3.0, 2.0, tol) - x);
+}
+
 double cyl_bessel_j(int n, double x)
 {
   // Handle negative arguments via the parity relation
@@ -991,13 +1069,22 @@ double cyl_bessel_j(int n, double x)
 void get_energy_index(
   const vector<double>& energies, double E, int& i, double& f)
 {
-  // Get index and interpolation factor for linear-linear energy grid
+  // Get index and interpolation factor for linear-linear energy grid. The index
+  // is kept within the topmost interval so that both energies[i] and
+  // energies[i + 1] are valid for callers.
+  const int n = energies.size();
   i = 0;
   f = 0.0;
-  if (E >= energies.front()) {
-    i = lower_bound_index(energies.begin(), energies.end(), E);
-    if (i + 1 < energies.size())
-      f = (E - energies[i]) / (energies[i + 1] - energies[i]);
+  if (n < 2 || E < energies.front())
+    return;
+
+  i = lower_bound_index(energies.begin(), energies.end(), E);
+  if (i < n - 1) {
+    f = (E - energies[i]) / (energies[i + 1] - energies[i]);
+  } else {
+    // E lies above the top of the grid; use the topmost interval
+    i = n - 2;
+    f = 1.0;
   }
 }
 

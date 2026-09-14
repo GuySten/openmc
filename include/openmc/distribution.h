@@ -322,10 +322,22 @@ public:
   //! \return f(x)
   double evaluate(double x) const override;
 
+  //! Sample the value at a given quantile of the distribution
+  //
+  // Exposed separately from sample() so that two distributions can be sampled
+  // at the *same* quantile, which is what makes interpolating between them
+  // meaningful. Sampling each independently and interpolating the results
+  // would mix two unrelated points of the two distributions.
+  //
+  //! \param c Quantile in [0,1)
+  //! \return Sampled value
+  double sample_at(double c) const;
+
   // properties
   vector<double>& x() { return x_; }
   const vector<double>& x() const { return x_; }
   const vector<double>& p() const { return p_; }
+  const vector<double>& c() const { return c_; }
   Interpolation interp() const { return interp_; }
   double integral() const override { return integral_; };
 

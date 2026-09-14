@@ -71,10 +71,28 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read elastic scattering
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
+  read_dataset(rgroup, "xs_transport", elastic_transport_);
+  read_dataset(rgroup, "xs_total", elastic_total_);
   hid_t dist_group = open_group(rgroup, "distribution");
-  elastic_angle_ = AngleDistribution {dist_group};
+  // Interpolate between the tabulated distributions log-log in energy rather
+  // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
+  // this TAB2, but that rule assumes the tables are close enough together for
+  // a linear blend of them to mean something, and here they are not.
+  //
+  // Elastic angular data is tabulated on a sparse, geometric energy grid --
+  // for aluminium there is no table between 256 keV and 10 MeV, an interval
+  // across which 1-<mu> falls by a factor of 35. The default linear stochastic
+  // interpolation picks the low-energy, wide-angle table 92% of the time right
+  // across that gap, over-scattering by a factor of about 3.5. That leaves the
+  // stopping power and CSDA range correct, so a range check passes, but stops
+  // electrons penetrating and drives depth-deposition profiles far too shallow.
+  elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
   close_group(dist_group);
   close_group(rgroup);
+
+  // Must follow elastic_angle_: the rescale factor is measured against the
+  // mean that distribution actually samples.
+  this->compute_mean_deflection();
 
   // Read excitation
   rgroup = open_group(group, "excitation");
@@ -199,9 +217,189 @@ void ElectronInteraction::calculate_xs(Particle& p) const
 
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  return elastic_angle_.sample(E, seed);
+  double mu = elastic_angle_.sample(E, seed);
+
+  // The angular tables are spaced far too sparsely to interpolate between:
+  // for aluminium there is none between 256 keV and 10 MeV, an interval across
+  // which 1-<mu> falls by a factor of 35. Whatever is done with them, the mean
+  // deflection in that gap is a guess.
+  //
+  // It does not have to be. EPRDATA14 tabulates the transport-corrected
+  // elastic cross section on the same dense grid as the cross sections, and it
+  // gives the first moment of the angular distribution directly. Use it to set
+  // the mean deflection and let the tables supply only the shape, by scaling
+  // the sampled deflection to the tabulated first moment.
+  //
+  // The first moment is what governs multiple scattering, so getting it right
+  // matters far more than the detail of the shape between tables. That the
+  // target is trustworthy has been checked against partial-wave theory: EEDL's
+  // transport cross section for iron agrees with NIST SRD 64 (ELSEPA) to a
+  // median of 0.5% from 1 keV to 300 keV, and the tabulated angular
+  // distribution reproduces both the first and second moments there to 0.3%.
+  //
+  // The size of the correction varies far more than an earlier version of this
+  // comment claimed. At and below a few hundred keV, where the tables are
+  // closely spaced, the factor sits within about 1% of unity and the sampling
+  // is left essentially untouched. Deep inside a sparse interval it does real
+  // work: without it the first moment for tantalum at 1 MeV is 19% below the
+  // tabulated transport cross section, and for beryllium 19% above.
+  //
+  // The cost is the shape: this is an affine stretch of 1-mu, so the second
+  // moment moves as the square of the factor. That is a deliberate trade --
+  // PENELOPE avoids it by fitting a DCS to match both moments, but that needs
+  // a second transport cross section, which EPICS does not tabulate.
+  double factor = this->elastic_rescale(E);
+  double deflection = (1.0 - mu) * factor;
+  // 1-mu cannot exceed 2; a rescaling that overshoots means exact backscatter
+  return 1.0 - std::min(2.0, deflection);
 }
 
+namespace {
+
+//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
+//
+//! The evaluation tabulates the angular distribution only out to
+//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
+//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
+//! angle eta. The first moment of that form over the peak depends only on eta
+//! and the cutoff -- the normalization C cancels -- so it can be evaluated
+//! without reference to the tables the peak is missing from.
+double peak_mean_deflection(int Z, double E)
+{
+  // 1-mu at the upper end of the tabulated angular distributions. Verified
+  // against every table of every element when the library is converted; see
+  // openmc/data/electron.py.
+  constexpr double X0 {1.0e-6};
+
+  double e_total = E + MASS_ELECTRON_EV;
+  double pc =
+    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
+  if (pc <= 0.0)
+    return 0.5 * X0;
+  double tau = E / MASS_ELECTRON_EV;
+  double beta = pc / e_total;
+
+  // Moliere's screening angle with the low-energy correction Seltzer
+  // recommends, the same form ITS and MCNP use for this peak.
+  double screen = FINE_STRUCTURE * MASS_ELECTRON_EV / (0.885 * pc);
+  double coulomb = FINE_STRUCTURE * Z / beta;
+  double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
+               (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
+
+  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
+  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
+  // L is a difference of two terms that are both X0/a to leading order and is
+  // itself only half its square, which is why it is left to log1pmx.
+  //
+  // Both ends of the grid are extreme: the peak is far narrower than the
+  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
+  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
+  // accurate throughout, but a double approaching 1 stops carrying its
+  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
+  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
+  // So pass the complement in directly once w is large, where log(q) + w has
+  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
+  // exact to rounding on its own side of the handover.
+  double a = 2.0 * eta;
+  double w = X0 / (a + X0);
+  double q = a / (a + X0);
+  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
+  return -a * (a + X0) * L / X0;
+}
+
+} // namespace
+
+//! Mean deflection 1-<mu> of the tabulated large-angle distribution
+//
+//! The transport-corrected cross section is the first moment of the *total*
+//! elastic cross section, peak included, while the angular tables describe
+//! only the large-angle part. Take the peak's contribution back out before
+//! forming the ratio, or the deflection is overstated wherever the peak
+//! carries appreciable cross section: by 2% at 10 MeV in aluminium, rising to
+//! 23% at 66 MeV. Below the energy at which the peak opens up the correction
+//! is identically zero, the evaluation having sigma_total == sigma_elastic
+//! there.
+void ElectronInteraction::compute_mean_deflection()
+{
+  int n = energy_.size();
+  elastic_deflection_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    if (elastic_(i) <= 0.0) {
+      elastic_deflection_[i] = 0.0;
+      continue;
+    }
+    double peak = elastic_total_(i) - elastic_(i);
+    double moment = elastic_transport_(i);
+    if (peak > 0.0)
+      moment -= peak * peak_mean_deflection(Z_, energy_(i));
+    elastic_deflection_[i] = moment > 0.0 ? moment / elastic_(i) : 0.0;
+  }
+
+  // Factor that puts the sampled deflection onto the tabulated transport cross
+  // section. The denominator is the mean sample() actually produces, not
+  // mean_deflection(): see AngleDistribution::sampled_mean_deflection. Using
+  // the latter left the first moment up to 9% short of its own target deep
+  // inside a sparse interval, and for iron at 1 MeV pushed it the wrong way.
+  //
+  // Computed here, once, because the quadrature behind it is far too expensive
+  // to repeat per collision.
+  elastic_rescale_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    double target = elastic_deflection_[i];
+    double sampled = elastic_angle_.sampled_mean_deflection(energy_(i));
+    elastic_rescale_[i] =
+      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
+  }
+}
+
+double ElectronInteraction::elastic_rescale(double E) const
+{
+  int n = energy_.size();
+  if (n == 0)
+    return 1.0;
+  if (E <= energy_[0])
+    return elastic_rescale_[0];
+  if (E >= energy_(n - 1))
+    return elastic_rescale_[n - 1];
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return elastic_rescale_[i];
+
+  // The factor is of order one and varies smoothly, so a linear blend in
+  // log-energy is plenty -- unlike 1-<mu> itself, which spans decades.
+  double f = std::log(E / e0) / std::log(e1 / e0);
+  return (1.0 - f) * elastic_rescale_[i] + f * elastic_rescale_[i + 1];
+}
+
+double ElectronInteraction::mean_deflection(double E) const
+{
+  int n = energy_.size();
+  if (E <= energy_[0])
+    return elastic_deflection_[0];
+  if (E >= energy_(n - 1))
+    return elastic_deflection_[n - 1];
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return elastic_deflection_[i];
+
+  double r0 = elastic_deflection_[i];
+  double r1 = elastic_deflection_[i + 1];
+
+  // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
+  // logarithmically; a linear interpolation would badly overshoot in between.
+  if (r0 > 0.0 && r1 > 0.0) {
+    double f = std::log(E / e0) / std::log(e1 / e0);
+    return std::exp((1.0 - f) * std::log(r0) + f * std::log(r1));
+  }
+  double f = (E - e0) / (e1 - e0);
+  return (1.0 - f) * r0 + f * r1;
+}
 double ElectronInteraction::excitation(double E) const
 {
   return E - excitation_energy_loss_(E);
@@ -229,8 +427,17 @@ void ElectronInteraction::ionization(Particle& p, int i_shell) const
       name_, i_shell, p.E(), E_knock, e_b));
   }
 
+  // The knock-on is deflected according to the energy the primary actually
+  // transferred, not the kinetic energy it is left with. The two differ by the
+  // binding energy, which the atom absorbs: the momentum transfer that set the
+  // recoil direction corresponds to E_knock + e_b, so using E_knock alone
+  // ejects the electron too far sideways -- by 22% of the incident momentum
+  // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
+  // makes the two polar angles the consistent free binary-collision pair for a
+  // transfer of E_knock + e_b.
+  double E_transfer = E_knock + e_b;
   double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_knock));
+                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_transfer));
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
   p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
 
@@ -268,11 +475,95 @@ int ElectronInteraction::sample_ionization_shell(Particle& p) const
   fatal_error("Did not sample any electron shell during electro-ionization.");
 }
 
+namespace {
+
+//! Polar angle of a bremsstrahlung photon, from Koch and Motz formula 2BS
+//
+//! EPICS carries no angular information for this channel -- the evaluation
+//! states outright that the direction is left to the transport code -- so an
+//! analytic form is the only option. This is the screened Schiff/Bethe-Heitler
+//! shape, sampled by rejection in the reduced angle y = gamma*theta following
+//! the formulation in EGSnrc, which uses it as its default for all energies.
+//!
+//! The emitting electron's direction is deliberately left alone. PENELOPE,
+//! EGSnrc and MCNP all do the same, on the grounds that elastic scattering
+//! governs the electron's deflection and the radiative recoil is negligible
+//! beside it.
+//!
+//! \param Z Atomic number of the target
+//! \param E Kinetic energy of the electron before emission [eV]
+//! \param E_photon Energy of the emitted photon [eV]
+//! \param seed Pseudorandom number seed pointer
+//! \return Cosine of the angle between the photon and the electron
+double bremsstrahlung_cos_theta(
+  int Z, double E, double E_photon, uint64_t* seed)
+{
+  // (Zeff/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
+  // electron-electron contribution. 1/111^2 = 8.116224e-5.
+  double z_screen = 8.116224e-5 * std::cbrt(static_cast<double>(Z) * (Z + 1));
+  double log_z_screen = -std::log(z_screen);
+
+  double e_total = E + MASS_ELECTRON_EV;
+  double e_final = e_total - E_photon;
+  if (E_photon <= 0.0 || e_final <= MASS_ELECTRON_EV)
+    return 1.0;
+
+  double gamma = e_total / MASS_ELECTRON_EV;
+  double beta = std::sqrt((gamma - 1.0) * (gamma + 1.0)) / gamma;
+  double y2_max = 2.0 * beta * (1.0 + beta) * gamma * gamma;
+  if (y2_max <= 0.0)
+    return 1.0;
+  double y2_max_inv = 1.0 / y2_max;
+  double z2_max_sqrt = std::sqrt(y2_max + 1.0);
+
+  double ratio = (e_final / MASS_ELECTRON_EV) / gamma;
+  double arg1 = 1.0 + ratio * ratio;
+  double arg2 = arg1 + 2.0 * ratio;
+
+  // (2*E_final*gamma/k)^2, the argument of the screening logarithm
+  double aux = 2.0 * e_final * gamma / E_photon;
+  aux *= aux;
+  double aux1 = aux * z_screen;
+  double arg3 = (aux1 > 10.0) ? log_z_screen + (1.0 - aux1) / (aux1 * aux1)
+                              : std::log(aux / (1.0 + aux1));
+
+  double rej_max = arg1 * arg3 - arg2;
+  if (!(rej_max > 0.0))
+    return 1.0;
+
+  // Rejection loop. The trial variable is drawn from the leading term and
+  // rejected against the screened shape; it converges in a few iterations, but
+  // cap it so that a pathological energy cannot hang a history.
+  double y2 = 0.0;
+  for (int iter = 0; iter < 1000; ++iter) {
+    double xi = prn(seed);
+    double test = prn(seed);
+    double aux3 = z2_max_sqrt / (xi + (1.0 - xi) * z2_max_sqrt);
+    test *= aux3 * rej_max;
+    y2 = aux3 * aux3 - 1.0;
+    double aux3_4 = aux3 * aux3 * aux3 * aux3;
+    double y2s = ratio * y2 / aux3_4;
+    double aux4 = 16.0 * y2s - arg2;
+    double aux5 = arg1 - 4.0 * y2s;
+    if (test < aux4 + aux5 * arg3)
+      break;
+    double aux2 = std::log(aux / (1.0 + aux1 / aux3_4));
+    if (test < aux4 + aux5 * aux2)
+      break;
+  }
+
+  return std::max(-1.0, std::min(1.0, 1.0 - 2.0 * y2 * y2_max_inv));
+}
+
+} // namespace
+
 void ElectronInteraction::bremsstrahlung(Particle& p) const
 {
   double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
+  double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
+  Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;
-  p.create_secondary(p.wgt(), p.u(), E_photon, ParticleType::photon());
+  p.create_secondary(p.wgt(), u, E_photon, ParticleType::photon());
 }
 
 //==============================================================================

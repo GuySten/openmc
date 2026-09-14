@@ -31,6 +31,18 @@ public:
 
   double elastic_scatter(double E, uint64_t* seed) const;
 
+  //! Mean deflection 1-<mu> at a given energy, from the transport-corrected
+  //! elastic cross section with the in-peak contribution removed.
+  double mean_deflection(double E) const;
+
+  //! Factor that puts the sampled deflection onto that mean, interpolated
+  //! from the table built by compute_mean_deflection().
+  double elastic_rescale(double E) const;
+
+  //! Tabulate the mean deflection of the large-angle distribution on the
+  //! energy grid. Called once, from the constructor.
+  void compute_mean_deflection();
+
   double excitation(double E) const;
 
   void ionization(Particle& p, int i_shell) const;
@@ -54,6 +66,27 @@ public:
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
   tensor::Tensor<double> elastic_;
+  //! Transport-corrected elastic cross section, on the dense energy grid the
+  //! sparse angular tables cannot supply between themselves. This is the first
+  //! moment of the *total* elastic cross section, so the in-peak part has to be
+  //! taken back out of it before it describes the tabulated large-angle
+  //! distribution -- see mean_deflection().
+  tensor::Tensor<double> elastic_transport_;
+  //! Total elastic cross section: the tabulated large-angle part in elastic_
+  //! plus the forward peak the evaluation leaves to an analytic form. Equal to
+  //! elastic_ below the energy at which the peak opens up (1.75 MeV in Al, 3
+  //! MeV in Fe, 8 MeV in U).
+  tensor::Tensor<double> elastic_total_;
+  //! Mean deflection 1-<mu> of the tabulated large-angle distribution, on the
+  //! energy grid: the transport cross section less the forward peak's share of
+  //! it, over the large-angle cross section. Built once by
+  //! compute_mean_deflection() rather than per collision.
+  vector<double> elastic_deflection_;
+  //! Ratio of the tabulated mean deflection to the one the angular
+  //! distribution actually samples, on the energy grid. Built once by
+  //! compute_mean_deflection(); the quadrature behind it is far too expensive
+  //! to repeat per collision.
+  vector<double> elastic_rescale_;
   AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;

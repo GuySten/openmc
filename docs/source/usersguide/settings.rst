@@ -712,10 +712,12 @@ Materials are still defined in terms of nuclides, and
 photon data does not distinguish isotopes, elements are expanded using natural
 abundances.
 
-Elemental evaluations such as ``C0``, which several libraries provide in place
-of the individual isotopes of carbon, vanadium, zinc, platinum, osmium, thallium
-and tungsten, are supported: their mass is the natural-abundance-weighted atomic
-weight, which is what such an evaluation reports as its atomic weight ratio.
+Elemental evaluations such as ``C0``, which some libraries provide in place of
+the individual isotopes of an element, are supported. Their mass is the
+natural-abundance-weighted atomic weight of the element, which is the mass of
+the material such an evaluation describes; individual evaluations may carry an
+atomic weight ratio differing from it by as much as a part in a thousand, so
+densities for these can shift by more than the last few digits.
 
 A photon source turns photon transport on, since that setting is off by default
 and a source saying it emits photons settles what was never specified. Neutron
@@ -728,8 +730,10 @@ default source, which emits neutrons, and is reported the same way.
 
 Only eigenvalue and fixed source calculations sample the external source, so
 sources are not checked for the other run modes. A stochastic volume calculation
-samples no source and transports nothing, reporting its nuclide inventories
-without reading any data at all; plotting reads none either. A particle restart
+samples no source and transports nothing, so it reports its nuclide inventories
+without reading any neutron data, and without reading any data at all unless the
+model also carries a photon source; plotting reads none either. A particle
+restart
 transports whatever the restart file holds, and a source written in a plugin can
 emit anything at all; neither type is known ahead of time, so both are checked
 when the particle appears.

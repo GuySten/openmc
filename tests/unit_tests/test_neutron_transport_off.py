@@ -80,6 +80,11 @@ def test_photon_run_without_neutron_data(photon_only_xs):
     assert atom_density == pytest.approx(
         1.0e-24 * 2.7 * openmc.data.AVOGADRO / mass)
 
+    # Post-processing can tell that no neutron data went into this
+    with openmc.StatePoint('statepoint.2.h5') as sp:
+        assert not sp.neutron_transport
+        assert sp.photon_transport
+
 
 def test_neutron_data_still_required_by_default(photon_only_xs):
     """Without opting in, the same library is rejected as before.

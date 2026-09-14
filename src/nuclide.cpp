@@ -398,6 +398,17 @@ Nuclide::Nuclide(const std::string& name)
     if (pdg == PDG_PROTON)
       pdg = ParticleType {1, 1}.pdg_number();
 
+    // ParticleType also accepts aliases like "alpha" and bare PDG numbers,
+    // which a data library would never name a nuclide. Insisting on the
+    // canonical spelling keeps the set of accepted names the same whether or
+    // not neutron data is being read.
+    auto canonical = ParticleType {pdg}.str();
+    if (canonical != name) {
+      throw std::runtime_error {
+        fmt::format("'{}' is not written as a nuclide name; use '{}' instead.",
+          name, canonical)};
+    }
+
     Z = (pdg / 10000) % 1000;
     A = (pdg / 10) % 1000;
     metastable = pdg % 10;
@@ -406,7 +417,9 @@ Nuclide::Nuclide(const std::string& name)
     // would otherwise come from the neutron data library
     mass = atomic_mass_from_pdg(pdg);
 
-  } catch (const std::invalid_argument&) {
+    // ParticleType reports a name it cannot parse as invalid_argument, and an
+    // out-of-range PDG number as out_of_range; both derive from logic_error
+  } catch (const std::logic_error&) {
     // An elemental evaluation names an element rather than a nuclide, and its
     // atomic weight ratio is the natural-abundance-weighted atomic mass
     Z = elemental_atomic_number(name);

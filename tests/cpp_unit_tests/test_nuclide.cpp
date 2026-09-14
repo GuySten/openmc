@@ -85,7 +85,26 @@ TEST_CASE("Nuclide constructed without cross section data")
     // Tc has no naturally occurring isotopes, so no elemental weight either
     REQUIRE_THROWS_AS(Nuclide {"Tc0"}, std::runtime_error);
 
+    // A number too large for the PDG parser is reported, not thrown past
+    REQUIRE_THROWS_AS(Nuclide {"99999999999"}, std::runtime_error);
+
     // A rejected name leaves nothing registered behind
     REQUIRE(data::nuclide_map.find("Tc0") == data::nuclide_map.end());
+  }
+
+  SECTION("only canonical nuclide names are accepted")
+  {
+    // A data library names nuclides in GNDS form. Particle aliases and bare
+    // PDG numbers are not nuclide names, and accepting them here would make a
+    // model run only when neutron data is being skipped.
+    for (const auto* name : {"alpha", "h1", "proton", "d", "t", "he4",
+           "1000130270", "pdg:1000130270"}) {
+      REQUIRE_THROWS_AS(Nuclide {name}, std::runtime_error);
+    }
+
+    // The canonical spellings of those same nuclides are fine
+    REQUIRE_NOTHROW(Nuclide {"He4"});
+    REQUIRE_NOTHROW(Nuclide {"H1"});
+    REQUIRE_NOTHROW(Nuclide {"Al27"});
   }
 }

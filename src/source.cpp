@@ -58,6 +58,20 @@ void validate_particle_type(ParticleType type, const std::string& context)
       type.str(), type.pdg_number(), context));
 }
 
+//! Turn on transport of a source particle type so that the cross sections it
+//! needs are loaded. Electrons and positrons are handled as part of photon
+//! transport.
+void enable_transport(ParticleType type)
+{
+  if (type == ParticleType::neutron()) {
+    settings::neutron_transport = true;
+  } else if (type == ParticleType::photon() ||
+             type == ParticleType::electron() ||
+             type == ParticleType::positron()) {
+    settings::photon_transport = true;
+  }
+}
+
 } // namespace
 
 //==============================================================================
@@ -321,13 +335,9 @@ IndependentSource::IndependentSource(pugi::xml_node node) : Source(node)
   if (check_for_node(node, "particle")) {
     auto temp_str = get_node_value(node, "particle", false, true);
     particle_ = ParticleType(temp_str);
-    if (particle_ == ParticleType::photon() ||
-        particle_ == ParticleType::electron() ||
-        particle_ == ParticleType::positron()) {
-      settings::photon_transport = true;
-    }
   }
   validate_particle_type(particle_, "IndependentSource");
+  enable_transport(particle_);
 
   // Check for external source file
   if (check_for_node(node, "file")) {
@@ -531,16 +541,11 @@ void FileSource::load_sites_from_file(const std::string& path)
     file_close(file_id);
   }
 
-  // Make sure particles in source file have valid types. If any particle is a
-  // photon, electron, or positron, enable photon transport so that the
-  // appropriate cross sections are loaded.
+  // Make sure particles in source file have valid types and turn on transport
+  // of each type so that the appropriate cross sections are loaded
   for (const auto& site : this->sites_) {
     validate_particle_type(site.particle, "FileSource");
-    if (site.particle == ParticleType::photon() ||
-        site.particle == ParticleType::electron() ||
-        site.particle == ParticleType::positron()) {
-      settings::photon_transport = true;
-    }
+    enable_transport(site.particle);
   }
 }
 

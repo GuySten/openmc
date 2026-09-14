@@ -222,8 +222,11 @@ Material::Material(pugi::xml_node node)
     const auto& name {names[i]};
 
     // Check that this nuclide is listed in the nuclear data library
-    // (cross_sections.xml for CE and the MGXS HDF5 for MG)
-    if (settings::run_mode != RunMode::PLOTTING) {
+    // (cross_sections.xml for CE and the MGXS HDF5 for MG). If neutrons are
+    // not transported, no neutron data is read for the nuclide and only its
+    // name matters, so there is nothing to look up.
+    if (settings::run_mode != RunMode::PLOTTING &&
+        settings::neutron_transport) {
       LibraryKey key {Library::Type::neutron, name};
       if (data::library_map.find(key) == data::library_map.end()) {
         fatal_error("Could not find nuclide " + name +
@@ -308,6 +311,14 @@ Material::Material(pugi::xml_node node)
   // =======================================================================
   // READ AND PARSE <sab> TAG FOR THERMAL SCATTERING DATA
   if (settings::run_CE) {
+    // S(a,b) data only affects neutron scattering, so reading it when neutrons
+    // are not transported would require data that has no bearing on results
+    if (!settings::neutron_transport && node.child("sab")) {
+      fatal_error("Thermal scattering data was specified on material " +
+                  std::to_string(id_) +
+                  ", but neutron transport is turned off.");
+    }
+
     // Loop over <sab> elements
 
     vector<std::string> sab_names;

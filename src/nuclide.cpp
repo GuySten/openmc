@@ -1,5 +1,6 @@
 #include "openmc/nuclide.h"
 
+#include "openmc/atomic_mass.h"
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
@@ -7,6 +8,7 @@
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/message_passing.h"
+#include "openmc/particle_type.h"
 #include "openmc/photon.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
@@ -21,7 +23,8 @@
 
 #include <algorithm> // for sort, min_element
 #include <cassert>
-#include <string> // for to_string, stoi
+#include <stdexcept> // for invalid_argument
+#include <string>    // for to_string, stoi
 
 namespace openmc {
 
@@ -348,6 +351,49 @@ Nuclide::Nuclide(hid_t group, const vector<double>& temperature)
   }
 
   this->create_derived(prompt_photons_.get(), delayed_photons_.get());
+}
+
+Nuclide::Nuclide(const std::string& name)
+{
+  // Set index of nuclide in global vector
+  index_ = data::nuclides.size();
+  name_ = name;
+  data::nuclide_map[name_] = index_;
+
+  // Without a data library, the only information about the nuclide is what can
+  // be inferred from its name
+  ParticleType type;
+  try {
+    type = ParticleType {name};
+  } catch (const std::invalid_argument&) {
+    fatal_error(fmt::format("'{}' could not be interpreted as a nuclide name. "
+                            "When neutron transport is turned off, nuclide "
+                            "properties are determined from the name alone.",
+      name));
+  }
+  if (!type.is_nucleus()) {
+    fatal_error(fmt::format("'{}' does not name a nuclide.", name));
+  }
+
+  // The proton has its own PDG code rather than the H1 nuclear one
+  int32_t pdg = type.pdg_number();
+  if (pdg == PDG_PROTON)
+    pdg = ParticleType {1, 1}.pdg_number();
+
+  Z_ = (pdg / 10000) % 1000;
+  A_ = (pdg / 10) % 1000;
+  metastable_ = pdg % 10;
+
+  // Use the tabulated atomic mass in place of the atomic weight ratio that
+  // would otherwise come from the neutron data library
+  double mass = atomic_mass_from_pdg(pdg);
+  if (mass <= 0.0) {
+    fatal_error(fmt::format(
+      "No tabulated atomic mass is available for {}, which is needed to "
+      "determine material densities when neutron transport is turned off.",
+      name));
+  }
+  awr_ = mass / MASS_NEUTRON;
 }
 
 Nuclide::~Nuclide()
@@ -1109,35 +1155,41 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 {
   if (data::nuclide_map.find(name) == data::nuclide_map.end() ||
       data::nuclide_map.at(name) >= data::nuclides.size()) {
-    LibraryKey key {Library::Type::neutron, name};
-    const auto& it = data::library_map.find(key);
-    if (it == data::library_map.end()) {
-      set_errmsg(
-        "Nuclide '" + std::string {name} + "' is not present in library.");
-      return OPENMC_E_DATA;
+    if (settings::neutron_transport) {
+      LibraryKey key {Library::Type::neutron, name};
+      const auto& it = data::library_map.find(key);
+      if (it == data::library_map.end()) {
+        set_errmsg(
+          "Nuclide '" + std::string {name} + "' is not present in library.");
+        return OPENMC_E_DATA;
+      }
+
+      // Get filename for library containing nuclide
+      int idx = it->second;
+      const auto& filename = data::libraries[idx].path_;
+      write_message(6, "Reading {} from {}", name, filename);
+
+      // Open file and make sure version is sufficient
+      hid_t file_id = file_open(filename, 'r');
+      check_data_version(file_id);
+
+      // Read nuclide data from HDF5
+      hid_t group = open_group(file_id, name);
+      vector<double> temperature {temps, temps + n};
+      data::nuclides.push_back(make_unique<Nuclide>(group, temperature));
+
+      close_group(group);
+      file_close(file_id);
+
+      // Read multipole file into the appropriate entry on the nuclides array
+      int i_nuclide = data::nuclide_map.at(name);
+      if (settings::temperature_multipole)
+        read_multipole_data(i_nuclide);
+    } else {
+      // Neutrons are not transported, so no neutron data is needed. Only the
+      // identity of the nuclide and its atomic weight ratio are determined.
+      data::nuclides.push_back(make_unique<Nuclide>(std::string {name}));
     }
-
-    // Get filename for library containing nuclide
-    int idx = it->second;
-    const auto& filename = data::libraries[idx].path_;
-    write_message(6, "Reading {} from {}", name, filename);
-
-    // Open file and make sure version is sufficient
-    hid_t file_id = file_open(filename, 'r');
-    check_data_version(file_id);
-
-    // Read nuclide data from HDF5
-    hid_t group = open_group(file_id, name);
-    vector<double> temperature {temps, temps + n};
-    data::nuclides.push_back(make_unique<Nuclide>(group, temperature));
-
-    close_group(group);
-    file_close(file_id);
-
-    // Read multipole file into the appropriate entry on the nuclides array
-    int i_nuclide = data::nuclide_map.at(name);
-    if (settings::temperature_multipole)
-      read_multipole_data(i_nuclide);
 
     // Read elemental data, if necessary
     if (settings::photon_transport) {

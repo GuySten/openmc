@@ -683,6 +683,46 @@ can be selected::
        for a later fixed source photon calculation.
      * Photoneutron reactions.
 
+.. _usersguide_no_neutron_data:
+
+Running Without Neutron Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Photon and electron transport are driven entirely by per-element data, so a
+calculation in which no neutrons appear does not need neutron cross sections.
+By default OpenMC still reads a neutron data file for every nuclide in every
+material, which means that such a calculation requires a data library it never
+uses. Setting :attr:`Settings.neutron_transport` to ``False`` turns that off::
+
+  settings = openmc.Settings()
+  settings.run_mode = 'fixed source'
+  settings.photon_transport = True
+  settings.neutron_transport = False
+  settings.source = openmc.IndependentSource(particle='photon')
+
+With this setting, no neutron data is read and the ``cross_sections.xml`` file
+only has to list the photon data for the elements present in the model. The
+atomic masses used to convert between mass and atom densities are then taken
+from AME2020 rather than from the atomic weight ratios in the data library, so
+densities may differ in the last few digits from an otherwise identical run
+that does read neutron data.
+
+Materials are still defined in terms of nuclides, and
+:meth:`openmc.Material.add_element` works against a photon-only library: since
+photon data does not distinguish isotopes, elements are expanded using natural
+abundances.
+
+Just as a photon source turns photon transport on, a source that emits neutrons
+turns neutron transport back on, so a model is never left transporting particles
+for which no data was read.
+
+Because neutron transport cannot be turned off without something else to
+transport, ``neutron_transport = False`` requires photon transport to be enabled
+(either explicitly or by the source). It is not compatible with eigenvalue
+calculations, multi-group mode, thermal scattering data, resonance scattering,
+or decay photon sources, each of which is rejected with an error rather than
+silently ignored.
+
 --------------------------
 Generation of Output Files
 --------------------------

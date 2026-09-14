@@ -541,6 +541,27 @@ particles per batch for a fixed source simulation.
 
   *Default*: None
 
+-------------------------------
+``<neutron_transport>`` Element
+-------------------------------
+
+The ``<neutron_transport>`` element determines whether neutron transport is
+enabled. This element has no attributes or sub-elements and can be set to
+either "false" or "true". When it is set to "false", no neutron cross section
+data is read; the data library then only has to contain the photon data needed
+by the calculation. The atomic masses used to normalize material densities are
+taken from AME2020 rather than from the atomic weight ratios in the data
+library.
+
+A source that emits neutrons turns neutron transport back on, in the same way
+that a photon source turns photon transport on.
+
+Turning neutron transport off requires photon transport to be enabled and is not
+compatible with eigenvalue calculations, multi-group mode, thermal scattering
+data, resonance scattering, or decay photon sources.
+
+  *Default*: true
+
 ------------------------------
 ``<photon_transport>`` Element
 ------------------------------

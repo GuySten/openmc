@@ -137,16 +137,30 @@ class Element(str):
             cross_sections = openmc.config.get('cross_sections')
 
         # If a cross_sections library is present, check natural nuclides
-        # against the nuclides in the library
+        # against the nuclides in the library. Only neutron data determines
+        # which isotopes can be used, since photon data is tabulated per
+        # element rather than per nuclide.
+        library_nuclides = None
         if cross_sections is not None:
             library_nuclides = set()
+            has_neutron_data = False
             tree = ET.parse(cross_sections)
             root = tree.getroot()
             for child in root.findall('library'):
+                if child.get('type') != 'neutron':
+                    continue
+                has_neutron_data = True
                 nuclide = child.attrib['materials']
                 if re.match(r'{}\d+'.format(self), nuclide):
                     library_nuclides.add(nuclide)
 
+            # A library with no neutron data at all -- as used for a
+            # photon-only calculation -- says nothing about which isotopes are
+            # available, so fall back to expanding by natural abundance
+            if not has_neutron_data:
+                library_nuclides = None
+
+        if library_nuclides is not None:
             # Get a set of the mutual and absent nuclides. Convert to lists
             # and sort to avoid different ordering between Python 2 and 3.
             mutual_nuclides = natural_nuclides.intersection(library_nuclides)
@@ -196,8 +210,8 @@ class Element(str):
                               'the isotopes of this element individually.'
                         raise ValueError(msg)
 
-        # If a cross_section library is not present, expand the element into
-        # its natural nuclides
+        # If no neutron data library is available, expand the element into its
+        # natural nuclides
         else:
             for nuclide in sorted(natural_nuclides, key=zam):
                 abundances[nuclide] = NATURAL_ABUNDANCE[nuclide]

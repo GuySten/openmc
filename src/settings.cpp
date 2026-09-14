@@ -60,6 +60,7 @@ bool ifp_delayed_group_on {false};
 bool ifp_lifetime_on {false};
 bool legendre_to_tabular {true};
 bool material_cell_offsets {true};
+bool neutron_transport {true};
 bool output_summary {true};
 bool output_tallies {true};
 bool particle_restart_run {false};
@@ -625,6 +626,19 @@ void read_settings_xml(pugi::xml_node root)
       electron_treatment = ElectronTreatment::TTB;
     } else {
       fatal_error("Unrecognized electron treatment: " + temp_str + ".");
+    }
+  }
+
+  // Check for neutron transport
+  if (check_for_node(root, "neutron_transport")) {
+    neutron_transport = get_node_value_bool(root, "neutron_transport");
+
+    if (!run_CE && !neutron_transport) {
+      fatal_error("Neutron transport cannot be turned off in multigroup mode.");
+    }
+    if (!neutron_transport && run_mode == RunMode::EIGENVALUE) {
+      fatal_error("Neutron transport cannot be turned off in an eigenvalue "
+                  "calculation.");
     }
   }
 
@@ -1368,6 +1382,25 @@ void read_settings_xml(pugi::xml_node root)
       settings::use_shared_secondary_bank = true;
     }
   }
+
+  // Sources can turn transport of a particle type back on, so this is only
+  // settled once they have all been read
+  if (!neutron_transport && !photon_transport) {
+    fatal_error("Neutron transport is turned off but photon transport is not "
+                "turned on, so no particles would be transported.");
+  }
+
+  // Reject options that act on neutron data, which is not read when neutrons
+  // are not transported, rather than silently ignoring them
+  if (!neutron_transport) {
+    if (res_scat_on) {
+      fatal_error("Resonance scattering requires neutron transport.");
+    }
+    if (use_decay_photons) {
+      fatal_error("Decay photon sources are produced by neutron activation "
+                  "and require neutron transport.");
+    }
+  }
 }
 
 void free_memory_settings()
@@ -1379,6 +1412,7 @@ void free_memory_settings()
   settings::track_identifiers.clear();
   settings::ifp_delayed_group_on = false;
   settings::ifp_lifetime_on = false;
+  settings::neutron_transport = true;
 }
 
 //==============================================================================
@@ -1403,6 +1437,8 @@ bool* bool_setting(const char* name)
     return &settings::event_based;
   } else if (std::strcmp(name, "need_depletion_rx") == 0) {
     return &simulation::need_depletion_rx;
+  } else if (std::strcmp(name, "neutron_transport") == 0) {
+    return &settings::neutron_transport;
   } else if (std::strcmp(name, "photon_transport") == 0) {
     return &settings::photon_transport;
   } else if (std::strcmp(name, "output_summary") == 0) {

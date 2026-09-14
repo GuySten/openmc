@@ -169,6 +169,14 @@ class Settings:
         lost particles.
 
         .. versionadded:: 0.14.0
+    neutron_transport : bool
+        Whether to transport neutrons. When this is False, no neutron cross
+        section data is read, which allows a photon-only calculation to be run
+        against a data library that contains no neutron data at all. Atomic
+        masses needed to normalize material densities are taken from AME2020
+        instead of from the data library.
+
+        .. versionadded:: 0.16.0
     no_reduce : bool
         Indicate that all user-defined and global tallies should not be reduced
         across processes in a parallel calculation.
@@ -432,6 +440,7 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
+        self._neutron_transport = None
         self._photon_transport = None
         self._atomic_relaxation = None
         self._plot_seed = None
@@ -714,6 +723,15 @@ class Settings:
     def ptables(self, ptables: bool):
         cv.check_type('probability tables', ptables, bool)
         self._ptables = ptables
+
+    @property
+    def neutron_transport(self) -> bool:
+        return self._neutron_transport
+
+    @neutron_transport.setter
+    def neutron_transport(self, neutron_transport: bool):
+        cv.check_type('neutron transport', neutron_transport, bool)
+        self._neutron_transport = neutron_transport
 
     @property
     def photon_transport(self) -> bool:
@@ -1718,6 +1736,11 @@ class Settings:
             element = ET.SubElement(root, "atomic_relaxation")
             element.text = str(self._atomic_relaxation).lower()
 
+    def _create_neutron_transport_subelement(self, root):
+        if self._neutron_transport is not None:
+            element = ET.SubElement(root, "neutron_transport")
+            element.text = str(self._neutron_transport).lower()
+
     def _create_photon_transport_subelement(self, root):
         if self._photon_transport is not None:
             element = ET.SubElement(root, "photon_transport")
@@ -2255,6 +2278,11 @@ class Settings:
         if text is not None:
             self.max_order = int(text)
 
+    def _neutron_transport_from_xml_element(self, root):
+        text = get_text(root, 'neutron_transport')
+        if text is not None:
+            self.neutron_transport = text in ('true', '1')
+
     def _photon_transport_from_xml_element(self, root):
         text = get_text(root, 'photon_transport')
         if text is not None:
@@ -2618,6 +2646,7 @@ class Settings:
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
+        self._create_neutron_transport_subelement(element)
         self._create_photon_transport_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
@@ -2737,6 +2766,7 @@ class Settings:
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
+        settings._neutron_transport_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)

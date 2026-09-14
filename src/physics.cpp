@@ -80,6 +80,38 @@ void collision(Particle& p)
   // Kill particle if energy falls below cutoff
   int type = p.type().transport_index();
   if (type != C_NONE && p.E() < settings::energy_cutoff[type]) {
+    // Follow the convention sample_photon_reaction uses for a photon below the
+    // cutoff: zero the energy as well as the weight. That is what deposits the
+    // residual, since the heating score is the collision energy balance
+    // E_last + Q - E - (banked secondaries), evaluated in event_collide after
+    // this returns. Zeroing only the weight discards it.
+    //
+    // The entry checks in sample_electron_reaction and sample_positron_reaction
+    // already do this, but they only see a particle that was below the cutoff
+    // before the collision. A particle slowing down crosses the cutoff during
+    // one, and lands here instead, still carrying up to a full cutoff of
+    // kinetic energy. Over a 1 MeV history that is several percent once every
+    // knock-on is counted, and it is lost at the ends of tracks -- deepest in
+    // the target -- so it distorts a depth-deposition profile as well as the
+    // total.
+    //
+    // The weight test skips particles a reaction sampler already terminated
+    // (it zeroes both, so a positron would otherwise annihilate twice) and
+    // particles killed by Russian roulette, whose energy must not be deposited.
+    if (settings::electron_transport && p.wgt() != 0.0 &&
+        (p.type().is_electron() || p.type().is_positron())) {
+      if (p.type().is_positron()) {
+        // The one thing a charged particle cannot mirror from the photon case:
+        // a positron still annihilates at rest, and dropping the pair would
+        // discard 2 m_e c^2 that has nothing to do with the transport cutoff.
+        Direction u = isotropic_direction(p.current_seed());
+        p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.create_secondary(
+          p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+      }
+      p.E() = 0.0;
+      p.event() = TallyEvent::ABSORB;
+    }
     p.wgt() = 0.0;
   }
 

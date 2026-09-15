@@ -1,3 +1,4 @@
+import os
 from numbers import Integral
 from warnings import warn
 
@@ -12,7 +13,7 @@ from .angle_distribution import AngleDistribution
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
 from .energy_distribution import ContinuousTabular
 from .function import Tabulated1D
-from .photon import _SUBSHELLS
+from .photon import _SUBSHELLS, MASS_ELECTRON_EV
 from .uncorrelated import UncorrelatedAngleEnergy
 
 def _tabular_from_cdf(x, c, name):
@@ -422,3 +423,97 @@ def use_dpwa_elastic(electron, path):
         distributions.append(
             Tabular(mu, p / norm, interpolation='linear-linear'))
     electron.elastic_dist = AngleDistribution(energy, distributions)
+
+
+# Seltzer-Berger scaled bremsstrahlung cross sections, read from BREMX.DAT when
+# first needed. chi(Z, T, kappa) = (beta^2 / Z^2) * k * dsigma/dk, in barns,
+# tabulated against reduced photon energy kappa = k/T. The factor of kappa is
+# what makes chi finite at kappa = 0, so the cross section above any photon
+# threshold is one integral of the same table.
+_BREMX = {}
+
+
+def _load_bremx():
+    if _BREMX:
+        return
+    path = os.path.join(os.path.dirname(__file__), 'BREMX.DAT')
+    with open(path) as fh:
+        words = fh.read().split()
+    n = int(words[37])
+    k = int(words[38])
+    p = 39
+    _BREMX['T'] = np.fromiter(words[p:p + n], float, n) * EV_PER_MEV
+    p += n
+    _BREMX['kappa'] = np.fromiter(words[p:p + k], float, k)
+    p += k
+    for Z in range(1, 101):
+        # Tabulated in millibarns
+        _BREMX[Z] = 1.0e-3 * np.reshape(
+            np.fromiter(words[p:p + n * k], float, n * k), (n, k))
+        p += n * k
+
+
+def use_seltzer_berger_brems(electron, photon_cutoff=1.0, n_points=201):
+    """Replace bremsstrahlung with the Seltzer-Berger scaled cross sections.
+
+    Parameters
+    ----------
+    electron : IncidentElectron
+        Data to modify in place.
+    photon_cutoff : float
+        Lowest emitted photon energy in [eV]. Bremsstrahlung has no
+        threshold-free cross section -- dsigma/dk diverges as 1/k -- so one has
+        to be chosen. The default matches the evaluated tables closely enough
+        that the interaction rate is comparable; emission below it is dropped
+        entirely, which is negligible at 1 eV.
+    n_points : int
+        Points in the tabulated photon-energy distribution at each incident
+        energy.
+
+    Notes
+    -----
+    The evaluated spectra are tabulated on nine incident energies for carbon,
+    with nothing between 12.25 MeV and 100 GeV -- a factor of 8163. Seltzer and
+    Berger give 57, sixteen of them between 0.256 and 25 MeV, so the anchoring
+    against BREML that the sparse tables needed is not written here at all.
+
+    Rate and spectrum come from the same table and the same threshold. Taking
+    one from each source would leave them integrals of different things, and
+    the radiative stopping power wrong by the mismatch.
+
+    """
+    _load_bremx()
+    Z = electron.atomic_number
+    T = _BREMX['T']
+    kappa = _BREMX['kappa']
+    chi = _BREMX[Z]
+
+    grid = electron.energy_grid
+    if grid[0] < T[0] or grid[-1] > T[-1]:
+        warn(f'{electron.name}: the scaled bremsstrahlung cross sections cover '
+             f'{T[0]:.4g} to {T[-1]:.4g} eV but the energy grid runs '
+             f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Cross sections are clamped '
+             'to the endpoints outside that range.')
+
+    keep = T > photon_cutoff
+    energy = T[keep]
+    xs = np.empty(energy.size)
+    energy_out = []
+    for i, e in enumerate(energy):
+        gamma = 1.0 + e / MASS_ELECTRON_EV
+        beta_sq = 1.0 - 1.0 / (gamma * gamma)
+        # Log-spaced in the emitted energy, where the 1/k density lives
+        k = np.logspace(np.log10(photon_cutoff), np.log10(e), n_points)
+        chi_k = np.interp(k / e, kappa, chi[keep][i])
+        dsigma_dk = (Z * Z / beta_sq) * chi_k / k
+        xs[i] = np.trapezoid(dsigma_dk, k)
+        energy_out.append(Tabular(k, dsigma_dk / xs[i],
+                                  interpolation='linear-linear'))
+
+    electron.bremsstrahlung_xs = _log_interp(grid, energy, xs)
+    electron.bremsstrahlung_dist = UncorrelatedAngleEnergy()
+    electron.bremsstrahlung_dist.energy = ContinuousTabular(
+        [energy.size], [5], energy, energy_out)
+    # No mean-energy anchor: with this many incident energies there is nothing
+    # for it to correct, and its absence disables the rescale in the transport.
+    electron.bremsstrahlung_mean_energy = None

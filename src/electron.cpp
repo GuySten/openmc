@@ -260,7 +260,11 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.interp_factor = f;
 
   // Calculate microscopic elastic cross section
-  xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
+  // The total elastic cross section, peak included: the peak is sampled as a
+  // collision like any other (see elastic_scatter), not folded into the mean
+  // deflection of the tabulated part.
+  xs.elastic = elastic_total_(i_grid) +
+               f * (elastic_total_(i_grid + 1) - elastic_total_(i_grid));
 
   // Calculate microscopic excitation cross section
   xs.excitation =
@@ -281,8 +285,111 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.last_E = p.E();
 }
 
+namespace {
+
+//! The forward elastic peak
+//
+//! The evaluation tabulates the angular distribution only out to
+//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
+//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
+//! angle eta. MT526 minus MT525 gives the cross section the peak carries, so
+//! the evaluation supplies everything needed to sample it: rate, shape and
+//! range. Below the energy at which the peak opens the two are equal.
+//!
+//! 1-mu at the upper end of the tabulated distributions. Verified against
+//! every table of every element when the library is converted; see
+//! openmc/data/electron.py.
+constexpr double PEAK_CUTOFF {1.0e-6};
+
+//! Moliere's screening angle eta for the in-peak screened-Rutherford form,
+//! with the low-energy correction Seltzer recommends -- the same form ITS and
+//! MCNP use. Negative on a non-physical energy, which the callers handle.
+double peak_screening(int Z, double E)
+{
+  double e_total = E + MASS_ELECTRON_EV;
+  double pc =
+    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
+  if (pc <= 0.0)
+    return -1.0;
+  double tau = E / MASS_ELECTRON_EV;
+  double beta = pc / e_total;
+
+  // FINE_STRUCTURE is the INVERSE fine-structure constant, 137.036. Seltzer's
+  // form wants alpha itself in both places, so both divide by it. Using it as
+  // alpha inflates eta by 137^4 times the Coulomb term -- 7.5e14 for carbon at
+  // 5 MeV -- which drives w = X0/(2*eta + X0) to zero and makes
+  // peak_mean_deflection return a flat X0/2 for every element at every energy.
+  double screen = MASS_ELECTRON_EV / (FINE_STRUCTURE * 0.885 * pc);
+  double coulomb = Z / (FINE_STRUCTURE * beta);
+  return 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
+         (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
+}
+
+//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
+//
+//! The first moment of the screened-Rutherford form over the peak depends only
+//! on eta and the cutoff -- the normalization C cancels -- so it can be
+//! evaluated without reference to the tables the peak is missing from. It must
+//! agree with what sample_peak_deflection() actually produces, or the
+//! bookkeeping in compute_mean_deflection() double-counts or loses deflection.
+double peak_mean_deflection(int Z, double E)
+{
+  constexpr double X0 {PEAK_CUTOFF};
+  double eta = peak_screening(Z, E);
+  if (eta < 0.0)
+    return 0.5 * X0;
+
+  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
+  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
+  // L is a difference of two terms that are both X0/a to leading order and is
+  // itself only half its square, which is why it is left to log1pmx.
+  //
+  // Both ends of the grid are extreme: the peak is far narrower than the
+  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
+  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
+  // accurate throughout, but a double approaching 1 stops carrying its
+  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
+  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
+  // So pass the complement in directly once w is large, where log(q) + w has
+  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
+  // exact to rounding on its own side of the handover.
+  double a = 2.0 * eta;
+  double w = X0 / (a + X0);
+  double q = a / (a + X0);
+  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
+  return -a * (a + X0) * L / X0;
+}
+
+//! Sample 1-mu inside the forward peak from C/(2*eta + 1-mu)^2 on [0, X0]
+//
+//! The cumulative of that form is F(t) = t*(X0+a)/(X0*(t+a)) with a = 2*eta,
+//! which inverts in closed form. The denominator is X0*(1-xi) + a, so it stays
+//! positive however narrow the peak is, and xi = 1 returns exactly X0.
+double sample_peak_deflection(int Z, double E, uint64_t* seed)
+{
+  constexpr double X0 {PEAK_CUTOFF};
+  double eta = peak_screening(Z, E);
+  if (eta < 0.0)
+    return 0.5 * X0;
+  double a = 2.0 * eta;
+  double xi = prn(seed);
+  return a * xi * X0 / (X0 * (1.0 - xi) + a);
+}
+
+} // namespace
+
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
+  // The peak is the larger channel by far once it opens -- 93% of elastic
+  // collisions for carbon at 21 MeV -- and its deflections are all under
+  // 1.4 mrad. Sampling it is what keeps the multiply-scattered distribution
+  // right at every order: reproducing the peak and the tables together tracks
+  // ELSEPA to within 3% from the first Legendre moment out to the thousandth,
+  // while folding the peak's first moment into the tabulated part instead
+  // matches only the low orders and falls to half by l = 1024.
+  if (prn(seed) < this->elastic_peak_fraction(E))
+    return 1.0 - sample_peak_deflection(Z_, E, seed);
+
   double mu = elastic_angle_.sample(E, seed);
 
   // The angular tables are spaced far too sparsely to interpolate between:
@@ -320,60 +427,6 @@ double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
   return 1.0 - std::min(2.0, deflection);
 }
 
-namespace {
-
-//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
-//
-//! The evaluation tabulates the angular distribution only out to
-//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
-//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
-//! angle eta. The first moment of that form over the peak depends only on eta
-//! and the cutoff -- the normalization C cancels -- so it can be evaluated
-//! without reference to the tables the peak is missing from.
-double peak_mean_deflection(int Z, double E)
-{
-  // 1-mu at the upper end of the tabulated angular distributions. Verified
-  // against every table of every element when the library is converted; see
-  // openmc/data/electron.py.
-  constexpr double X0 {1.0e-6};
-
-  double e_total = E + MASS_ELECTRON_EV;
-  double pc =
-    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
-  if (pc <= 0.0)
-    return 0.5 * X0;
-  double tau = E / MASS_ELECTRON_EV;
-  double beta = pc / e_total;
-
-  // Moliere's screening angle with the low-energy correction Seltzer
-  // recommends, the same form ITS and MCNP use for this peak.
-  double screen = FINE_STRUCTURE * MASS_ELECTRON_EV / (0.885 * pc);
-  double coulomb = FINE_STRUCTURE * Z / beta;
-  double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
-               (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
-
-  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
-  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
-  // L is a difference of two terms that are both X0/a to leading order and is
-  // itself only half its square, which is why it is left to log1pmx.
-  //
-  // Both ends of the grid are extreme: the peak is far narrower than the
-  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
-  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
-  // accurate throughout, but a double approaching 1 stops carrying its
-  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
-  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
-  // So pass the complement in directly once w is large, where log(q) + w has
-  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
-  // exact to rounding on its own side of the handover.
-  double a = 2.0 * eta;
-  double w = X0 / (a + X0);
-  double q = a / (a + X0);
-  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
-  return -a * (a + X0) * L / X0;
-}
-
-} // namespace
 
 //! Mean deflection 1-<mu> of the tabulated large-angle distribution
 //
@@ -416,6 +469,37 @@ void ElectronInteraction::compute_mean_deflection()
     elastic_rescale_[i] =
       (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
   }
+
+  // Probability that an elastic collision lands in the peak. xs.elastic is now
+  // the total, so this is what splits it.
+  elastic_peak_frac_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    double total = elastic_total_(i);
+    elastic_peak_frac_[i] =
+      total > 0.0 ? std::max(0.0, (total - elastic_(i)) / total) : 0.0;
+  }
+}
+
+double ElectronInteraction::elastic_peak_fraction(double E) const
+{
+  int n = energy_.size();
+  if (n == 0)
+    return 0.0;
+  if (E <= energy_[0])
+    return elastic_peak_frac_[0];
+  if (E >= energy_(n - 1))
+    return elastic_peak_frac_[n - 1];
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return elastic_peak_frac_[i];
+
+  // Linear in E, matching how calculate_xs interpolates the cross section this
+  // fraction divides.
+  double f = (E - e0) / (e1 - e0);
+  return (1.0 - f) * elastic_peak_frac_[i] + f * elastic_peak_frac_[i + 1];
 }
 
 double ElectronInteraction::elastic_rescale(double E) const

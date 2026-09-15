@@ -39,6 +39,11 @@ public:
   //! from the table built by compute_mean_deflection().
   double elastic_rescale(double E) const;
 
+  //! Probability that an elastic collision falls inside the forward peak,
+  //! (MT526 - MT525) / MT526, interpolated from the table built by
+  //! compute_mean_deflection().
+  double elastic_peak_fraction(double E) const;
+
   //! Tabulate the mean deflection of the large-angle distribution on the
   //! energy grid. Called once, from the constructor.
   void compute_mean_deflection();
@@ -97,6 +102,9 @@ public:
   //! compute_mean_deflection(); the quadrature behind it is far too expensive
   //! to repeat per collision.
   vector<double> elastic_rescale_;
+  //! Fraction of the total elastic cross section carried by the forward peak,
+  //! on the energy grid. Zero below the energy at which the peak opens.
+  vector<double> elastic_peak_frac_;
   AngleDistribution elastic_angle_;
   tensor::Tensor<double> ionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;

@@ -353,6 +353,25 @@ class IncidentElectron:
                     bremsstrahlung_group, "mean_energy")
 
 
+# Dirac partial-wave elastic cross sections are read from a pre-generated HDF5
+# file when they are first needed. The dictionary stores the incident energies
+# with the key 'energy' and the deflections 1-cos(theta) at which the cross
+# sections are tabulated with the key 'mu'; the data for each element is a dict
+# with keys 'dcs' (a 2D array with shape (n_energies, n_angles), exponentiated
+# on read from the logarithm the file stores), 'xs' and 'xs_transport', stored
+# on the key Z
+_ELASTIC_DPWA = {}
+
+# Seltzer-Berger scaled bremsstrahlung cross sections are read from the same
+# data file the thick-target approximation uses when they are first needed.
+# chi(Z, T, kappa) = (beta^2 / Z^2) * k * dsigma/dk, in barns, tabulated against
+# reduced photon energy kappa = k/T. The factor of kappa is what makes chi
+# finite at kappa = 0, so the cross section above any photon threshold is one
+# integral of the same table. The dictionary stores the incident energies with
+# the key 'T' and the reduced photon energies with the key 'kappa'; the scaled
+# cross sections for each element are a 2D array stored on the key Z
+_BREMX = {}
+
 def _with_cdf(x, p, interpolation='linear-linear'):
     """Tabular carrying the cumulative the HDF5 writers and the transport expect.
 
@@ -376,15 +395,17 @@ def _log_interp(x, xp, fp):
     return np.exp(np.interp(np.log(x), np.log(xp), np.log(fp)))
 
 
-def use_dpwa_elastic(electron, path):
+def use_dpwa_elastic(electron, path=None):
     """Replace elastic scattering with Dirac partial-wave data.
 
     Parameters
     ----------
     electron : IncidentElectron
         Data to modify in place.
-    path : str
-        Path to the HDF5 file written by ``make_elastic_dpwa.py``.
+    path : str, optional
+        HDF5 file written by ``make_elastic_dpwa.py``. Defaults to
+        ``elastic_dpwa.h5`` beside this module, the way the Compton profiles
+        and the scaled bremsstrahlung cross sections are found.
 
     Notes
     -----
@@ -403,16 +424,35 @@ def use_dpwa_elastic(electron, path):
 
     """
     Z = electron.atomic_number
-    with h5py.File(str(path), 'r') as f:
-        if f.attrs.get('filetype') != np.bytes_('elastic_dpwa'):
-            raise ValueError(f'{path} is not an elastic_dpwa file')
-        energy = f['energy'][()]
-        # 1 - cos(theta), ascending from 0
-        deflection = f['mu'][()]
-        group = f[f'{Z:03}']
-        dcs = group['dcs'][()].astype(float)
-        xs = group['xs'][()]
-        xs_transport = group['xs_transport'][()]
+
+    # If partial-wave elastic data hasn't been loaded, do so
+    if not _ELASTIC_DPWA:
+        if path is None:
+            path = os.path.join(os.path.dirname(__file__), 'elastic_dpwa.h5')
+        with h5py.File(str(path), 'r') as f:
+            if f.attrs.get('filetype') != np.bytes_('elastic_dpwa'):
+                raise ValueError(f'{path} is not an elastic_dpwa file')
+            _ELASTIC_DPWA['energy'] = f['energy'][()]
+            # 1 - cos(theta), ascending from 0
+            _ELASTIC_DPWA['mu'] = f['mu'][()]
+            for i in range(1, 101):
+                key = f'{i:03}'
+                if key not in f:
+                    continue
+                group = f[key]
+                _ELASTIC_DPWA[i] = {
+                    # Stored as its logarithm; see make_elastic_dpwa.py
+                    'dcs': np.exp(group['log_dcs'][()].astype(float)),
+                    'xs': group['xs'][()],
+                    'xs_transport': group['xs_transport'][()]}
+
+    energy = _ELASTIC_DPWA['energy']
+    deflection = _ELASTIC_DPWA['mu']
+    if Z not in _ELASTIC_DPWA:
+        raise ValueError(f'No partial-wave elastic data for Z={Z}')
+    dcs = _ELASTIC_DPWA[Z]['dcs']
+    xs = _ELASTIC_DPWA[Z]['xs']
+    xs_transport = _ELASTIC_DPWA[Z]['xs_transport']
 
     grid = electron.energy_grid
     if grid[0] < energy[0] or grid[-1] > energy[-1]:
@@ -437,14 +477,6 @@ def use_dpwa_elastic(electron, path):
     for i in range(len(energy)):
         distributions.append(_with_cdf(mu, dcs[i][::-1]))
     electron.elastic_dist = AngleDistribution(energy, distributions)
-
-
-# Seltzer-Berger scaled bremsstrahlung cross sections, read from BREMX.DAT when
-# first needed. chi(Z, T, kappa) = (beta^2 / Z^2) * k * dsigma/dk, in barns,
-# tabulated against reduced photon energy kappa = k/T. The factor of kappa is
-# what makes chi finite at kappa = 0, so the cross section above any photon
-# threshold is one integral of the same table.
-_BREMX = {}
 
 
 def _load_bremx():

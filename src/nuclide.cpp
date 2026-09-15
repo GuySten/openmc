@@ -1163,7 +1163,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         // Read element data from HDF5
         hid_t group = open_group(file_id, element.c_str());
-        data::elements.push_back(make_unique<PhotonInteraction>(group));
+        data::elements.push_back(make_unique<Element>(group));
 
         close_group(group);
         file_close(file_id);

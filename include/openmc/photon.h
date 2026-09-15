@@ -18,7 +18,12 @@
 namespace openmc {
 
 //==============================================================================
-//! Photon interaction data for a single element
+//! Interaction data for a single element
+//!
+//! Holds the photoatomic cross sections and atomic relaxation data, the
+//! Compton profiles, the stopping powers and scaled bremsstrahlung cross
+//! sections used by the thick-target approximation, and -- when electron
+//! transport is enabled -- the electron interaction data as well.
 //==============================================================================
 
 class ElectronSubshell {
@@ -39,11 +44,11 @@ public:
   vector<Transition> transitions;
 };
 
-class PhotonInteraction {
+class Element {
 public:
   // Constructors/destructor
-  PhotonInteraction(hid_t group);
-  ~PhotonInteraction();
+  Element(hid_t group);
+  ~Element();
 
   // Methods
   void calculate_xs(Particle& p) const;
@@ -238,7 +243,7 @@ extern tensor::Tensor<double>
 
 //! Interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
-extern vector<unique_ptr<PhotonInteraction>> elements;
+extern vector<unique_ptr<Element>> elements;
 
 } // namespace data
 

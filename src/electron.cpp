@@ -31,10 +31,10 @@ namespace openmc {
 //==============================================================================
 
 //==============================================================================
-// Electron interaction data, read into PhotonInteraction
+// Electron interaction data, read into Element
 //==============================================================================
 
-void PhotonInteraction::read_electron_data(hid_t group)
+void Element::read_electron_data(hid_t group)
 {
   // name_, Z_ and index_ are already set from the photoatomic data; only the
   // electron grid and reactions are read here.
@@ -148,7 +148,7 @@ void PhotonInteraction::read_electron_data(hid_t group)
   close_group(rgroup);
 }
 
-void PhotonInteraction::calculate_electron_xs(Particle& p) const
+void Element::calculate_electron_xs(Particle& p) const
 {
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
@@ -200,17 +200,17 @@ void PhotonInteraction::calculate_electron_xs(Particle& p) const
   xs.last_E = p.E();
 }
 
-double PhotonInteraction::elastic_scatter(double E, uint64_t* seed) const
+double Element::elastic_scatter(double E, uint64_t* seed) const
 {
   return elastic_angle_.sample(E, seed);
 }
 
-double PhotonInteraction::excitation(double E) const
+double Element::excitation(double E) const
 {
   return E - excitation_energy_loss_(E);
 }
 
-void PhotonInteraction::ionization(Particle& p, int i_shell) const
+void Element::ionization(Particle& p, int i_shell) const
 {
   double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
@@ -252,7 +252,7 @@ void PhotonInteraction::ionization(Particle& p, int i_shell) const
   p.E() = p.E() - E_knock - e_b;
 }
 
-int PhotonInteraction::sample_ionization_shell(Particle& p) const
+int Element::sample_ionization_shell(Particle& p) const
 {
   auto& xs {p.electron_xs(index_)};
 
@@ -361,7 +361,7 @@ double bremsstrahlung_cos_theta(
 
 } // namespace
 
-void PhotonInteraction::bremsstrahlung(Particle& p) const
+void Element::bremsstrahlung(Particle& p) const
 {
   double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());

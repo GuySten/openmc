@@ -26,15 +26,6 @@ vector<Bremsstrahlung> ttb;
 // Non-member functions
 //==============================================================================
 
-double positron_bremsstrahlung_factor(double Z_sq, double E)
-{
-  double t = std::log(1.0 + 1.0e6 * E / (Z_sq * MASS_ELECTRON_EV));
-  return 1.0 - std::exp(-1.2359e-1 * t + 6.1274e-2 * std::pow(t, 2) -
-                        3.1516e-2 * std::pow(t, 3) + 7.7446e-3 * std::pow(t, 4) -
-                        1.0595e-3 * std::pow(t, 5) + 7.0568e-5 * std::pow(t, 6) -
-                        1.808e-6 * std::pow(t, 7));
-}
-
 void thick_target_bremsstrahlung(Particle& p)
 {
   thick_target_bremsstrahlung(p, p.type(), p.u(), p.E());

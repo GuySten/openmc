@@ -614,7 +614,7 @@ carbon and for lead from 0.1 to 100 MeV.
 
 A positron radiates less than an electron of the same energy, being repelled by
 the nucleus rather than attracted to it, and its cross section is
-:eq:`brems-integral` scaled by the factor :math:`F_{\text{p}}(Z,T)` of
+:eq:`brems-integral` scaled by Salvat's factor :math:`F_{\text{p}}(Z,T)` of
 :eq:`positron-factor` -- the same one the thick-target approximation applies.
 The factor does not depend on :math:`\kappa`, so it scales the rate and leaves
 the spectrum sampled above untouched. It is not a small correction at high

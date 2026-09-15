@@ -198,7 +198,7 @@ void Element::calculate_electron_xs(Particle& p) const
                       f * (electron_bremsstrahlung_(i_grid + 1) -
                             electron_bremsstrahlung_(i_grid));
   if (p.type().is_positron()) {
-    xs.bremsstrahlung *= positron_bremsstrahlung_factor(Z_ * Z_, E);
+    xs.bremsstrahlung *= salvat_factor(Z_ * Z_, E);
   }
 
   // Calculate microscopic total cross section

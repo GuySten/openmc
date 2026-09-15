@@ -688,7 +688,7 @@ void Material::init_bremsstrahlung()
     if (positron) {
       for (int i = 0; i < n_e; ++i) {
         double r =
-          positron_bremsstrahlung_factor(Z_eq_sq, data::ttb_e_grid(i));
+          salvat_factor(Z_eq_sq, data::ttb_e_grid(i));
         stopping_power_radiative(i) *= r;
         tensor::View<double> dcs_i = dcs.slice(i);
         dcs_i *= r;

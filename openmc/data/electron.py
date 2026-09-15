@@ -294,9 +294,10 @@ class IncidentElectron:
 # sections are tabulated with the key 'mu'; the data for each element is a dict
 # with the single key 'dcs' (a 2D array with shape (n_energies, n_angles),
 # exponentiated on read from the logarithm the file stores), stored on the key
-# Z. Neither the integrated nor the transport cross section is read: both are
-# integrals of 'dcs', and taking them from the same table that is sampled is
-# what keeps the rate consistent with the deflections it produces.
+# Z. The differential cross section is all the file holds: every cross section
+# the transport needs is an integral of it, and taking them from the same table
+# that is sampled is what keeps the rate consistent with the deflections it
+# produces.
 _ELASTIC_DPWA = {}
 
 def _with_cdf(x, p, interpolation='linear-linear'):
@@ -368,10 +369,6 @@ def use_dpwa_elastic(electron, path=None):
                 if key not in f:
                     continue
                 group = f[key]
-                # The file also carries ELSEPA's own phase-shift transport
-                # cross sections. They are an independent check on the
-                # tabulated distribution rather than an input to it, so the
-                # transport never sees them and they are not loaded.
                 _ELASTIC_DPWA[i] = {
                     # Stored as its logarithm; see make_elastic_dpwa.py
                     'dcs': np.exp(group['log_dcs'][()].astype(float))}

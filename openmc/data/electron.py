@@ -1,4 +1,5 @@
 from numbers import Integral
+from warnings import warn
 
 import numpy as np
 import h5py
@@ -349,3 +350,75 @@ class IncidentElectron:
             if self.bremsstrahlung_mean_energy is not None:
                 self.bremsstrahlung_mean_energy.to_hdf5(
                     bremsstrahlung_group, "mean_energy")
+
+
+def _log_interp(x, xp, fp):
+    """Log-log interpolation, clamped to the endpoints of the tabulated range."""
+    x = np.clip(x, xp[0], xp[-1])
+    return np.exp(np.interp(np.log(x), np.log(xp), np.log(fp)))
+
+
+def use_dpwa_elastic(electron, path):
+    """Replace elastic scattering with Dirac partial-wave data.
+
+    Parameters
+    ----------
+    electron : IncidentElectron
+        Data to modify in place.
+    path : str
+        Path to the HDF5 file written by ``make_elastic_dpwa.py``.
+
+    Notes
+    -----
+    The evaluated libraries split elastic scattering at mu = 1 - 1e-6, giving a
+    tabulated distribution above that and leaving the forward peak to an
+    analytic screened-Rutherford form, with the transport cross section as the
+    only anchor tying the two together. A partial-wave differential cross
+    section covers the whole angular range at once, so there is no split: the
+    total and the large-angle cross sections become the same number, which
+    leaves the peak-sampling and rescaling machinery in the transport with
+    nothing to do. It disables itself rather than needing to be removed.
+
+    The partial-wave data stops at 100 MeV where the evaluated data runs to
+    100 GeV. Cross sections are clamped to the endpoints beyond that range,
+    which is adequate below 100 MeV and wrong above it.
+
+    """
+    Z = electron.atomic_number
+    with h5py.File(str(path), 'r') as f:
+        if f.attrs.get('filetype') != np.bytes_('elastic_dpwa'):
+            raise ValueError(f'{path} is not an elastic_dpwa file')
+        energy = f['energy'][()]
+        # 1 - cos(theta), ascending from 0
+        deflection = f['mu'][()]
+        group = f[f'{Z:03}']
+        dcs = group['dcs'][()].astype(float)
+        xs = group['xs'][()]
+        xs_transport = group['xs_transport'][()]
+
+    grid = electron.energy_grid
+    if grid[0] < energy[0] or grid[-1] > energy[-1]:
+        warn(f'{electron.name}: the partial-wave data covers '
+             f'{energy[0]:.4g} to {energy[-1]:.4g} eV but the energy grid runs '
+             f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Elastic cross sections are '
+             'clamped to the endpoints outside that range, which is wrong '
+             'rather than merely approximate.')
+    barns = 1.0e24
+    electron.elastic_xs = _log_interp(grid, energy, xs) * barns
+    # No forward-peak split: the differential cross section is the whole of it
+    electron.elastic_total_xs = electron.elastic_xs.copy()
+    electron.elastic_transport_xs = _log_interp(
+        grid, energy, xs_transport) * barns
+
+    # mu ascending from -1, as the transport samples it. The partial-wave cross
+    # section is a density, so it is tabulated as one rather than differentiated
+    # from a cumulative -- which is where the evaluated tables lose 1-2% of the
+    # first moment to histogram binning.
+    mu = (1.0 - deflection)[::-1]
+    distributions = []
+    for i in range(len(energy)):
+        p = dcs[i][::-1]
+        norm = np.trapezoid(p, mu)
+        distributions.append(
+            Tabular(mu, p / norm, interpolation='linear-linear'))
+    electron.elastic_dist = AngleDistribution(energy, distributions)

@@ -680,6 +680,15 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
+  // Two-photon annihilation in flight, which ends the history here rather
+  // than at the cutoff and sends out photons of up to T + m_e c^2 instead of
+  // a 511 keV pair
+  prob += micro.annihilation;
+  if (prob > cutoff) {
+    element.annihilation(p);
+    return;
+  }
+
   // Bremsstrahlung
   prob += micro.bremsstrahlung;
   if (prob > cutoff) {

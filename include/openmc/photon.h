@@ -83,6 +83,22 @@ public:
 
   void bremsstrahlung(Particle& p) const;
 
+  //! Two-photon annihilation of a positron in flight
+  //
+  //! The positron annihilates with a bound electron, which is taken to be free
+  //! and at rest, and is replaced by two photons sharing its kinetic energy
+  //! plus both rest masses. Unlike annihilation at the transport cutoff, the
+  //! photons are not 511 keV: they carry up to T + m_e c^2 each.
+  void annihilation(Particle& p) const;
+
+  //! Cross section for in-flight annihilation, per atom, in [b]
+  //
+  //! Heitler's two-photon result for a free electron at rest, multiplied by
+  //! the Z electrons of the atom. It is a closed form in the incident energy
+  //! alone, so it is evaluated exactly at the energy wanted rather than
+  //! tabulated on the grid and interpolated.
+  double annihilation_xs(double E) const;
+
   //! Sample the energy of a bremsstrahlung photon from the scaled cross
   //! sections of the photon library, above the threshold the electron
   //! library's cross section was integrated from. Returns zero when the

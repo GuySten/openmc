@@ -210,6 +210,8 @@ struct ElectroAtomicMicroXS {
   double elastic;        //!< microscopic elastic xs
   double excitation;     //!< microscopic excitation xs
   double ionization;     //!< microscopic ionization xs
+  double annihilation;   //!< microscopic in-flight annihilation xs, zero for
+                         //!< electrons
   double bremsstrahlung; //!< microscopic bremsstrahlung xs
 };
 

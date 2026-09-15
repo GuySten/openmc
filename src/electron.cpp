@@ -189,6 +189,12 @@ void Element::calculate_electron_xs(Particle& p) const
   const auto ion_ip1 = electroionization_.slice(tensor::all, i_grid + 1).sum();
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
+  // In-flight annihilation is a channel a positron has and an electron does
+  // not. Over a whole slowing-down history it is far from rare: about one
+  // positron in six started at 21 MeV annihilates before reaching the cutoff.
+  xs.annihilation =
+    p.type().is_positron() ? this->annihilation_xs(E) : 0.0;
+
   // Calculate microscopic bremsstrahlung cross section. A positron radiates
   // less than an electron of the same energy, being repelled by the nucleus
   // rather than attracted to it. The ratio is independent of the emitted
@@ -202,7 +208,8 @@ void Element::calculate_electron_xs(Particle& p) const
   }
 
   // Calculate microscopic total cross section
-  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;
+  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.annihilation +
+             xs.bremsstrahlung;
   xs.last_E = p.E();
 }
 
@@ -419,6 +426,81 @@ double Element::sample_bremsstrahlung_energy(double E, uint64_t* seed) const
     if (prn(seed) * chi_max < chi)
       return k;
   }
+}
+
+double Element::annihilation_xs(double E) const
+{
+  // pi r_e^2 in barns, with the classical electron radius written as
+  // alpha^2 a_0 so that it follows from the constants already tabulated
+  constexpr double BOHR_RADIUS_CM =
+    PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+  constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
+  constexpr double PI_R_E_SQ = PI * R_E * R_E * 1.0e24;
+
+  double gamma = 1.0 + E / MASS_ELECTRON_EV;
+  double g_sq = gamma * gamma;
+  if (g_sq <= 1.0 + 1.0e-12)
+    return 0.0;
+  double s = std::sqrt(g_sq - 1.0);
+
+  // Heitler, per electron. It grows as 1/beta as the positron slows, which is
+  // why a positron that reaches the cutoff annihilates rather than lingers.
+  double sigma = PI_R_E_SQ / (gamma + 1.0) *
+                 ((g_sq + 4.0 * gamma + 1.0) / (g_sq - 1.0) *
+                     std::log(gamma + s) -
+                   (gamma + 3.0) / s);
+  return Z_ * std::max(sigma, 0.0);
+}
+
+void Element::annihilation(Particle& p) const
+{
+  // Energy available to the two photons: the positron's kinetic energy and
+  // both rest masses, the electron being taken as free and at rest.
+  double avail = p.E() + 2.0 * MASS_ELECTRON_EV;
+  double a = avail / MASS_ELECTRON_EV; // gamma + 1
+  double t = a - 2.0;                  // gamma - 1
+  double pc = std::sqrt(a * t);        // sqrt(gamma^2 - 1)
+  double pot = pc / t;
+
+  // Sample the fraction of the available energy taken by the first photon.
+  // It runs between ep0 and 1 - ep0, and is drawn from 1/ep with the rest of
+  // Heitler's spectrum taken by rejection. The rejection function is written
+  // normalised to its own maximum, as in EGSnrc.
+  double ep0 = 1.0 / (a + pc);
+  double span = std::log((1.0 - ep0) / ep0);
+  double ep;
+  while (true) {
+    ep = ep0 * std::exp(span * prn(p.current_seed()));
+    double arg = ep * a - 1.0;
+    double rejection = 1.0 - arg * arg / (ep * (a * a - 2.0));
+    if (prn(p.current_seed()) <= rejection)
+      break;
+  }
+
+  double E_1 = avail * ep;
+  double E_2 = avail - E_1;
+
+  // Both polar angles follow from the photon energies; the two are coplanar
+  // with the incident direction and on opposite sides of it.
+  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+  double mu_1 = std::max(
+    -1.0, std::min(1.0, (E_1 - MASS_ELECTRON_EV) * pot / E_1));
+  double mu_2 = std::max(
+    -1.0, std::min(1.0, (E_2 - MASS_ELECTRON_EV) * pot / E_2));
+  Direction u_1 = rotate_angle(p.u(), mu_1, &phi, p.current_seed());
+  double phi_2 = phi + PI;
+  Direction u_2 = rotate_angle(p.u(), mu_2, &phi_2, p.current_seed());
+  p.create_secondary(p.wgt(), u_1, E_1, ParticleType::photon());
+  p.create_secondary(p.wgt(), u_2, E_2, ParticleType::photon());
+
+  // The positron is gone. Zeroing the weight as well tells the post-collision
+  // cutoff handling that this particle has already annihilated, and the
+  // POSITRON_ANNIHILATION marker gives the heating score the Q value that
+  // balances the two rest masses the photons carry away.
+  p.E() = 0.0;
+  p.wgt() = 0.0;
+  p.event() = TallyEvent::ABSORB;
+  p.event_mt() = POSITRON_ANNIHILATION;
 }
 
 void Element::bremsstrahlung(Particle& p) const

@@ -1,6 +1,7 @@
 #include "openmc/photon.h"
 
 #include "openmc/array.h"
+#include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
@@ -188,10 +189,17 @@ void Element::calculate_electron_xs(Particle& p) const
   const auto ion_ip1 = electroionization_.slice(tensor::all, i_grid + 1).sum();
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
-  // Calculate microscopic bremsstrahlung cross section
+  // Calculate microscopic bremsstrahlung cross section. A positron radiates
+  // less than an electron of the same energy, being repelled by the nucleus
+  // rather than attracted to it. The ratio is independent of the emitted
+  // photon energy, so it scales the rate here and leaves the spectrum that
+  // sample_bremsstrahlung_energy() draws from untouched.
   xs.bremsstrahlung = electron_bremsstrahlung_(i_grid) +
                       f * (electron_bremsstrahlung_(i_grid + 1) -
                             electron_bremsstrahlung_(i_grid));
+  if (p.type().is_positron()) {
+    xs.bremsstrahlung *= positron_bremsstrahlung_factor(Z_ * Z_, E);
+  }
 
   // Calculate microscopic total cross section
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;

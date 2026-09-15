@@ -612,6 +612,15 @@ samples above the same one. The product of the two is the radiative stopping
 power, which reproduces the ESTAR tabulation to better than one per cent for
 carbon and for lead from 0.1 to 100 MeV.
 
+A positron radiates less than an electron of the same energy, being repelled by
+the nucleus rather than attracted to it, and its cross section is
+:eq:`brems-integral` scaled by the factor :math:`F_{\text{p}}(Z,T)` of
+:eq:`positron-factor` -- the same one the thick-target approximation applies.
+The factor does not depend on :math:`\kappa`, so it scales the rate and leaves
+the spectrum sampled above untouched. It is not a small correction at high
+:math:`Z`: for lead it is 0.49 at 1 MeV and 0.84 at 21 MeV, against 0.96 and
+1.00 for carbon.
+
 The evaluation carries no angular information for this channel at all, so the
 emission angle must come from a model. OpenMC samples it from formula 2BS of
 Koch_ and Motz, the screened Schiff form of the Bethe-Heitler cross section,

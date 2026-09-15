@@ -687,14 +687,8 @@ void Material::init_bremsstrahlung()
     // Issy-les-Moulineaux, France (2011).
     if (positron) {
       for (int i = 0; i < n_e; ++i) {
-        double t = std::log(
-          1.0 + 1.0e6 * data::ttb_e_grid(i) / (Z_eq_sq * MASS_ELECTRON_EV));
         double r =
-          1.0 -
-          std::exp(-1.2359e-1 * t + 6.1274e-2 * std::pow(t, 2) -
-                   3.1516e-2 * std::pow(t, 3) + 7.7446e-3 * std::pow(t, 4) -
-                   1.0595e-3 * std::pow(t, 5) + 7.0568e-5 * std::pow(t, 6) -
-                   1.808e-6 * std::pow(t, 7));
+          positron_bremsstrahlung_factor(Z_eq_sq, data::ttb_e_grid(i));
         stopping_power_radiative(i) *= r;
         tensor::View<double> dcs_i = dcs.slice(i);
         dcs_i *= r;

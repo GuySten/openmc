@@ -43,6 +43,19 @@ extern tensor::Tensor<double>
 // Global variables
 //==============================================================================
 
+//! Ratio of the positron to the electron bremsstrahlung cross section
+//
+//! A positron is repelled by the nucleus where an electron is attracted, so it
+//! radiates less, the difference vanishing at high energy. The factor is
+//! independent of the emitted photon energy, so it scales the cross section
+//! and leaves the spectrum alone. Source: F. Salvat, J. M. Fernandez-Varea and
+//! J. Sempau, "PENELOPE-2011: A Code System for Monte Carlo Simulation of
+//! Electron and Photon Transport", OECD-NEA (2011).
+//!
+//! \param[in] Z_sq atomic number squared, or its equivalent for a mixture
+//! \param[in] E    kinetic energy of the positron in [eV]
+double positron_bremsstrahlung_factor(double Z_sq, double E);
+
 void thick_target_bremsstrahlung(Particle& p);
 void thick_target_bremsstrahlung(
   Particle& p, ParticleType type, Direction u, double E);

@@ -250,6 +250,42 @@ relaxation sublibrary files are required:
 Once the HDF5 files have been generated, a library can be created using the
 :class:`DataLibrary` class as described in :ref:`create_xs_library`.
 
+.. _electron_data:
+
+-----------------------
+Electron Cross Sections
+-----------------------
+
+Electron interaction data is needed to run OpenMC with electron transport
+enabled, in addition to the photon data above. It comes from three sources.
+
+The excitation and electroionization data are read from the eprdata ACE tables
+of the EPICS evaluated libraries, the same files the photon data comes from.
+
+The elastic differential cross sections are a Dirac partial-wave calculation
+distributed with OpenMC as ``openmc/data/elastic_dpwa.h5``, generated with
+ELSEPA_ on PENELOPE's 96-point energy grid. If you use this data in your
+research, please cite
+
+  Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
+  (2005) 157-190.
+
+The bremsstrahlung photon spectra are the scaled cross sections of `Seltzer and
+Berger`_ already distributed with OpenMC for the thick-target approximation,
+and are read from the photon library rather than stored a second time.
+
+The :class:`openmc.data.IncidentElectron` class reads an ACE table, and the
+:func:`openmc.data.use_dpwa_elastic` and
+:func:`openmc.data.use_seltzer_berger_brems` functions substitute the two
+calculated datasets before the result is written:
+
+::
+
+  c = openmc.data.IncidentElectron.from_ace('6000.14p')
+  openmc.data.use_dpwa_elastic(c)
+  openmc.data.use_seltzer_berger_brems(c)
+  c.export_to_hdf5('C.h5')
+
 -----------
 Chain Files
 -----------
@@ -302,5 +338,6 @@ example of how to create a multigroup library, see this `MG mode notebook
 .. _JEFF: https://www.oecd-nea.org/dbdata/jeff/jeff33/
 .. _TENDL: https://tendl.web.psi.ch/tendl_2023/tendl2023.html
 .. _Seltzer and Berger: https://doi.org/10.1016/0092-640X(86)90014-8
+.. _ELSEPA: https://www.sciencedirect.com/science/article/pii/S0010465504004795
 .. _NIST ESTAR database: https://physics.nist.gov/PhysRefData/Star/Text/ESTAR.html
 .. _Biggs et al.: https://doi.org/10.1016/0092-640X(75)90030-3

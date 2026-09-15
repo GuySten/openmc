@@ -381,12 +381,22 @@ selected in proportion to its cross section, and that interaction is sampled in
 full. Nothing is condensed into a step: there is no multiple-scattering
 distribution, no substep energy loss, and no path-length correction.
 
-The interaction data are those of the EPICS evaluated libraries, in particular
-the Evaluated Electron Data Library (EEDL), read from the eprdata ACE format.
-For each element the library supplies the four cross sections on a common dense
-energy grid, the elastic angular distributions, the average energy loss to
-excitation, the electroionization spectra for each subshell, and the
-bremsstrahlung photon spectra.
+The inelastic interaction data are those of the EPICS evaluated libraries, in
+particular the Evaluated Electron Data Library (EEDL), read from the eprdata
+ACE format: the average energy loss to excitation, and the electroionization
+cross sections and knock-on spectra for each subshell, all on a common dense
+energy grid.
+
+Elastic scattering and bremsstrahlung are taken from calculated datasets
+instead, described in their sections below. The evaluated cross sections for
+both are sound, but the distributions that go with them are tabulated on far
+too few incident energies to interpolate -- the elastic angular distributions
+on 14 to 16 energies per element spanning ten decades, the bremsstrahlung
+spectra on nine, with nothing at all between 12.25 MeV and 100 GeV.
+
+Every cross section is the integral of the distribution that is sampled from
+it. Rate and shape come from one table in each channel, so an electron collides
+at the rate implied by the deflections and energy losses it then gets.
 
 Elastic Scattering
 ------------------
@@ -396,76 +406,62 @@ energy to the atom. It is by a wide margin the most frequent interaction, and
 the accumulation of many small deflections is what limits how deeply electrons
 penetrate.
 
-The evaluation splits the angular distribution in two. A tabulated distribution
-covers scattering away from the forward direction, out to a cutoff at
-:math:`\mu_{\text{max}} = 1 - 10^{-6}`, about 1.4 mrad from forward; the
-narrow peak beyond that cutoff is left to an analytic screened-Rutherford form
+The differential cross section is a Dirac partial-wave calculation, tabulated
+over the whole angular range on 606 angles at each of 96 incident energies from
+50 eV to 100 MeV. Nothing is split out of it: the cross section that sets the
+distance to the next elastic collision is the integral of the same table the
+deflection is sampled from,
 
 .. math::
-    :label: elastic-peak
+    :label: elastic-integral
 
-    f(\mu) \propto \frac{1}{(2\eta + 1 - \mu)^2},
+    \sigma_{\text{el}}(T) = 2\pi \int_0^2
+    \frac{d\sigma}{d\Omega}\, d(1 - \cos\theta).
 
-with Molière's screening angle carrying the low-energy correction
-recommended by Seltzer,
+There is no forward-peak cutoff, no analytic screened-Rutherford tail beyond
+it, and no transport cross section used to rescale the sampled deflection. The
+distribution is tabulated as a density rather than differentiated from a
+cumulative, which is where histogram binning of an evaluated table loses one to
+two per cent of its first moment.
 
-.. math::
-    :label: elastic-screening
-
-    \eta = \frac{1}{4}\left(\frac{\alpha m_e c}{0.885\,p}\right)^2
-    Z^{2/3} \left[1.13 + 3.76 \left(\frac{\alpha Z}{\beta}\right)^2
-    \sqrt{\frac{\tau}{\tau + 1}}\right],
-
-where :math:`\tau = T/m_ec^2`. The cross section that accompanies the
-tabulated distribution is the large-angle cross section
-:math:`\sigma_{\text{el}}`, not the total; pairing the total with these tables
-would count the peak twice.
-
-The angular tables are given at only 14 to 16 energies per element, spanning
-ten decades. For aluminium there is no table between 256 keV and 10 MeV, an
-interval across which the mean deflection falls by a factor of 35, so the
-tables cannot simply be interpolated. Two things follow. First, the tables are
-interpolated logarithmically in energy, with both bracketing distributions
-sampled at the same cumulative probability and the resulting deflections
-combined geometrically; a linear rule places essentially all of the weight on
-the lower table across a gap of that size. Second, the mean deflection is not
-taken from the tables at all. The library tabulates a transport-corrected
-elastic cross section :math:`\sigma_{\text{tr}}` on the same dense grid as the
-cross sections, and its first moment gives the mean deflection directly:
+The tables are interpolated logarithmically in energy: both bracketing
+distributions are sampled at the same cumulative probability and the two
+deflections are combined geometrically,
 
 .. math::
-    :label: mean-deflection
+    :label: elastic-interp
 
-    \langle 1 - \mu \rangle = \frac{\sigma_{\text{tr}} -
-    \sigma_{\text{peak}} \langle 1 - \mu \rangle_{\text{peak}}}
-    {\sigma_{\text{el}}},
+    1 - \mu = (1 - \mu_i)^{1-f}\,(1 - \mu_{i+1})^{f}, \quad
+    f = \frac{\ln(T/T_i)}{\ln(T_{i+1}/T_i)}.
 
-where :math:`\sigma_{\text{peak}}` is the difference between the total and
-large-angle cross sections. The subtraction is needed because
-:math:`\sigma_{\text{tr}}` is the first moment of the *total* distribution,
-peak included, while the tables describe only the large-angle part. Integrating
-:eq:`elastic-peak` over the peak gives its contribution in closed form,
+A linear blend of two distributions a decade apart would put essentially all of
+its weight on the lower, wider-angle one.
 
-.. math::
-    :label: peak-moment
+Above 100 MeV the cross section is clamped to its value there.
 
-    \langle 1 - \mu \rangle_{\text{peak}} =
-    -\frac{a(a + x_0)}{x_0}\left[\ln(1 - w) + w\right], \quad
-    a = 2\eta,\quad x_0 = 1 - \mu_{\text{max}},\quad
-    w = \frac{x_0}{a + x_0}.
+Partial-Wave Elastic Data
+-------------------------
 
-The bracketed term is :math:`\ln(1+x) - x` at :math:`x = -w`. Both of its
-terms approach :math:`-w` while their difference is only :math:`w^2/2`, so it
-is evaluated by a dedicated routine rather than by subtracting them directly.
+The differential cross sections used above are computed with ELSEPA_, the
+Dirac partial-wave code of Salvat, Jablonski and Powell. They are distributed
+with OpenMC as ``openmc/data/elastic_dpwa.h5``, covering :math:`Z = 1` to 99 on
+PENELOPE's 96-point energy grid, and are regenerated by the
+``make_elastic_dpwa.py`` script that records the settings used.
 
-Below the energy at which the peak opens up -- 1.75 MeV in aluminium, 3 MeV in
-iron, 8 MeV in uranium -- the evaluation gives
-:math:`\sigma_{\text{tot}} = \sigma_{\text{el}}` and the correction vanishes
-identically.
+Those settings are a Fermi nuclear charge distribution, a Dirac-Fock electron
+density, Furness-McCarthy exchange and an LDA correlation-polarization
+potential, with no absorption -- the inelastic channels are transported
+explicitly rather than removed from the elastic flux -- and Born factorization
+at high energy. They are the ones under which PENELOPE's own database is built;
+for carbon the two agree to four decimal places in the integrated and both
+transport cross sections from 100 keV to 100 MeV.
 
-Each sampled deflection is then scaled so that its mean matches
-:eq:`mean-deflection`, leaving the tables to supply the shape and the dense
-grid to supply the first moment.
+If you use this data in your research, please cite
+
+  F. Salvat, A. Jablonski and C. J. Powell, "ELSEPA -- Dirac partial-wave
+  calculation of elastic scattering of electrons and positrons by atoms,
+  positive ions and molecules", *Computer Physics Communications* **165**
+  (2005) 157-190.
 
 Atomic Excitation
 -----------------
@@ -537,10 +533,37 @@ cascade.
 Bremsstrahlung Emission
 -----------------------
 
-The photon energy is sampled from the spectra tabulated in the library, whose
-incident-energy grids are again sparse and are interpolated logarithmically,
-with unit-base scaling because the spectrum is self-similar: its upper endpoint
-is the incident energy itself.
+The photon energy is sampled from the Seltzer-Berger scaled cross sections
+:math:`\chi(Z, T, \kappa) = (\beta^2/Z^2)\, k\, d\sigma/dk`, tabulated in
+barns against the reduced photon energy :math:`\kappa = k/T`. This is the same
+table the thick-target approximation uses, carried in the photon library, and
+it is given on 57 incident energies against the evaluation's nine.
+
+Since :math:`\chi` is finite at :math:`\kappa = 0`, the whole of the
+:math:`1/k` divergence of :math:`d\sigma/dk = (Z^2/\beta^2)\chi(\kappa)/k`
+is explicit. The photon energy is therefore sampled by drawing :math:`k` from
+:math:`1/k` over :math:`[k_{\text{cut}}, T]` and accepting it with probability
+:math:`\chi(\kappa)/\chi_{\text{max}}`, with :math:`\chi` linear in
+:math:`\kappa` between tabulated points and between the two bracketing
+incident energies.
+
+Bremsstrahlung has no threshold-free cross section -- the number of photons
+emitted diverges logarithmically as :math:`k \to 0` -- so one has to be
+chosen. The cross section stored in the electron library is the integral of the
+same density above the same :math:`k_{\text{cut}}`,
+
+.. math::
+    :label: brems-integral
+
+    \sigma_{\text{br}}(T) = \frac{Z^2}{\beta^2}
+    \int_{\kappa_{\text{cut}}}^{1} \frac{\chi(\kappa)}{\kappa}\,
+    d\kappa,
+
+evaluated in closed form on each interval of the tabulated :math:`\kappa`
+grid, and the threshold it used is stored beside it so that the transport
+samples above the same one. The product of the two is the radiative stopping
+power, which reproduces the ESTAR tabulation to better than one per cent for
+carbon and for lead from 0.1 to 100 MeV.
 
 The evaluation carries no angular information for this channel at all, so the
 emission angle must come from a model. OpenMC samples it from formula 2BS of
@@ -579,6 +602,8 @@ below the binding energy of the least-bound shell, and excitation can also
 vanish at some energy above 10 eV depending on the element. Between those
 thresholds an electron can take a very large number of elastic steps without
 losing energy. Setting the cutoff no lower than about 12 eV avoids this.
+
+.. _ELSEPA: https://www.sciencedirect.com/science/article/pii/S0010465504004795
 
 .. _Koch: https://doi.org/10.1103/RevModPhys.31.920
 

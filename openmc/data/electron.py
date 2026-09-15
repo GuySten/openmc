@@ -335,6 +335,12 @@ def use_dpwa_elastic(electron, path=None):
         ``elastic_dpwa.h5`` beside this module, the way the Compton profiles
         and the scaled bremsstrahlung cross sections are found.
 
+    References
+    ----------
+    The data are computed with ELSEPA. If you use them in your research, please
+    cite Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
+    (2005) 157-190.
+
     Notes
     -----
     The evaluated libraries split elastic scattering at mu = 1 - 1e-6, giving a

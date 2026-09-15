@@ -206,6 +206,87 @@ Incident Photon Data
                           - **threshold_idx** (*int*) -- Index on the energy
                             grid of the reaction threshold
 
+----------------------
+Incident Electron Data
+----------------------
+
+Written by :meth:`openmc.data.IncidentElectron.export_to_hdf5` and read only
+when electron transport is enabled. Every cross section here is tabulated
+against the element's own ``energy`` grid, which is the electron library's and
+is not the photon library's grid.
+
+**/**
+
+:Attributes: - **filetype** (*char[]*) -- String indicating the type of file
+             - **version** (*int[2]*) -- Major and minor version of the data
+
+**/<element>/**
+
+:Attributes: - **Z** (*int*) -- Atomic number
+
+:Datasets:
+           - **energy** (*double[]*) -- Energies in [eV] at which cross sections
+             are tabulated
+
+**/<element>/elastic/**
+
+:Datasets:
+           - **xs** (*double[]*) -- Elastic scattering cross section in [b],
+             the integral of the angular distribution below over the whole
+             solid angle
+
+**/<element>/elastic/distribution/**
+
+:Datasets: - **energy** (*double[]*) -- incident energies in [eV] at which
+             angular distributions are given
+           - **mu** (*double[3][]*) -- the tabulated angular distributions, in
+             the same layout as **angle/mu** of an
+             :ref:`uncorrelated angle-energy distribution <angle_energy>`. They
+             cover the full range of the scattering cosine; nothing is split
+             out of the forward direction.
+
+**/<element>/excitation/**
+
+:Datasets: - **xs** (*double[]*) -- Atomic excitation cross section in [b]
+           - **energy_loss** (:ref:`function <1d_functions>`) -- Average energy
+             lost to excitation in [eV] as a function of incident energy
+
+**/<element>/ionization/**
+
+:Attributes:
+             - **designators** (*char[][]*) -- Designator of each subshell,
+               e.g. 'L1'. These need not match, in length or in order, the
+               subshells of the photon library, which carry the binding
+               energies and relaxation transitions; they are paired by
+               designator.
+
+:Datasets:
+           - **xs** (*double[][]*) -- Electroionization cross section in [b]
+             for each subshell
+
+**/<element>/ionization/<designator>/**
+
+:Object type: An :ref:`uncorrelated angle-energy distribution <angle_energy>`
+              carrying only its **energy** group, a continuous tabular
+              distribution of the kinetic energy in [eV] of the ejected
+              knock-on electron at each incident energy. The polar angles of
+              both electrons follow from the energy transfer and are not
+              sampled, so no angular distribution is stored.
+
+**/<element>/bremsstrahlung/**
+
+:Attributes:
+             - **photon_cutoff** (*double*) -- Lowest emitted photon energy in
+               [eV] that the cross section below was integrated above.
+               Bremsstrahlung has no threshold-free cross section, so the
+               transport has to sample the photon energy above this same value.
+
+:Datasets:
+           - **xs** (*double[]*) -- Bremsstrahlung cross section in [b]. The
+             photon spectrum it integrates is not stored here: it is the scaled
+             cross section in **/<element>/bremsstrahlung/dcs** of the photon
+             library, which the transport samples directly.
+
 -------------------------------
 Thermal Neutron Scattering Data
 -------------------------------

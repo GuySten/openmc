@@ -1,6 +1,7 @@
 #ifndef OPENMC_PHOTON_H
 #define OPENMC_PHOTON_H
 
+#include "openmc/array.h"
 #include "openmc/distribution_angle.h"
 #include "openmc/distribution_energy.h"
 #include "openmc/endf.h"
@@ -73,7 +74,9 @@ public:
 
   void calculate_electron_xs(Particle& p) const;
 
-  double elastic_scatter(double E, uint64_t* seed) const;
+  //! Sample an elastic deflection. \param q_index 0 for an electron, 1 for a
+  //! positron; the two differ little in rate and a great deal in first moment
+  double elastic_scatter(int q_index, double E, uint64_t* seed) const;
 
   double excitation(double E) const;
 
@@ -170,8 +173,10 @@ public:
   vector<int> electron_shell_map_;
 
   tensor::Tensor<double> electron_energy_;
-  tensor::Tensor<double> elastic_;
-  AngleDistribution elastic_angle_;
+  //! Elastic cross sections and angular distributions, indexed by projectile
+  //! charge: 0 for an electron, 1 for a positron
+  array<tensor::Tensor<double>, 2> elastic_;
+  array<AngleDistribution, 2> elastic_angle_;
   tensor::Tensor<double> electroionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;
   tensor::Tensor<double> excitation_;

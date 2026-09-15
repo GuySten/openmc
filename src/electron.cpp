@@ -40,42 +40,33 @@ void Element::read_electron_data(hid_t group)
   // electron grid and reactions are read here.
   read_dataset(group, "energy", electron_energy_);
 
-  // Read elastic scattering
+  // Read elastic scattering, for both projectile charges. They differ little
+  // in rate -- the integrated cross sections agree to under a per cent, which
+  // is the Born limit and is symmetric in the charge -- and a great deal in
+  // first moment, because a positron is repelled by the nucleus and stays out
+  // of the small-impact-parameter region that makes the large deflections.
   hid_t rgroup = open_group(group, "elastic");
-  read_dataset(rgroup, "xs", elastic_);
-  // A partial-wave differential cross section covers the whole angular range,
-  // so there is no large-angle/forward-peak split to reconcile. An evaluated
-  // library does have one, and this build has none of the machinery that used
-  // to bridge it, so refuse the data rather than transport it wrongly.
-  if (object_exists(rgroup, "xs_total")) {
-    tensor::Tensor<double> total;
-    read_dataset(rgroup, "xs_total", total);
-    for (int i = 0; i < total.size(); ++i) {
-      if (total(i) > elastic_(i) * (1.0 + 1e-9)) {
-        fatal_error(fmt::format(
-          "Electron elastic data for {} splits the forward peak out of the "
-          "angular distribution (xs_total exceeds xs). This build samples a "
-          "partial-wave cross section over the whole angular range and cannot "
-          "use such a library.",
-          name_));
-      }
-    }
+  for (int q = 0; q < 2; ++q) {
+    hid_t qgroup = open_group(rgroup, q == 0 ? "electron" : "positron");
+    read_dataset(qgroup, "xs", elastic_[q]);
+    hid_t qdist = open_group(qgroup, "distribution");
+    // Interpolate between the tabulated distributions log-log in energy rather
+    // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
+    // this TAB2, but that rule assumes the tables are close enough together
+    // for a linear blend of them to mean something, and here they are not.
+    //
+    // Elastic angular data is tabulated on a sparse, geometric energy grid --
+    // for aluminium there is no table between 256 keV and 10 MeV, an interval
+    // across which 1-<mu> falls by a factor of 35. The default linear
+    // stochastic interpolation picks the low-energy, wide-angle table 92% of
+    // the time right across that gap, over-scattering by a factor of about
+    // 3.5. That leaves the stopping power and CSDA range correct, so a range
+    // check passes, but stops electrons penetrating and drives
+    // depth-deposition profiles far too shallow.
+    elastic_angle_[q] = AngleDistribution {qdist, Interpolation::log_log};
+    close_group(qdist);
+    close_group(qgroup);
   }
-  hid_t dist_group = open_group(rgroup, "distribution");
-  // Interpolate between the tabulated distributions log-log in energy rather
-  // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
-  // this TAB2, but that rule assumes the tables are close enough together for
-  // a linear blend of them to mean something, and here they are not.
-  //
-  // Elastic angular data is tabulated on a sparse, geometric energy grid --
-  // for aluminium there is no table between 256 keV and 10 MeV, an interval
-  // across which 1-<mu> falls by a factor of 35. The default linear stochastic
-  // interpolation picks the low-energy, wide-angle table 92% of the time right
-  // across that gap, over-scattering by a factor of about 3.5. That leaves the
-  // stopping power and CSDA range correct, so a range check passes, but stops
-  // electrons penetrating and drives depth-deposition profiles far too shallow.
-  elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
-  close_group(dist_group);
   close_group(rgroup);
 
   // Read excitation
@@ -178,7 +169,9 @@ void Element::calculate_electron_xs(Particle& p) const
   xs.interp_factor = f;
 
   // Calculate microscopic elastic cross section
-  xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
+  int q = p.type().is_positron() ? 1 : 0;
+  xs.elastic =
+    elastic_[q](i_grid) + f * (elastic_[q](i_grid + 1) - elastic_[q](i_grid));
 
   // Calculate microscopic excitation cross section
   xs.excitation =
@@ -213,9 +206,9 @@ void Element::calculate_electron_xs(Particle& p) const
   xs.last_E = p.E();
 }
 
-double Element::elastic_scatter(double E, uint64_t* seed) const
+double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
 {
-  return elastic_angle_.sample(E, seed);
+  return elastic_angle_[q_index].sample(E, seed);
 }
 
 double Element::excitation(double E) const

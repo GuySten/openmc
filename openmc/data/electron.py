@@ -49,12 +49,12 @@ def _tabular_from_cdf(x, c, name):
 # file when they are first needed. The dictionary stores the incident energies
 # with the key 'energy' and the deflections 1-cos(theta) at which the cross
 # sections are tabulated with the key 'mu'; the data for each element is a dict
-# with the single key 'dcs' (a 2D array with shape (n_energies, n_angles),
-# exponentiated on read from the logarithm the file stores), stored on the key
-# Z. The differential cross section is all the file holds: every cross section
-# the transport needs is an integral of it, and taking them from the same table
-# that is sampled is what keeps the rate consistent with the deflections it
-# produces.
+# with the keys 'electron' and 'positron', each a 2D array with shape
+# (n_energies, n_angles) exponentiated on read from the logarithm the file
+# stores, on the key Z. The differential cross sections are all the file holds:
+# every cross section the transport needs is an integral of one of them, and
+# taking them from the same table that is sampled is what keeps the rate
+# consistent with the deflections it produces.
 _ELASTIC_DPWA = {}
 
 def _with_cdf(x, p):
@@ -86,8 +86,11 @@ class IncidentElectron:
     def __init__(self, atomic_number):
         self.atomic_number = atomic_number
         self.energy_grid = None
-        self.elastic_xs = None
-        self.elastic_dist = None
+        # Keyed by 'electron' and 'positron': a positron is repelled by the
+        # nucleus where an electron is attracted, which barely changes the
+        # integrated cross section but changes its first moment a great deal
+        self.elastic_xs = {}
+        self.elastic_dist = {}
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_photon_cutoff = None
         self.excitation_xs = None
@@ -256,8 +259,11 @@ class IncidentElectron:
             group.create_dataset("energy", data=self.energy_grid)
             
             elastic_group = group.create_group("elastic")
-            elastic_group.create_dataset("xs", data=self.elastic_xs)
-            self.elastic_dist.to_hdf5(elastic_group.create_group("distribution"))
+            for particle in ('electron', 'positron'):
+                pgroup = elastic_group.create_group(particle)
+                pgroup.create_dataset("xs", data=self.elastic_xs[particle])
+                self.elastic_dist[particle].to_hdf5(
+                    pgroup.create_group("distribution"))
             
             excitation_group = group.create_group("excitation")
             excitation_group.create_dataset("xs", data=self.excitation_xs)
@@ -289,7 +295,9 @@ class IncidentElectron:
 
         Read from ``elastic_dpwa.h5`` beside this module, the way the photon
         data finds its Compton profiles and its scaled bremsstrahlung cross
-        sections.
+        sections. Electron and positron data are both stored: their integrated
+        cross sections agree to under a per cent, which is the Born limit and
+        is symmetric in the charge, but their first moments do not.
 
         References
         ----------
@@ -330,23 +338,15 @@ class IncidentElectron:
                     if key not in f:
                         continue
                     group = f[key]
+                    # Stored as its logarithm; see make_elastic_dpwa.py
                     _ELASTIC_DPWA[i] = {
-                        # Stored as its logarithm; see make_elastic_dpwa.py
-                        'dcs': np.exp(group['log_dcs'][()].astype(float))}
+                        k: np.exp(group[k]['log_dcs'][()].astype(float))
+                        for k in ('electron', 'positron')}
 
         energy = _ELASTIC_DPWA['energy']
         deflection = _ELASTIC_DPWA['mu']
         if Z not in _ELASTIC_DPWA:
             raise ValueError(f'No partial-wave elastic data for Z={Z}')
-        dcs = _ELASTIC_DPWA[Z]['dcs']
-
-        # The cross section is the integral of the distribution that is sampled,
-        # not a separately tabulated number: 2*pi*int dcs d(1-cos(theta)). Taking
-        # it from the same 606-point table keeps the rate at which collisions
-        # happen consistent with the deflections they produce. It runs 0.2-1.2%
-        # above ELSEPA's own phase-shift total, which is the quadrature error of
-        # the tabulated grid and belongs in the rate as well.
-        xs = 2.0 * np.pi * np.trapezoid(dcs, deflection, axis=1)
 
         grid = self.energy_grid
         if grid[0] < energy[0] or grid[-1] > energy[-1]:
@@ -355,18 +355,27 @@ class IncidentElectron:
                  f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Elastic cross sections are '
                  'clamped to the endpoints outside that range, which is wrong '
                  'rather than merely approximate.')
-        barns = 1.0e24
-        self.elastic_xs = _log_interp(grid, energy, xs) * barns
 
-        # mu ascending from -1, as the transport samples it. The partial-wave cross
-        # section is a density, so it is tabulated as one rather than differentiated
-        # from a cumulative -- which is where the evaluated tables lose 1-2% of the
-        # first moment to histogram binning.
+        # mu ascending from -1, as the transport samples it. The partial-wave
+        # cross section is a density, so it is tabulated as one rather than
+        # differentiated from a cumulative -- which is where the evaluated
+        # tables lose 1-2% of the first moment to histogram binning.
         mu = (1.0 - deflection)[::-1]
-        distributions = []
-        for i in range(len(energy)):
-            distributions.append(_with_cdf(mu, dcs[i][::-1]))
-        self.elastic_dist = AngleDistribution(energy, distributions)
+        barns = 1.0e24
+        for particle in ('electron', 'positron'):
+            dcs = _ELASTIC_DPWA[Z][particle]
+
+            # The cross section is the integral of the distribution that is
+            # sampled, not a separately tabulated number:
+            # 2*pi*int dcs d(1-cos(theta)). Taking it from the same 606-point
+            # table keeps the rate at which collisions happen consistent with
+            # the deflections they produce. It runs 0.2-1.2% above ELSEPA's own
+            # phase-shift total, which is the quadrature error of the tabulated
+            # grid and belongs in the rate as well.
+            xs = 2.0 * np.pi * np.trapezoid(dcs, deflection, axis=1)
+            self.elastic_xs[particle] = _log_interp(grid, energy, xs) * barns
+            self.elastic_dist[particle] = AngleDistribution(
+                energy, [_with_cdf(mu, row[::-1]) for row in dcs])
 
 
     def _add_bremsstrahlung(self, photon_cutoff=_PHOTON_CUTOFF):

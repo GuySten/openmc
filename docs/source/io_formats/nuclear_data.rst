@@ -228,14 +228,18 @@ is not the photon library's grid.
            - **energy** (*double[]*) -- Energies in [eV] at which cross sections
              are tabulated
 
-**/<element>/elastic/**
+**/<element>/elastic/<particle>/**
+
+Both ``electron`` and ``positron`` are present. Only the sign of the charge
+differs, which leaves the integrated cross sections within a per cent of one
+another and their first moments as much as a factor of three apart.
 
 :Datasets:
            - **xs** (*double[]*) -- Elastic scattering cross section in [b],
              the integral of the angular distribution below over the whole
              solid angle
 
-**/<element>/elastic/distribution/**
+**/<element>/elastic/<particle>/distribution/**
 
 :Datasets: - **energy** (*double[]*) -- incident energies in [eV] at which
              angular distributions are given

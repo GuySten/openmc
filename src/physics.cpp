@@ -562,7 +562,7 @@ void sample_electron_reaction(Particle& p)
   // Mott scattering
   prob += micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(p.E(), p.current_seed());
+    p.mu() = element.elastic_scatter(0, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
@@ -642,7 +642,7 @@ void sample_positron_reaction(Particle& p)
   // Mott scattering
   prob += micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(p.E(), p.current_seed());
+    p.mu() = element.elastic_scatter(1, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;

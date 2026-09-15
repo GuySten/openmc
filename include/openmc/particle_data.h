@@ -209,7 +209,10 @@ struct ElectroAtomicMicroXS {
   double total;          //!< microscopic total electron xs
   double elastic;        //!< microscopic elastic xs
   double excitation;     //!< microscopic excitation xs
-  double ionization;     //!< microscopic ionization xs
+  double ionization;     //!< microscopic ionization xs; for a positron this is
+                         //!< a majorant, made exact by rejection
+  double bhabha;         //!< microscopic Bhabha xs above the Moller limit,
+                         //!< zero for electrons
   double annihilation;   //!< microscopic in-flight annihilation xs, zero for
                          //!< electrons
   double bremsstrahlung; //!< microscopic bremsstrahlung xs

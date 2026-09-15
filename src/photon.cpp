@@ -164,6 +164,9 @@ Element::Element(hid_t group)
       has_atomic_relaxation_ = true;
       read_attribute(tgroup, "binding_energy", shell.binding_energy);
     }
+    if (attribute_exists(tgroup, "num_electrons")) {
+      read_attribute(tgroup, "num_electrons", shell.num_electrons);
+    }
 
     // Read subshell cross section
     tensor::Tensor<double> xs;

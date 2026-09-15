@@ -42,6 +42,7 @@ public:
   int index_subshell; //!< index in SUBSHELLS
   int threshold;
   double binding_energy;
+  double num_electrons {0.0}; //!< occupancy, needed by Bhabha scattering
   vector<Transition> transitions;
 };
 
@@ -80,11 +81,30 @@ public:
 
   double excitation(double E) const;
 
-  void ionization(Particle& p, int i_shell) const;
+  //! Electroionization: Moller scattering for an electron, Bhabha for a
+  //! positron. Returns false when a positron's sampled transfer is rejected,
+  //! which leaves the particle untouched -- see compute_moller_majorant().
+  bool ionization(Particle& p, int i_shell) const;
 
   int sample_ionization_shell(Particle& p) const;
 
   void bremsstrahlung(Particle& p) const;
+
+  //! Bhabha scattering above the Moller kinematic limit
+  //
+  //! A Moller collision cannot transfer more than half of what is left after
+  //! the binding energy is paid, so the evaluated knock-on spectra stop there
+  //! and a positron's larger transfers are simply absent from them. This is
+  //! that missing range, which lies far above every binding energy and is
+  //! therefore free-electron territory.
+  void bhabha(Particle& p, int i_shell) const;
+
+  //! Sample the subshell in which such a collision occurs
+  int sample_bhabha_shell(Particle& p) const;
+
+  //! Emit the knock-on electron and deflect the projectile, for a transfer of
+  //! W out of which the atom keeps the binding energy e_b
+  void emit_knock_on(Particle& p, double W, double e_b) const;
 
   //! Two-photon annihilation of a positron in flight
   //
@@ -179,6 +199,14 @@ public:
   array<AngleDistribution, 2> elastic_angle_;
   tensor::Tensor<double> electroionization_;
   vector<unique_ptr<ContinuousTabular>> ionization_dist_;
+  //! Bhabha cross section above the Moller limit, per subshell, on
+  //! electron_energy_. Filled by compute_bhabha_xs(), used only for positrons.
+  tensor::Tensor<double> bhabha_;
+
+  //! Largest value the Bhabha-to-Moller ratio takes at each grid energy.
+  //! Filled by compute_moller_majorant(), used only for positrons.
+  tensor::Tensor<double> moller_majorant_;
+
   tensor::Tensor<double> excitation_;
   Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> electron_bremsstrahlung_;
@@ -191,6 +219,16 @@ public:
   static constexpr int MAX_STACK_SIZE =
     7; //!< maximum possible size of atomic relaxation stack
 private:
+  //! Integrate the free Bhabha differential cross section over the transfers
+  //! the evaluated knock-on spectra cannot reach, for every subshell and every
+  //! point of the electron energy grid
+  void compute_bhabha_xs();
+
+  //! Tabulate the largest Bhabha-to-Moller ratio at each grid energy, which is
+  //! the factor by which a positron's electroionization cross section is
+  //! raised to make it a majorant of the true one
+  void compute_moller_majorant();
+
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)
     double c_limit;      //!< Half-profile integral K_i(|pz_max|), Eq. (3.117)

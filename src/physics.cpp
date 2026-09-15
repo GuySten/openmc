@@ -658,21 +658,31 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
-  // Bhabha scattering. The knock-on spectra sampled below are the
-  // evaluation's Moller ones, tabulated for an electron projectile: they stop
-  // at the (T - B)/2 limit that indistinguishability imposes, where a positron
-  // may transfer up to T - B. The collision stopping power that follows is
-  // some 2-3% high above 1 MeV and about 5% low near 100 keV.
+  // Bhabha scattering, below the Moller kinematic limit: the evaluated
+  // spectrum reweighted by the free Bhabha-to-Moller ratio. The cross section
+  // is a majorant, so a rejected transfer is a real outcome -- the positron
+  // simply carries on unchanged.
   prob += micro.ionization;
   if (prob > cutoff) {
-    // Sample which atomic subshell was ionized based on the subshell cross
-    // sections
     int i_shell = element.sample_ionization_shell(p);
-
-    // Generate secondary knock-on electron and adjust primary energy
-    element.ionization(p, i_shell);
+    if (!element.ionization(p, i_shell))
+      return;
 
     // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
+    }
+    return;
+  }
+
+  // Bhabha scattering, above that limit: transfers the evaluated spectra
+  // cannot reach at all, far above every binding energy and so exactly where
+  // the free cross section is the right description
+  prob += micro.bhabha;
+  if (prob > cutoff) {
+    int i_shell = element.sample_bhabha_shell(p);
+    element.bhabha(p, i_shell);
     if (settings::atomic_relaxation && i_shell >= 0 &&
         element.has_atomic_relaxation_) {
       element.atomic_relaxation(element.electron_shell_map_[i_shell], p);

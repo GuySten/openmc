@@ -574,17 +574,52 @@ the knock-on leaves with the momentum of :math:`T_{\text{k}}` rather than of
 vacancy is passed to the atomic relaxation model, which follows the full
 cascade.
 
-A positron is given the same spectra. They are Moller spectra, tabulated for an
-electron projectile, and the two processes are not the same: the two electrons
-of a Moller collision are indistinguishable, so the faster one is labelled the
-primary and the transfer stops at :math:`(T - B)/2`, while a positron and the
-electron it ejects are distinguishable and the transfer runs to :math:`T - B`.
-Both cross sections go as :math:`1/\varepsilon^2` for small energy transfers,
-which is the bulk of them, so the error is confined to the hard tail: the
-collision stopping power that results is some 2 to 3 per cent high above 1 MeV
-and about 5 per cent low near 100 keV, and the number of knock-ons above a
-10 keV cutoff is 0.6 to 5 per cent high. This is small beside the difference
-the two projectiles make to elastic scattering, described above.
+A positron is given the same spectra, reweighted. The two processes differ:
+the electrons of a Moller collision are indistinguishable, so the faster is
+labelled the primary and the transfer stops at :math:`(T-B)/2`, while a
+positron and the electron it ejects are distinguishable and the transfer runs
+to :math:`T`. Below that limit the reweighting is by the ratio of the two free
+cross sections,
+
+.. math::
+    :label: bhabha-moller-ratio
+
+    R(\varepsilon) = \frac{d\sigma_{\text{B}}/d\varepsilon}
+    {d\sigma_{\text{M}}/d\varepsilon}, \qquad \varepsilon = W/T,
+
+which is applied by rejection during the collision, the tabulated cross section
+having been raised beforehand to :math:`\max_\varepsilon R` so that it remains
+a majorant of the true one. Nothing has to integrate :math:`R` over the
+evaluated spectrum for this to come out right.
+
+The ratio is better founded than either cross section alone. The final state is
+the same for both projectiles -- an electron ejected with :math:`W - B`,
+leaving one vacancy -- so in the Bethe decomposition the close-collision cross
+section factorises into a target part, the generalised oscillator strength, and
+a projectile part, and only the projectile part distinguishes Moller from
+Bhabha. Whatever binding does to one it does to the other, and it cancels in
+:math:`R`. This is the assumption PENELOPE makes in applying free Moller and
+Bhabha cross sections oscillator by oscillator, and it is far weaker than
+requiring either to be free. It also needs no threshold: both cross sections
+tend to Rutherford's :math:`1/\varepsilon^2` as :math:`\varepsilon \to 0`, so
+:math:`R \to 1` and the correction switches itself off exactly where the free
+picture stops being trustworthy. Relativistically :math:`R = 1 - 2\varepsilon`
+to good accuracy.
+
+Above the Moller limit the evaluated spectra stop, so there is nothing to
+reweight and the free Bhabha cross section is integrated and sampled directly.
+That range lies far above every binding energy by construction, which is
+exactly where the free description is right.
+
+Against the ICRU-37 collision stopping power, the ratio of positron to electron
+comes out at 0.981 for carbon at 1.26 MeV and 0.989 for lead at 1 MeV, against
+reference values of 0.977 and 0.972. Sampling the electron spectra unchanged,
+as an evaluated library on its own obliges one to do, would give 1.000.
+
+A free Bhabha cross section integrated from each binding energy upward is
+*not* a substitute for the whole channel: it comes to 0.47 to 0.53 of the
+ICRU-37 collision stopping power for both carbon and lead at every energy,
+having no distant collisions at all.
 
 .. _bremsstrahlung_angle:
 

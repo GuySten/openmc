@@ -136,6 +136,190 @@ void Element::read_electron_data(hid_t group)
   read_dataset(rgroup, "xs", electron_bremsstrahlung_);
   read_attribute(rgroup, "photon_cutoff", bremsstrahlung_photon_cutoff_);
   close_group(rgroup);
+
+  this->compute_moller_majorant();
+  this->compute_bhabha_xs();
+}
+
+namespace {
+
+//! The free Moller and Bhabha differential cross sections, as functions of the
+//! fraction eps = W/T of its kinetic energy the projectile transfers
+//
+//! Both carry the same leading constant, so only their shapes are written here
+//! and the constant cancels wherever the two are divided. The coefficients are
+//! PENELOPE's.
+struct FreeCollision {
+  double b1, b2, b3, b4; //!< Bhabha
+  double y_sq, moller_c; //!< Moller
+
+  explicit FreeCollision(double E)
+  {
+    double gamma = 1.0 + E / MASS_ELECTRON_EV;
+    double amol = std::pow((gamma - 1.0) / gamma, 2);
+    double g12 = (gamma + 1.0) * (gamma + 1.0);
+    b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
+    b2 = amol * (3.0 + 1.0 / g12);
+    b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
+    b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
+    double y = 1.0 / (gamma + 1.0);
+    y_sq = y * y;
+    moller_c = (2.0 * gamma - 1.0) / (gamma * gamma);
+  }
+
+  double bhabha(double x) const
+  {
+    return (1.0 + x * (-b1 + x * (b2 + x * (-b3 + x * b4)))) / (x * x);
+  }
+
+  double moller(double x) const
+  {
+    double u = 1.0 - x;
+    return 1.0 / (x * x) + 1.0 / (u * u) + y_sq - moller_c / (x * u);
+  }
+
+  //! Ratio of the two. It tends to 1 as x tends to 0, where both become
+  //! Rutherford's 1/x^2, so it leaves the soft collisions -- which are almost
+  //! all of them -- alone. Relativistically it is 1 - 2x to good accuracy.
+  double ratio(double x) const { return this->bhabha(x) / this->moller(x); }
+};
+
+//! Integral of the Bhabha cross section shape over W, with the leading
+//! constant dropped. Every term is elementary.
+double bhabha_integral(
+  const FreeCollision& c, double E, double W_lo, double W_hi)
+{
+  if (W_hi <= W_lo)
+    return 0.0;
+  double x_lo = W_lo / E;
+  double x_hi = W_hi / E;
+  return (1.0 / x_lo - 1.0 / x_hi - c.b1 * std::log(x_hi / x_lo) +
+           c.b2 * (x_hi - x_lo) - 0.5 * c.b3 * (x_hi * x_hi - x_lo * x_lo) +
+           c.b4 * (x_hi * x_hi * x_hi - x_lo * x_lo * x_lo) / 3.0) /
+         E;
+}
+
+//! 2 pi r_e^2 m_e c^2 in [b eV], the constant both cross sections carry. The
+//! classical electron radius is written as alpha^2 a_0 so that it follows from
+//! the constants already tabulated rather than adding one.
+constexpr double BOHR_RADIUS_CM =
+  PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
+constexpr double COLLISION_CONST = 2.0 * PI * 1.0e24 * R_E * R_E *
+                                   MASS_ELECTRON_EV;
+
+} // namespace
+
+void Element::compute_moller_majorant()
+{
+  int n_energy = electron_energy_.size();
+  moller_majorant_ =
+    tensor::Tensor<double>({static_cast<size_t>(n_energy)});
+
+  // The evaluated knock-on spectra describe a Moller collision. A positron's
+  // spectrum is the same thing reweighted by the ratio of the two free cross
+  // sections: the final state is identical, an electron ejected with W - B, so
+  // whatever the binding does to one it does to the other and it cancels in
+  // the ratio. That is a far weaker assumption than either cross section being
+  // free, and it is the one PENELOPE makes when it applies Moller and Bhabha
+  // per oscillator.
+  //
+  // The reweighting is done by rejection during the collision, so the cross
+  // section has to be a majorant of the true one: the largest the ratio gets
+  // over the accessible transfers. Above about 1 MeV that is 1, the ratio
+  // being 1 - 2x; below it the ratio rises above 1 near x = 0.3 and the
+  // majorant follows it.
+  constexpr int N_SCAN = 512;
+  for (int j = 0; j < n_energy; ++j) {
+    FreeCollision c {electron_energy_(j)};
+    double peak = 1.0;
+    for (int k = 0; k <= N_SCAN; ++k) {
+      // Logarithmic in x, since the ratio varies fastest near the ends
+      double x = std::exp(std::log(1.0e-8) +
+                          k * (std::log(0.5) - std::log(1.0e-8)) / N_SCAN);
+      peak = std::max(peak, c.ratio(x));
+    }
+    // A majorant that is a shade too small would bias the sampling, so the
+    // scan's own resolution is paid for here
+    moller_majorant_(j) = peak * 1.001;
+  }
+}
+
+void Element::compute_bhabha_xs()
+{
+  int n_shell = electroionization_.shape(0);
+  int n_energy = electron_energy_.size();
+  bhabha_ = tensor::Tensor<double>(
+    {static_cast<size_t>(n_shell), static_cast<size_t>(n_energy)});
+
+  for (int i = 0; i < n_shell; ++i) {
+    const auto& shell {shells_[electron_shell_map_[i]]};
+    double B = shell.binding_energy;
+    double n_e = shell.num_electrons;
+
+    for (int j = 0; j < n_energy; ++j) {
+      double E = electron_energy_(j);
+      bhabha_(i, j) = 0.0;
+      if (n_e <= 0.0 || E <= B)
+        continue;
+
+      // A Moller collision gives the knock-on at most half of what is left
+      // after the binding energy is paid, so the largest transfer it can make
+      // is (T + B)/2. A positron may transfer everything. The gap between the
+      // two is this channel, and it lies far above every binding energy.
+      double W_lo = 0.5 * (E + B);
+      FreeCollision c {E};
+      double gamma = 1.0 + E / MASS_ELECTRON_EV;
+      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+      bhabha_(i, j) = n_e * COLLISION_CONST / beta_sq *
+                      bhabha_integral(c, E, W_lo, E);
+    }
+  }
+}
+
+int Element::sample_bhabha_shell(Particle& p) const
+{
+  const auto& xs {p.electron_xs(index_)};
+  int n_shell = bhabha_.shape(0);
+  int i_grid = xs.index_grid;
+  double f = xs.interp_factor;
+
+  double total = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    total += bhabha_(i, i_grid) +
+             f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+  }
+  double cutoff = prn(p.current_seed()) * total;
+  double prob = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    prob += bhabha_(i, i_grid) +
+            f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    if (prob > cutoff)
+      return i;
+  }
+  return n_shell - 1;
+}
+
+void Element::bhabha(Particle& p, int i_shell) const
+{
+  double E = p.E();
+  double B = shells_[electron_shell_map_[i_shell]].binding_energy;
+  double W_lo = 0.5 * (E + B);
+  if (W_lo >= E)
+    return;
+
+  // Sample the transfer from 1/W^2 over [W_lo, T] and take the rest of the
+  // Bhabha shape by rejection; it is at most 1 on this interval
+  FreeCollision c {E};
+  double W;
+  while (true) {
+    double xi = prn(p.current_seed());
+    W = W_lo * E / (E - xi * (E - W_lo));
+    if (prn(p.current_seed()) < c.bhabha(W / E) * (W * W) / (E * E))
+      break;
+  }
+
+  this->emit_knock_on(p, W, B);
 }
 
 void Element::calculate_electron_xs(Particle& p) const
@@ -182,6 +366,24 @@ void Element::calculate_electron_xs(Particle& p) const
   const auto ion_ip1 = electroionization_.slice(tensor::all, i_grid + 1).sum();
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
+  xs.bhabha = 0.0;
+  if (p.type().is_positron()) {
+    // A positron's spectrum is the evaluated one reweighted by the free
+    // Bhabha-to-Moller ratio, applied by rejection inside the collision. That
+    // makes this a majorant rather than the cross section itself: raising it
+    // here and declining a fraction of the collisions there leaves the rate at
+    // the reweighted integral without anyone having to evaluate that integral.
+    xs.ionization *= moller_majorant_(i_grid) +
+                     f * (moller_majorant_(i_grid + 1) -
+                           moller_majorant_(i_grid));
+
+    // Transfers above the Moller limit, which the evaluated spectra cannot
+    // reach at all, are a channel of their own
+    const auto bha_i = bhabha_.slice(tensor::all, i_grid).sum();
+    const auto bha_ip1 = bhabha_.slice(tensor::all, i_grid + 1).sum();
+    xs.bhabha = bha_i + f * (bha_ip1 - bha_i);
+  }
+
   // In-flight annihilation is a channel a positron has and an electron does
   // not. Over a whole slowing-down history it is far from rare: about one
   // positron in six started at 21 MeV annihilates before reaching the cutoff.
@@ -201,8 +403,8 @@ void Element::calculate_electron_xs(Particle& p) const
   }
 
   // Calculate microscopic total cross section
-  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.annihilation +
-             xs.bremsstrahlung;
+  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bhabha +
+             xs.annihilation + xs.bremsstrahlung;
   xs.last_E = p.E();
 }
 
@@ -216,14 +418,30 @@ double Element::excitation(double E) const
   return E - excitation_energy_loss_(E);
 }
 
-void Element::ionization(Particle& p, int i_shell) const
+bool Element::ionization(Particle& p, int i_shell) const
 {
   double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
-  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
   // Binding energies live on shells_. Note this is NOT binding_energy_, which
   // belongs to the shorter Compton Doppler broadening shell list and would be
   // indexed out of bounds here.
   double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
+
+  // The tabulated spectra describe a Moller collision. For a positron the
+  // final state is the same -- an electron ejected with E_knock, the atom left
+  // with a vacancy -- but the projectile factor is Bhabha's, so the spectrum
+  // is reweighted by the ratio of the two free cross sections. Binding cancels
+  // in that ratio. The cross section was raised to a majorant to pay for this
+  // rejection, so declining here is a real outcome and not a lost collision.
+  if (p.type().is_positron()) {
+    const auto& xs {p.electron_xs(index_)};
+    double majorant = moller_majorant_(xs.index_grid) +
+                      xs.interp_factor * (moller_majorant_(xs.index_grid + 1) -
+                                           moller_majorant_(xs.index_grid));
+    FreeCollision c {p.E()};
+    double x = (E_knock + e_b) / p.E();
+    if (prn(p.current_seed()) * majorant >= c.ratio(x))
+      return false;
+  }
 
   // The scattered primary must be left with positive energy. A sampled
   // knock-on energy that violates this would give a negative energy electron
@@ -237,6 +455,15 @@ void Element::ionization(Particle& p, int i_shell) const
       name_, i_shell, p.E(), E_knock, e_b));
   }
 
+  this->emit_knock_on(p, E_knock + e_b, e_b);
+  return true;
+}
+
+void Element::emit_knock_on(Particle& p, double W, double e_b) const
+{
+  double E_knock = W - e_b;
+  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+
   // The knock-on is deflected according to the energy the primary actually
   // transferred, not the kinetic energy it is left with. The two differ by the
   // binding energy, which the atom absorbs: the momentum transfer that set the
@@ -245,9 +472,8 @@ void Element::ionization(Particle& p, int i_shell) const
   // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
   // makes the two polar angles the consistent free Moller pair for a transfer
   // of E_knock + e_b.
-  double E_transfer = E_knock + e_b;
   double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_transfer));
+                              (1.0 + 2.0 * MASS_ELECTRON_EV / W));
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
   p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
 
@@ -260,13 +486,21 @@ void Element::ionization(Particle& p, int i_shell) const
 
 int Element::sample_ionization_shell(Particle& p) const
 {
-  auto& xs {p.electron_xs(index_)};
-
-  // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * xs.ionization;
+  const auto& xs {p.electron_xs(index_)};
   int n_shell = electroionization_.shape(0);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
+
+  // Summed here rather than taken from xs.ionization, which for a positron
+  // carries the majorant factor. Only the relative weights matter, and a
+  // factor common to every shell cancels out of them.
+  double total = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    total += electroionization_(i, i_grid) +
+             f * (electroionization_(i, i_grid + 1) -
+                   electroionization_(i, i_grid));
+  }
+  double cutoff = prn(p.current_seed()) * total;
 
   int i_shell;
   double prob = 0.0;

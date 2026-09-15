@@ -162,7 +162,73 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   bremsstrahlung_dist_ = make_unique<ContinuousTabular>(egroup);
   close_group(egroup);
   close_group(dist_group);
+  // Average emitted photon energy, if the evaluation carries one. Older
+  // libraries do not, and the sampling then runs unanchored as before.
+  if (object_exists(rgroup, "mean_energy")) {
+    hid_t mdset = open_dataset(rgroup, "mean_energy");
+    brems_mean_energy_ = Tabulated1D {mdset};
+    has_brems_mean_energy_ = true;
+    close_dataset(mdset);
+  }
   close_group(rgroup);
+
+  // Must follow bremsstrahlung_dist_: the factor is measured against the mean
+  // that distribution actually samples.
+  this->compute_brems_rescale();
+}
+
+//! Factor putting the sampled photon energy onto the tabulated mean
+//
+//! Exactly the elastic story one channel over. The bremsstrahlung spectra are
+//! tabulated on nine incident energies from 10 eV to 100 GeV, with nothing at
+//! all between 12.25 MeV and 100 GeV. At those nine energies the sampled mean
+//! reproduces BREML to better than half a percent, so the spectra themselves
+//! are sound; it is the interpolation between them that drifts, running about
+//! 4% high around 2-4 MeV and 3.5% low at 21 MeV for carbon, rising to 5% low
+//! at 30 MeV. Multiplied through by the bremsstrahlung cross section that is a
+//! radiative stopping power wrong by the same amount, which moves both the
+//! range and the width of the fall-off.
+//!
+//! As with the elastic rescale, this is an affine stretch: the second moment
+//! moves as the square of the factor. Here that is wanted rather than merely
+//! tolerated, since radiative straggling is carried by the hard end of the
+//! spectrum that the interpolation is losing.
+void ElectronInteraction::compute_brems_rescale()
+{
+  if (!has_brems_mean_energy_)
+    return;
+
+  int n = energy_.size();
+  brems_rescale_.resize(n);
+  for (int i = 0; i < n; ++i) {
+    double E = energy_(i);
+    double target = brems_mean_energy_(E);
+    double sampled = bremsstrahlung_dist_->sampled_mean(E);
+    brems_rescale_[i] =
+      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
+  }
+}
+
+double ElectronInteraction::brems_rescale(double E) const
+{
+  int n = brems_rescale_.size();
+  if (n == 0)
+    return 1.0;
+  if (E <= energy_(0))
+    return brems_rescale_[0];
+  if (E >= energy_(n - 1))
+    return brems_rescale_[n - 1];
+
+  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
+  double e0 = energy_(i);
+  double e1 = energy_(i + 1);
+  if (e1 <= e0)
+    return brems_rescale_[i];
+
+  // The factor is of order one and varies smoothly, so a linear blend in
+  // log-energy is plenty.
+  double f = std::log(E / e0) / std::log(e1 / e0);
+  return (1.0 - f) * brems_rescale_[i] + f * brems_rescale_[i + 1];
 }
 
 void ElectronInteraction::calculate_xs(Particle& p) const
@@ -560,6 +626,10 @@ double bremsstrahlung_cos_theta(
 void ElectronInteraction::bremsstrahlung(Particle& p) const
 {
   double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
+  // Put the first moment onto the tabulated one. A photon cannot carry away
+  // more than the electron has, so a factor above unity is clipped at the
+  // incident energy rather than allowed to produce a negative electron.
+  E_photon = std::min(p.E(), E_photon * this->brems_rescale(p.E()));
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;

@@ -48,6 +48,7 @@ class IncidentElectron:
         self.elastic_total_xs = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_dist = None
+        self.bremsstrahlung_mean_energy = None
         self.excitation_xs = None
         self.excitation_energy_loss = None        
         self.ionization_xs = {}  # Keyed by subshell index
@@ -123,6 +124,7 @@ class IncidentElectron:
         j_ionization = ace.jxs[23]      # EION: electroionization table info
         j_brem = ace.jxs[24]            # BREMI: bremsstrahlung table info
         j_brem_tab = ace.jxs[25]        # BREME: bremsstrahlung spectrum tables
+        j_brem_mean = ace.jxs[26]       # BREML: average emitted photon energy
         
         data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
         data.energy_grid = ace.xss[j_energy : j_energy + n_energy]*EV_PER_MEV
@@ -176,6 +178,35 @@ class IncidentElectron:
         data.excitation_energy_loss = Tabulated1D(
             ace.xss[j_excitation : j_excitation + n_xl]*EV_PER_MEV,
             ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl]*EV_PER_MEV)
+
+        # Average energy of the emitted bremsstrahlung photon, from the BREML
+        # block at JXS(26): NXS(12) energies followed by NXS(12) mean energies,
+        # both in MeV. This is the first moment of the same spectra stored in
+        # BREME, but on a grid dense enough to interpolate -- BREME has only
+        # nine incident energies between 10 eV and 100 GeV, with nothing at all
+        # between 12.25 MeV and 100 GeV, and the sampled mean drifts several
+        # percent off this curve in between. The transport code uses it to
+        # rescale the sampled photon energy, exactly as it uses the JXS(27)
+        # transport cross section to rescale the sampled elastic deflection.
+        n_brem_mean = ace.nxs[12]
+        if j_brem_mean > 0 and n_brem_mean > 0:
+            brem_mean_e = ace.xss[j_brem_mean : j_brem_mean + n_brem_mean]
+            brem_mean_k = ace.xss[
+                j_brem_mean + n_brem_mean : j_brem_mean + 2 * n_brem_mean]
+            # Guard against a mis-sized block rather than silently anchoring
+            # the sampling to whatever happened to sit at that offset.
+            if (len(brem_mean_e) == n_brem_mean
+                    and np.all(np.diff(brem_mean_e) > 0.0)
+                    and np.all(brem_mean_k > 0.0)
+                    and np.all(brem_mean_k < brem_mean_e)):
+                # ACE carries no interpolation law for this block. The mean
+                # photon energy is a positive, smooth, near-power-law function
+                # on a geometric grid of about seven points per decade, so
+                # log-log is the faithful choice; lin-lin across a decade-wide
+                # step would bias it high wherever the curve is convex.
+                data.bremsstrahlung_mean_energy = Tabulated1D(
+                    brem_mean_e*EV_PER_MEV, brem_mean_k*EV_PER_MEV,
+                    breakpoints=[n_brem_mean], interpolation=[5])
 
         j_subshell_xs = j_xs + 5 * n_energy
         for s, shell in enumerate(data.shells):
@@ -315,3 +346,6 @@ class IncidentElectron:
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)
             self.bremsstrahlung_dist.to_hdf5(bremsstrahlung_group.create_group("distribution"))
+            if self.bremsstrahlung_mean_energy is not None:
+                self.bremsstrahlung_mean_energy.to_hdf5(
+                    bremsstrahlung_group, "mean_energy")

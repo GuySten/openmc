@@ -92,12 +92,11 @@ void Element::read_electron_data(hid_t group)
   read_attribute(rgroup, "designators", designators);
   for (auto designator : designators) {
     hid_t shell_group = open_group(rgroup, designator.c_str());
-    hid_t egroup = open_group(shell_group, "energy");
     // Knock-on spectra are anchored at the subshell binding energy; they must
     // not be remapped onto the interpolated endpoint range. See the note on
     // the ContinuousTabular constructor.
-    ionization_dist_.push_back(make_unique<ContinuousTabular>(egroup, false));
-    close_group(egroup);
+    ionization_dist_.push_back(
+      make_unique<ContinuousTabular>(shell_group, false));
     close_group(shell_group);
   }
   close_group(rgroup);

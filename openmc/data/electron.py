@@ -15,7 +15,13 @@ from .energy_distribution import ContinuousTabular
 from .function import Tabulated1D
 from .photon import (_BREMSSTRAHLUNG, _SUBSHELLS, MASS_ELECTRON_EV,
                      _load_bremsstrahlung)
-from .uncorrelated import UncorrelatedAngleEnergy
+
+# Bremsstrahlung has no threshold-free cross section -- dsigma/dk diverges as
+# 1/k -- so a lowest emitted photon energy in [eV] has to be chosen. At 1 eV the
+# rate is comparable to the evaluated tables' and what is dropped below it is
+# negligible.
+_PHOTON_CUTOFF = 1.0
+
 
 def _tabular_from_cdf(x, c, name):
     """Build a histogram Tabular from a tabulated cumulative distribution.
@@ -37,6 +43,41 @@ def _tabular_from_cdf(x, c, name):
     dist = Tabular(x, p, interpolation='histogram')
     dist.c = c
     return dist
+
+
+# Dirac partial-wave elastic cross sections are read from a pre-generated HDF5
+# file when they are first needed. The dictionary stores the incident energies
+# with the key 'energy' and the deflections 1-cos(theta) at which the cross
+# sections are tabulated with the key 'mu'; the data for each element is a dict
+# with the single key 'dcs' (a 2D array with shape (n_energies, n_angles),
+# exponentiated on read from the logarithm the file stores), stored on the key
+# Z. The differential cross section is all the file holds: every cross section
+# the transport needs is an integral of it, and taking them from the same table
+# that is sampled is what keeps the rate consistent with the deflections it
+# produces.
+_ELASTIC_DPWA = {}
+
+def _with_cdf(x, p):
+    """Tabular carrying the cumulative the HDF5 writers and the transport expect.
+
+    AngleDistribution and ContinuousTabular both write a tabulated CDF
+    alongside the density, and the sampler inverts that CDF rather than
+    reintegrating the density. Building it here with the same trapezoidal rule
+    the interpolation implies keeps the two consistent.
+    """
+    c = np.concatenate(([0.0], np.cumsum(0.5 * (p[:-1] + p[1:]) * np.diff(x))))
+    total = c[-1]
+    if total <= 0.0:
+        raise ValueError('distribution has no probability')
+    dist = Tabular(x, p / total, interpolation='linear-linear')
+    dist.c = c / total
+    return dist
+
+
+def _log_interp(x, xp, fp):
+    """Log-log interpolation, clamped to the endpoints of the tabulated range."""
+    x = np.clip(x, xp[0], xp[-1])
+    return np.exp(np.interp(np.log(x), np.log(xp), np.log(fp)))
 
 
 class IncidentElectron:
@@ -73,14 +114,24 @@ class IncidentElectron:
         return ATOMIC_SYMBOL[self.atomic_number]
 
     @classmethod
-    def from_ace(cls, ace_table_or_filename):
+    def from_ace(cls, ace_table_or_filename, photon_cutoff=_PHOTON_CUTOFF):
         """Generate incident electron data from an ACE table
+
+        The excitation and electroionization data come from the table. Elastic
+        scattering and bremsstrahlung do not: their evaluated distributions are
+        tabulated on far too few incident energies to interpolate, so they are
+        taken from the calculated datasets distributed with OpenMC, the way the
+        photon data takes its Compton profiles and its scaled bremsstrahlung
+        cross sections.
 
         Parameters
         ----------
         ace_or_filename : str or openmc.data.ace.Table
             ACE table to read from. If given as a string, it is assumed to be
             the filename for the ACE file.
+        photon_cutoff : float
+            Lowest emitted bremsstrahlung photon energy in [eV]; see
+            :meth:`IncidentElectron._add_bremsstrahlung`.
 
         Returns
         -------
@@ -98,18 +149,6 @@ class IncidentElectron:
         Z = get_metadata(int(ace.zaid))[2]
         data = cls(Z)
 
-        # Check the format flag. NXS(6) == 1 is EPRDATA12; 3 is EPRDATA14 and
-        # later. EPRDATA12 is rejected because it has no JXS(27) block, and
-        # without the transport-corrected and total elastic cross sections
-        # stored there the elastic scattering cannot be sampled correctly.
-        format_flag = ace.nxs[6]
-        if format_flag != 3:
-            raise ValueError(
-                f'Unsupported electron-photon-relaxation format flag '
-                f'NXS(6)={format_flag} in table {ace.name}. EPRDATA14 or later '
-                '(NXS(6)=3) is required for the elastic cross sections at '
-                'JXS(27).')
-
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
         n_xl = ace.nxs[9]
@@ -119,8 +158,6 @@ class IncidentElectron:
         j_shell = ace.jxs[11]           # SUBSH: subshell designators
         j_energy = ace.jxs[19]          # ESZE: electron energy grid + cross sections
         j_excitation = ace.jxs[20]      # EXCIT: excitation energy-loss table
-        j_elastic = ace.jxs[21]         # ELASI: elastic angular table info
-        j_elastic_tab = ace.jxs[22]     # ELAS: elastic angular tables
         j_ionization = ace.jxs[23]      # EION: electroionization table info
         
         data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
@@ -130,25 +167,12 @@ class IncidentElectron:
 
         # Read cross sections from the ESZE block. The layout is, in order:
         # energy grid, total, elastic, bremsstrahlung, excitation, total
-        # electroionization, then one block per subshell. The total and the
-        # total electroionization are deliberately skipped: the total is
-        # recomputed by the transport code from the partials, and the
-        # subshell cross sections are read individually below.
-        #
-        # Note that the elastic cross section here is the LARGE-ANGLE elastic
-        # cross section, which is the quantity consistent with the ELAS
-        # angular tables used for single-event transport. The transport-
-        # corrected and total elastic cross sections added at JXS(27) in
-        # EPRDATA14 must NOT be substituted here -- pairing either of those
-        # with these angular tables would double count the small-angle
-        # treatment.
-        data.elastic_xs = ace.xss[j_xs + n_energy : j_xs + 2 * n_energy]
-
-        # The JXS(27) block -- the transport-corrected and total elastic cross
-        # sections -- is not read. It exists to bridge the forward peak the
-        # angular tables leave out, and a partial-wave differential cross
-        # section that covers the whole angular range has no such gap.
-        data.bremsstrahlung_xs = ace.xss[j_xs + 2 * n_energy : j_xs + 3 * n_energy]
+        # electroionization, then one block per subshell. Only excitation is
+        # taken from it. The total and the total electroionization are
+        # redundant, the first with the sum of the partials and the second
+        # with the subshell blocks read below; the elastic and bremsstrahlung
+        # columns belong to distributions this reader does not produce, and
+        # reading them would only leave two numbers to be overwritten.
         data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
 
         # Average excitation energy loss, from the EXCIT block at JXS(20).
@@ -167,7 +191,6 @@ class IncidentElectron:
         locinfo = ace.xss[j_ionization + n_subshells: j_ionization + 2*n_subshells].astype(int)
         loctab = ace.xss[j_ionization + 2*n_subshells: j_ionization + 3*n_subshells].astype(int)
         for s, shell in enumerate(data.shells):
-            data.ionization_dist[shell] = UncorrelatedAngleEnergy()
             energy = ace.xss[locinfo[s]:locinfo[s]+ni[s]]*EV_PER_MEV
             ls = ace.xss[locinfo[s]+ni[s]:locinfo[s]+2*ni[s]].astype(int)
             offsets = ace.xss[locinfo[s]+2*ni[s]:locinfo[s]+3*ni[s]].astype(int)
@@ -197,38 +220,12 @@ class IncidentElectron:
             # wider range drives the mean energy transfer far too high: with
             # unit-base on, the collision stopping power comes out at 1.3 to
             # 2.1 times ICRU-37.
-            data.ionization_dist[shell].energy = ContinuousTabular(
+            data.ionization_dist[shell] = ContinuousTabular(
                 [len(energy)], [5], energy, energy_out)
-            
-        
-        # The bremsstrahlung photon spectrum at JXS(25) is not read: the
-        # transport samples it from the scaled cross sections of the photon
-        # library, which are tabulated on 57 incident energies against the
-        # evaluation's nine.
 
-        na = ace.nxs[10]
-        energy = ace.xss[j_elastic : j_elastic + na]*EV_PER_MEV
-        le = ace.xss[j_elastic + na : j_elastic + 2 * na].astype(int)
-        offsets = ace.xss[j_elastic + 2 * na : j_elastic + 3 * na].astype(int)
-        mu = []
-        for i in range(na):
-            start = j_elastic_tab + offsets[i]
-            cos = ace.xss[start:start + le[i]]
-            c = ace.xss[start + le[i]:start + 2*le[i]]
-            # The evaluation stops the tabulated distribution at 1 - 1e-6 and
-            # leaves the forward peak beyond it to an analytic screened
-            # Rutherford form. The transport code assumes that cutoff when it
-            # subtracts the peak's contribution from the transport cross
-            # section, so a table that ended anywhere else would be silently
-            # mistreated.
-            if abs(cos[-1] - (1.0 - 1.0e-6)) > 1.0e-9:
-                raise ValueError(
-                    f'Elastic angular table {i} of {ace.name} ends at '
-                    f'mu={cos[-1]!r}, not at the 1-1e-6 cutoff the elastic '
-                    'peak treatment assumes.')
-            mu.append(_tabular_from_cdf(cos, c, f'elastic angular table {i}'))
-        
-        data.elastic_dist = AngleDistribution(energy, mu)
+        # Add partial-wave elastic and Seltzer-Berger bremsstrahlung data
+        data._add_dpwa_elastic()
+        data._add_bremsstrahlung(photon_cutoff)
 
         return data
 
@@ -287,195 +284,148 @@ class IncidentElectron:
             bremsstrahlung_group.attrs["photon_cutoff"] = \
                 self.bremsstrahlung_photon_cutoff
 
+    def _add_dpwa_elastic(self):
+        """Add the Dirac partial-wave elastic scattering data.
 
-# Dirac partial-wave elastic cross sections are read from a pre-generated HDF5
-# file when they are first needed. The dictionary stores the incident energies
-# with the key 'energy' and the deflections 1-cos(theta) at which the cross
-# sections are tabulated with the key 'mu'; the data for each element is a dict
-# with the single key 'dcs' (a 2D array with shape (n_energies, n_angles),
-# exponentiated on read from the logarithm the file stores), stored on the key
-# Z. The differential cross section is all the file holds: every cross section
-# the transport needs is an integral of it, and taking them from the same table
-# that is sampled is what keeps the rate consistent with the deflections it
-# produces.
-_ELASTIC_DPWA = {}
+        Read from ``elastic_dpwa.h5`` beside this module, the way the photon
+        data finds its Compton profiles and its scaled bremsstrahlung cross
+        sections.
 
-def _with_cdf(x, p, interpolation='linear-linear'):
-    """Tabular carrying the cumulative the HDF5 writers and the transport expect.
+        References
+        ----------
+        The data are computed with ELSEPA. If you use them in your research, please
+        cite Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
+        (2005) 157-190.
 
-    AngleDistribution and ContinuousTabular both write a tabulated CDF
-    alongside the density, and the sampler inverts that CDF rather than
-    reintegrating the density. Building it here with the same trapezoidal rule
-    the interpolation implies keeps the two consistent.
-    """
-    c = np.concatenate(([0.0], np.cumsum(0.5 * (p[:-1] + p[1:]) * np.diff(x))))
-    total = c[-1]
-    if total <= 0.0:
-        raise ValueError('distribution has no probability')
-    dist = Tabular(x, p / total, interpolation=interpolation)
-    dist.c = c / total
-    return dist
+        Notes
+        -----
+        The evaluated libraries split elastic scattering at mu = 1 - 1e-6, giving a
+        tabulated distribution above that and leaving the forward peak to an
+        analytic screened-Rutherford form, with the transport cross section as the
+        only anchor tying the two together. A partial-wave differential cross
+        section covers the whole angular range at once, so there is no split, no
+        separate total to reconcile with it, and nothing for the peak-sampling and
+        rescaling machinery in the transport to do. The cross section written here
+        is the integral of the same distribution the transport samples, so the rate
+        at which collisions happen is consistent with the deflections they give.
 
+        The partial-wave data stops at 100 MeV where the evaluated data runs to
+        100 GeV. Cross sections are clamped to the endpoints beyond that range,
+        which is adequate below 100 MeV and wrong above it.
 
-def _log_interp(x, xp, fp):
-    """Log-log interpolation, clamped to the endpoints of the tabulated range."""
-    x = np.clip(x, xp[0], xp[-1])
-    return np.exp(np.interp(np.log(x), np.log(xp), np.log(fp)))
+        """
+        Z = self.atomic_number
 
-
-def use_dpwa_elastic(electron, path=None):
-    """Replace elastic scattering with Dirac partial-wave data.
-
-    Parameters
-    ----------
-    electron : IncidentElectron
-        Data to modify in place.
-    path : str, optional
-        HDF5 file written by ``make_elastic_dpwa.py``. Defaults to
-        ``elastic_dpwa.h5`` beside this module, the way the Compton profiles
-        and the scaled bremsstrahlung cross sections are found.
-
-    References
-    ----------
-    The data are computed with ELSEPA. If you use them in your research, please
-    cite Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
-    (2005) 157-190.
-
-    Notes
-    -----
-    The evaluated libraries split elastic scattering at mu = 1 - 1e-6, giving a
-    tabulated distribution above that and leaving the forward peak to an
-    analytic screened-Rutherford form, with the transport cross section as the
-    only anchor tying the two together. A partial-wave differential cross
-    section covers the whole angular range at once, so there is no split, no
-    separate total to reconcile with it, and nothing for the peak-sampling and
-    rescaling machinery in the transport to do. The cross section written here
-    is the integral of the same distribution the transport samples, so the rate
-    at which collisions happen is consistent with the deflections they give.
-
-    The partial-wave data stops at 100 MeV where the evaluated data runs to
-    100 GeV. Cross sections are clamped to the endpoints beyond that range,
-    which is adequate below 100 MeV and wrong above it.
-
-    """
-    Z = electron.atomic_number
-
-    # If partial-wave elastic data hasn't been loaded, do so
-    if not _ELASTIC_DPWA:
-        if path is None:
+        # Load the partial-wave elastic data if it has not yet been loaded
+        if not _ELASTIC_DPWA:
             path = os.path.join(os.path.dirname(__file__), 'elastic_dpwa.h5')
-        with h5py.File(str(path), 'r') as f:
-            if f.attrs.get('filetype') != np.bytes_('elastic_dpwa'):
-                raise ValueError(f'{path} is not an elastic_dpwa file')
-            _ELASTIC_DPWA['energy'] = f['energy'][()]
-            # 1 - cos(theta), ascending from 0
-            _ELASTIC_DPWA['mu'] = f['mu'][()]
-            for i in range(1, 101):
-                key = f'{i:03}'
-                if key not in f:
-                    continue
-                group = f[key]
-                _ELASTIC_DPWA[i] = {
-                    # Stored as its logarithm; see make_elastic_dpwa.py
-                    'dcs': np.exp(group['log_dcs'][()].astype(float))}
+            with h5py.File(path, 'r') as f:
+                if f.attrs.get('filetype') != np.bytes_('elastic_dpwa'):
+                    raise ValueError(f'{path} is not an elastic_dpwa file')
+                _ELASTIC_DPWA['energy'] = f['energy'][()]
+                # 1 - cos(theta), ascending from 0
+                _ELASTIC_DPWA['mu'] = f['mu'][()]
+                for i in range(1, 101):
+                    key = f'{i:03}'
+                    if key not in f:
+                        continue
+                    group = f[key]
+                    _ELASTIC_DPWA[i] = {
+                        # Stored as its logarithm; see make_elastic_dpwa.py
+                        'dcs': np.exp(group['log_dcs'][()].astype(float))}
 
-    energy = _ELASTIC_DPWA['energy']
-    deflection = _ELASTIC_DPWA['mu']
-    if Z not in _ELASTIC_DPWA:
-        raise ValueError(f'No partial-wave elastic data for Z={Z}')
-    dcs = _ELASTIC_DPWA[Z]['dcs']
+        energy = _ELASTIC_DPWA['energy']
+        deflection = _ELASTIC_DPWA['mu']
+        if Z not in _ELASTIC_DPWA:
+            raise ValueError(f'No partial-wave elastic data for Z={Z}')
+        dcs = _ELASTIC_DPWA[Z]['dcs']
 
-    # The cross section is the integral of the distribution that is sampled,
-    # not a separately tabulated number: 2*pi*int dcs d(1-cos(theta)). Taking
-    # it from the same 606-point table keeps the rate at which collisions
-    # happen consistent with the deflections they produce. It runs 0.2-1.2%
-    # above ELSEPA's own phase-shift total, which is the quadrature error of
-    # the tabulated grid and belongs in the rate as well.
-    xs = 2.0 * np.pi * np.trapezoid(dcs, deflection, axis=1)
+        # The cross section is the integral of the distribution that is sampled,
+        # not a separately tabulated number: 2*pi*int dcs d(1-cos(theta)). Taking
+        # it from the same 606-point table keeps the rate at which collisions
+        # happen consistent with the deflections they produce. It runs 0.2-1.2%
+        # above ELSEPA's own phase-shift total, which is the quadrature error of
+        # the tabulated grid and belongs in the rate as well.
+        xs = 2.0 * np.pi * np.trapezoid(dcs, deflection, axis=1)
 
-    grid = electron.energy_grid
-    if grid[0] < energy[0] or grid[-1] > energy[-1]:
-        warn(f'{electron.name}: the partial-wave data covers '
-             f'{energy[0]:.4g} to {energy[-1]:.4g} eV but the energy grid runs '
-             f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Elastic cross sections are '
-             'clamped to the endpoints outside that range, which is wrong '
-             'rather than merely approximate.')
-    barns = 1.0e24
-    electron.elastic_xs = _log_interp(grid, energy, xs) * barns
+        grid = self.energy_grid
+        if grid[0] < energy[0] or grid[-1] > energy[-1]:
+            warn(f'{self.name}: the partial-wave data covers '
+                 f'{energy[0]:.4g} to {energy[-1]:.4g} eV but the energy grid runs '
+                 f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Elastic cross sections are '
+                 'clamped to the endpoints outside that range, which is wrong '
+                 'rather than merely approximate.')
+        barns = 1.0e24
+        self.elastic_xs = _log_interp(grid, energy, xs) * barns
 
-    # mu ascending from -1, as the transport samples it. The partial-wave cross
-    # section is a density, so it is tabulated as one rather than differentiated
-    # from a cumulative -- which is where the evaluated tables lose 1-2% of the
-    # first moment to histogram binning.
-    mu = (1.0 - deflection)[::-1]
-    distributions = []
-    for i in range(len(energy)):
-        distributions.append(_with_cdf(mu, dcs[i][::-1]))
-    electron.elastic_dist = AngleDistribution(energy, distributions)
+        # mu ascending from -1, as the transport samples it. The partial-wave cross
+        # section is a density, so it is tabulated as one rather than differentiated
+        # from a cumulative -- which is where the evaluated tables lose 1-2% of the
+        # first moment to histogram binning.
+        mu = (1.0 - deflection)[::-1]
+        distributions = []
+        for i in range(len(energy)):
+            distributions.append(_with_cdf(mu, dcs[i][::-1]))
+        self.elastic_dist = AngleDistribution(energy, distributions)
 
 
-def use_seltzer_berger_brems(electron, photon_cutoff=1.0):
-    """Replace the bremsstrahlung cross section with the Seltzer-Berger one.
+    def _add_bremsstrahlung(self, photon_cutoff=_PHOTON_CUTOFF):
+        """Add the Seltzer-Berger bremsstrahlung cross section.
 
-    Parameters
-    ----------
-    electron : IncidentElectron
-        Data to modify in place.
-    photon_cutoff : float
-        Lowest emitted photon energy in [eV]. Bremsstrahlung has no
-        threshold-free cross section -- dsigma/dk diverges as 1/k -- so one has
-        to be chosen. The default matches the evaluated tables closely enough
-        that the interaction rate is comparable; emission below it is dropped
-        entirely, which is negligible at 1 eV.
+        Parameters
+        ----------
+        photon_cutoff : float
+            Lowest emitted photon energy in [eV] to integrate the cross section
+            above; see ``_PHOTON_CUTOFF``.
 
-    Notes
-    -----
-    Only the cross section is written. The spectrum it integrates is the scaled
-    cross section chi(Z, T, kappa) of the photon library, which the transport
-    samples directly, so storing a copy of it here would be storing the same
-    numbers twice and inviting the two to drift apart.
+        Notes
+        -----
+        Only the cross section is written. The spectrum it integrates is the scaled
+        cross section chi(Z, T, kappa) of the photon library, which the transport
+        samples directly, so storing a copy of it here would be storing the same
+        numbers twice and inviting the two to drift apart.
 
-    The evaluated spectra are tabulated on nine incident energies for carbon,
-    with nothing between 12.25 MeV and 100 GeV -- a factor of 8163. Seltzer and
-    Berger give 57, sixteen of them between 0.256 and 25 MeV, so the anchoring
-    against BREML that the sparse tables needed is not written here at all.
+        The evaluated spectra are tabulated on nine incident energies for carbon,
+        with nothing between 12.25 MeV and 100 GeV -- a factor of 8163. Seltzer and
+        Berger give 57, sixteen of them between 0.256 and 25 MeV, so the anchoring
+        against BREML that the sparse tables needed is not written here at all.
 
-    """
-    _load_bremsstrahlung()
-    Z = electron.atomic_number
-    energy = _BREMSSTRAHLUNG['electron_energy']
-    kappa = _BREMSSTRAHLUNG['photon_energy']
-    chi = _BREMSSTRAHLUNG[Z]['dcs']
+        """
+        _load_bremsstrahlung()
+        Z = self.atomic_number
+        energy = _BREMSSTRAHLUNG['electron_energy']
+        kappa = _BREMSSTRAHLUNG['photon_energy']
+        chi = _BREMSSTRAHLUNG[Z]['dcs']
 
-    grid = electron.energy_grid
-    if grid[0] < energy[0] or grid[-1] > energy[-1]:
-        warn(f'{electron.name}: the scaled bremsstrahlung cross sections cover '
-             f'{energy[0]:.4g} to {energy[-1]:.4g} eV but the energy grid runs '
-             f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Cross sections are clamped '
-             'to the endpoints outside that range.')
+        grid = self.energy_grid
+        if grid[0] < energy[0] or grid[-1] > energy[-1]:
+            warn(f'{self.name}: the scaled bremsstrahlung cross sections cover '
+                 f'{energy[0]:.4g} to {energy[-1]:.4g} eV but the energy grid runs '
+                 f'{grid[0]:.4g} to {grid[-1]:.4g} eV. Cross sections are clamped '
+                 'to the endpoints outside that range.')
 
-    # sigma = int_{k_cut}^{T} dsigma/dk dk with dsigma/dk = Z^2/beta^2 chi/k,
-    #       = Z^2/beta^2 int_{kappa_cut}^{1} chi(kappa)/kappa dkappa.
-    # chi is linear in kappa between tabulated points, which the transport
-    # assumes when it samples, so each interval integrates in closed form:
-    # int (a + b kappa)/kappa dkappa = a ln(kappa2/kappa1) + b (kappa2-kappa1).
-    # Doing it analytically rather than on a quadrature grid is what keeps the
-    # rate an integral of exactly the distribution that is sampled.
-    gamma = 1.0 + energy/MASS_ELECTRON_EV
-    beta_sq = 1.0 - 1.0/(gamma*gamma)
-    kappa_cut = photon_cutoff/energy
+        # sigma = int_{k_cut}^{T} dsigma/dk dk with dsigma/dk = Z^2/beta^2 chi/k,
+        #       = Z^2/beta^2 int_{kappa_cut}^{1} chi(kappa)/kappa dkappa.
+        # chi is linear in kappa between tabulated points, which the transport
+        # assumes when it samples, so each interval integrates in closed form:
+        # int (a + b kappa)/kappa dkappa = a ln(kappa2/kappa1) + b (kappa2-kappa1).
+        # Doing it analytically rather than on a quadrature grid is what keeps the
+        # rate an integral of exactly the distribution that is sampled.
+        gamma = 1.0 + energy/MASS_ELECTRON_EV
+        beta_sq = 1.0 - 1.0/(gamma*gamma)
+        kappa_cut = photon_cutoff/energy
 
-    lo, hi = kappa[:-1], kappa[1:]
-    b = np.diff(chi, axis=1)/(hi - lo)
-    a = chi[:, :-1] - b*lo
-    # Clip each interval to [kappa_cut, 1]; intervals below the cutoff collapse
-    x1 = np.clip(lo, kappa_cut[:, None], None)
-    x2 = np.clip(hi, kappa_cut[:, None], None)
-    integral = np.sum(
-        np.where(x2 > x1, a*np.log(np.where(x2 > x1, x2/np.maximum(x1, 1e-300),
-                                            1.0)) + b*(x2 - x1), 0.0),
-        axis=1)
-    xs = Z*Z/beta_sq*integral
+        lo, hi = kappa[:-1], kappa[1:]
+        b = np.diff(chi, axis=1)/(hi - lo)
+        a = chi[:, :-1] - b*lo
+        # Clip each interval to [kappa_cut, 1]; intervals below the cutoff collapse
+        x1 = np.clip(lo, kappa_cut[:, None], None)
+        x2 = np.clip(hi, kappa_cut[:, None], None)
+        integral = np.sum(
+            np.where(x2 > x1, a*np.log(np.where(x2 > x1, x2/np.maximum(x1, 1e-300),
+                                                1.0)) + b*(x2 - x1), 0.0),
+            axis=1)
+        xs = Z*Z/beta_sq*integral
 
-    electron.bremsstrahlung_xs = _log_interp(grid, energy, xs)
-    electron.bremsstrahlung_photon_cutoff = photon_cutoff
+        self.bremsstrahlung_xs = _log_interp(grid, energy, xs)
+        self.bremsstrahlung_photon_cutoff = photon_cutoff

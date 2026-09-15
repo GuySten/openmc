@@ -274,16 +274,14 @@ The bremsstrahlung photon spectra are the scaled cross sections of `Seltzer and
 Berger`_ already distributed with OpenMC for the thick-target approximation,
 and are read from the photon library rather than stored a second time.
 
-The :class:`openmc.data.IncidentElectron` class reads an ACE table, and the
-:func:`openmc.data.use_dpwa_elastic` and
-:func:`openmc.data.use_seltzer_berger_brems` functions substitute the two
-calculated datasets before the result is written:
+The :meth:`IncidentElectron.from_ace` method reads an ACE table and adds the
+two calculated datasets itself, the way :meth:`IncidentPhoton.from_ace` adds
+the Compton profiles and the scaled bremsstrahlung cross sections, so building
+an element takes the same two calls as a photon one:
 
 ::
 
   c = openmc.data.IncidentElectron.from_ace('6000.14p')
-  openmc.data.use_dpwa_elastic(c)
-  openmc.data.use_seltzer_berger_brems(c)
   c.export_to_hdf5('C.h5')
 
 -----------

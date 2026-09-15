@@ -266,12 +266,11 @@ is not the photon library's grid.
 
 **/<element>/ionization/<designator>/**
 
-:Object type: An :ref:`uncorrelated angle-energy distribution <angle_energy>`
-              carrying only its **energy** group, a continuous tabular
-              distribution of the kinetic energy in [eV] of the ejected
-              knock-on electron at each incident energy. The polar angles of
-              both electrons follow from the energy transfer and are not
-              sampled, so no angular distribution is stored.
+:Object type: A :ref:`continuous tabular <continuous_tabular>` distribution of
+              the kinetic energy in [eV] of the ejected knock-on electron at
+              each incident energy. The polar angles of both electrons follow
+              from the energy transfer and are not sampled, so no angular
+              distribution accompanies it.
 
 **/<element>/bremsstrahlung/**
 
@@ -671,6 +670,8 @@ Level Inelastic
              - **threshold** (*double*) -- Energy threshold in the laboratory
                system in eV
              - **mass_ratio** (*double*) -- :math:`(A/(A + 1))^2`
+
+.. _continuous_tabular:
 
 Continuous Tabular
 ------------------

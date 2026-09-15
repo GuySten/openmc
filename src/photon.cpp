@@ -33,6 +33,8 @@ constexpr int Element::MAX_STACK_SIZE;
 namespace data {
 
 tensor::Tensor<double> compton_profile_pz;
+tensor::Tensor<double> brems_e_grid;
+tensor::Tensor<double> brems_k_grid;
 
 std::unordered_map<std::string, int> element_map;
 vector<unique_ptr<Element>> elements;
@@ -313,7 +315,19 @@ Element::Element(hid_t group)
   // Calculate total pair production
   pair_production_total_ = pair_production_nuclear_ + pair_production_electron_;
 
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
+  if (settings::electron_transport) {
+    // Read the bremsstrahlung scaled DCS. The electron library carries only
+    // the cross section, which is an integral of this table above a threshold
+    // it records, so the emitted photon energy is sampled from the table
+    // itself rather than from a second copy of it stored as a distribution.
+    rgroup = open_group(group, "bremsstrahlung");
+    read_dataset(rgroup, "dcs", dcs_);
+    if (data::brems_e_grid.size() == 0) {
+      read_dataset(rgroup, "electron_energy", data::brems_e_grid);
+      read_dataset(rgroup, "photon_energy", data::brems_k_grid);
+    }
+    close_group(rgroup);
+  } else if (settings::electron_treatment == ElectronTreatment::TTB) {
     // Read bremsstrahlung scaled DCS
     rgroup = open_group(group, "bremsstrahlung");
     read_dataset(rgroup, "dcs", dcs_);
@@ -1118,6 +1132,8 @@ void free_memory_photon()
   data::compton_profile_pz.resize({0});
   data::ttb_e_grid.resize({0});
   data::ttb_k_grid.resize({0});
+  data::brems_e_grid.resize({0});
+  data::brems_k_grid.resize({0});
 }
 
 } // namespace openmc

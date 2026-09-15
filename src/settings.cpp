@@ -648,8 +648,13 @@ void read_settings_xml(pugi::xml_node root)
                   "multigroup mode");
     }
 
-    if (electron_transport)
+    if (electron_transport) {
       photon_transport = true;
+      // The thick-target approximation stands in for electrons that are not
+      // transported, and sample_electron_reaction() ignores it when they are.
+      // Turning it off here keeps its tables from being built at all.
+      electron_treatment = ElectronTreatment::LED;
+    }
   }
 
   // Check for atomic relaxation

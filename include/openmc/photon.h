@@ -83,6 +83,12 @@ public:
 
   void bremsstrahlung(Particle& p) const;
 
+  //! Sample the energy of a bremsstrahlung photon from the scaled cross
+  //! sections of the photon library, above the threshold the electron
+  //! library's cross section was integrated from. Returns zero when the
+  //! incident energy leaves no room above that threshold.
+  double sample_bremsstrahlung_energy(double E, uint64_t* seed) const;
+
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
   int Z_;            //!< Atomic number
@@ -155,7 +161,10 @@ public:
   tensor::Tensor<double> excitation_;
   Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> electron_bremsstrahlung_;
-  unique_ptr<ContinuousTabular> bremsstrahlung_dist_;
+
+  //! Lowest emitted photon energy the bremsstrahlung cross section above was
+  //! integrated from; the spectrum has to be sampled above the same one
+  double bremsstrahlung_photon_cutoff_ {0.0};
 
   // Constant data
   static constexpr int MAX_STACK_SIZE =
@@ -219,17 +228,6 @@ double compton_energy_ratio(double alpha, double mu, double pz);
 
 std::pair<double, double> klein_nishina(double alpha, uint64_t* seed);
 
-namespace detail {
-
-double evaluate_2BN_differential(double T_0, double k_photon, double theta);
-
-double sample_2BN(double T_0, double k_photon, uint64_t* seed);
-
-double sample_schiff_2BS(
-  double E_electron, double k_photon, int Z, uint64_t* seed);
-
-} // namespace detail
-
 void free_memory_photon();
 
 //==============================================================================
@@ -240,6 +238,12 @@ namespace data {
 
 extern tensor::Tensor<double>
   compton_profile_pz; //! Compton profile momentum grid
+
+//! Grids of the Seltzer-Berger scaled bremsstrahlung cross sections, read when
+//! electron transport is enabled: incident electron kinetic energies in [eV]
+//! and reduced photon energies kappa = k/T
+extern tensor::Tensor<double> brems_e_grid;
+extern tensor::Tensor<double> brems_k_grid;
 
 //! Interaction data for each element
 extern std::unordered_map<std::string, int> element_map;

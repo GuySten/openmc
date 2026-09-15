@@ -1,7 +1,6 @@
 #include "openmc/photon.h"
 
 #include "openmc/array.h"
-#include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
@@ -137,14 +136,14 @@ void Element::read_electron_data(hid_t group)
     }
   }
 
-  // Read bremsstrahlung
+  // Read bremsstrahlung. Only the cross section is here: it is an integral of
+  // the scaled cross sections of the photon library above the threshold stored
+  // alongside it, and the emitted photon energy is sampled from that same
+  // table. Storing the distribution here as well would be storing the same
+  // numbers twice and inviting the rate and the spectrum to drift apart.
   rgroup = open_group(group, "bremsstrahlung");
   read_dataset(rgroup, "xs", electron_bremsstrahlung_);
-  dist_group = open_group(rgroup, "distribution");
-  hid_t egroup = open_group(dist_group, "energy");
-  bremsstrahlung_dist_ = make_unique<ContinuousTabular>(egroup);
-  close_group(egroup);
-  close_group(dist_group);
+  read_attribute(rgroup, "photon_cutoff", bremsstrahlung_photon_cutoff_);
   close_group(rgroup);
 }
 
@@ -361,9 +360,65 @@ double bremsstrahlung_cos_theta(
 
 } // namespace
 
+double Element::sample_bremsstrahlung_energy(double E, uint64_t* seed) const
+{
+  double k_min = bremsstrahlung_photon_cutoff_;
+  if (E <= k_min)
+    return 0.0;
+
+  const auto& T = data::brems_e_grid;
+  const auto& kappa = data::brems_k_grid;
+  int n_e = T.size();
+  int n_k = kappa.size();
+
+  // Bracket the incident energy. The scaled cross section was splined onto
+  // this grid against the logarithm of the energy and is linear in chi, so it
+  // is interpolated the same way here. Outside the grid the nearest row is
+  // used, which is what the cross section does as well.
+  int i;
+  double f;
+  if (E <= T(0)) {
+    i = 0;
+    f = 0.0;
+  } else if (E >= T(n_e - 1)) {
+    i = n_e - 2;
+    f = 1.0;
+  } else {
+    i = lower_bound_index(T.cbegin(), T.cend(), E);
+    f = std::log(E / T(i)) / std::log(T(i + 1) / T(i));
+  }
+
+  // dsigma/dk is proportional to chi(kappa)/k, so k is sampled from 1/k over
+  // [k_min, E] and the shape of chi is taken by rejection. chi is bounded by
+  // its largest tabulated value on the two rows: interpolating linearly in
+  // kappa and then in chi cannot leave that range.
+  double chi_max = 0.0;
+  for (int j = 0; j < n_k; ++j) {
+    chi_max = std::max(chi_max, std::max(dcs_(i, j), dcs_(i + 1, j)));
+  }
+  if (chi_max <= 0.0)
+    return 0.0;
+
+  double ratio = E / k_min;
+  while (true) {
+    double k = k_min * std::pow(ratio, prn(seed));
+    double x = k / E;
+    int j = lower_bound_index(kappa.cbegin(), kappa.cend(), x);
+    j = std::min(j, n_k - 2);
+    double g = (x - kappa(j)) / (kappa(j + 1) - kappa(j));
+    double chi_lo = dcs_(i, j) + g * (dcs_(i, j + 1) - dcs_(i, j));
+    double chi_hi = dcs_(i + 1, j) + g * (dcs_(i + 1, j + 1) - dcs_(i + 1, j));
+    double chi = chi_lo + f * (chi_hi - chi_lo);
+    if (prn(seed) * chi_max < chi)
+      return k;
+  }
+}
+
 void Element::bremsstrahlung(Particle& p) const
 {
-  double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
+  double E_photon = this->sample_bremsstrahlung_energy(p.E(), p.current_seed());
+  if (E_photon <= 0.0)
+    return;
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;

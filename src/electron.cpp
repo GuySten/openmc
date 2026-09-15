@@ -235,8 +235,8 @@ void Element::ionization(Particle& p, int i_shell) const
   // recoil direction corresponds to E_knock + e_b, so using E_knock alone
   // ejects the electron too far sideways -- by 22% of the incident momentum
   // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
-  // makes the two polar angles the consistent free binary-collision pair for a
-  // transfer of E_knock + e_b.
+  // makes the two polar angles the consistent free Moller pair for a transfer
+  // of E_knock + e_b.
   double E_transfer = E_knock + e_b;
   double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
                               (1.0 + 2.0 * MASS_ELECTRON_EV / E_transfer));

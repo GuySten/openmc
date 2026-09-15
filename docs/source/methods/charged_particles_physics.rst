@@ -517,8 +517,9 @@ events. This matches the treatment in MCNP's single-event mode.
 Electroionization
 -----------------
 
-Electroionization ejects a bound electron. The subshell is sampled in
-proportion to the subshell ionization cross sections, and the kinetic energy
+Electroionization ejects a bound electron: Moller scattering when the
+projectile is an electron, Bhabha scattering when it is a positron. The
+subshell is sampled in proportion to the subshell ionization cross sections, and the kinetic energy
 :math:`T_{\text{k}}` of the ejected knock-on electron is sampled from the
 spectrum tabulated for that subshell. The incident electron loses the knock-on
 energy together with the binding energy :math:`B` of the vacated subshell,
@@ -537,9 +538,9 @@ probability. As with the angular tables, the incident-energy grids are sparse
 -- aluminium's K shell jumps from 15.8 keV to 501 keV -- and are interpolated
 logarithmically.
 
-The polar deflections of both electrons are taken from the free
-binary-collision relation applied to each electron's own energy, and are not
-sampled independently:
+The polar deflections of both electrons are taken from the free Moller
+relation applied to each electron's own energy, and are not sampled
+independently:
 
 .. math::
     :label: ionization-angles
@@ -561,6 +562,18 @@ the knock-on leaves with the momentum of :math:`T_{\text{k}}` rather than of
 :math:`W`; no free-electron model of a bound target can conserve both. The
 vacancy is passed to the atomic relaxation model, which follows the full
 cascade.
+
+A positron is given the same spectra. They are Moller spectra, tabulated for an
+electron projectile, and the two processes are not the same: the two electrons
+of a Moller collision are indistinguishable, so the faster one is labelled the
+primary and the transfer stops at :math:`(T - B)/2`, while a positron and the
+electron it ejects are distinguishable and the transfer runs to :math:`T - B`.
+Both cross sections go as :math:`1/\varepsilon^2` for small energy transfers,
+which is the bulk of them, so the error is confined to the hard tail: the
+collision stopping power that results is some 2 to 3 per cent high above 1 MeV
+and about 5 per cent low near 100 keV, and the number of knock-ons above a
+10 keV cutoff is 0.6 to 5 per cent high. This is small beside the difference
+the two projectiles make to elastic scattering, described above.
 
 .. _bremsstrahlung_angle:
 

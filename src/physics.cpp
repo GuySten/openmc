@@ -578,7 +578,7 @@ void sample_electron_reaction(Particle& p)
     return;
   }
 
-  // Ionization
+  // Moller scattering
   prob += micro.ionization;
   if (prob > cutoff) {
     // Sample which atomic subshell was ionized based on the subshell cross
@@ -658,7 +658,11 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
-  // Ionization
+  // Bhabha scattering. The knock-on spectra sampled below are the
+  // evaluation's Moller ones, tabulated for an electron projectile: they stop
+  // at the (T - B)/2 limit that indistinguishability imposes, where a positron
+  // may transfer up to T - B. The collision stopping power that follows is
+  // some 2-3% high above 1 MeV and about 5% low near 100 keV.
   prob += micro.ionization;
   if (prob > cutoff) {
     // Sample which atomic subshell was ionized based on the subshell cross

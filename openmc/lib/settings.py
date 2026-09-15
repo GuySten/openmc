@@ -87,6 +87,7 @@ class _Settings:
         c_int32, 'max_write_lost_particles'
     )
     need_depletion_rx = _DLLFunctionProperty(c_bool, 'need_depletion_rx')
+    neutron_transport = _DLLFunctionProperty(c_bool, 'neutron_transport')
     output_summary = _DLLFunctionProperty(c_bool, 'output_summary')
     particles = _DLLFunctionProperty(c_int64, 'n_particles')
     photon_transport = _DLLFunctionProperty(c_bool, 'photon_transport')

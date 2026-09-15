@@ -41,16 +41,6 @@ bool is_integer_string(const std::string& s)
   return true;
 }
 
-int atomic_number_from_symbol(std::string_view symbol)
-{
-  for (int z = 1; z <= MAX_Z; ++z) {
-    if (symbol == ATOMIC_SYMBOL[z]) {
-      return z;
-    }
-  }
-  return 0;
-}
-
 bool parse_gnds_nuclide(std::string_view name, int& Z, int& A, int& m)
 {
   if (name.empty())
@@ -127,6 +117,16 @@ std::string nuclide_name_from_pdg(int32_t pdg)
 }
 
 } // namespace
+
+int atomic_number_from_symbol(std::string_view symbol)
+{
+  for (int z = 1; z <= MAX_Z; ++z) {
+    if (symbol == ATOMIC_SYMBOL[z]) {
+      return z;
+    }
+  }
+  return 0;
+}
 
 //==============================================================================
 // ParticleType member function implementations

@@ -58,6 +58,44 @@ void validate_particle_type(ParticleType type, const std::string& context)
       type.str(), type.pdg_number(), context));
 }
 
+//! Whether the run mode samples the external source at all
+bool samples_external_source()
+{
+  return settings::run_mode == RunMode::EIGENVALUE ||
+         settings::run_mode == RunMode::FIXED_SOURCE;
+}
+
+//! Turn on photon transport if a source emits photons, so that the cross
+//! sections it needs are loaded. Electrons and positrons are transported as
+//! part of photon transport.
+//
+//! There is no neutron counterpart: photon transport is off by default, so
+//! turning it on fills in something the user did not specify, whereas neutron
+//! transport is only ever off because the user asked for it. Overriding that
+//! would quietly change which particles a calculation transports, so a source
+//! that emits neutrons is rejected instead -- see check_neutron_source.
+void enable_transport(ParticleType type)
+{
+  if (type == ParticleType::photon() || type == ParticleType::electron() ||
+      type == ParticleType::positron()) {
+    settings::photon_transport = true;
+  }
+}
+
+//! Reject a source that emits neutrons when neutron transport is turned off
+void check_neutron_source(ParticleType type, const std::string& context)
+{
+  if (settings::neutron_transport || !type.is_neutron())
+    return;
+  if (!samples_external_source())
+    return;
+
+  fatal_error(fmt::format("{} emits neutrons, but neutron transport is turned "
+                          "off. Either turn it back on or give a source that "
+                          "does not emit neutrons.",
+    context));
+}
+
 } // namespace
 
 //==============================================================================
@@ -321,13 +359,10 @@ IndependentSource::IndependentSource(pugi::xml_node node) : Source(node)
   if (check_for_node(node, "particle")) {
     auto temp_str = get_node_value(node, "particle", false, true);
     particle_ = ParticleType(temp_str);
-    if (particle_ == ParticleType::photon() ||
-        particle_ == ParticleType::electron() ||
-        particle_ == ParticleType::positron()) {
-      settings::photon_transport = true;
-    }
   }
   validate_particle_type(particle_, "IndependentSource");
+  check_neutron_source(particle_, "A source");
+  enable_transport(particle_);
 
   // Check for external source file
   if (check_for_node(node, "file")) {
@@ -531,16 +566,12 @@ void FileSource::load_sites_from_file(const std::string& path)
     file_close(file_id);
   }
 
-  // Make sure particles in source file have valid types. If any particle is a
-  // photon, electron, or positron, enable photon transport so that the
-  // appropriate cross sections are loaded.
+  // Make sure particles in source file have valid types and turn on transport
+  // of each type so that the appropriate cross sections are loaded
   for (const auto& site : this->sites_) {
     validate_particle_type(site.particle, "FileSource");
-    if (site.particle == ParticleType::photon() ||
-        site.particle == ParticleType::electron() ||
-        site.particle == ParticleType::positron()) {
-      settings::photon_transport = true;
-    }
+    check_neutron_source(site.particle, fmt::format("Source file '{}'", path));
+    enable_transport(site.particle);
   }
 }
 

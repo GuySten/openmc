@@ -60,6 +60,7 @@ bool ifp_delayed_group_on {false};
 bool ifp_lifetime_on {false};
 bool legendre_to_tabular {true};
 bool material_cell_offsets {true};
+bool neutron_transport {true};
 bool output_summary {true};
 bool output_tallies {true};
 bool particle_restart_run {false};
@@ -628,6 +629,19 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
+  // Check for neutron transport
+  if (check_for_node(root, "neutron_transport")) {
+    neutron_transport = get_node_value_bool(root, "neutron_transport");
+
+    if (!run_CE && !neutron_transport) {
+      fatal_error("Neutron transport cannot be turned off in multigroup mode.");
+    }
+    if (!neutron_transport && run_mode == RunMode::EIGENVALUE) {
+      fatal_error("Neutron transport cannot be turned off in an eigenvalue "
+                  "calculation.");
+    }
+  }
+
   // Check for photon transport
   if (check_for_node(root, "photon_transport")) {
     photon_transport = get_node_value_bool(root, "photon_transport");
@@ -691,6 +705,16 @@ void read_settings_xml(pugi::xml_node root)
   // Watt spectrum. No default source is needed in random ray mode.
   if (model::external_sources.empty() &&
       settings::solver_type != SolverType::RANDOM_RAY) {
+    // The default source emits neutrons, so a calculation that turned neutron
+    // transport off has nothing it can fall back on. Run modes that never
+    // sample the external source are unaffected.
+    if (!neutron_transport && (run_mode == RunMode::EIGENVALUE ||
+                                run_mode == RunMode::FIXED_SOURCE)) {
+      fatal_error("Neutron transport is turned off, but no source was "
+                  "specified. The default source emits neutrons, so a source "
+                  "has to be given explicitly.");
+    }
+
     double T[] {0.0};
     double p[] {1.0};
     model::external_sources.push_back(make_unique<IndependentSource>(
@@ -1368,6 +1392,24 @@ void read_settings_xml(pugi::xml_node root)
       settings::use_shared_secondary_bank = true;
     }
   }
+
+  // Reject options that act on neutron data, which is not read when neutrons
+  // are not transported, rather than silently ignoring them
+  if (!neutron_transport) {
+    if (res_scat_on) {
+      fatal_error("Resonance scattering requires neutron transport.");
+    }
+    if (temperature_multipole) {
+      fatal_error("Multipole data is neutron data and requires neutron "
+                  "transport.");
+    }
+    if (use_decay_photons) {
+      fatal_error("The D1S method replaces the photons produced in neutron "
+                  "reactions with decay photons, so it requires neutron "
+                  "transport. A photon calculation driven by a decay source, "
+                  "as in the R2S method, does not use this setting.");
+    }
+  }
 }
 
 void free_memory_settings()
@@ -1403,6 +1445,8 @@ bool* bool_setting(const char* name)
     return &settings::event_based;
   } else if (std::strcmp(name, "need_depletion_rx") == 0) {
     return &simulation::need_depletion_rx;
+  } else if (std::strcmp(name, "neutron_transport") == 0) {
+    return &settings::neutron_transport;
   } else if (std::strcmp(name, "photon_transport") == 0) {
     return &settings::photon_transport;
   } else if (std::strcmp(name, "output_summary") == 0) {

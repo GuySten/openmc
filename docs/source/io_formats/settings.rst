@@ -541,6 +541,35 @@ particles per batch for a fixed source simulation.
 
   *Default*: None
 
+-------------------------------
+``<neutron_transport>`` Element
+-------------------------------
+
+The ``<neutron_transport>`` element determines whether neutron transport is
+enabled. This element has no attributes or sub-elements and can be set to
+either "false" or "true". When it is set to "false", no neutron cross section
+data is read; the data library then only has to contain the photon data needed
+by the calculation. The atomic masses used to normalize material densities are
+taken from AME2020 rather than from the atomic weight ratios in the data
+library.
+
+A source that emits neutrons is an error rather than something that turns
+neutron transport back on, unlike the way a photon source turns photon transport
+on: photon transport is off by default, whereas neutron transport is only ever
+off because it was requested. The default source used when no ``<source>`` is
+given emits neutrons, so a calculation without neutrons has to specify its
+source.
+
+Turning neutron transport off is not compatible with eigenvalue calculations,
+multi-group mode (and therefore the random ray solver), thermal scattering data,
+NCrystal configurations, resonance scattering, multipole data, or
+``<use_decay_photons>``, which drives the D1S method
+from neutron reactions. A photon calculation whose source comes from the decay
+of activated materials, as in the R2S method, does not set that element and is
+unaffected.
+
+  *Default*: true
+
 ------------------------------
 ``<photon_transport>`` Element
 ------------------------------

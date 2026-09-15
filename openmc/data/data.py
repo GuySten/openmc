@@ -265,12 +265,18 @@ def atomic_mass(isotope):
         # For isotopes found in some libraries that represent all natural
         # isotopes of their element (e.g. C0), calculate the atomic mass as
         # the sum of the atomic mass times the natural abundance of the isotopes
-        # that make up the element.
-        for element in ['C', 'Zn', 'Pt', 'Os', 'Tl', 'V']:
+        # that make up the element. Which elements a library provides this way
+        # varies, so cover every element that has naturally occurring isotopes.
+        for element in ATOMIC_SYMBOL.values():
+            natural = isotopes(element) if element else []
+            if not natural:
+                continue
             isotope_zero = element.lower() + '0'
-            _ATOMIC_MASS[isotope_zero] = 0.
-            for iso, abundance in isotopes(element):
-                _ATOMIC_MASS[isotope_zero] += abundance * _ATOMIC_MASS[iso.lower()]
+            # Naturally occurring metastable states, e.g. Ta180_m1, are keyed
+            # by their ground state in the mass table
+            _ATOMIC_MASS[isotope_zero] = sum(
+                abundance * _ATOMIC_MASS[iso.lower().partition('_')[0]]
+                for iso, abundance in natural)
 
     # Get rid of metastable information
     if '_' in isotope:

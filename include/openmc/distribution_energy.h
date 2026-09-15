@@ -110,6 +110,20 @@ public:
   //! Maximum outgoing energy for this distribution
   double max_energy(double E) const override;
 
+  //! Mean of what sample() actually produces at a given incident energy.
+  //!
+  //! Integrates the sampled value over the quantile rather than estimating it
+  //! from the tables, so it measures the blended distribution the transport
+  //! sees, interpolation error included. Only the unit-base log-log branch is
+  //! covered, which is the one bremsstrahlung uses; anything else returns a
+  //! negative value to say "not available" rather than a wrong answer.
+  //!
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] refine Sub-intervals per quadrature node
+  //! \return Mean outgoing energy in [eV], or a negative value if the
+  //!   distribution is not sampled by the unit-base log-log branch
+  double sampled_mean(double E, int refine = 8) const;
+
 private:
   bool unit_base_; //!< Remap onto the interpolated [E_1, E_K] range?
 

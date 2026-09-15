@@ -51,6 +51,16 @@ public:
 
   void bremsstrahlung(Particle& p) const;
 
+  //! Factor that puts the sampled bremsstrahlung photon energy onto the
+  //! tabulated mean, interpolated from the table built by
+  //! compute_brems_rescale(). Unity when the evaluation carries no BREML
+  //! block to anchor against.
+  double brems_rescale(double E) const;
+
+  //! Tabulate that factor on the energy grid. Called once, from the
+  //! constructor, and only after bremsstrahlung_dist_ exists.
+  void compute_brems_rescale();
+
   // Data members
   std::string name_;      //!< Name of element, e.g. "Zr"
   int Z_;                 //!< Atomic number
@@ -94,6 +104,19 @@ public:
   Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> bremsstrahlung_;
   unique_ptr<ContinuousTabular> bremsstrahlung_dist_;
+  //! Average energy of the emitted bremsstrahlung photon, from the BREML block
+  //! at JXS(26). The photon spectra are tabulated on only nine incident
+  //! energies spanning ten decades, and between them the sampled mean drifts
+  //! several percent off this curve; BREML gives the first moment on a grid
+  //! dense enough to interpolate. Empty if the evaluation has no such block.
+  Tabulated1D brems_mean_energy_;
+  //! Whether brems_mean_energy_ was populated from the evaluation.
+  bool has_brems_mean_energy_ {false};
+  //! Ratio of that tabulated mean to the one the spectrum actually samples, on
+  //! the energy grid. Built once by compute_brems_rescale(); the quadrature
+  //! behind it is far too expensive to repeat per collision. Empty when there
+  //! is no BREML block, which the sampling reads as "leave the photon alone".
+  vector<double> brems_rescale_;
 };
 
 //==============================================================================

@@ -353,6 +353,23 @@ class IncidentElectron:
                     bremsstrahlung_group, "mean_energy")
 
 
+def _with_cdf(x, p, interpolation='linear-linear'):
+    """Tabular carrying the cumulative the HDF5 writers and the transport expect.
+
+    AngleDistribution and ContinuousTabular both write a tabulated CDF
+    alongside the density, and the sampler inverts that CDF rather than
+    reintegrating the density. Building it here with the same trapezoidal rule
+    the interpolation implies keeps the two consistent.
+    """
+    c = np.concatenate(([0.0], np.cumsum(0.5 * (p[:-1] + p[1:]) * np.diff(x))))
+    total = c[-1]
+    if total <= 0.0:
+        raise ValueError('distribution has no probability')
+    dist = Tabular(x, p / total, interpolation=interpolation)
+    dist.c = c / total
+    return dist
+
+
 def _log_interp(x, xp, fp):
     """Log-log interpolation, clamped to the endpoints of the tabulated range."""
     x = np.clip(x, xp[0], xp[-1])
@@ -418,10 +435,7 @@ def use_dpwa_elastic(electron, path):
     mu = (1.0 - deflection)[::-1]
     distributions = []
     for i in range(len(energy)):
-        p = dcs[i][::-1]
-        norm = np.trapezoid(p, mu)
-        distributions.append(
-            Tabular(mu, p / norm, interpolation='linear-linear'))
+        distributions.append(_with_cdf(mu, dcs[i][::-1]))
     electron.elastic_dist = AngleDistribution(energy, distributions)
 
 
@@ -507,8 +521,7 @@ def use_seltzer_berger_brems(electron, photon_cutoff=1.0, n_points=201):
         chi_k = np.interp(k / e, kappa, chi[keep][i])
         dsigma_dk = (Z * Z / beta_sq) * chi_k / k
         xs[i] = np.trapezoid(dsigma_dk, k)
-        energy_out.append(Tabular(k, dsigma_dk / xs[i],
-                                  interpolation='linear-linear'))
+        energy_out.append(_with_cdf(k, dsigma_dk))
 
     electron.bremsstrahlung_xs = _log_interp(grid, energy, xs)
     electron.bremsstrahlung_dist = UncorrelatedAngleEnergy()

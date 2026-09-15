@@ -13,7 +13,6 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
-#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/hdf5_interface.h"
@@ -952,7 +951,7 @@ void Material::calculate_electron_xs(Particle& p) const
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.electron_xs(i_element)};
     if (p.E() != micro.last_E) {
-      data::electroatomic[i_element]->calculate_xs(p);
+      data::photoatomic[i_element]->calculate_electron_xs(p);
     }
 
     // ========================================================================

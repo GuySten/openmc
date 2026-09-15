@@ -3,7 +3,6 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
-#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
@@ -1187,8 +1186,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
           // Read element data from HDF5
           hid_t group = open_group(file_id, element.c_str());
-          data::electroatomic.push_back(
-            make_unique<ElectronInteraction>(group));
+          data::photoatomic.back()->read_electron_data(group);
 
           close_group(group);
           file_close(file_id);

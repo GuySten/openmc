@@ -1,6 +1,8 @@
 #ifndef OPENMC_PHOTON_H
 #define OPENMC_PHOTON_H
 
+#include "openmc/distribution_angle.h"
+#include "openmc/distribution_energy.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -56,6 +58,26 @@ public:
 
   void atomic_relaxation(int i_shell, Particle& p) const;
 
+  //! Read the electron interaction data for this element.
+  //
+  //! Called only when electron transport is enabled, from a group in the
+  //! electron library rather than the photoatomic one. Everything it fills is
+  //! left empty otherwise, which costs a few hundred bytes per element and no
+  //! heap at all.
+  void read_electron_data(hid_t group);
+
+  void calculate_electron_xs(Particle& p) const;
+
+  double elastic_scatter(double E, uint64_t* seed) const;
+
+  double excitation(double E) const;
+
+  void ionization(Particle& p, int i_shell) const;
+
+  int sample_ionization_shell(Particle& p) const;
+
+  void bremsstrahlung(Particle& p) const;
+
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
   int Z_;            //!< Atomic number
@@ -107,6 +129,28 @@ public:
 
   // Whether atomic relaxation data is present
   bool has_atomic_relaxation_ {false};
+
+  //============================================================================
+  // Electron interaction data
+  //
+  // Empty unless electron transport is enabled; see read_electron_data(). The
+  // energy grid is the electron library's own and is not the photon grid
+  // above, so it is named separately.
+
+  //! For each electroionization subshell, the index of the matching subshell in
+  //! shells_. The two lists are not guaranteed to have the same length or
+  //! ordering, so they are matched by ENDF designator rather than by position.
+  vector<int> electron_shell_map_;
+
+  tensor::Tensor<double> electron_energy_;
+  tensor::Tensor<double> elastic_;
+  AngleDistribution elastic_angle_;
+  tensor::Tensor<double> electroionization_;
+  vector<unique_ptr<ContinuousTabular>> ionization_dist_;
+  tensor::Tensor<double> excitation_;
+  Tabulated1D excitation_energy_loss_;
+  tensor::Tensor<double> electron_bremsstrahlung_;
+  unique_ptr<ContinuousTabular> bremsstrahlung_dist_;
 
   // Constant data
   static constexpr int MAX_STACK_SIZE =
@@ -169,6 +213,17 @@ double compton_energy_ratio(double alpha, double mu, double pz);
 } // namespace detail
 
 std::pair<double, double> klein_nishina(double alpha, uint64_t* seed);
+
+namespace detail {
+
+double evaluate_2BN_differential(double T_0, double k_photon, double theta);
+
+double sample_2BN(double T_0, double k_photon, uint64_t* seed);
+
+double sample_schiff_2BS(
+  double E_electron, double k_photon, int Z, uint64_t* seed);
+
+} // namespace detail
 
 void free_memory_photon();
 

@@ -6,7 +6,6 @@
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
-#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/ifp.h"
@@ -553,7 +552,7 @@ void sample_electron_reaction(Particle& p)
   // Sample element within material
   int i_element = sample_electron_element(p);
   const auto& micro {p.electron_xs(i_element)};
-  const auto& element {*data::electroatomic[i_element]};
+  const auto& element {*data::photoatomic[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
@@ -589,14 +588,10 @@ void sample_electron_reaction(Particle& p)
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);
 
-    // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data. i_element indexes data::electroatomic, so the photoatomic index
-    // must be taken from the element rather than reused directly.
-    if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
-      if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
-      }
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
     }
     return;
   }
@@ -637,7 +632,7 @@ void sample_positron_reaction(Particle& p)
   // Sample element within material
   int i_element = sample_electron_element(p);
   const auto& micro {p.electron_xs(i_element)};
-  const auto& element {*data::electroatomic[i_element]};
+  const auto& element {*data::photoatomic[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
@@ -673,14 +668,10 @@ void sample_positron_reaction(Particle& p)
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);
 
-    // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data. i_element indexes data::electroatomic, so the photoatomic index
-    // must be taken from the element rather than reused directly.
-    if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
-      if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
-      }
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
     }
     return;
   }

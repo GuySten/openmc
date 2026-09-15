@@ -5,7 +5,6 @@
 #include "openmc/collision_track.h"
 #include "openmc/container_util.h"
 #include "openmc/eigenvalue.h"
-#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/event.h"
 #include "openmc/geometry_aux.h"
@@ -867,7 +866,7 @@ void initialize_data()
       int positron = ParticleType::positron().transport_index();
 
       const std::vector<int> charged = {electron, positron};
-      for (const auto& elem : data::electroatomic) {
+      for (const auto& elem : data::photoatomic) {
         if (elem->energy_.size() >= 1) {
           int n = elem->energy_.size();
           for (auto t : charged) {

@@ -213,6 +213,17 @@ double exprel(double x);
 //! \return log(1+x)/x without loss of precision near 0
 double log1prel(double x);
 
+//! Evaluate log(1+x) - x
+//!
+//! The result is -x^2/2 near zero while both terms are x, so forming the
+//! difference directly -- however accurately each term is computed -- loses
+//! about x of the precision. This follows the atanh-series construction used
+//! for the same function in R and Julia, which does not subtract them at all.
+//!
+//! \param x Real argument, greater than -1
+//! \return log(1+x) - x without loss of precision near 0
+double log1pmx(double x);
+
 //! Evaluate the cylindrical Bessel function of the first kind J_n(x)
 //!
 //! Uses std::cyl_bessel_j where available (e.g., libstdc++). On standard

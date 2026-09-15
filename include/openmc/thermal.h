@@ -50,7 +50,7 @@ public:
   //! \param[out] E_out Outgoing neutron energy in [eV]
   //! \param[out] mu Outgoing scattering angle cosine
   //! \param[inout] seed Pseudorandom seed pointer
-  void sample(const NuclideMicroXS& micro_xs, double E_in, double* E_out,
+  void sample(const NeutronMicroXS& micro_xs, double E_in, double* E_out,
     double* mu, uint64_t* seed) const;
 
   //! Select the elastic or inelastic distribution to sample
@@ -59,7 +59,7 @@ public:
   //! \param[inout] seed Pseudorandom seed pointer
   //! \return Reference to the selected angle-energy distribution
   AngleEnergy& sample_dist(
-    const NuclideMicroXS& micro_xs, double E, uint64_t* seed) const;
+    const NeutronMicroXS& micro_xs, double E, uint64_t* seed) const;
 
   //! Sample an outgoing energy and evaluate the angular PDF
   //! \param[in] micro_xs Microscopic cross sections
@@ -68,7 +68,7 @@ public:
   //! \param[out] E_out Outgoing energy in [eV]
   //! \param[inout] seed Pseudorandom seed pointer
   //! \return Probability density for the scattering cosine
-  double sample_energy_and_pdf(const NuclideMicroXS& micro_xs, double E_in,
+  double sample_energy_and_pdf(const NeutronMicroXS& micro_xs, double E_in,
     double mu, double& E_out, uint64_t* seed) const;
 
 private:
@@ -118,7 +118,7 @@ public:
 
   // Sample an outgoing energy and angle
   void sample(
-    const NuclideMicroXS& micro_xs, double E_in, double* E_out, double* mu);
+    const NeutronMicroXS& micro_xs, double E_in, double* E_out, double* mu);
 
   std::string name_;   //!< name of table, e.g. "c_H_in_H2O"
   double awr_;         //!< weight of nucleus in neutron masses

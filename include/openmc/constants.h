@@ -238,6 +238,13 @@ enum ReactionType {
   PAIR_PROD = 516,
   PAIR_PROD_NUC = 517,
   PHOTOELECTRIC = 522,
+  ELECTRON_ELASTIC = 535,
+  ELECTROEXCITATION = 536,
+  // Not an ENDF MT. An internal marker for the event at which a transported
+  // positron annihilates, so that the heating score can tell that event apart
+  // from the positron's ordinary collisions. 534 upwards are taken by the
+  // subshell reactions, and 902 is past the end of the MT range.
+  POSITRON_ANNIHILATION = 902,
   N_P0 = 600,
   N_PC = 649,
   N_D0 = 650,

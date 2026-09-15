@@ -5,6 +5,7 @@
 #include "openmc/collision_track.h"
 #include "openmc/container_util.h"
 #include "openmc/eigenvalue.h"
+#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/event.h"
 #include "openmc/geometry_aux.h"
@@ -850,7 +851,7 @@ void initialize_data()
   }
 
   if (settings::photon_transport) {
-    for (const auto& elem : data::elements) {
+    for (const auto& elem : data::photoatomic) {
       if (elem->energy_.size() >= 1) {
         int photon = ParticleType::photon().transport_index();
         int n = elem->energy_.size();
@@ -860,8 +861,29 @@ void initialize_data()
           std::min(data::energy_max[photon], std::exp(elem->energy_(n - 1)));
       }
     }
+    if (settings::electron_transport) {
+      int photon = ParticleType::photon().transport_index();
+      int electron = ParticleType::electron().transport_index();
+      int positron = ParticleType::positron().transport_index();
 
-    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      const std::vector<int> charged = {electron, positron};
+      for (const auto& elem : data::electroatomic) {
+        if (elem->energy_.size() >= 1) {
+          int n = elem->energy_.size();
+          for (auto t : charged) {
+            data::energy_min[t] =
+              std::max(data::energy_min[t], std::exp(elem->energy_(1)));
+            data::energy_max[t] =
+              std::min(data::energy_max[t], std::exp(elem->energy_(n - 1)));
+          }
+        }
+      }
+      data::energy_min[photon] =
+        std::max(data::energy_min[photon], data::energy_min[electron]);
+
+      data::energy_max[photon] =
+        std::min(data::energy_max[photon], data::energy_max[electron]);
+    } else if (settings::electron_treatment == ElectronTreatment::TTB) {
       // Determine if minimum/maximum energy for bremsstrahlung is greater/less
       // than the current minimum/maximum
       if (data::ttb_e_grid.size() >= 1) {

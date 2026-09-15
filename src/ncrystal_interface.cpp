@@ -39,7 +39,7 @@ void NCrystalMat::scatter(Particle& p) const
 // Functions
 //==============================================================================
 
-void ncrystal_update_micro(double xs, NuclideMicroXS& micro)
+void ncrystal_update_micro(double xs, NeutronMicroXS& micro)
 {
   if (micro.thermal > 0 || micro.thermal_elastic > 0) {
     fatal_error("S(a,b) treatment and NCrystal are not compatible.");

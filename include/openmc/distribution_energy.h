@@ -73,7 +73,18 @@ private:
 
 class ContinuousTabular : public EnergyDistribution {
 public:
-  explicit ContinuousTabular(hid_t group);
+  //! \param[in] group HDF5 group to read from
+  //! \param[in] unit_base Whether to remap the sampled outgoing energy onto
+  //!   the interpolated [E_1, E_K] range of the bracketing tables. Correct
+  //!   when the whole distribution scales with the incident energy, as for
+  //!   fission and bremsstrahlung spectra. Must be false for distributions
+  //!   anchored at a fixed lower limit -- notably electroionization, whose
+  //!   knock-on spectrum is pinned at the subshell binding energy and falls as
+  //!   1/T^2, so that only the upper endpoint scales. Stretching such a
+  //!   distribution inflates the mean energy transfer by the ratio of the
+  //!   endpoints, which across the sparse EEDL incident-energy grid can be a
+  //!   factor of tens.
+  explicit ContinuousTabular(hid_t group, bool unit_base = true);
 
   //! Sample energy distribution
   //! \param[in] E Incident particle energy in [eV]
@@ -81,7 +92,34 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Mean of what sample() actually produces at a given incident energy.
+  //!
+  //! Integrates the sampled value over the quantile rather than estimating it
+  //! from the tables, so it measures the blended distribution the transport
+  //! sees, interpolation error included. Only the unit-base log-log branch is
+  //! covered, which is the one bremsstrahlung uses; anything else returns a
+  //! negative value to say "not available" rather than a wrong answer.
+  //!
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] refine Sub-intervals per quadrature node
+  //! \return Mean outgoing energy in [eV], or a negative value if the
+  //!   distribution is not sampled by the unit-base log-log branch
+  double sampled_mean(double E, int refine = 8) const;
+
 private:
+  bool unit_base_; //!< Remap onto the interpolated [E_1, E_K] range?
+
+  //! Outgoing energy for a single incoming energy
+  struct CTTable;
+
+  //! Invert the cumulative distribution of a single table
+  //!
+  //! \param[in] l Index of the table
+  //! \param[in] r1 Cumulative probability in [0,1)
+  //! \param[out] discrete Whether the sample fell on a discrete line
+  //! \return Outgoing energy in the table's own scale, in [eV]
+  double sample_table(int l, double r1, bool& discrete) const;
+
   //! Outgoing energy for a single incoming energy
   struct CTTable {
     Interpolation interpolation;  //!< Interpolation law

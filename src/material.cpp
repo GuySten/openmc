@@ -13,6 +13,7 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
+#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/hdf5_interface.h"
@@ -541,7 +542,7 @@ void Material::collision_stopping_power(double* s_col, bool positron)
   vector<double> e_b_sq;
 
   for (int i = 0; i < element_.size(); ++i) {
-    const auto& elm = *data::elements[element_[i]];
+    const auto& elm = *data::photoatomic[element_[i]];
     double awr = data::nuclides[nuclide_[i]]->awr_;
 
     // Get atomic density of nuclide given atom/weight percent
@@ -658,7 +659,7 @@ void Material::init_bremsstrahlung()
     // using Bragg's additivity rule.
     for (int i = 0; i < n; ++i) {
       // Get pointer to current element
-      const auto& elm = *data::elements[element_[i]];
+      const auto& elm = *data::photoatomic[element_[i]];
       double awr = data::nuclides[nuclide_[i]]->awr_;
 
       // Get atomic density and mass density of nuclide given atom/weight
@@ -822,6 +823,9 @@ void Material::calculate_xs(Particle& p) const
     this->calculate_neutron_xs(p);
   } else if (p.type().is_photon()) {
     this->calculate_photon_xs(p);
+  } else if (p.type().is_electron() || p.type().is_positron()) {
+    if (settings::electron_transport)
+      this->calculate_electron_xs(p);
   }
 }
 
@@ -917,7 +921,7 @@ void Material::calculate_photon_xs(Particle& p) const
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.photon_xs(i_element)};
     if (p.E() != micro.last_E) {
-      data::elements[i_element]->calculate_xs(p);
+      data::photoatomic[i_element]->calculate_xs(p);
     }
 
     // ========================================================================
@@ -932,6 +936,33 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().incoherent += atom_density * micro.incoherent;
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
     p.macro_xs().pair_production += atom_density * micro.pair_production;
+  }
+}
+
+void Material::calculate_electron_xs(Particle& p) const
+{
+  // Add contribution from each nuclide in material
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    // ========================================================================
+    // CALCULATE MICROSCOPIC CROSS SECTION
+
+    // Determine microscopic cross sections for this nuclide
+    int i_element = element_[i];
+
+    // Calculate microscopic cross section for this nuclide
+    const auto& micro {p.electron_xs(i_element)};
+    if (p.E() != micro.last_E) {
+      data::electroatomic[i_element]->calculate_xs(p);
+    }
+
+    // ========================================================================
+    // ADD TO MACROSCOPIC CROSS SECTION
+
+    // Copy atom density of nuclide in material
+    double atom_density = this->atom_density(i, p.density_mult());
+
+    // Add contributions to material macroscopic cross sections
+    p.macro_xs().total += atom_density * micro.total;
   }
 }
 

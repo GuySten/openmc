@@ -333,8 +333,20 @@ double get_reaction_q_value(const Particle& p)
   if (p.type().is_photon() && p.event_mt() == PAIR_PROD) {
     // pair production
     return -2 * MASS_ELECTRON_EV;
-  } else if (p.type() == ParticleType::positron()) {
-    // positron annihilation
+  } else if (p.type() == ParticleType::positron() &&
+             (p.event_mt() == POSITRON_ANNIHILATION ||
+               !settings::electron_transport)) {
+    // Positron annihilation, which releases the pair's rest mass into two
+    // banked photons. The energy balance below subtracts those again, so the
+    // net local deposit is the positron's kinetic energy, which is what this
+    // Q is for.
+    //
+    // Only at the annihilation. Without electron transport a positron has
+    // exactly one collision and that collision IS the annihilation, so the
+    // particle type alone was enough to identify it. A transported positron
+    // collides many times first, and crediting 2 m_e c^2 at every one of them
+    // invents 1.022 MeV of heating per collision: a 20 MeV electron on lead
+    // came out depositing 1851 times the energy it was given.
     return 2 * MASS_ELECTRON_EV;
   } else {
     return 0.0;

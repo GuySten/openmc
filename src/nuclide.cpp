@@ -1143,7 +1143,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
     if (settings::photon_transport) {
       auto element = to_element(name);
       if (data::element_map.find(element) == data::element_map.end() ||
-          data::element_map.at(element) >= data::photoatomic.size()) {
+          data::element_map.at(element) >= data::elements.size()) {
         // Read photon interaction data from HDF5 photon library
         LibraryKey key {Library::Type::photon, element};
         const auto& it = data::library_map.find(key);
@@ -1163,7 +1163,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         // Read element data from HDF5
         hid_t group = open_group(file_id, element.c_str());
-        data::photoatomic.push_back(make_unique<PhotonInteraction>(group));
+        data::elements.push_back(make_unique<PhotonInteraction>(group));
 
         close_group(group);
         file_close(file_id);
@@ -1186,7 +1186,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
           // Read element data from HDF5
           hid_t group = open_group(file_id, element.c_str());
-          data::photoatomic.back()->read_electron_data(group);
+          data::elements.back()->read_electron_data(group);
 
           close_group(group);
           file_close(file_id);

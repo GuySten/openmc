@@ -541,7 +541,7 @@ void Material::collision_stopping_power(double* s_col, bool positron)
   vector<double> e_b_sq;
 
   for (int i = 0; i < element_.size(); ++i) {
-    const auto& elm = *data::photoatomic[element_[i]];
+    const auto& elm = *data::elements[element_[i]];
     double awr = data::nuclides[nuclide_[i]]->awr_;
 
     // Get atomic density of nuclide given atom/weight percent
@@ -658,7 +658,7 @@ void Material::init_bremsstrahlung()
     // using Bragg's additivity rule.
     for (int i = 0; i < n; ++i) {
       // Get pointer to current element
-      const auto& elm = *data::photoatomic[element_[i]];
+      const auto& elm = *data::elements[element_[i]];
       double awr = data::nuclides[nuclide_[i]]->awr_;
 
       // Get atomic density and mass density of nuclide given atom/weight
@@ -920,7 +920,7 @@ void Material::calculate_photon_xs(Particle& p) const
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.photon_xs(i_element)};
     if (p.E() != micro.last_E) {
-      data::photoatomic[i_element]->calculate_xs(p);
+      data::elements[i_element]->calculate_xs(p);
     }
 
     // ========================================================================
@@ -951,7 +951,7 @@ void Material::calculate_electron_xs(Particle& p) const
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.electron_xs(i_element)};
     if (p.E() != micro.last_E) {
-      data::photoatomic[i_element]->calculate_electron_xs(p);
+      data::elements[i_element]->calculate_electron_xs(p);
     }
 
     // ========================================================================

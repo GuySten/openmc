@@ -56,7 +56,8 @@ void PhotonInteraction::read_electron_data(hid_t group)
           "Electron elastic data for {} splits the forward peak out of the "
           "angular distribution (xs_total exceeds xs). This build samples a "
           "partial-wave cross section over the whole angular range and cannot "
-          "use such a library.", name_));
+          "use such a library.",
+          name_));
       }
     }
   }
@@ -102,13 +103,13 @@ void PhotonInteraction::read_electron_data(hid_t group)
   }
   close_group(rgroup);
 
-  // Map each electroionization subshell onto the corresponding subshell of the
-  // photoatomic data, which holds the binding energies and relaxation
-  // transitions. Matching is by ENDF designator: the electroionization list
-  // (NXS(7) subshells) and the photoatomic list need not agree in length or
-  // order, and in particular neither corresponds to the Compton Doppler
-  // broadening shell list (NXS(5) shells).
-    electron_shell_map_.resize(designators.size(), -1);
+  // Map each electroionization subshell onto the corresponding entry of
+  // shells_, which holds the binding energies and relaxation transitions.
+  // Matching is by ENDF designator: the electroionization list (NXS(7)
+  // subshells) and shells_ need not agree in length or order, and in
+  // particular neither corresponds to the Compton Doppler broadening shell
+  // list (NXS(5) shells).
+  electron_shell_map_.resize(designators.size(), -1);
   for (int i = 0; i < designators.size(); ++i) {
     int endf_index = 0;
     int j = 1;
@@ -161,7 +162,8 @@ void PhotonInteraction::calculate_electron_xs(Particle& p) const
   } else {
     // We use upper_bound_index here because sometimes photons are created with
     // energies that exactly match a grid point
-    i_grid = upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
+    i_grid =
+      upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
   }
 
   // check for case where two energy points are the same
@@ -169,7 +171,8 @@ void PhotonInteraction::calculate_electron_xs(Particle& p) const
     ++i_grid;
 
   // calculate interpolation factor
-  double f = (E - electron_energy_(i_grid)) / (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
+  double f = (E - electron_energy_(i_grid)) /
+             (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
 
   auto& xs {p.electron_xs(index_)};
   xs.index_grid = i_grid;
@@ -188,9 +191,9 @@ void PhotonInteraction::calculate_electron_xs(Particle& p) const
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
   // Calculate microscopic bremsstrahlung cross section
-  xs.bremsstrahlung =
-    electron_bremsstrahlung_(i_grid) +
-    f * (electron_bremsstrahlung_(i_grid + 1) - electron_bremsstrahlung_(i_grid));
+  xs.bremsstrahlung = electron_bremsstrahlung_(i_grid) +
+                      f * (electron_bremsstrahlung_(i_grid + 1) -
+                            electron_bremsstrahlung_(i_grid));
 
   // Calculate microscopic total cross section
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;
@@ -202,7 +205,6 @@ double PhotonInteraction::elastic_scatter(double E, uint64_t* seed) const
   return elastic_angle_.sample(E, seed);
 }
 
-
 double PhotonInteraction::excitation(double E) const
 {
   return E - excitation_energy_loss_(E);
@@ -212,10 +214,10 @@ void PhotonInteraction::ionization(Particle& p, int i_shell) const
 {
   double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
-  // Binding energies live on the photoatomic subshell list. Note this is NOT
-  // PhotonInteraction::binding_energy_, which belongs to the shorter Compton
-  // Doppler broadening shell list and would be indexed out of bounds here.
-    double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
+  // Binding energies live on shells_. Note this is NOT binding_energy_, which
+  // belongs to the shorter Compton Doppler broadening shell list and would be
+  // indexed out of bounds here.
+  double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
 
   // The scattered primary must be left with positive energy. A sampled
   // knock-on energy that violates this would give a negative energy electron
@@ -263,9 +265,9 @@ int PhotonInteraction::sample_ionization_shell(Particle& p) const
   int i_shell;
   double prob = 0.0;
   for (i_shell = 0; i_shell < n_shell; ++i_shell) {
-    double sigma =
-      electroionization_(i_shell, i_grid) +
-      f * (electroionization_(i_shell, i_grid + 1) - electroionization_(i_shell, i_grid));
+    double sigma = electroionization_(i_shell, i_grid) +
+                   f * (electroionization_(i_shell, i_grid + 1) -
+                         electroionization_(i_shell, i_grid));
     // Increment probability to compare to cutoff
     prob += sigma;
     if (prob > cutoff)

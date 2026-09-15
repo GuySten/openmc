@@ -236,9 +236,9 @@ namespace data {
 extern tensor::Tensor<double>
   compton_profile_pz; //! Compton profile momentum grid
 
-//! Photon interaction data for each element
+//! Interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
-extern vector<unique_ptr<PhotonInteraction>> photoatomic;
+extern vector<unique_ptr<PhotonInteraction>> elements;
 
 } // namespace data
 

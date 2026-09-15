@@ -850,7 +850,7 @@ void initialize_data()
   }
 
   if (settings::photon_transport) {
-    for (const auto& elem : data::photoatomic) {
+    for (const auto& elem : data::elements) {
       if (elem->energy_.size() >= 1) {
         int photon = ParticleType::photon().transport_index();
         int n = elem->energy_.size();
@@ -866,7 +866,7 @@ void initialize_data()
       int positron = ParticleType::positron().transport_index();
 
       const std::vector<int> charged = {electron, positron};
-      for (const auto& elem : data::photoatomic) {
+      for (const auto& elem : data::elements) {
         if (elem->energy_.size() >= 1) {
           int n = elem->energy_.size();
           for (auto t : charged) {

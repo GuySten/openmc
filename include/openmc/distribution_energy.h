@@ -103,8 +103,6 @@ public:
   //! \param[in] E Incident particle energy in [eV]
   //! \param[in] refine Sub-intervals per quadrature node
   //! \return Mean outgoing energy in [eV], or a negative value if the
-  //!   distribution is not sampled by the unit-base log-log branch
-  double sampled_mean(double E, int refine = 8) const;
 
 private:
   bool unit_base_; //!< Remap onto the interpolated [E_1, E_K] range?

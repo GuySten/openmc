@@ -71,8 +71,23 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   // Read elastic scattering
   hid_t rgroup = open_group(group, "elastic");
   read_dataset(rgroup, "xs", elastic_);
-  read_dataset(rgroup, "xs_transport", elastic_transport_);
-  read_dataset(rgroup, "xs_total", elastic_total_);
+  // A partial-wave differential cross section covers the whole angular range,
+  // so there is no large-angle/forward-peak split to reconcile. An evaluated
+  // library does have one, and this build has none of the machinery that used
+  // to bridge it, so refuse the data rather than transport it wrongly.
+  if (object_exists(rgroup, "xs_total")) {
+    tensor::Tensor<double> total;
+    read_dataset(rgroup, "xs_total", total);
+    for (int i = 0; i < total.size(); ++i) {
+      if (total(i) > elastic_(i) * (1.0 + 1e-9)) {
+        fatal_error(fmt::format(
+          "Electron elastic data for {} splits the forward peak out of the "
+          "angular distribution (xs_total exceeds xs). This build samples a "
+          "partial-wave cross section over the whole angular range and cannot "
+          "use such a library.", name_));
+      }
+    }
+  }
   hid_t dist_group = open_group(rgroup, "distribution");
   // Interpolate between the tabulated distributions log-log in energy rather
   // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
@@ -89,10 +104,6 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
   close_group(dist_group);
   close_group(rgroup);
-
-  // Must follow elastic_angle_: the rescale factor is measured against the
-  // mean that distribution actually samples.
-  this->compute_mean_deflection();
 
   // Read excitation
   rgroup = open_group(group, "excitation");
@@ -162,73 +173,7 @@ ElectronInteraction::ElectronInteraction(hid_t group)
   bremsstrahlung_dist_ = make_unique<ContinuousTabular>(egroup);
   close_group(egroup);
   close_group(dist_group);
-  // Average emitted photon energy, if the evaluation carries one. Older
-  // libraries do not, and the sampling then runs unanchored as before.
-  if (object_exists(rgroup, "mean_energy")) {
-    hid_t mdset = open_dataset(rgroup, "mean_energy");
-    brems_mean_energy_ = Tabulated1D {mdset};
-    has_brems_mean_energy_ = true;
-    close_dataset(mdset);
-  }
   close_group(rgroup);
-
-  // Must follow bremsstrahlung_dist_: the factor is measured against the mean
-  // that distribution actually samples.
-  this->compute_brems_rescale();
-}
-
-//! Factor putting the sampled photon energy onto the tabulated mean
-//
-//! Exactly the elastic story one channel over. The bremsstrahlung spectra are
-//! tabulated on nine incident energies from 10 eV to 100 GeV, with nothing at
-//! all between 12.25 MeV and 100 GeV. At those nine energies the sampled mean
-//! reproduces BREML to better than half a percent, so the spectra themselves
-//! are sound; it is the interpolation between them that drifts, running about
-//! 4% high around 2-4 MeV and 3.5% low at 21 MeV for carbon, rising to 5% low
-//! at 30 MeV. Multiplied through by the bremsstrahlung cross section that is a
-//! radiative stopping power wrong by the same amount, which moves both the
-//! range and the width of the fall-off.
-//!
-//! As with the elastic rescale, this is an affine stretch: the second moment
-//! moves as the square of the factor. Here that is wanted rather than merely
-//! tolerated, since radiative straggling is carried by the hard end of the
-//! spectrum that the interpolation is losing.
-void ElectronInteraction::compute_brems_rescale()
-{
-  if (!has_brems_mean_energy_)
-    return;
-
-  int n = energy_.size();
-  brems_rescale_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    double E = energy_(i);
-    double target = brems_mean_energy_(E);
-    double sampled = bremsstrahlung_dist_->sampled_mean(E);
-    brems_rescale_[i] =
-      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
-  }
-}
-
-double ElectronInteraction::brems_rescale(double E) const
-{
-  int n = brems_rescale_.size();
-  if (n == 0)
-    return 1.0;
-  if (E <= energy_(0))
-    return brems_rescale_[0];
-  if (E >= energy_(n - 1))
-    return brems_rescale_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return brems_rescale_[i];
-
-  // The factor is of order one and varies smoothly, so a linear blend in
-  // log-energy is plenty.
-  double f = std::log(E / e0) / std::log(e1 / e0);
-  return (1.0 - f) * brems_rescale_[i] + f * brems_rescale_[i + 1];
 }
 
 void ElectronInteraction::calculate_xs(Particle& p) const
@@ -260,11 +205,7 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.interp_factor = f;
 
   // Calculate microscopic elastic cross section
-  // The total elastic cross section, peak included: the peak is sampled as a
-  // collision like any other (see elastic_scatter), not folded into the mean
-  // deflection of the tabulated part.
-  xs.elastic = elastic_total_(i_grid) +
-               f * (elastic_total_(i_grid + 1) - elastic_total_(i_grid));
+  xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
 
   // Calculate microscopic excitation cross section
   xs.excitation =
@@ -285,271 +226,12 @@ void ElectronInteraction::calculate_xs(Particle& p) const
   xs.last_E = p.E();
 }
 
-namespace {
-
-//! The forward elastic peak
-//
-//! The evaluation tabulates the angular distribution only out to
-//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
-//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
-//! angle eta. MT526 minus MT525 gives the cross section the peak carries, so
-//! the evaluation supplies everything needed to sample it: rate, shape and
-//! range. Below the energy at which the peak opens the two are equal.
-//!
-//! 1-mu at the upper end of the tabulated distributions. Verified against
-//! every table of every element when the library is converted; see
-//! openmc/data/electron.py.
-constexpr double PEAK_CUTOFF {1.0e-6};
-
-//! Moliere's screening angle eta for the in-peak screened-Rutherford form,
-//! with the low-energy correction Seltzer recommends -- the same form ITS and
-//! MCNP use. Negative on a non-physical energy, which the callers handle.
-double peak_screening(int Z, double E)
-{
-  double e_total = E + MASS_ELECTRON_EV;
-  double pc =
-    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
-  if (pc <= 0.0)
-    return -1.0;
-  double tau = E / MASS_ELECTRON_EV;
-  double beta = pc / e_total;
-
-  // FINE_STRUCTURE is the INVERSE fine-structure constant, 137.036. Seltzer's
-  // form wants alpha itself in both places, so both divide by it. Using it as
-  // alpha inflates eta by 137^4 times the Coulomb term -- 7.5e14 for carbon at
-  // 5 MeV -- which drives w = X0/(2*eta + X0) to zero and makes
-  // peak_mean_deflection return a flat X0/2 for every element at every energy.
-  double screen = MASS_ELECTRON_EV / (FINE_STRUCTURE * 0.885 * pc);
-  double coulomb = Z / (FINE_STRUCTURE * beta);
-  return 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
-         (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
-}
-
-//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
-//
-//! The first moment of the screened-Rutherford form over the peak depends only
-//! on eta and the cutoff -- the normalization C cancels -- so it can be
-//! evaluated without reference to the tables the peak is missing from. It must
-//! agree with what sample_peak_deflection() actually produces, or the
-//! bookkeeping in compute_mean_deflection() double-counts or loses deflection.
-double peak_mean_deflection(int Z, double E)
-{
-  constexpr double X0 {PEAK_CUTOFF};
-  double eta = peak_screening(Z, E);
-  if (eta < 0.0)
-    return 0.5 * X0;
-
-  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
-  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
-  // L is a difference of two terms that are both X0/a to leading order and is
-  // itself only half its square, which is why it is left to log1pmx.
-  //
-  // Both ends of the grid are extreme: the peak is far narrower than the
-  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
-  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
-  // accurate throughout, but a double approaching 1 stops carrying its
-  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
-  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
-  // So pass the complement in directly once w is large, where log(q) + w has
-  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
-  // exact to rounding on its own side of the handover.
-  double a = 2.0 * eta;
-  double w = X0 / (a + X0);
-  double q = a / (a + X0);
-  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
-  return -a * (a + X0) * L / X0;
-}
-
-//! Sample 1-mu inside the forward peak from C/(2*eta + 1-mu)^2 on [0, X0]
-//
-//! The cumulative of that form is F(t) = t*(X0+a)/(X0*(t+a)) with a = 2*eta,
-//! which inverts in closed form. The denominator is X0*(1-xi) + a, so it stays
-//! positive however narrow the peak is, and xi = 1 returns exactly X0.
-double sample_peak_deflection(int Z, double E, uint64_t* seed)
-{
-  constexpr double X0 {PEAK_CUTOFF};
-  double eta = peak_screening(Z, E);
-  if (eta < 0.0)
-    return 0.5 * X0;
-  double a = 2.0 * eta;
-  double xi = prn(seed);
-  return a * xi * X0 / (X0 * (1.0 - xi) + a);
-}
-
-} // namespace
-
 double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
 {
-  // The peak is the larger channel by far once it opens -- 93% of elastic
-  // collisions for carbon at 21 MeV -- and its deflections are all under
-  // 1.4 mrad. Sampling it is what keeps the multiply-scattered distribution
-  // right at every order: reproducing the peak and the tables together tracks
-  // ELSEPA to within 3% from the first Legendre moment out to the thousandth,
-  // while folding the peak's first moment into the tabulated part instead
-  // matches only the low orders and falls to half by l = 1024.
-  if (prn(seed) < this->elastic_peak_fraction(E))
-    return 1.0 - sample_peak_deflection(Z_, E, seed);
-
-  double mu = elastic_angle_.sample(E, seed);
-
-  // The angular tables are spaced far too sparsely to interpolate between:
-  // for aluminium there is none between 256 keV and 10 MeV, an interval across
-  // which 1-<mu> falls by a factor of 35. Whatever is done with them, the mean
-  // deflection in that gap is a guess.
-  //
-  // It does not have to be. EPRDATA14 tabulates the transport-corrected
-  // elastic cross section on the same dense grid as the cross sections, and it
-  // gives the first moment of the angular distribution directly. Use it to set
-  // the mean deflection and let the tables supply only the shape, by scaling
-  // the sampled deflection to the tabulated first moment.
-  //
-  // The first moment is what governs multiple scattering, so getting it right
-  // matters far more than the detail of the shape between tables. That the
-  // target is trustworthy has been checked against partial-wave theory: EEDL's
-  // transport cross section for iron agrees with NIST SRD 64 (ELSEPA) to a
-  // median of 0.5% from 1 keV to 300 keV, and the tabulated angular
-  // distribution reproduces both the first and second moments there to 0.3%.
-  //
-  // The size of the correction varies far more than an earlier version of this
-  // comment claimed. At and below a few hundred keV, where the tables are
-  // closely spaced, the factor sits within about 1% of unity and the sampling
-  // is left essentially untouched. Deep inside a sparse interval it does real
-  // work: without it the first moment for tantalum at 1 MeV is 19% below the
-  // tabulated transport cross section, and for beryllium 19% above.
-  //
-  // The cost is the shape: this is an affine stretch of 1-mu, so the second
-  // moment moves as the square of the factor. That is a deliberate trade --
-  // PENELOPE avoids it by fitting a DCS to match both moments, but that needs
-  // a second transport cross section, which EPICS does not tabulate.
-  double factor = this->elastic_rescale(E);
-  double deflection = (1.0 - mu) * factor;
-  // 1-mu cannot exceed 2; a rescaling that overshoots means exact backscatter
-  return 1.0 - std::min(2.0, deflection);
+  return elastic_angle_.sample(E, seed);
 }
 
 
-//! Mean deflection 1-<mu> of the tabulated large-angle distribution
-//
-//! The transport-corrected cross section is the first moment of the *total*
-//! elastic cross section, peak included, while the angular tables describe
-//! only the large-angle part. Take the peak's contribution back out before
-//! forming the ratio, or the deflection is overstated wherever the peak
-//! carries appreciable cross section: by 2% at 10 MeV in aluminium, rising to
-//! 23% at 66 MeV. Below the energy at which the peak opens up the correction
-//! is identically zero, the evaluation having sigma_total == sigma_elastic
-//! there.
-void ElectronInteraction::compute_mean_deflection()
-{
-  int n = energy_.size();
-  elastic_deflection_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    if (elastic_(i) <= 0.0) {
-      elastic_deflection_[i] = 0.0;
-      continue;
-    }
-    double peak = elastic_total_(i) - elastic_(i);
-    double moment = elastic_transport_(i);
-    if (peak > 0.0)
-      moment -= peak * peak_mean_deflection(Z_, energy_(i));
-    elastic_deflection_[i] = moment > 0.0 ? moment / elastic_(i) : 0.0;
-  }
-
-  // Factor that puts the sampled deflection onto the tabulated transport cross
-  // section. The denominator is the mean sample() actually produces, not
-  // mean_deflection(): see AngleDistribution::sampled_mean_deflection. Using
-  // the latter left the first moment up to 9% short of its own target deep
-  // inside a sparse interval, and for iron at 1 MeV pushed it the wrong way.
-  //
-  // Computed here, once, because the quadrature behind it is far too expensive
-  // to repeat per collision.
-  elastic_rescale_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    double target = elastic_deflection_[i];
-    double sampled = elastic_angle_.sampled_mean_deflection(energy_(i));
-    elastic_rescale_[i] =
-      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
-  }
-
-  // Probability that an elastic collision lands in the peak. xs.elastic is now
-  // the total, so this is what splits it.
-  elastic_peak_frac_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    double total = elastic_total_(i);
-    elastic_peak_frac_[i] =
-      total > 0.0 ? std::max(0.0, (total - elastic_(i)) / total) : 0.0;
-  }
-}
-
-double ElectronInteraction::elastic_peak_fraction(double E) const
-{
-  int n = energy_.size();
-  if (n == 0)
-    return 0.0;
-  if (E <= energy_[0])
-    return elastic_peak_frac_[0];
-  if (E >= energy_(n - 1))
-    return elastic_peak_frac_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return elastic_peak_frac_[i];
-
-  // Linear in E, matching how calculate_xs interpolates the cross section this
-  // fraction divides.
-  double f = (E - e0) / (e1 - e0);
-  return (1.0 - f) * elastic_peak_frac_[i] + f * elastic_peak_frac_[i + 1];
-}
-
-double ElectronInteraction::elastic_rescale(double E) const
-{
-  int n = energy_.size();
-  if (n == 0)
-    return 1.0;
-  if (E <= energy_[0])
-    return elastic_rescale_[0];
-  if (E >= energy_(n - 1))
-    return elastic_rescale_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return elastic_rescale_[i];
-
-  // The factor is of order one and varies smoothly, so a linear blend in
-  // log-energy is plenty -- unlike 1-<mu> itself, which spans decades.
-  double f = std::log(E / e0) / std::log(e1 / e0);
-  return (1.0 - f) * elastic_rescale_[i] + f * elastic_rescale_[i + 1];
-}
-
-double ElectronInteraction::mean_deflection(double E) const
-{
-  int n = energy_.size();
-  if (E <= energy_[0])
-    return elastic_deflection_[0];
-  if (E >= energy_(n - 1))
-    return elastic_deflection_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return elastic_deflection_[i];
-
-  double r0 = elastic_deflection_[i];
-  double r1 = elastic_deflection_[i + 1];
-
-  // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
-  // logarithmically; a linear interpolation would badly overshoot in between.
-  if (r0 > 0.0 && r1 > 0.0) {
-    double f = std::log(E / e0) / std::log(e1 / e0);
-    return std::exp((1.0 - f) * std::log(r0) + f * std::log(r1));
-  }
-  double f = (E - e0) / (e1 - e0);
-  return (1.0 - f) * r0 + f * r1;
-}
 double ElectronInteraction::excitation(double E) const
 {
   return E - excitation_energy_loss_(E);
@@ -710,10 +392,6 @@ double bremsstrahlung_cos_theta(
 void ElectronInteraction::bremsstrahlung(Particle& p) const
 {
   double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
-  // Put the first moment onto the tabulated one. A photon cannot carry away
-  // more than the electron has, so a factor above unity is clipped at the
-  // incident energy rather than allowed to produce a negative electron.
-  E_photon = std::min(p.E(), E_photon * this->brems_rescale(p.E()));
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;

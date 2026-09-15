@@ -1,5 +1,7 @@
 #include "openmc/electron.h"
 
+#include <cstdlib>
+
 #include "openmc/array.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
@@ -394,7 +396,13 @@ void ElectronInteraction::compute_mean_deflection()
       elastic_deflection_[i] = 0.0;
       continue;
     }
-    double peak = elastic_total_(i) - elastic_(i);
+    // Diagnostic escape hatch, penelope-xcheck only: OPENMC_NO_ELASTIC_PEAK=1
+    // drops the subtraction so the whole transport cross section is handed to
+    // the sampled distribution. That overstates the deflection by the peak's
+    // share of sigma_tr -- 1.2% for carbon at 4.27 MeV, 11.1% at 21.13 -- and
+    // so bounds what the peak treatment can possibly be worth.
+    static const bool no_peak = std::getenv("OPENMC_NO_ELASTIC_PEAK") != nullptr;
+    double peak = no_peak ? 0.0 : elastic_total_(i) - elastic_(i);
     double moment = elastic_transport_(i);
     if (peak > 0.0)
       moment -= peak * peak_mean_deflection(Z_, energy_(i));

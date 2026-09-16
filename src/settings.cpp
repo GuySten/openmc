@@ -651,8 +651,22 @@ void read_settings_xml(pugi::xml_node root)
                   "multigroup mode");
     }
 
-    if (electron_transport)
-      photon_transport = true;
+    if (electron_transport) {
+      // Electron transport is meaningless without photon transport, and the
+      // per-element data it needs is only loaded when photon transport is on.
+      if (!photon_transport) {
+        warning("Electron transport requires photon transport; enabling it.");
+        photon_transport = true;
+      }
+      // The thick-target approximation stands in for electrons that are not
+      // transported, and sample_electron_reaction() ignores it when they are.
+      // Turning it off here keeps its tables from being built at all.
+      if (electron_treatment == ElectronTreatment::TTB) {
+        warning("Electron treatment 'ttb' is ignored when electron transport "
+                "is enabled; bremsstrahlung is sampled per event instead.");
+      }
+      electron_treatment = ElectronTreatment::LED;
+    }
   }
 
   // Check for photonuclear physics

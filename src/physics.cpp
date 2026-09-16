@@ -6,7 +6,6 @@
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
-#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/ifp.h"
@@ -360,7 +359,7 @@ void sample_photon_reaction(Particle& p)
   // Sample element within material
   int i_element = sample_photon_element(p);
   const auto& micro {p.photon_xs(i_element)};
-  const auto& element {*data::photoatomic[i_element]};
+  const auto& element {*data::elements[i_element]};
 
   // Calculate photon energy over electron rest mass equivalent
   double alpha = p.E() / MASS_ELECTRON_EV;
@@ -571,7 +570,7 @@ void sample_electron_reaction(Particle& p)
   // Sample element within material
   int i_element = sample_electron_element(p);
   const auto& micro {p.electron_xs(i_element)};
-  const auto& element {*data::electroatomic[i_element]};
+  const auto& element {*data::elements[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
@@ -581,7 +580,7 @@ void sample_electron_reaction(Particle& p)
   // Mott scattering
   prob += micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(p.E(), p.current_seed());
+    p.mu() = element.elastic_scatter(0, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
@@ -597,7 +596,7 @@ void sample_electron_reaction(Particle& p)
     return;
   }
 
-  // Ionization
+  // Moller scattering
   prob += micro.ionization;
   if (prob > cutoff) {
     // Sample which atomic subshell was ionized based on the subshell cross
@@ -606,25 +605,27 @@ void sample_electron_reaction(Particle& p)
 
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    // There is no ENDF MT for total electroionization; 534 upwards name the
+    // individual subshells, which is what the data resolves anyway
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
-    // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data. i_element indexes data::electroatomic, so the photoatomic index
-    // must be taken from the element rather than reused directly.
-    if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
-      if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
-      }
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
     }
     return;
   }
 
-  // Bremsstrahlung
-  prob += micro.bremsstrahlung;
-  if (prob > cutoff) {
-    element.bremsstrahlung(p);
-    return;
-  }
+  // Bremsstrahlung. Last channel, so it takes whatever is left: the running
+  // total is accumulated in a different order from xs.total and rounding must
+  // not be able to leave the particle with no reaction at all.
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 void sample_positron_reaction(Particle& p)
@@ -655,7 +656,7 @@ void sample_positron_reaction(Particle& p)
   // Sample element within material
   int i_element = sample_electron_element(p);
   const auto& micro {p.electron_xs(i_element)};
-  const auto& element {*data::electroatomic[i_element]};
+  const auto& element {*data::elements[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
@@ -665,7 +666,7 @@ void sample_positron_reaction(Particle& p)
   // Mott scattering
   prob += micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(p.E(), p.current_seed());
+    p.mu() = element.elastic_scatter(1, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
@@ -681,34 +682,63 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
-  // Ionization
+  // Bhabha scattering, below the Moller kinematic limit: the evaluated
+  // spectrum reweighted by the free Bhabha-to-Moller ratio. The cross section
+  // is a majorant, so a rejected transfer is a real outcome -- the positron
+  // simply carries on unchanged.
   prob += micro.ionization;
   if (prob > cutoff) {
-    // Sample which atomic subshell was ionized based on the subshell cross
-    // sections
     int i_shell = element.sample_ionization_shell(p);
+    if (!element.ionization(p, i_shell))
+      // The reweighting declined this collision, so nothing changed. Leaving
+      // event() as KILL is correct here: the heating balance then evaluates to
+      // zero, which is right for a collision that did not happen.
+      return;
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
-    // Generate secondary knock-on electron and adjust primary energy
-    element.ionization(p, i_shell);
-
-    // Trigger relaxation (Fluorescence / Auger) via the companion photoatomic
-    // data. i_element indexes data::electroatomic, so the photoatomic index
-    // must be taken from the element rather than reused directly.
-    if (settings::atomic_relaxation && i_shell >= 0) {
-      const auto& photoatomic = *data::photoatomic[element.i_photoatomic_];
-      if (photoatomic.has_atomic_relaxation_) {
-        photoatomic.atomic_relaxation(element.shell_map_[i_shell], p);
-      }
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
     }
     return;
   }
 
-  // Bremsstrahlung
-  prob += micro.bremsstrahlung;
+  // Bhabha scattering, above that limit: transfers the evaluated spectra
+  // cannot reach at all, far above every binding energy and so exactly where
+  // the free cross section is the right description
+  prob += micro.bhabha;
   if (prob > cutoff) {
-    element.bremsstrahlung(p);
+    int i_shell = element.sample_bhabha_shell(p);
+    element.bhabha(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
+    }
     return;
   }
+
+  // Two-photon annihilation in flight, which ends the history here rather
+  // than at the cutoff and sends out photons of up to T + m_e c^2 instead of
+  // a 511 keV pair
+  prob += micro.annihilation;
+  if (prob > cutoff) {
+    element.annihilation(p);
+    return;
+  }
+
+  // Bremsstrahlung. Last channel, so it takes whatever is left rather than
+  // letting rounding drop the collision (see sample_electron_reaction).
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 int sample_nuclide(Particle& p)

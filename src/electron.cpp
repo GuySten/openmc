@@ -1,15 +1,15 @@
-#include "openmc/electron.h"
+#include "openmc/photon.h"
 
 #include "openmc/array.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
+#include "openmc/material.h"
 #include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
-#include "openmc/photon.h"
 #include "openmc/physics.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -18,6 +18,7 @@
 
 #include "openmc/tensor.h"
 
+#include <algorithm> // for max, min
 #include <cmath>
 #include <fmt/core.h>
 #include <limits>
@@ -30,69 +31,49 @@ namespace openmc {
 // Global variables
 //==============================================================================
 
-namespace data {
-
-std::unordered_map<std::string, int> electron_map;
-vector<unique_ptr<ElectronInteraction>> electroatomic;
-
-} // namespace data
-
 //==============================================================================
-// ElectronInteraction implementation
+// Electron interaction data, read into Element
 //==============================================================================
 
-ElectronInteraction::ElectronInteraction(hid_t group)
+void Element::read_electron_data(hid_t group)
 {
-  // Set index of element in global vector
-  index_ = data::electroatomic.size();
+  // name_, Z_ and index_ are already set from the photoatomic data; only the
+  // electron grid and reactions are read here.
+  read_dataset(group, "energy", electron_energy_);
 
-  // Get name of nuclide from group, removing leading '/'
-  name_ = object_name(group).substr(1);
-  data::electron_map[name_] = index_;
-
-  // Resolve the index of this element in data::photoatomic, which is needed
-  // for subshell binding energies and atomic relaxation. The photoatomic data
-  // for an element is always loaded immediately before its electron data, so
-  // the entry exists by now. Do not assume the two indices coincide.
-  auto it = data::element_map.find(name_);
-  if (it == data::element_map.end()) {
-    fatal_error(fmt::format("Photoatomic data for element {} must be loaded "
-                            "before its electron data.",
-      name_));
-  }
-  i_photoatomic_ = it->second;
-
-  // Get atomic number
-  read_attribute(group, "Z", Z_);
-
-  // Determine number of energies and read energy grid
-  read_dataset(group, "energy", energy_);
-
-  // Read elastic scattering
+  // Read elastic scattering, for both projectile charges. They differ little
+  // in rate -- the integrated cross sections agree to under a per cent, which
+  // is the Born limit and is symmetric in the charge -- and a great deal in
+  // first moment, because a positron is repelled by the nucleus and stays out
+  // of the small-impact-parameter region that makes the large deflections.
   hid_t rgroup = open_group(group, "elastic");
-  read_dataset(rgroup, "xs", elastic_);
-  read_dataset(rgroup, "xs_transport", elastic_transport_);
-  read_dataset(rgroup, "xs_total", elastic_total_);
-  hid_t dist_group = open_group(rgroup, "distribution");
-  // Interpolate between the tabulated distributions log-log in energy rather
-  // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
-  // this TAB2, but that rule assumes the tables are close enough together for
-  // a linear blend of them to mean something, and here they are not.
-  //
-  // Elastic angular data is tabulated on a sparse, geometric energy grid --
-  // for aluminium there is no table between 256 keV and 10 MeV, an interval
-  // across which 1-<mu> falls by a factor of 35. The default linear stochastic
-  // interpolation picks the low-energy, wide-angle table 92% of the time right
-  // across that gap, over-scattering by a factor of about 3.5. That leaves the
-  // stopping power and CSDA range correct, so a range check passes, but stops
-  // electrons penetrating and drives depth-deposition profiles far too shallow.
-  elastic_angle_ = AngleDistribution {dist_group, Interpolation::log_log};
-  close_group(dist_group);
+  if (attribute_exists(rgroup, "energy_min")) {
+    read_attribute(rgroup, "energy_min", elastic_energy_min_);
+    read_attribute(rgroup, "energy_max", elastic_energy_max_);
+  }
+  for (int q = 0; q < 2; ++q) {
+    hid_t qgroup = open_group(rgroup, q == 0 ? "electron" : "positron");
+    read_dataset(qgroup, "xs", elastic_[q]);
+    hid_t qdist = open_group(qgroup, "distribution");
+    // Interpolate between the tabulated distributions log-log in energy rather
+    // than with the lin_lin rule the data carries. EEDL does specify INT=2 for
+    // this TAB2, but that rule assumes the tables are close enough together
+    // for a linear blend of them to mean something, and here they are not.
+    //
+    // The partial-wave grid is geometric, about fifteen points per decade, and
+    // 1-<mu> falls as a power of the energy across each interval. A linear
+    // blend of two tables a factor of 1.2 apart is a chord across a convex
+    // curve, and picking one of them at random -- what the lin_lin rule
+    // amounts to -- reproduces the arithmetic mean of the two rather than the
+    // power law. Blending the deflection geometrically follows the trend
+    // instead: measured against a leave-one-out reconstruction it recovers
+    // <1-mu> to a few tenths of a per cent, against a few per cent for the
+    // default rule.
+    elastic_angle_[q] = AngleDistribution {qdist, Interpolation::log_log};
+    close_group(qdist);
+    close_group(qgroup);
+  }
   close_group(rgroup);
-
-  // Must follow elastic_angle_: the rescale factor is measured against the
-  // mean that distribution actually samples.
-  this->compute_mean_deflection();
 
   // Read excitation
   rgroup = open_group(group, "excitation");
@@ -104,29 +85,27 @@ ElectronInteraction::ElectronInteraction(hid_t group)
 
   // Read ionization
   rgroup = open_group(group, "ionization");
-  read_dataset(rgroup, "xs", ionization_);
+  read_dataset(rgroup, "xs", electroionization_);
   vector<std::string> designators;
   read_attribute(rgroup, "designators", designators);
   for (auto designator : designators) {
     hid_t shell_group = open_group(rgroup, designator.c_str());
-    hid_t egroup = open_group(shell_group, "energy");
-    // Knock-on spectra are anchored at the subshell binding energy; they must
-    // not be remapped onto the interpolated endpoint range. See the note on
-    // the ContinuousTabular constructor.
-    ionization_dist_.push_back(make_unique<ContinuousTabular>(egroup, false));
-    close_group(egroup);
+    // Knock-on spectra are anchored at the subshell binding energy and end at
+    // the kinematic limit, so they are neither self-similar nor safe to remap
+    // onto an interpolated endpoint range; see ElectroionizationSpectrum.
+    ionization_dist_.push_back(
+      make_unique<ElectroionizationSpectrum>(shell_group));
     close_group(shell_group);
   }
   close_group(rgroup);
 
-  // Map each electroionization subshell onto the corresponding subshell of the
-  // photoatomic data, which holds the binding energies and relaxation
-  // transitions. Matching is by ENDF designator: the electroionization list
-  // (NXS(7) subshells) and the photoatomic list need not agree in length or
-  // order, and in particular neither corresponds to the Compton Doppler
-  // broadening shell list (NXS(5) shells).
-  const auto& photoatomic {*data::photoatomic[i_photoatomic_]};
-  shell_map_.resize(designators.size(), -1);
+  // Map each electroionization subshell onto the corresponding entry of
+  // shells_, which holds the binding energies and relaxation transitions.
+  // Matching is by ENDF designator: the electroionization list (NXS(7)
+  // subshells) and shells_ need not agree in length or order, and in
+  // particular neither corresponds to the Compton Doppler broadening shell
+  // list (NXS(5) shells).
+  electron_shell_map_.resize(designators.size(), -1);
   for (int i = 0; i < designators.size(); ++i) {
     int endf_index = 0;
     int j = 1;
@@ -138,14 +117,14 @@ ElectronInteraction::ElectronInteraction(hid_t group)
       ++j;
     }
 
-    for (int k = 0; k < photoatomic.shells_.size(); ++k) {
-      if (photoatomic.shells_[k].index_subshell == endf_index) {
-        shell_map_[i] = k;
+    for (int k = 0; k < shells_.size(); ++k) {
+      if (shells_[k].index_subshell == endf_index) {
+        electron_shell_map_[i] = k;
         break;
       }
     }
 
-    if (shell_map_[i] < 0) {
+    if (electron_shell_map_[i] < 0) {
       fatal_error(fmt::format(
         "Electroionization subshell {} of element {} has no counterpart in the "
         "photoatomic data, so its binding energy and relaxation transitions "
@@ -154,382 +133,496 @@ ElectronInteraction::ElectronInteraction(hid_t group)
     }
   }
 
-  // Read bremsstrahlung
+  // Read bremsstrahlung. Only the cross section is here: it is an integral of
+  // the scaled cross sections of the photon library above the threshold stored
+  // alongside it, and the emitted photon energy is sampled from that same
+  // table. Storing the distribution here as well would be storing the same
+  // numbers twice and inviting the rate and the spectrum to drift apart.
   rgroup = open_group(group, "bremsstrahlung");
-  read_dataset(rgroup, "xs", bremsstrahlung_);
-  dist_group = open_group(rgroup, "distribution");
-  hid_t egroup = open_group(dist_group, "energy");
-  bremsstrahlung_dist_ = make_unique<ContinuousTabular>(egroup);
-  close_group(egroup);
-  close_group(dist_group);
-  // Average emitted photon energy, if the evaluation carries one. Older
-  // libraries do not, and the sampling then runs unanchored as before.
-  if (object_exists(rgroup, "mean_energy")) {
-    hid_t mdset = open_dataset(rgroup, "mean_energy");
-    brems_mean_energy_ = Tabulated1D {mdset};
-    has_brems_mean_energy_ = true;
-    close_dataset(mdset);
-  }
+  read_dataset(rgroup, "xs", electron_bremsstrahlung_);
+  read_attribute(rgroup, "photon_cutoff", bremsstrahlung_photon_cutoff_);
   close_group(rgroup);
 
-  // Must follow bremsstrahlung_dist_: the factor is measured against the mean
-  // that distribution actually samples.
-  this->compute_brems_rescale();
+  this->compute_moller_majorant();
+  this->compute_bhabha_xs();
 }
 
-//! Factor putting the sampled photon energy onto the tabulated mean
-//
-//! Exactly the elastic story one channel over. The bremsstrahlung spectra are
-//! tabulated on nine incident energies from 10 eV to 100 GeV, with nothing at
-//! all between 12.25 MeV and 100 GeV. At those nine energies the sampled mean
-//! reproduces BREML to better than half a percent, so the spectra themselves
-//! are sound; it is the interpolation between them that drifts, running about
-//! 4% high around 2-4 MeV and 3.5% low at 21 MeV for carbon, rising to 5% low
-//! at 30 MeV. Multiplied through by the bremsstrahlung cross section that is a
-//! radiative stopping power wrong by the same amount, which moves both the
-//! range and the width of the fall-off.
-//!
-//! As with the elastic rescale, this is an affine stretch: the second moment
-//! moves as the square of the factor. Here that is wanted rather than merely
-//! tolerated, since radiative straggling is carried by the hard end of the
-//! spectrum that the interpolation is losing.
-void ElectronInteraction::compute_brems_rescale()
-{
-  if (!has_brems_mean_energy_)
-    return;
+namespace {
 
-  int n = energy_.size();
-  brems_rescale_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    double E = energy_(i);
-    double target = brems_mean_energy_(E);
-    double sampled = bremsstrahlung_dist_->sampled_mean(E);
-    brems_rescale_[i] =
-      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
+//! The free Moller and Bhabha differential cross sections, as functions of the
+//! fraction eps = W/T of its kinetic energy the projectile transfers
+//
+//! Both carry the same leading constant, so only their shapes are written here
+//! and the constant cancels wherever the two are divided. The coefficients are
+//! PENELOPE's.
+struct FreeCollision {
+  double b1, b2, b3, b4; //!< Bhabha
+  double amol, moller_c; //!< Moller
+
+  explicit FreeCollision(double E)
+  {
+    double gamma = 1.0 + E / MASS_ELECTRON_EV;
+    // ((gamma-1)/gamma)^2, the constant term of the Moller shape and the
+    // common factor of every Bhabha coefficient
+    amol = std::pow((gamma - 1.0) / gamma, 2);
+    double g12 = (gamma + 1.0) * (gamma + 1.0);
+    b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
+    b2 = amol * (3.0 + 1.0 / g12);
+    b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
+    b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
+    moller_c = (2.0 * gamma - 1.0) / (gamma * gamma);
+  }
+
+  double bhabha(double x) const
+  {
+    return (1.0 + x * (-b1 + x * (b2 + x * (-b3 + x * b4)))) / (x * x);
+  }
+
+  double moller(double x) const
+  {
+    double u = 1.0 - x;
+    return 1.0 / (x * x) + 1.0 / (u * u) + amol - moller_c / (x * u);
+  }
+
+  //! Ratio of the two. It tends to 1 as x tends to 0, where both become
+  //! Rutherford's 1/x^2, so it leaves the soft collisions -- which are almost
+  //! all of them -- alone. Relativistically it is 1 - 2x to good accuracy.
+  double ratio(double x) const { return this->bhabha(x) / this->moller(x); }
+};
+
+//! Integral of the Bhabha cross section shape over W, with the leading
+//! constant dropped. Every term is elementary.
+double bhabha_integral(
+  const FreeCollision& c, double E, double W_lo, double W_hi)
+{
+  if (W_hi <= W_lo)
+    return 0.0;
+  double x_lo = W_lo / E;
+  double x_hi = W_hi / E;
+  return (1.0 / x_lo - 1.0 / x_hi - c.b1 * std::log(x_hi / x_lo) +
+           c.b2 * (x_hi - x_lo) - 0.5 * c.b3 * (x_hi * x_hi - x_lo * x_lo) +
+           c.b4 * (x_hi * x_hi * x_hi - x_lo * x_lo * x_lo) / 3.0) /
+         E;
+}
+
+//! 2 pi r_e^2 m_e c^2 in [b eV], the constant both cross sections carry. The
+//! classical electron radius is written as alpha^2 a_0 so that it follows from
+//! the constants already tabulated rather than adding one.
+constexpr double BOHR_RADIUS_CM =
+  PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
+constexpr double COLLISION_CONST =
+  2.0 * PI * 1.0e24 * R_E * R_E * MASS_ELECTRON_EV;
+
+} // namespace
+
+void Element::compute_moller_majorant()
+{
+  int n_energy = electron_energy_.size();
+  moller_majorant_ = tensor::Tensor<double>({static_cast<size_t>(n_energy)});
+
+  // The evaluated knock-on spectra describe a Moller collision. A positron's
+  // spectrum is the same thing reweighted by the ratio of the two free cross
+  // sections: the final state is identical, an electron ejected with W - B, so
+  // whatever the binding does to one it does to the other and it cancels in
+  // the ratio. That is a far weaker assumption than either cross section being
+  // free, and it is the one PENELOPE makes when it applies Moller and Bhabha
+  // per oscillator.
+  //
+  // The reweighting is done by rejection during the collision, so the cross
+  // section has to be a majorant of the true one: the largest the ratio gets
+  // over the accessible transfers. Above about 1 MeV that is 1, the ratio
+  // being 1 - 2x; below it the ratio rises above 1 near x = 0.3 and the
+  // majorant follows it.
+  constexpr int N_SCAN = 512;
+  for (int j = 0; j < n_energy; ++j) {
+    FreeCollision c {electron_energy_(j)};
+    double peak = 1.0;
+    for (int k = 0; k <= N_SCAN; ++k) {
+      // Logarithmic in x, since the ratio varies fastest near the ends
+      double x = std::exp(
+        std::log(1.0e-8) + k * (std::log(0.5) - std::log(1.0e-8)) / N_SCAN);
+      peak = std::max(peak, c.ratio(x));
+    }
+    // A majorant that is a shade too small would bias the sampling, so the
+    // scan's own resolution is paid for here
+    moller_majorant_(j) = peak * 1.001;
   }
 }
 
-double ElectronInteraction::brems_rescale(double E) const
+void Element::compute_bhabha_xs()
 {
-  int n = brems_rescale_.size();
-  if (n == 0)
-    return 1.0;
-  if (E <= energy_(0))
-    return brems_rescale_[0];
-  if (E >= energy_(n - 1))
-    return brems_rescale_[n - 1];
+  int n_shell = electroionization_.shape(0);
+  int n_energy = electron_energy_.size();
+  bhabha_ = tensor::Tensor<double>(
+    {static_cast<size_t>(n_shell), static_cast<size_t>(n_energy)});
 
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return brems_rescale_[i];
+  for (int i = 0; i < n_shell; ++i) {
+    const auto& shell {shells_[electron_shell_map_[i]]};
+    double B = shell.binding_energy;
+    double n_e = shell.num_electrons;
 
-  // The factor is of order one and varies smoothly, so a linear blend in
-  // log-energy is plenty.
-  double f = std::log(E / e0) / std::log(e1 / e0);
-  return (1.0 - f) * brems_rescale_[i] + f * brems_rescale_[i + 1];
+    for (int j = 0; j < n_energy; ++j) {
+      double E = electron_energy_(j);
+      bhabha_(i, j) = 0.0;
+      if (n_e <= 0.0 || E <= B)
+        continue;
+
+      // A Moller collision gives the knock-on at most half of what is left
+      // after the binding energy is paid, so the largest transfer it can make
+      // is (T + B)/2. A positron may transfer everything. The gap between the
+      // two is this channel, and it lies far above every binding energy.
+      double W_lo = 0.5 * (E + B);
+      FreeCollision c {E};
+      double gamma = 1.0 + E / MASS_ELECTRON_EV;
+      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+      bhabha_(i, j) =
+        n_e * COLLISION_CONST / beta_sq * bhabha_integral(c, E, W_lo, E);
+    }
+  }
 }
 
-void ElectronInteraction::calculate_xs(Particle& p) const
+int Element::sample_bhabha_shell(Particle& p) const
+{
+  const auto& xs {p.electron_xs(index_)};
+  int n_shell = bhabha_.shape(0);
+  int i_grid = xs.index_grid;
+  double f = xs.interp_factor;
+
+  double total = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    total +=
+      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+  }
+  double cutoff = prn(p.current_seed()) * total;
+  double prob = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    prob +=
+      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    if (prob > cutoff)
+      return i;
+  }
+  return n_shell - 1;
+}
+
+void Element::bhabha(Particle& p, int i_shell) const
+{
+  double E = p.E();
+  double B = shells_[electron_shell_map_[i_shell]].binding_energy;
+  double W_lo = 0.5 * (E + B);
+  if (W_lo >= E)
+    return;
+
+  // Sample the transfer from 1/W^2 over [W_lo, T] and take the rest of the
+  // Bhabha shape by rejection; it is at most 1 on this interval
+  FreeCollision c {E};
+  double W;
+  while (true) {
+    double xi = prn(p.current_seed());
+    W = W_lo * E / (E - xi * (E - W_lo));
+    if (prn(p.current_seed()) < c.bhabha(W / E) * (W * W) / (E * E))
+      break;
+  }
+
+  this->emit_knock_on(p, W, B, W);
+}
+
+void Element::calculate_electron_xs(Particle& p) const
 {
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
-  int n_grid = energy_.size();
+  int n_grid = electron_energy_.size();
   double E = p.E();
   int i_grid;
-  if (E <= energy_[0]) {
+  if (E <= electron_energy_[0]) {
     i_grid = 0;
-  } else if (E > energy_(n_grid - 1)) {
+  } else if (E > electron_energy_(n_grid - 1)) {
     i_grid = n_grid - 2;
   } else {
     // We use upper_bound_index here because sometimes photons are created with
     // energies that exactly match a grid point
-    i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), E);
+    i_grid =
+      upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
   }
 
   // check for case where two energy points are the same
-  if (energy_(i_grid) == energy_(i_grid + 1))
+  if (electron_energy_(i_grid) == electron_energy_(i_grid + 1))
     ++i_grid;
 
-  // calculate interpolation factor
-  double f = (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));
+  // Calculate interpolation factor, clamped to the tabulated range. Outside it
+  // the factor is unbounded, and extrapolating linearly sends the partials
+  // negative: below the first grid point the elastic cross section then
+  // exceeds the total and the sampler is pinned on the elastic branch for
+  // ever. That is reachable, because the default electron cutoff is zero.
+  double f = (E - electron_energy_(i_grid)) /
+             (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
+  f = std::max(0.0, std::min(1.0, f));
 
   auto& xs {p.electron_xs(index_)};
   xs.index_grid = i_grid;
   xs.interp_factor = f;
 
   // Calculate microscopic elastic cross section
-  xs.elastic = elastic_(i_grid) + f * (elastic_(i_grid + 1) - elastic_(i_grid));
+  int q = p.type().is_positron() ? 1 : 0;
+  xs.elastic =
+    elastic_[q](i_grid) + f * (elastic_[q](i_grid + 1) - elastic_[q](i_grid));
 
   // Calculate microscopic excitation cross section
   xs.excitation =
     excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
 
   // Calculate microscopic ionization cross section
-  const auto ion_i = ionization_.slice(tensor::all, i_grid).sum();
-  const auto ion_ip1 = ionization_.slice(tensor::all, i_grid + 1).sum();
+  const auto ion_i = electroionization_.slice(tensor::all, i_grid).sum();
+  const auto ion_ip1 = electroionization_.slice(tensor::all, i_grid + 1).sum();
   xs.ionization = ion_i + f * (ion_ip1 - ion_i);
 
-  // Calculate microscopic bremsstrahlung cross section
-  xs.bremsstrahlung =
-    bremsstrahlung_(i_grid) +
-    f * (bremsstrahlung_(i_grid + 1) - bremsstrahlung_(i_grid));
+  xs.bhabha = 0.0;
+  if (p.type().is_positron()) {
+    // A positron's spectrum is the evaluated one reweighted by the free
+    // Bhabha-to-Moller ratio, applied by rejection inside the collision. That
+    // makes this a majorant rather than the cross section itself: raising it
+    // here and declining a fraction of the collisions there leaves the rate at
+    // the reweighted integral without anyone having to evaluate that integral.
+    xs.ionization *=
+      moller_majorant_(i_grid) +
+      f * (moller_majorant_(i_grid + 1) - moller_majorant_(i_grid));
+
+    // Transfers above the Moller limit, which the evaluated spectra cannot
+    // reach at all, are a channel of their own
+    const auto bha_i = bhabha_.slice(tensor::all, i_grid).sum();
+    const auto bha_ip1 = bhabha_.slice(tensor::all, i_grid + 1).sum();
+    xs.bhabha = bha_i + f * (bha_ip1 - bha_i);
+  }
+
+  // In-flight annihilation is a channel a positron has and an electron does
+  // not. Over a whole slowing-down history it is far from rare: about one
+  // positron in six started at 21 MeV annihilates before reaching the cutoff.
+  xs.annihilation = p.type().is_positron() ? this->annihilation_xs(E) : 0.0;
+
+  // Calculate microscopic bremsstrahlung cross section. A positron radiates
+  // less than an electron of the same energy, being repelled by the nucleus
+  // rather than attracted to it. The ratio is independent of the emitted
+  // photon energy, so it scales the rate here and leaves the spectrum that
+  // sample_bremsstrahlung_energy() draws from untouched.
+  xs.bremsstrahlung = electron_bremsstrahlung_(i_grid) +
+                      f * (electron_bremsstrahlung_(i_grid + 1) -
+                            electron_bremsstrahlung_(i_grid));
+  if (p.type().is_positron()) {
+    xs.bremsstrahlung *= salvat_factor(Z_ * Z_, E);
+  }
 
   // Calculate microscopic total cross section
-  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bremsstrahlung;
+  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bhabha +
+             xs.annihilation + xs.bremsstrahlung;
   xs.last_E = p.E();
+  xs.last_q = q;
 }
 
-double ElectronInteraction::elastic_scatter(double E, uint64_t* seed) const
+double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
 {
-  double mu = elastic_angle_.sample(E, seed);
-
-  // The angular tables are spaced far too sparsely to interpolate between:
-  // for aluminium there is none between 256 keV and 10 MeV, an interval across
-  // which 1-<mu> falls by a factor of 35. Whatever is done with them, the mean
-  // deflection in that gap is a guess.
-  //
-  // It does not have to be. EPRDATA14 tabulates the transport-corrected
-  // elastic cross section on the same dense grid as the cross sections, and it
-  // gives the first moment of the angular distribution directly. Use it to set
-  // the mean deflection and let the tables supply only the shape, by scaling
-  // the sampled deflection to the tabulated first moment.
-  //
-  // The first moment is what governs multiple scattering, so getting it right
-  // matters far more than the detail of the shape between tables. That the
-  // target is trustworthy has been checked against partial-wave theory: EEDL's
-  // transport cross section for iron agrees with NIST SRD 64 (ELSEPA) to a
-  // median of 0.5% from 1 keV to 300 keV, and the tabulated angular
-  // distribution reproduces both the first and second moments there to 0.3%.
-  //
-  // The size of the correction varies far more than an earlier version of this
-  // comment claimed. At and below a few hundred keV, where the tables are
-  // closely spaced, the factor sits within about 1% of unity and the sampling
-  // is left essentially untouched. Deep inside a sparse interval it does real
-  // work: without it the first moment for tantalum at 1 MeV is 19% below the
-  // tabulated transport cross section, and for beryllium 19% above.
-  //
-  // The cost is the shape: this is an affine stretch of 1-mu, so the second
-  // moment moves as the square of the factor. That is a deliberate trade --
-  // PENELOPE avoids it by fitting a DCS to match both moments, but that needs
-  // a second transport cross section, which EPICS does not tabulate.
-  double factor = this->elastic_rescale(E);
-  double deflection = (1.0 - mu) * factor;
-  // 1-mu cannot exceed 2; a rescaling that overshoots means exact backscatter
-  return 1.0 - std::min(2.0, deflection);
+  return elastic_angle_[q_index].sample(E, seed);
 }
 
-namespace {
-
-//! Mean deflection 1-<mu> of elastic scattering inside the forward peak
-//
-//! The evaluation tabulates the angular distribution only out to
-//! mu = 1 - 1e-6, about 1.4 mrad from forward, and leaves the peak itself to
-//! the screened-Rutherford form C/(2*eta + 1 - mu)^2 with Moliere's screening
-//! angle eta. The first moment of that form over the peak depends only on eta
-//! and the cutoff -- the normalization C cancels -- so it can be evaluated
-//! without reference to the tables the peak is missing from.
-double peak_mean_deflection(int Z, double E)
+double Element::excitation(double E) const
 {
-  // 1-mu at the upper end of the tabulated angular distributions. Verified
-  // against every table of every element when the library is converted; see
-  // openmc/data/electron.py.
-  constexpr double X0 {1.0e-6};
-
-  double e_total = E + MASS_ELECTRON_EV;
-  double pc =
-    std::sqrt(e_total * e_total - MASS_ELECTRON_EV * MASS_ELECTRON_EV);
-  if (pc <= 0.0)
-    return 0.5 * X0;
-  double tau = E / MASS_ELECTRON_EV;
-  double beta = pc / e_total;
-
-  // Moliere's screening angle with the low-energy correction Seltzer
-  // recommends, the same form ITS and MCNP use for this peak.
-  double screen = FINE_STRUCTURE * MASS_ELECTRON_EV / (0.885 * pc);
-  double coulomb = FINE_STRUCTURE * Z / beta;
-  double eta = 0.25 * screen * screen * std::cbrt(static_cast<double>(Z) * Z) *
-               (1.13 + 3.76 * coulomb * coulomb * std::sqrt(tau / (tau + 1.0)));
-
-  // Integrating the peak gives <1-mu> = -a*(a+X0)*L/X0, with a = 2*eta the
-  // screened-Rutherford width, w = X0/(a+X0) and L = log1pmx(-w). Written out,
-  // L is a difference of two terms that are both X0/a to leading order and is
-  // itself only half its square, which is why it is left to log1pmx.
-  //
-  // Both ends of the grid are extreme: the peak is far narrower than the
-  // cutoff at low energy, w reaching 3e-10 for americium at 12 eV, and far
-  // wider at high energy, w reaching 1 - 1e-9 for hydrogen at 100 GeV. w is
-  // accurate throughout, but a double approaching 1 stops carrying its
-  // complement -- 1-w is a/(a+X0), and recovering it by subtraction inside
-  // log1p leaves only eps/(1-w) of it, which is then taken the logarithm of.
-  // So pass the complement in directly once w is large, where log(q) + w has
-  // nothing to cancel, and leave the small-w end to log1pmx. Either form is
-  // exact to rounding on its own side of the handover.
-  double a = 2.0 * eta;
-  double w = X0 / (a + X0);
-  double q = a / (a + X0);
-  double L = (w < 0.5) ? log1pmx(-w) : std::log(q) + w;
-  return -a * (a + X0) * L / X0;
+  // The loss table clamps below its first abscissa, so an electron under that
+  // energy would be handed a loss larger than it has
+  return std::max(0.0, E - excitation_energy_loss_(E));
 }
 
-} // namespace
-
-//! Mean deflection 1-<mu> of the tabulated large-angle distribution
-//
-//! The transport-corrected cross section is the first moment of the *total*
-//! elastic cross section, peak included, while the angular tables describe
-//! only the large-angle part. Take the peak's contribution back out before
-//! forming the ratio, or the deflection is overstated wherever the peak
-//! carries appreciable cross section: by 2% at 10 MeV in aluminium, rising to
-//! 23% at 66 MeV. Below the energy at which the peak opens up the correction
-//! is identically zero, the evaluation having sigma_total == sigma_elastic
-//! there.
-void ElectronInteraction::compute_mean_deflection()
+bool Element::ionization(Particle& p, int i_shell) const
 {
-  int n = energy_.size();
-  elastic_deflection_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    if (elastic_(i) <= 0.0) {
-      elastic_deflection_[i] = 0.0;
-      continue;
-    }
-    double peak = elastic_total_(i) - elastic_(i);
-    double moment = elastic_transport_(i);
-    if (peak > 0.0)
-      moment -= peak * peak_mean_deflection(Z_, energy_(i));
-    elastic_deflection_[i] = moment > 0.0 ? moment / elastic_(i) : 0.0;
+  double density;
+  double E_knock =
+    ionization_dist_[i_shell]->sample(p.E(), p.current_seed(), &density);
+  // Binding energies live on shells_. Note this is NOT binding_energy_, which
+  // belongs to the shorter Compton Doppler broadening shell list and would be
+  // indexed out of bounds here.
+  double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
+
+  // The tabulated spectra describe a Moller collision. For a positron the
+  // final state is the same -- an electron ejected with E_knock, the atom left
+  // with a vacancy -- but the projectile factor is Bhabha's, so the spectrum
+  // is reweighted by the ratio of the two free cross sections. Binding cancels
+  // in that ratio. The cross section was raised to a majorant to pay for this
+  // rejection, so declining here is a real outcome and not a lost collision.
+  if (p.type().is_positron()) {
+    const auto& xs {p.electron_xs(index_)};
+    double majorant = moller_majorant_(xs.index_grid) +
+                      xs.interp_factor * (moller_majorant_(xs.index_grid + 1) -
+                                           moller_majorant_(xs.index_grid));
+    FreeCollision c {p.E()};
+    double x = (E_knock + e_b) / p.E();
+    if (prn(p.current_seed()) * majorant >= c.ratio(x))
+      return false;
   }
 
-  // Factor that puts the sampled deflection onto the tabulated transport cross
-  // section. The denominator is the mean sample() actually produces, not
-  // mean_deflection(): see AngleDistribution::sampled_mean_deflection. Using
-  // the latter left the first moment up to 9% short of its own target deep
-  // inside a sparse interval, and for iron at 1 MeV pushed it the wrong way.
-  //
-  // Computed here, once, because the quadrature behind it is far too expensive
-  // to repeat per collision.
-  elastic_rescale_.resize(n);
-  for (int i = 0; i < n; ++i) {
-    double target = elastic_deflection_[i];
-    double sampled = elastic_angle_.sampled_mean_deflection(energy_(i));
-    elastic_rescale_[i] =
-      (target > 0.0 && sampled > 0.0) ? target / sampled : 1.0;
-  }
+  // The scattered primary must be left with positive energy. The blended
+  // spectrum can exceed the kinematic limit in a band roughly 0.1 eV wide just
+  // above each subshell threshold, where the first tabulated table sits at
+  // E = B exactly: there the limit (E-B)/2 is zero while the table still
+  // carries outgoing energies. Everywhere else the blend is safe, because
+  // log((E-B)/2) is concave in log E and so the geometric chord between two
+  // tabulated maxima lies below the affine limit. Clamp rather than abort:
+  // this is a known property of the interpolation, not a corrupt library, and
+  // killing a run hours in over a 0.1 eV band would be indefensible.
+  double w_max = 0.5 * (p.E() - e_b);
+  if (E_knock > w_max)
+    E_knock = std::max(0.0, std::nextafter(w_max, 0.0));
+
+  double W = E_knock + e_b;
+  this->emit_knock_on(p, W, e_b, this->sample_recoil(p, i_shell, W, density));
+  return true;
 }
 
-double ElectronInteraction::elastic_rescale(double E) const
+void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
 {
-  int n = energy_.size();
-  if (n == 0)
-    return 1.0;
-  if (E <= energy_[0])
-    return elastic_rescale_[0];
-  if (E >= energy_(n - 1))
-    return elastic_rescale_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return elastic_rescale_[i];
-
-  // The factor is of order one and varies smoothly, so a linear blend in
-  // log-energy is plenty -- unlike 1-<mu> itself, which spans decades.
-  double f = std::log(E / e0) / std::log(e1 / e0);
-  return (1.0 - f) * elastic_rescale_[i] + f * elastic_rescale_[i + 1];
-}
-
-double ElectronInteraction::mean_deflection(double E) const
-{
-  int n = energy_.size();
-  if (E <= energy_[0])
-    return elastic_deflection_[0];
-  if (E >= energy_(n - 1))
-    return elastic_deflection_[n - 1];
-
-  int i = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
-  double e0 = energy_(i);
-  double e1 = energy_(i + 1);
-  if (e1 <= e0)
-    return elastic_deflection_[i];
-
-  double r0 = elastic_deflection_[i];
-  double r1 = elastic_deflection_[i + 1];
-
-  // 1-<mu> falls by orders of magnitude over this grid, so interpolate it
-  // logarithmically; a linear interpolation would badly overshoot in between.
-  if (r0 > 0.0 && r1 > 0.0) {
-    double f = std::log(E / e0) / std::log(e1 / e0);
-    return std::exp((1.0 - f) * std::log(r0) + f * std::log(r1));
-  }
-  double f = (E - e0) / (e1 - e0);
-  return (1.0 - f) * r0 + f * r1;
-}
-double ElectronInteraction::excitation(double E) const
-{
-  return E - excitation_energy_loss_(E);
-}
-
-void ElectronInteraction::ionization(Particle& p, int i_shell) const
-{
-  double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+  double E = p.E();
+  double E_knock = W - e_b;
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
-  // Binding energies live on the photoatomic subshell list. Note this is NOT
-  // PhotonInteraction::binding_energy_, which belongs to the shorter Compton
-  // Doppler broadening shell list and would be indexed out of bounds here.
-  const auto& element {*data::photoatomic[i_photoatomic_]};
-  double e_b = element.shells_[shell_map_[i_shell]].binding_energy;
 
-  // The scattered primary must be left with positive energy. A sampled
-  // knock-on energy that violates this would give a negative energy electron
-  // and a negative argument in the scattering cosine below.
-  if (E_knock + e_b >= p.E()) {
-    p.write_restart();
-    fatal_error(fmt::format(
-      "Electroionization of {} shell {} at {} eV sampled a knock-on energy of "
-      "{} eV which, with a binding energy of {} eV, exceeds the energy of the "
-      "incident electron.",
-      name_, i_shell, p.E(), E_knock, e_b));
-  }
+  // Momenta of the projectile before and after, and of the transfer. The
+  // smallest momentum the collision can hand over is what is left when the
+  // projectile is not deflected at all, and every angle below is measured from
+  // there, which keeps the cancellation out of the soft collisions that
+  // dominate the count.
+  double pc = std::sqrt(E * (E + two_m));
+  double pc_out = std::sqrt((E - W) * (E - W + two_m));
+  double cq_sq = Q * (Q + two_m);
+  // (pc)^2 - (pc')^2 = W(2E - W + 2mc^2) exactly, so dividing by the sum
+  // avoids subtracting two nearly equal square roots. The soft collisions that
+  // dominate the count are precisely where that subtraction loses its digits,
+  // and the transverse channel needs this to come back exactly forward.
+  double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
 
-  // The knock-on is deflected according to the energy the primary actually
-  // transferred, not the kinetic energy it is left with. The two differ by the
-  // binding energy, which the atom absorbs: the momentum transfer that set the
-  // recoil direction corresponds to E_knock + e_b, so using E_knock alone
-  // ejects the electron too far sideways -- by 22% of the incident momentum
-  // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
-  // makes the two polar angles the consistent free binary-collision pair for a
-  // transfer of E_knock + e_b.
-  double E_transfer = E_knock + e_b;
-  double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                              (1.0 + 2.0 * MASS_ELECTRON_EV / E_transfer));
+  // The projectile is deflected through the momentum transfer. Note the
+  // deflection is set by the energy the projectile actually gave up, not by
+  // the kinetic energy the knock-on carries away: the two differ by the
+  // binding energy, which the atom absorbs.
+  double mu = 1.0 - (cq_sq - cq_min * cq_min) / (2.0 * pc * pc_out);
+  p.mu() = std::max(-1.0, std::min(1.0, mu));
+
+  // The knock-on leaves along the momentum transfer. For a free collision this
+  // is the Moller partner of the angle above; for a distant one it is much
+  // closer to the forward direction, since little momentum changed hands.
+  double cq = std::sqrt(cq_sq);
+  double mu_knock = 1.0 - (cq - cq_min) * (pc + pc_out - cq) / (2.0 * pc * cq);
+  mu_knock = std::max(-1.0, std::min(1.0, mu_knock));
+
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
   p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
 
-  p.mu() = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                     (1.0 + 2.0 * MASS_ELECTRON_EV / (p.E() - E_knock - e_b)));
   phi += PI;
   p.u() = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
-  p.E() = p.E() - E_knock - e_b;
+  p.E() = E - W;
 }
 
-int ElectronInteraction::sample_ionization_shell(Particle& p) const
+double Element::sample_recoil(
+  Particle& p, int i_shell, double W, double density) const
 {
-  auto& xs {p.electron_xs(index_)};
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+  double E = p.E();
 
-  // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * xs.ionization;
-  int n_shell = ionization_.shape(0);
+  // Resonance energy of the oscillator standing for this subshell. It is a
+  // property of the material, not of the atom alone, because the outer shells
+  // are screened by the medium they sit in.
+  const auto& mat = *model::materials[p.material()];
+  double w_r = mat.oscillator_energy(index_, i_shell);
+
+  // Smallest recoil the collision can leave, reached when the projectile is
+  // not deflected
+  double pc = std::sqrt(E * (E + two_m));
+  double pc_out = std::sqrt((E - W) * (E - W + two_m));
+  double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
+  // Q(Q + 2mc^2) = (cq)^2 inverted without subtracting nearly equal terms
+  double cq_min_sq = cq_min * cq_min;
+  double q_min =
+    cq_min_sq / (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
+                  MASS_ELECTRON_EV);
+
+  // No room below the resonance -- or no oscillator data at all -- leaves the
+  // close collision as the only possibility
+  if (q_min >= w_r)
+    return W;
+
+  double beta_sq =
+    E * (E + two_m) / ((E + MASS_ELECTRON_EV) * (E + MASS_ELECTRON_EV));
+
+  // Was it a close collision? The free binary cross section at this transfer
+  // is known in closed form, and whatever share of the evaluated cross section
+  // it accounts for is the share of collisions that struck a single electron:
+  //
+  //     P_close(W) = (dsigma_free/dW) / (dsigma_eval/dW)
+  //
+  // This is what PENELOPE's cut at the resonance energy amounts to for its own
+  // delta oscillator, which places all distant strength at exactly W_i. The
+  // evaluated spectra spread that strength over a range of W instead, so the
+  // cut would hand close kinematics to the part of it lying above W_i, and
+  // there is a good deal: for the carbon L3 shell it is a quarter of the
+  // collisions where the free cross section can account for a sixteenth.
+  //
+  // For a positron the evaluated spectrum is reweighted by the Bhabha-to-
+  // Moller ratio and the free cross section is Bhabha's, so the ratio cancels
+  // out of the test and the same Moller form serves both charges -- which is
+  // the same conclusion PENELOPE reaches, its distant interactions being
+  // identical for the two.
+  if (density > 0.0) {
+    const auto& xs {p.electron_xs(index_)};
+    int i_grid = xs.index_grid;
+    double sigma = electroionization_(i_shell, i_grid) +
+                   xs.interp_factor * (electroionization_(i_shell, i_grid + 1) -
+                                        electroionization_(i_shell, i_grid));
+    const auto& shell = shells_[electron_shell_map_[i_shell]];
+    FreeCollision c {E};
+    double sigma_free = shell.num_electrons * COLLISION_CONST / beta_sq *
+                        c.moller(W / E) / (E * E);
+    if (prn(p.current_seed()) * sigma * density < sigma_free)
+      return W;
+  } else if (W > w_r) {
+    // Without the density, fall back to PENELOPE's own cut
+    return W;
+  }
+
+  // Distant interaction. The transverse part is the one the density effect
+  // acts on, and it hands over no momentum; the longitudinal part is
+  // distributed as 1/(Q(Q + 2mc^2)) between the two bounds. The two are
+  // weighted by their cross sections, whose common factor f_i / W_i cancels.
+  double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
+  double c_tra =
+    -std::log1p(-beta_sq) - beta_sq - mat.density_effect_correction(E);
+  if (c_tra > 0.0 && prn(p.current_seed()) * (c_tra + c_lon) < c_tra)
+    return q_min;
+
+  // Invert the longitudinal distribution
+  double a = std::exp(prn(p.current_seed()) * c_lon);
+  return two_m * a * q_min / (q_min + two_m - a * q_min);
+}
+
+int Element::sample_ionization_shell(Particle& p) const
+{
+  const auto& xs {p.electron_xs(index_)};
+  int n_shell = electroionization_.shape(0);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
+
+  // Summed here rather than taken from xs.ionization, which for a positron
+  // carries the majorant factor. Only the relative weights matter, and a
+  // factor common to every shell cancels out of them.
+  double total = 0.0;
+  for (int i = 0; i < n_shell; ++i) {
+    total +=
+      electroionization_(i, i_grid) +
+      f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
+  }
+  double cutoff = prn(p.current_seed()) * total;
 
   int i_shell;
   double prob = 0.0;
   for (i_shell = 0; i_shell < n_shell; ++i_shell) {
-    double sigma =
-      ionization_(i_shell, i_grid) +
-      f * (ionization_(i_shell, i_grid + 1) - ionization_(i_shell, i_grid));
+    double sigma = electroionization_(i_shell, i_grid) +
+                   f * (electroionization_(i_shell, i_grid + 1) -
+                         electroionization_(i_shell, i_grid));
     // Increment probability to compare to cutoff
     prob += sigma;
     if (prob > cutoff)
@@ -564,8 +657,9 @@ namespace {
 double bremsstrahlung_cos_theta(
   int Z, double E, double E_photon, uint64_t* seed)
 {
-  // (Zeff/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
-  // electron-electron contribution. 1/111^2 = 8.116224e-5.
+  // (Zeff^(1/3)/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
+  // electron-electron contribution, so the factor is (Z(Z+1))^(1/3)/111^2.
+  // 1/111^2 = 8.116224e-5.
   double z_screen = 8.116224e-5 * std::cbrt(static_cast<double>(Z) * (Z + 1));
   double log_z_screen = -std::log(z_screen);
 
@@ -601,6 +695,7 @@ double bremsstrahlung_cos_theta(
   // rejected against the screened shape; it converges in a few iterations, but
   // cap it so that a pathological energy cannot hang a history.
   double y2 = 0.0;
+  bool accepted = false;
   for (int iter = 0; iter < 1000; ++iter) {
     double xi = prn(seed);
     double test = prn(seed);
@@ -611,39 +706,166 @@ double bremsstrahlung_cos_theta(
     double y2s = ratio * y2 / aux3_4;
     double aux4 = 16.0 * y2s - arg2;
     double aux5 = arg1 - 4.0 * y2s;
-    if (test < aux4 + aux5 * arg3)
+    if (test < aux4 + aux5 * arg3) {
+      accepted = true;
       break;
+    }
     double aux2 = std::log(aux / (1.0 + aux1 / aux3_4));
-    if (test < aux4 + aux5 * aux2)
+    if (test < aux4 + aux5 * aux2) {
+      accepted = true;
       break;
+    }
   }
+
+  // Falling out of the loop leaves y2 holding a trial that was rejected, which
+  // would be worse than no sample at all. Emit forward instead, as the
+  // degenerate cases above already do.
+  if (!accepted)
+    return 1.0;
 
   return std::max(-1.0, std::min(1.0, 1.0 - 2.0 * y2 * y2_max_inv));
 }
 
 } // namespace
 
-void ElectronInteraction::bremsstrahlung(Particle& p) const
+double Element::sample_bremsstrahlung_energy(double E, uint64_t* seed) const
 {
-  double E_photon = bremsstrahlung_dist_->sample(p.E(), p.current_seed());
-  // Put the first moment onto the tabulated one. A photon cannot carry away
-  // more than the electron has, so a factor above unity is clipped at the
-  // incident energy rather than allowed to produce a negative electron.
-  E_photon = std::min(p.E(), E_photon * this->brems_rescale(p.E()));
+  double k_min = bremsstrahlung_photon_cutoff_;
+  if (E <= k_min)
+    return 0.0;
+
+  const auto& T = data::brems_e_grid;
+  const auto& kappa = data::brems_k_grid;
+  int n_e = T.size();
+  int n_k = kappa.size();
+
+  // Bracket the incident energy. The scaled cross section was splined onto
+  // this grid against the logarithm of the energy and is linear in chi, so it
+  // is interpolated the same way here. Outside the grid the nearest row is
+  // used, which is what the cross section does as well.
+  int i;
+  double f;
+  if (E <= T(0)) {
+    i = 0;
+    f = 0.0;
+  } else if (E >= T(n_e - 1)) {
+    i = n_e - 2;
+    f = 1.0;
+  } else {
+    i = lower_bound_index(T.cbegin(), T.cend(), E);
+    f = std::log(E / T(i)) / std::log(T(i + 1) / T(i));
+  }
+
+  // dsigma/dk is proportional to chi(kappa)/k, so k is sampled from 1/k over
+  // [k_min, E] and the shape of chi is taken by rejection. chi is bounded by
+  // its largest tabulated value on the two rows: interpolating linearly in
+  // kappa and then in chi cannot leave that range.
+  double chi_max = 0.0;
+  for (int j = 0; j < n_k; ++j) {
+    chi_max = std::max(chi_max, std::max(dcs_(i, j), dcs_(i + 1, j)));
+  }
+  if (chi_max <= 0.0)
+    return 0.0;
+
+  double ratio = E / k_min;
+  while (true) {
+    double k = k_min * std::pow(ratio, prn(seed));
+    double x = k / E;
+    int j = lower_bound_index(kappa.cbegin(), kappa.cend(), x);
+    j = std::min(j, n_k - 2);
+    double g = (x - kappa(j)) / (kappa(j + 1) - kappa(j));
+    double chi_lo = dcs_(i, j) + g * (dcs_(i, j + 1) - dcs_(i, j));
+    double chi_hi = dcs_(i + 1, j) + g * (dcs_(i + 1, j + 1) - dcs_(i + 1, j));
+    double chi = chi_lo + f * (chi_hi - chi_lo);
+    if (prn(seed) * chi_max < chi)
+      return k;
+  }
+}
+
+double Element::annihilation_xs(double E) const
+{
+  // pi r_e^2 in barns, with the classical electron radius written as
+  // alpha^2 a_0 so that it follows from the constants already tabulated
+  constexpr double BOHR_RADIUS_CM =
+    PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+  constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
+  constexpr double PI_R_E_SQ = PI * R_E * R_E * 1.0e24;
+
+  double gamma = 1.0 + E / MASS_ELECTRON_EV;
+  double g_sq = gamma * gamma;
+  if (g_sq <= 1.0 + 1.0e-12)
+    return 0.0;
+  double s = std::sqrt(g_sq - 1.0);
+
+  // Heitler, per electron. It grows as 1/beta as the positron slows, which is
+  // why a positron that reaches the cutoff annihilates rather than lingers.
+  double sigma =
+    PI_R_E_SQ / (gamma + 1.0) *
+    ((g_sq + 4.0 * gamma + 1.0) / (g_sq - 1.0) * std::log(gamma + s) -
+      (gamma + 3.0) / s);
+  return Z_ * std::max(sigma, 0.0);
+}
+
+void Element::annihilation(Particle& p) const
+{
+  // Energy available to the two photons: the positron's kinetic energy and
+  // both rest masses, the electron being taken as free and at rest.
+  double avail = p.E() + 2.0 * MASS_ELECTRON_EV;
+  double a = avail / MASS_ELECTRON_EV; // gamma + 1
+  double t = a - 2.0;                  // gamma - 1
+  double pc = std::sqrt(a * t);        // sqrt(gamma^2 - 1)
+  double pot = pc / t;
+
+  // Sample the fraction of the available energy taken by the first photon.
+  // It runs between ep0 and 1 - ep0, and is drawn from 1/ep with the rest of
+  // Heitler's spectrum taken by rejection. The rejection function is written
+  // normalised to its own maximum, as in EGSnrc.
+  double ep0 = 1.0 / (a + pc);
+  double span = std::log((1.0 - ep0) / ep0);
+  double ep;
+  while (true) {
+    ep = ep0 * std::exp(span * prn(p.current_seed()));
+    double arg = ep * a - 1.0;
+    double rejection = 1.0 - arg * arg / (ep * (a * a - 2.0));
+    if (prn(p.current_seed()) <= rejection)
+      break;
+  }
+
+  double E_1 = avail * ep;
+  double E_2 = avail - E_1;
+
+  // Both polar angles follow from the photon energies; the two are coplanar
+  // with the incident direction and on opposite sides of it.
+  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+  double mu_1 =
+    std::max(-1.0, std::min(1.0, (E_1 - MASS_ELECTRON_EV) * pot / E_1));
+  double mu_2 =
+    std::max(-1.0, std::min(1.0, (E_2 - MASS_ELECTRON_EV) * pot / E_2));
+  Direction u_1 = rotate_angle(p.u(), mu_1, &phi, p.current_seed());
+  double phi_2 = phi + PI;
+  Direction u_2 = rotate_angle(p.u(), mu_2, &phi_2, p.current_seed());
+  p.create_secondary(p.wgt(), u_1, E_1, ParticleType::photon());
+  p.create_secondary(p.wgt(), u_2, E_2, ParticleType::photon());
+
+  // The positron is gone. Zeroing the weight as well tells the post-collision
+  // cutoff handling that this particle has already annihilated, and the
+  // POSITRON_ANNIHILATION marker gives the heating score the Q value that
+  // balances the two rest masses the photons carry away.
+  p.E() = 0.0;
+  p.wgt() = 0.0;
+  p.event() = TallyEvent::ABSORB;
+  p.event_mt() = POSITRON_ANNIHILATION;
+}
+
+void Element::bremsstrahlung(Particle& p) const
+{
+  double E_photon = this->sample_bremsstrahlung_energy(p.E(), p.current_seed());
+  if (E_photon <= 0.0)
+    return;
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
   p.E() -= E_photon;
   p.create_secondary(p.wgt(), u, E_photon, ParticleType::photon());
-}
-
-//==============================================================================
-// Non-member functions
-//==============================================================================
-
-void free_memory_electron()
-{
-  data::electroatomic.clear();
-  data::electron_map.clear();
 }
 
 } // namespace openmc

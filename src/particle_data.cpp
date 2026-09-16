@@ -3,7 +3,6 @@
 #include <sstream>
 
 #include "openmc/cell.h"
-#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/geometry.h"
 #include "openmc/material.h"
@@ -109,9 +108,9 @@ ParticleData::ParticleData()
 
   // Create microscopic cross section caches
   neutron_xs_.resize(data::nuclides.size());
-  photon_xs_.resize(data::photoatomic.size());
+  photon_xs_.resize(data::elements.size());
   photonuclear_xs_.resize(data::photonuclears.size());
-  electron_xs_.resize(data::electroatomic.size());
+  electron_xs_.resize(data::elements.size());
 
   // Creates the pulse-height storage for the particle
   if (!model::pulse_height_cells.empty()) {

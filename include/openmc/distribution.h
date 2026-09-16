@@ -337,7 +337,6 @@ public:
   vector<double>& x() { return x_; }
   const vector<double>& x() const { return x_; }
   const vector<double>& p() const { return p_; }
-  const vector<double>& c() const { return c_; }
   Interpolation interp() const { return interp_; }
   double integral() const override { return integral_; };
 

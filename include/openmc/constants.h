@@ -238,8 +238,11 @@ enum ReactionType {
   PAIR_PROD = 516,
   PAIR_PROD_NUC = 517,
   PHOTOELECTRIC = 522,
-  ELECTRON_ELASTIC = 535,
-  ELECTROEXCITATION = 536,
+  // Electro-atomic reactions. MT 534 upwards are the subshell reactions, so
+  // 535/536 are L1/L2 rather than anything to do with these channels.
+  ELECTRON_ELASTIC = 526,
+  ELECTRON_BREMS = 527,
+  ELECTROEXCITATION = 528,
   // Not an ENDF MT. An internal marker for the event at which a transported
   // positron annihilates, so that the heating score can tell that event apart
   // from the positron's ordinary collisions. 534 upwards are taken by the

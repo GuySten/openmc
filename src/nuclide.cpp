@@ -3,7 +3,6 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
-#include "openmc/electron.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
@@ -1145,7 +1144,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
     if (settings::photon_transport) {
       auto element = to_element(name);
       if (data::element_map.find(element) == data::element_map.end() ||
-          data::element_map.at(element) >= data::photoatomic.size()) {
+          data::element_map.at(element) >= data::elements.size()) {
         // Read photon interaction data from HDF5 photon library
         LibraryKey key {Library::Type::photon, element};
         const auto& it = data::library_map.find(key);
@@ -1165,7 +1164,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         // Read element data from HDF5
         hid_t group = open_group(file_id, element.c_str());
-        data::photoatomic.push_back(make_unique<PhotonInteraction>(group));
+        data::elements.push_back(make_unique<Element>(group));
 
         close_group(group);
         file_close(file_id);
@@ -1188,8 +1187,7 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
           // Read element data from HDF5
           hid_t group = open_group(file_id, element.c_str());
-          data::electroatomic.push_back(
-            make_unique<ElectronInteraction>(group));
+          data::elements.back()->read_electron_data(group);
 
           close_group(group);
           file_close(file_id);

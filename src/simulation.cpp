@@ -5,7 +5,6 @@
 #include "openmc/collision_track.h"
 #include "openmc/container_util.h"
 #include "openmc/eigenvalue.h"
-#include "openmc/electron.h"
 #include "openmc/error.h"
 #include "openmc/event.h"
 #include "openmc/geometry_aux.h"
@@ -944,7 +943,9 @@ void set_photonuclear_bounds()
 //!   neutron            intersection of the incident-neutron grids
 //!   photon             intersection of the photo-atomic grids
 //!   electron/positron  depends on how charged particles are treated:
-//!                        transport -- intersection of electro-atomic grids
+//!                        transport -- intersection of the electro-atomic,
+//!                                     partial-wave elastic and
+//!                                     bremsstrahlung grids
 //!                        TTB       -- the bremsstrahlung tabulation
 //!                        LED       -- unbounded, killed where created
 //!                        none      -- unbounded, never created
@@ -982,7 +983,7 @@ void set_energy_bounds()
 
     // Photo-atomic data. Energies are stored as logarithms. The first grid
     // point is skipped, following the interpolation used during transport.
-    for (const auto& elem : data::photoatomic) {
+    for (const auto& elem : data::elements) {
       int n = elem->energy_.size();
       if (n < 2)
         continue;
@@ -993,20 +994,37 @@ void set_energy_bounds()
     // Electrons and positrons. Exactly one source of limits applies.
     switch (settings::charged_mode()) {
     case settings::ChargedMode::transport:
-      // Electro-atomic data, tabulated linearly in [eV]
-      for (const auto& elem : data::electroatomic) {
-        int n = elem->energy_.size();
+      // Electro-atomic data, tabulated linearly in [eV]. The photo-atomic grid
+      // above belongs to the photon cross sections and is stored
+      // logarithmically; it says nothing about where the electron data starts
+      // and stops.
+      for (const auto& elem : data::elements) {
+        int n = elem->electron_energy_.size();
         if (n < 2)
           continue;
+        for (int t : {electron, positron}) {
+          restrict_energy(
+            t, elem->electron_energy_(0), elem->electron_energy_(n - 1));
+          // The partial-wave elastic data stops well below the end of the
+          // evaluated grid, and beyond it the deflection would be frozen while
+          // the true transport cross section keeps falling as 1/E^2.
+          restrict_energy(
+            t, elem->elastic_energy_min_, elem->elastic_energy_max_);
+        }
+      }
+      // Bremsstrahlung is sampled from the scaled cross sections of the photon
+      // library, which cover a narrower range again
+      if (data::brems_e_grid.size() >= 2) {
+        int n = data::brems_e_grid.size();
         for (int t : {electron, positron})
-          restrict_energy(t, elem->energy_(0), elem->energy_(n - 1));
+          restrict_energy(t, data::brems_e_grid(0), data::brems_e_grid(n - 1));
       }
       break;
 
     case settings::ChargedMode::ttb: {
       // The bremsstrahlung tabulation is shared by every element and is stored
       // as logarithms. Its lower end is the photon energy cutoff, since
-      // PhotonInteraction truncates the DCS there.
+      // Element truncates the DCS there.
       int n = data::ttb_e_grid.size();
       if (n >= 2) {
         for (int t : {electron, positron})
@@ -1020,6 +1038,16 @@ void set_energy_bounds()
     case settings::ChargedMode::none:
       // Charged particles are never transported, so no energy is out of range
       break;
+    }
+
+    // The default charged-particle cutoff is zero, which would let a particle
+    // fall below the tabulated range and be transported on clamped cross
+    // sections. Raise it to where the data begins unless the user asked for
+    // something higher. Nothing below lowers energy_min, so this is final.
+    if (settings::charged_mode() == settings::ChargedMode::transport) {
+      for (int t : {electron, positron})
+        settings::energy_cutoff[t] =
+          std::max(settings::energy_cutoff[t], data::energy_min[t]);
     }
 
     // A photon collision transfers essentially the whole photon energy to a

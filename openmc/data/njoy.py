@@ -877,7 +877,7 @@ def make_ace_photonuclear(filename, acer=True, xsdir=None,
 
     if acer:
         ace = (output_dir / "ace") if acer is True else Path(acer)
-        xsdir = (ace.parent / "xsdir") if xsdir is None else xsdir
+        xsdir = (ace.parent / "xsdir") if xsdir is None else Path(xsdir)
         with ace.open('w') as ace_file, xsdir.open('w') as xsdir_file:
             # Get contents of ACE file
             text = (output_dir / f"ace_0.0").read_text()

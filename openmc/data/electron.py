@@ -440,7 +440,7 @@ class IncidentElectron:
 
             # The cross section is the integral of the distribution that is
             # sampled, not a separately tabulated number:
-            # 2*pi*int dcs d(1-cos(theta)). Taking it from the same 606-point
+            # 2*pi*int dcs d(1-cos(theta)). Taking it from the same 375-point
             # table keeps the rate at which collisions happen consistent with
             # the deflections they produce. It runs 0.2-1.2% above ELSEPA's own
             # phase-shift total, which is the quadrature error of the tabulated

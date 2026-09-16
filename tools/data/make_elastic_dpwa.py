@@ -49,6 +49,12 @@ import h5py
 import numpy as np
 from openmc.data import ATOMIC_SYMBOL
 
+# Angular grid thinning, applied when the file is written. ELSEPA's grid is
+# geometric below this deflection and uniform above it.
+WIDE_ANGLE = 0.1
+WIDE_ANGLE_STRIDE = 4
+
+
 
 # PENELOPE's electron energy grid in eV, kept identical so the two databases
 # can be compared point by point
@@ -212,6 +218,21 @@ def main():
             results[Z, ielec] = (mu, dcs)
 
     reference_mu = results[args.zmin, -1][0]
+
+    # Thin the wide-angle end of ELSEPA's grid. Below 1-cos(theta) = 0.1 the
+    # grid is geometric and carries the forward peak, so every point is kept.
+    # Above it the grid is uniform half-degree steps, and taking one in four
+    # changes the integrated, first and second transport cross sections by at
+    # most 5e-4 -- against the 0.2-1.4% by which the tabulated integral already
+    # differs from ELSEPA's own phase-shift totals. It drops the file from
+    # 24.4 MB to 14.9 MB, which matters because this ships in every wheel.
+    keep = reference_mu < WIDE_ANGLE
+    wide = np.where(~keep)[0]
+    keep[wide[::WIDE_ANGLE_STRIDE]] = True
+    keep[0] = True
+    keep[-1] = True
+    reference_mu = reference_mu[keep]
+
     with h5py.File(args.output, 'w') as f:
         f.attrs['filetype'] = np.bytes_('elastic_dpwa')
         f.attrs['source'] = np.bytes_(
@@ -221,23 +242,28 @@ def main():
         )
 
         # Write energies and the shared angular grid
-        f.create_dataset('energy', data=energies)
-        f.create_dataset('mu', data=reference_mu)
+        f.create_dataset('energy', data=energies, compression='gzip',
+                         compression_opts=9, shuffle=True)
+        f.create_dataset('mu', data=reference_mu, compression='gzip',
+                         compression_opts=9, shuffle=True)
 
         for Z in atomic_numbers:
             # Create group for this element
             group = f.create_group(f'{Z:03}')
             for ielec, name in projectiles.items():
                 mu, dcs = results[Z, ielec]
-                if not np.allclose(mu, reference_mu, rtol=1e-12, atol=0.0):
+                if not np.allclose(mu[keep], reference_mu, rtol=1e-12,
+                                   atol=0.0):
                     raise RuntimeError(f'Z={Z} {name}: angular grid differs')
+                dcs = dcs[:, keep]
 
                 # Stored as log(dcs): the cross section spans many decades and
                 # its logarithm is smooth, which compresses to 9.9 MB against
                 # 16.9 MB for the cross section itself. Round trip is accurate
                 # to 4e-6, well inside the precision of the calculation.
+                log_dcs = np.log(dcs).astype(np.float32)
                 group.create_group(name).create_dataset(
-                    'log_dcs', data=np.log(dcs).astype(np.float32),
+                    'log_dcs', data=log_dcs, chunks=log_dcs.shape,
                     compression='gzip', compression_opts=9, shuffle=True)
 
     size = os.path.getsize(args.output) / 1e6

@@ -407,8 +407,11 @@ the accumulation of many small deflections is what limits how deeply electrons
 penetrate.
 
 The differential cross section is a Dirac partial-wave calculation, tabulated
-over the whole angular range on 606 angles at each of 96 incident energies from
-50 eV to 100 MeV. Nothing is split out of it: the cross section that sets the
+over the whole angular range on 375 angles at each of 96 incident energies from
+50 eV to 100 MeV. ELSEPA writes 606 angles; the wide-angle end of its grid,
+where the steps are a uniform half a degree, is thinned to one point in four
+before the data is shipped, which changes the integrated, first and second
+transport cross sections by at most 5 parts in 10\ :sup:`4`. Nothing is split out of it: the cross section that sets the
 distance to the next elastic collision is the integral of the same table the
 deflection is sampled from,
 

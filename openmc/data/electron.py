@@ -261,6 +261,12 @@ class IncidentElectron:
             group.create_dataset("energy", data=self.energy_grid)
 
             elastic_group = group.create_group("elastic")
+            # The partial-wave data covers a narrower range than the evaluated
+            # energy grid, and outside it the cross sections are clamped to the
+            # endpoints. Record the real range so the transport can refuse to
+            # run where the elastic data is frozen rather than falling.
+            elastic_group.attrs["energy_min"] = self.elastic_energy_range[0]
+            elastic_group.attrs["energy_max"] = self.elastic_energy_range[1]
             for particle in ('electron', 'positron'):
                 pgroup = elastic_group.create_group(particle)
                 pgroup.create_dataset("xs", data=self.elastic_xs[particle])
@@ -374,6 +380,7 @@ class IncidentElectron:
             # the deflections they produce. It runs 0.2-1.2% above ELSEPA's own
             # phase-shift total, which is the quadrature error of the tabulated
             # grid and belongs in the rate as well.
+            self.elastic_energy_range = (float(energy[0]), float(energy[-1]))
             xs = 2.0 * np.pi * np.trapezoid(dcs, deflection, axis=1)
             self.elastic_xs[particle] = _log_interp(grid, energy, xs) * barns
             self.elastic_dist[particle] = AngleDistribution(

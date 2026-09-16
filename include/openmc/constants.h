@@ -243,9 +243,6 @@ enum ReactionType {
   ELECTRON_ELASTIC = 526,
   ELECTRON_BREMS = 527,
   ELECTROEXCITATION = 528,
-  // Total electroionization. The subshell it occurred in is reported through
-  // atomic relaxation, and MT 534+ name the individual subshells.
-  ELECTROIONIZATION = 523,
   // Not an ENDF MT. An internal marker for the event at which a transported
   // positron annihilates, so that the heating score can tell that event apart
   // from the positron's ordinary collisions. 534 upwards are taken by the

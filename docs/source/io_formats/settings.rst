@@ -250,9 +250,9 @@ photon at a time.
 
 .. _electron_transport:
 
--------------------------------
+--------------------------------
 ``<electron_transport>`` Element
--------------------------------
+--------------------------------
 
 The ``<electron_transport>`` element indicates whether electrons and positrons
 are transported as individual particles rather than having their energy

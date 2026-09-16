@@ -588,7 +588,10 @@ void sample_electron_reaction(Particle& p)
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);
     p.event() = TallyEvent::SCATTER;
-    p.event_mt() = ELECTROIONIZATION;
+    // There is no ENDF MT for total electroionization; 534 upwards name the
+    // individual subshells, which is what the data resolves anyway
+    p.event_mt() =
+      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -668,9 +671,13 @@ void sample_positron_reaction(Particle& p)
   if (prob > cutoff) {
     int i_shell = element.sample_ionization_shell(p);
     if (!element.ionization(p, i_shell))
+      // The reweighting declined this collision, so nothing changed. Leaving
+      // event() as KILL is correct here: the heating balance then evaluates to
+      // zero, which is right for a collision that did not happen.
       return;
     p.event() = TallyEvent::SCATTER;
-    p.event_mt() = ELECTROIONIZATION;
+    p.event_mt() =
+      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -688,7 +695,8 @@ void sample_positron_reaction(Particle& p)
     int i_shell = element.sample_bhabha_shell(p);
     element.bhabha(p, i_shell);
     p.event() = TallyEvent::SCATTER;
-    p.event_mt() = ELECTROIONIZATION;
+    p.event_mt() =
+      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
     if (settings::atomic_relaxation && i_shell >= 0 &&
         element.has_atomic_relaxation_) {
       element.atomic_relaxation(element.electron_shell_map_[i_shell], p);

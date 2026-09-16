@@ -222,6 +222,12 @@ public:
   //! charge: 0 for an electron, 1 for a positron
   array<tensor::Tensor<double>, 2> elastic_;
   array<AngleDistribution, 2> elastic_angle_;
+  //! Range the partial-wave data actually covers. Outside it the elastic cross
+  //! sections are clamped to the endpoints, which is tolerable for the total --
+  //! nearly flat at high energy -- but not for the first transport cross
+  //! section, which is still falling as 1/E^2.
+  double elastic_energy_min_ {0.0};
+  double elastic_energy_max_ {INFTY};
   tensor::Tensor<double> electroionization_;
   vector<unique_ptr<ElectroionizationSpectrum>> ionization_dist_;
   //! Bhabha cross section above the Moller limit, per subshell, on

@@ -47,6 +47,10 @@ void Element::read_electron_data(hid_t group)
   // first moment, because a positron is repelled by the nucleus and stays out
   // of the small-impact-parameter region that makes the large deflections.
   hid_t rgroup = open_group(group, "elastic");
+  if (attribute_exists(rgroup, "energy_min")) {
+    read_attribute(rgroup, "energy_min", elastic_energy_min_);
+    read_attribute(rgroup, "energy_max", elastic_energy_max_);
+  }
   for (int q = 0; q < 2; ++q) {
     hid_t qgroup = open_group(rgroup, q == 0 ? "electron" : "positron");
     read_dataset(qgroup, "xs", elastic_[q]);
@@ -56,14 +60,15 @@ void Element::read_electron_data(hid_t group)
     // this TAB2, but that rule assumes the tables are close enough together
     // for a linear blend of them to mean something, and here they are not.
     //
-    // Elastic angular data is tabulated on a sparse, geometric energy grid --
-    // for aluminium there is no table between 256 keV and 10 MeV, an interval
-    // across which 1-<mu> falls by a factor of 35. The default linear
-    // stochastic interpolation picks the low-energy, wide-angle table 92% of
-    // the time right across that gap, over-scattering by a factor of about
-    // 3.5. That leaves the stopping power and CSDA range correct, so a range
-    // check passes, but stops electrons penetrating and drives
-    // depth-deposition profiles far too shallow.
+    // The partial-wave grid is geometric, about fifteen points per decade, and
+    // 1-<mu> falls as a power of the energy across each interval. A linear
+    // blend of two tables a factor of 1.2 apart is a chord across a convex
+    // curve, and picking one of them at random -- what the lin_lin rule
+    // amounts to -- reproduces the arithmetic mean of the two rather than the
+    // power law. Blending the deflection geometrically follows the trend
+    // instead: measured against a leave-one-out reconstruction it recovers
+    // <1-mu> to a few tenths of a per cent, against a few per cent for the
+    // default rule.
     elastic_angle_[q] = AngleDistribution {qdist, Interpolation::log_log};
     close_group(qdist);
     close_group(qgroup);
@@ -85,9 +90,9 @@ void Element::read_electron_data(hid_t group)
   read_attribute(rgroup, "designators", designators);
   for (auto designator : designators) {
     hid_t shell_group = open_group(rgroup, designator.c_str());
-    // Knock-on spectra are anchored at the subshell binding energy; they must
-    // not be remapped onto the interpolated endpoint range. See the note on
-    // the ContinuousTabular constructor.
+    // Knock-on spectra are anchored at the subshell binding energy and end at
+    // the kinematic limit, so they are neither self-similar nor safe to remap
+    // onto an interpolated endpoint range; see ElectroionizationSpectrum.
     ionization_dist_.push_back(
       make_unique<ElectroionizationSpectrum>(shell_group));
     close_group(shell_group);
@@ -151,20 +156,20 @@ namespace {
 //! and the constant cancels wherever the two are divided. The coefficients are
 //! PENELOPE's.
 struct FreeCollision {
-  double b1, b2, b3, b4; //!< Bhabha
-  double y_sq, moller_c; //!< Moller
+  double b1, b2, b3, b4;  //!< Bhabha
+  double amol, moller_c;  //!< Moller
 
   explicit FreeCollision(double E)
   {
     double gamma = 1.0 + E / MASS_ELECTRON_EV;
-    double amol = std::pow((gamma - 1.0) / gamma, 2);
+    // ((gamma-1)/gamma)^2, the constant term of the Moller shape and the
+    // common factor of every Bhabha coefficient
+    amol = std::pow((gamma - 1.0) / gamma, 2);
     double g12 = (gamma + 1.0) * (gamma + 1.0);
     b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
     b2 = amol * (3.0 + 1.0 / g12);
     b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
     b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
-    double y = 1.0 / (gamma + 1.0);
-    y_sq = y * y;
     moller_c = (2.0 * gamma - 1.0) / (gamma * gamma);
   }
 
@@ -176,7 +181,7 @@ struct FreeCollision {
   double moller(double x) const
   {
     double u = 1.0 - x;
-    return 1.0 / (x * x) + 1.0 / (u * u) + y_sq - moller_c / (x * u);
+    return 1.0 / (x * x) + 1.0 / (u * u) + amol - moller_c / (x * u);
   }
 
   //! Ratio of the two. It tends to 1 as x tends to 0, where both become
@@ -345,9 +350,14 @@ void Element::calculate_electron_xs(Particle& p) const
   if (electron_energy_(i_grid) == electron_energy_(i_grid + 1))
     ++i_grid;
 
-  // calculate interpolation factor
+  // Calculate interpolation factor, clamped to the tabulated range. Outside it
+  // the factor is unbounded, and extrapolating linearly sends the partials
+  // negative: below the first grid point the elastic cross section then
+  // exceeds the total and the sampler is pinned on the elastic branch for
+  // ever. That is reachable, because the default electron cutoff is zero.
   double f = (E - electron_energy_(i_grid)) /
              (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
+  f = std::max(0.0, std::min(1.0, f));
 
   auto& xs {p.electron_xs(index_)};
   xs.index_grid = i_grid;
@@ -417,7 +427,9 @@ double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
 
 double Element::excitation(double E) const
 {
-  return E - excitation_energy_loss_(E);
+  // The loss table clamps below its first abscissa, so an electron under that
+  // energy would be handed a loss larger than it has
+  return std::max(0.0, E - excitation_energy_loss_(E));
 }
 
 bool Element::ionization(Particle& p, int i_shell) const

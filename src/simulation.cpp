@@ -878,7 +878,26 @@ void initialize_data()
               std::max(data::energy_min[t], elem->electron_energy_(0));
             data::energy_max[t] =
               std::min(data::energy_max[t], elem->electron_energy_(n - 1));
+            // The partial-wave elastic data stops well below the end of the
+            // evaluated grid, and beyond it the deflection would be frozen
+            // while the true transport cross section keeps falling as 1/E^2.
+            data::energy_min[t] =
+              std::max(data::energy_min[t], elem->elastic_energy_min_);
+            data::energy_max[t] =
+              std::min(data::energy_max[t], elem->elastic_energy_max_);
           }
+        }
+      }
+      // Bremsstrahlung is sampled from the scaled cross sections of the photon
+      // library, which cover a narrower range again
+      // (see below for the cutoff that follows from these bounds)
+      if (data::brems_e_grid.size() >= 2) {
+        int n = data::brems_e_grid.size();
+        for (auto t : charged) {
+          data::energy_min[t] =
+            std::max(data::energy_min[t], data::brems_e_grid(0));
+          data::energy_max[t] =
+            std::min(data::energy_max[t], data::brems_e_grid(n - 1));
         }
       }
 
@@ -889,6 +908,16 @@ void initialize_data()
 
       data::energy_max[photon] =
         std::min(data::energy_max[photon], data::energy_max[electron]);
+
+      // The default charged-particle cutoff is zero, which would let a
+      // particle fall below the tabulated range and be transported on clamped
+      // cross sections. Raise it to where the data begins unless the user
+      // asked for something higher.
+      for (auto t : charged) {
+        if (settings::energy_cutoff[t] < data::energy_min[t]) {
+          settings::energy_cutoff[t] = data::energy_min[t];
+        }
+      }
     } else if (settings::electron_treatment == ElectronTreatment::TTB) {
       // Determine if minimum/maximum energy for bremsstrahlung is greater/less
       // than the current minimum/maximum

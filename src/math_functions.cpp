@@ -946,7 +946,6 @@ double log1prel(double x)
   }
 }
 
-
 double cyl_bessel_j(int n, double x)
 {
   // Handle negative arguments via the parity relation

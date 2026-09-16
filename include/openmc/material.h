@@ -183,7 +183,8 @@ public:
   const NCrystalMat& ncrystal_mat() const { return ncrystal_mat_; };
 
   //! Density-effect correction at kinetic energy \p E in [eV], interpolated
-  //! on data::ttb_e_grid. Zero unless init_electron_oscillators() has run.
+  //! on data::brems_e_grid, which is the grid electron transport populates.
+  //! Zero unless init_electron_oscillators() has run.
   double density_effect_correction(double E) const;
 
   //! Resonance energy in [eV] of the Sternheimer-Liljequist oscillator

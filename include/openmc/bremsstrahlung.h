@@ -60,13 +60,15 @@ extern tensor::Tensor<double>
 inline double salvat_factor(double Z_sq, double E)
 {
   double t = std::log(1.0 + 1.0e6 * E / (Z_sq * MASS_ELECTRON_EV));
-  return 1.0 - std::exp(t * (-1.2359e-1 +
-                             t * (6.1274e-2 +
-                                  t * (-3.1516e-2 +
-                                       t * (7.7446e-3 +
-                                            t * (-1.0595e-3 +
-                                                 t * (7.0568e-5 +
-                                                      t * -1.808e-6)))))));
+  // Written out term by term rather than in Horner form. The two differ in the
+  // last couple of bits, and this function also scales the thick-target
+  // tables, which users who never enable electron transport rely on; there is
+  // no reason for sharing it to have moved their results at all.
+  return 1.0 -
+         std::exp(-1.2359e-1 * t + 6.1274e-2 * std::pow(t, 2) -
+                  3.1516e-2 * std::pow(t, 3) + 7.7446e-3 * std::pow(t, 4) -
+                  1.0595e-3 * std::pow(t, 5) + 7.0568e-5 * std::pow(t, 6) -
+                  1.808e-6 * std::pow(t, 7));
 }
 
 void thick_target_bremsstrahlung(Particle& p);

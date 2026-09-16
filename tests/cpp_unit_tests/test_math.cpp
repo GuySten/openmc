@@ -391,4 +391,3 @@ TEST_CASE("Test isclose")
   REQUIRE(isclose(1.0, 1.0 + 1e-13, 0.0, 1e-12));
   REQUIRE(isclose(1.0e6, 1.0e6 + 1e-4, 1e-9, 0.0));
 }
-

@@ -44,14 +44,15 @@ double ElectroionizationSpectrum::invert(
   const auto& d {distribution_[l]};
   int n = d.e_out.size();
 
-  // Find the last cumulative point at or below c
-  int k = 0;
-  for (int j = 0; j < n - 1; ++j) {
-    if (c < d.c[j + 1])
-      break;
-    k = j + 1;
+  // Find the last cumulative point at or below c. This runs twice per
+  // ionization collision on tables of up to a few hundred points, so it is
+  // worth a binary search.
+  if (n < 2) {
+    *p_local = (n > 0) ? d.p[0] : 0.0;
+    return (n > 0) ? d.e_out[0] : 0.0;
   }
-  k = std::min(k, n - 2);
+  int k = lower_bound_index(d.c.cbegin(), d.c.cend(), c);
+  k = std::max(0, std::min(k, n - 2));
 
   double x_k = d.e_out[k];
   double p_k = d.p[k];

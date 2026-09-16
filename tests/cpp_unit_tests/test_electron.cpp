@@ -34,8 +34,8 @@ double q_min_of(double E, double W)
 {
   double cq = cq_min_of(E, W);
   return cq * cq /
-         (std::sqrt(openmc::MASS_ELECTRON_EV * openmc::MASS_ELECTRON_EV +
-                    cq * cq) +
+         (std::sqrt(
+            openmc::MASS_ELECTRON_EV * openmc::MASS_ELECTRON_EV + cq * cq) +
            openmc::MASS_ELECTRON_EV);
 }
 

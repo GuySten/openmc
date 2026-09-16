@@ -52,7 +52,7 @@ public:
 private:
   //! Outgoing spectrum tabulated for one incident energy
   struct Table {
-    Interpolation interpolation; //!< within-table law; EEDL uses histogram
+    Interpolation interpolation;  //!< within-table law; EEDL uses histogram
     tensor::Tensor<double> e_out; //!< knock-on energies in [eV]
     tensor::Tensor<double> p;     //!< probability density in [1/eV]
     tensor::Tensor<double> c;     //!< cumulative distribution
@@ -63,7 +63,7 @@ private:
   //! \param[out] p_local Density at the returned value, for the pushforward
   double invert(int l, double c, double* p_local) const;
 
-  vector<double> energy_;   //!< incident energies in [eV]
+  vector<double> energy_; //!< incident energies in [eV]
   vector<Table> distribution_;
 };
 

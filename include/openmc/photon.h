@@ -3,8 +3,8 @@
 
 #include "openmc/array.h"
 #include "openmc/distribution_angle.h"
-#include "openmc/electroionization.h"
 #include "openmc/distribution_energy.h"
+#include "openmc/electroionization.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"

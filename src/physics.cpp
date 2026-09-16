@@ -591,7 +591,8 @@ void sample_electron_reaction(Particle& p)
     // There is no ENDF MT for total electroionization; 534 upwards name the
     // individual subshells, which is what the data resolves anyway
     p.event_mt() =
-      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -677,7 +678,8 @@ void sample_positron_reaction(Particle& p)
       return;
     p.event() = TallyEvent::SCATTER;
     p.event_mt() =
-      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -696,7 +698,8 @@ void sample_positron_reaction(Particle& p)
     element.bhabha(p, i_shell);
     p.event() = TallyEvent::SCATTER;
     p.event_mt() =
-      533 + element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
     if (settings::atomic_relaxation && i_shell >= 0 &&
         element.has_atomic_relaxation_) {
       element.atomic_relaxation(element.electron_shell_map_[i_shell], p);

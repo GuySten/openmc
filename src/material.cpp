@@ -699,8 +699,8 @@ void Material::init_electron_oscillators()
       const auto& shell = elm.shells_[elm.electron_shell_map_[j]];
       double f_i = shell.num_electrons * kv.second / osc.electron_density;
       double u = shell.binding_energy;
-      oscillator_energy_.push_back(std::sqrt(
-        osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
+      oscillator_energy_.push_back(
+        std::sqrt(osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
       strength.push_back(f_i);
     }
   }
@@ -818,8 +818,7 @@ void Material::init_bremsstrahlung()
     // Issy-les-Moulineaux, France (2011).
     if (positron) {
       for (int i = 0; i < n_e; ++i) {
-        double r =
-          salvat_factor(Z_eq_sq, data::ttb_e_grid(i));
+        double r = salvat_factor(Z_eq_sq, data::ttb_e_grid(i));
         stopping_power_radiative(i) *= r;
         tensor::View<double> dcs_i = dcs.slice(i);
         dcs_i *= r;

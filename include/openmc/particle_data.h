@@ -203,8 +203,8 @@ struct PhotoAtomicMicroXS {
 //==============================================================================
 
 struct ElectroAtomicMicroXS {
-  int index_grid;        //!< index on element energy grid
-  double last_E {0.0};   //!< last evaluated energy in [eV]
+  int index_grid;      //!< index on element energy grid
+  double last_E {0.0}; //!< last evaluated energy in [eV]
   //! Charge of the projectile these were evaluated for: 0 for an electron, 1
   //! for a positron. Almost everything below is charge dependent -- the
   //! elastic table, the majorant on the ionization cross section, Bhabha,

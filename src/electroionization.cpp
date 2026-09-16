@@ -38,8 +38,7 @@ ElectroionizationSpectrum::ElectroionizationSpectrum(hid_t group)
   }
 }
 
-double ElectroionizationSpectrum::invert(
-  int l, double c, double* p_local) const
+double ElectroionizationSpectrum::invert(int l, double c, double* p_local) const
 {
   const auto& d {distribution_[l]};
   int n = d.e_out.size();
@@ -77,12 +76,11 @@ double ElectroionizationSpectrum::invert(
     return x_k;
   }
   double m = (p_k1 - p_k) / (x_k1 - x_k);
-  double x = (m == 0.0)
-               ? x_k + (c - c_k) / p_k
-               : x_k +
-                   (std::sqrt(std::max(0.0, p_k * p_k + 2.0 * m * (c - c_k))) -
-                     p_k) /
-                     m;
+  double x =
+    (m == 0.0)
+      ? x_k + (c - c_k) / p_k
+      : x_k +
+          (std::sqrt(std::max(0.0, p_k * p_k + 2.0 * m * (c - c_k))) - p_k) / m;
   *p_local = std::max(0.0, p_k + m * (x - x_k));
   return x;
 }

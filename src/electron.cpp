@@ -156,8 +156,8 @@ namespace {
 //! and the constant cancels wherever the two are divided. The coefficients are
 //! PENELOPE's.
 struct FreeCollision {
-  double b1, b2, b3, b4;  //!< Bhabha
-  double amol, moller_c;  //!< Moller
+  double b1, b2, b3, b4; //!< Bhabha
+  double amol, moller_c; //!< Moller
 
   explicit FreeCollision(double E)
   {
@@ -211,16 +211,15 @@ double bhabha_integral(
 constexpr double BOHR_RADIUS_CM =
   PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
 constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
-constexpr double COLLISION_CONST = 2.0 * PI * 1.0e24 * R_E * R_E *
-                                   MASS_ELECTRON_EV;
+constexpr double COLLISION_CONST =
+  2.0 * PI * 1.0e24 * R_E * R_E * MASS_ELECTRON_EV;
 
 } // namespace
 
 void Element::compute_moller_majorant()
 {
   int n_energy = electron_energy_.size();
-  moller_majorant_ =
-    tensor::Tensor<double>({static_cast<size_t>(n_energy)});
+  moller_majorant_ = tensor::Tensor<double>({static_cast<size_t>(n_energy)});
 
   // The evaluated knock-on spectra describe a Moller collision. A positron's
   // spectrum is the same thing reweighted by the ratio of the two free cross
@@ -241,8 +240,8 @@ void Element::compute_moller_majorant()
     double peak = 1.0;
     for (int k = 0; k <= N_SCAN; ++k) {
       // Logarithmic in x, since the ratio varies fastest near the ends
-      double x = std::exp(std::log(1.0e-8) +
-                          k * (std::log(0.5) - std::log(1.0e-8)) / N_SCAN);
+      double x = std::exp(
+        std::log(1.0e-8) + k * (std::log(0.5) - std::log(1.0e-8)) / N_SCAN);
       peak = std::max(peak, c.ratio(x));
     }
     // A majorant that is a shade too small would bias the sampling, so the
@@ -277,8 +276,8 @@ void Element::compute_bhabha_xs()
       FreeCollision c {E};
       double gamma = 1.0 + E / MASS_ELECTRON_EV;
       double beta_sq = 1.0 - 1.0 / (gamma * gamma);
-      bhabha_(i, j) = n_e * COLLISION_CONST / beta_sq *
-                      bhabha_integral(c, E, W_lo, E);
+      bhabha_(i, j) =
+        n_e * COLLISION_CONST / beta_sq * bhabha_integral(c, E, W_lo, E);
     }
   }
 }
@@ -292,14 +291,14 @@ int Element::sample_bhabha_shell(Particle& p) const
 
   double total = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    total += bhabha_(i, i_grid) +
-             f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    total +=
+      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
   }
   double cutoff = prn(p.current_seed()) * total;
   double prob = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    prob += bhabha_(i, i_grid) +
-            f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    prob +=
+      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
     if (prob > cutoff)
       return i;
   }
@@ -384,9 +383,9 @@ void Element::calculate_electron_xs(Particle& p) const
     // makes this a majorant rather than the cross section itself: raising it
     // here and declining a fraction of the collisions there leaves the rate at
     // the reweighted integral without anyone having to evaluate that integral.
-    xs.ionization *= moller_majorant_(i_grid) +
-                     f * (moller_majorant_(i_grid + 1) -
-                           moller_majorant_(i_grid));
+    xs.ionization *=
+      moller_majorant_(i_grid) +
+      f * (moller_majorant_(i_grid + 1) - moller_majorant_(i_grid));
 
     // Transfers above the Moller limit, which the evaluated spectra cannot
     // reach at all, are a channel of their own
@@ -398,8 +397,7 @@ void Element::calculate_electron_xs(Particle& p) const
   // In-flight annihilation is a channel a positron has and an electron does
   // not. Over a whole slowing-down history it is far from rare: about one
   // positron in six started at 21 MeV annihilates before reaching the cutoff.
-  xs.annihilation =
-    p.type().is_positron() ? this->annihilation_xs(E) : 0.0;
+  xs.annihilation = p.type().is_positron() ? this->annihilation_xs(E) : 0.0;
 
   // Calculate microscopic bremsstrahlung cross section. A positron radiates
   // less than an electron of the same energy, being repelled by the nucleus
@@ -473,8 +471,7 @@ bool Element::ionization(Particle& p, int i_shell) const
     E_knock = std::max(0.0, std::nextafter(w_max, 0.0));
 
   double W = E_knock + e_b;
-  this->emit_knock_on(
-    p, W, e_b, this->sample_recoil(p, i_shell, W, density));
+  this->emit_knock_on(p, W, e_b, this->sample_recoil(p, i_shell, W, density));
   return true;
 }
 
@@ -578,8 +575,8 @@ double Element::sample_recoil(
                                         electroionization_(i_shell, i_grid));
     const auto& shell = shells_[electron_shell_map_[i_shell]];
     FreeCollision c {E};
-    double sigma_free =
-      shell.num_electrons * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
+    double sigma_free = shell.num_electrons * COLLISION_CONST / beta_sq *
+                        c.moller(W / E) / (E * E);
     if (prn(p.current_seed()) * sigma * density < sigma_free)
       return W;
   } else if (W > w_r) {
@@ -592,8 +589,8 @@ double Element::sample_recoil(
   // distributed as 1/(Q(Q + 2mc^2)) between the two bounds. The two are
   // weighted by their cross sections, whose common factor f_i / W_i cancels.
   double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
-  double c_tra = -std::log1p(-beta_sq) - beta_sq -
-                 mat.density_effect_correction(E);
+  double c_tra =
+    -std::log1p(-beta_sq) - beta_sq - mat.density_effect_correction(E);
   if (c_tra > 0.0 && prn(p.current_seed()) * (c_tra + c_lon) < c_tra)
     return q_min;
 
@@ -614,9 +611,9 @@ int Element::sample_ionization_shell(Particle& p) const
   // factor common to every shell cancels out of them.
   double total = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    total += electroionization_(i, i_grid) +
-             f * (electroionization_(i, i_grid + 1) -
-                   electroionization_(i, i_grid));
+    total +=
+      electroionization_(i, i_grid) +
+      f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
   }
   double cutoff = prn(p.current_seed()) * total;
 
@@ -802,10 +799,10 @@ double Element::annihilation_xs(double E) const
 
   // Heitler, per electron. It grows as 1/beta as the positron slows, which is
   // why a positron that reaches the cutoff annihilates rather than lingers.
-  double sigma = PI_R_E_SQ / (gamma + 1.0) *
-                 ((g_sq + 4.0 * gamma + 1.0) / (g_sq - 1.0) *
-                     std::log(gamma + s) -
-                   (gamma + 3.0) / s);
+  double sigma =
+    PI_R_E_SQ / (gamma + 1.0) *
+    ((g_sq + 4.0 * gamma + 1.0) / (g_sq - 1.0) * std::log(gamma + s) -
+      (gamma + 3.0) / s);
   return Z_ * std::max(sigma, 0.0);
 }
 
@@ -840,10 +837,10 @@ void Element::annihilation(Particle& p) const
   // Both polar angles follow from the photon energies; the two are coplanar
   // with the incident direction and on opposite sides of it.
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
-  double mu_1 = std::max(
-    -1.0, std::min(1.0, (E_1 - MASS_ELECTRON_EV) * pot / E_1));
-  double mu_2 = std::max(
-    -1.0, std::min(1.0, (E_2 - MASS_ELECTRON_EV) * pot / E_2));
+  double mu_1 =
+    std::max(-1.0, std::min(1.0, (E_1 - MASS_ELECTRON_EV) * pot / E_1));
+  double mu_2 =
+    std::max(-1.0, std::min(1.0, (E_2 - MASS_ELECTRON_EV) * pot / E_2));
   Direction u_1 = rotate_angle(p.u(), mu_1, &phi, p.current_seed());
   double phi_2 = phi + PI;
   Direction u_2 = rotate_angle(p.u(), mu_2, &phi_2, p.current_seed());

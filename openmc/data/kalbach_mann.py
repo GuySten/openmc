@@ -196,7 +196,7 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
     Raises
     ------
     NotImplementedError
-        When the projectile is not a neutron
+        When the projectile is neither a neutron nor a photon
 
     Returns
     -------
@@ -205,13 +205,53 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
 
     """
 
+    if za_projectile not in (0, 1):
+        # These systematics are Kalbach's, derived and tested for incident
+        # nucleons, and the za_to_M table below only carries entries for a few
+        # of them. Without this guard an unsupported projectile fails as a bare
+        # KeyError from inside a distribution reader, or silently returns a
+        # number.
+        raise NotImplementedError(
+            'Kalbach-Mann slope systematics are implemented for neutron '
+            f'(ZA=1) and photon (ZA=0) projectiles only, got ZA={za_projectile}.')
+
     if za_projectile == 0:
-        # Calculate slope for photons using Eq. 3 in doi:10.1080/18811248.1995.9731830
-        # or ENDF-6 Formats Manual section 6.2.3.2
+        # Slope for photons, Eq. 6.5 of the ENDF-6 Formats Manual
+        # (BNL-224854-2023, section 6.2), after Chadwick, Young and Chiba,
+        # doi:10.1080/18811248.1995.9731830:
+        #
+        #   a_gamma(E_gamma, E_b_cm) = a_n(E_gamma, E_b_cm)
+        #       * sqrt(E_gamma / (2 m_n)) * min(4, max(1, 9.3/sqrt(E_b_cm)))
+        #
+        # Two things about this look wrong at first reading and are not:
+        #
+        #   1. The neutron slope is evaluated by treating the photon as a
+        #      neutron of the same energy, compound nucleus target + n and
+        #      entrance separation energy included. That IS the prescription:
+        #      "The extension to incident gammas requires one to plug E_gamma
+        #      into the spot where one would use the incident neutron energy
+        #      when computing corresponding a for neutrons to obtain a_n."
+        #   2. The clipping factor takes E_b_cm, the emitted particle energy
+        #      in the center-of-mass frame, in MeV -- not the emission channel
+        #      energy epsilon_b that the rest of these systematics use. For a
+        #      LANG=2 distribution the tabulated outgoing energies are already
+        #      center-of-mass, so energy_emitted is the right quantity.
+        #
+        # The middle factor is the ratio of a photon's momentum E/c to that of
+        # a nucleon of the same kinetic energy, sqrt(2mE); the clip saturates
+        # at 4 below 5.41 MeV and at 1 above 86.5 MeV.
         slope_n = kalbach_slope(energy_projectile, energy_emitted, 1,
-                  za_emitted, za_target)
-        return slope_n * np.sqrt(0.5*energy_projectile/NEUTRON_MASS_EV)*np.minimum(4,np.maximum(1,9.3/np.sqrt(energy_emitted/EV_PER_MEV))) 
-        
+                                za_emitted, za_target)
+        # A zero outgoing energy is a normal first grid point of an ENDF
+        # LAW=1/LANG=2 table; the limit of the clipping factor there is 4.
+        emitted_mev = energy_emitted / EV_PER_MEV
+        clip = np.where(emitted_mev > 0.0,
+                        9.3 / np.sqrt(np.where(emitted_mev > 0.0,
+                                               emitted_mev, 1.0)),
+                        np.inf)
+        return slope_n * np.sqrt(0.5*energy_projectile/NEUTRON_MASS_EV) \
+            * np.minimum(4, np.maximum(1, clip))
+
     # Special handling of elemental carbon
     if za_emitted == 6000:
         za_emitted = 6012
@@ -633,7 +673,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        particle = {0: 'photon', 1: 'neutron'}[za_projectile]        
+        particle = {0: 'photon', 1: 'neutron'}.get(za_projectile, 'neutron')        
         params, tab2 = get_tab2_record(file_obj)
         lep = params[3]
         ne = params[5]
@@ -665,6 +705,12 @@ class KalbachMann(AngleEnergy):
             # Slope factors for Kalbach-Mann
             if n_angle == 2:
                 a_i = values[:, 3]
+                calculated_slope.append(False)
+            elif za_projectile is None:
+                # A projectile the systematics do not cover. Reading the rest
+                # of the evaluation is still useful, so fall back to isotropic
+                # emission rather than refusing the file.
+                a_i = np.zeros_like(r_i)
                 calculated_slope.append(False)
             else:
                 a_i = [kalbach_slope(energy_projectile=energy[i],

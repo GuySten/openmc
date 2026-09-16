@@ -103,8 +103,26 @@ public:
   int sample_bhabha_shell(Particle& p) const;
 
   //! Emit the knock-on electron and deflect the projectile, for a transfer of
-  //! W out of which the atom keeps the binding energy e_b
-  void emit_knock_on(Particle& p, double W, double e_b) const;
+  //! W out of which the atom keeps the binding energy e_b, the collision
+  //! having handed the atom a recoil energy Q
+  //
+  //! Both polar angles follow from Q alone: the projectile is deflected
+  //! through the momentum transfer and the knock-on leaves along it. Setting
+  //! Q = W recovers the free binary collision, in which the two are the
+  //! familiar Moller pair.
+  void emit_knock_on(Particle& p, double W, double e_b, double Q) const;
+
+  //! Sample the recoil energy of an inelastic collision transferring W out of
+  //! subshell i_shell
+  //
+  //! A free electron takes up the whole transfer, Q = W. A bound one does not:
+  //! while the momentum transfer stays below the scale of the subshell's
+  //! oscillator the atom is excited as a whole, through a dipole-like
+  //! interaction whose recoil is far smaller than the binary value and which
+  //! PENELOPE splits into a longitudinal part, distributed as 1/(Q(Q+2mc^2)),
+  //! and a transverse part that carries no momentum at all. Above that scale
+  //! the subshell responds as a free electron and Q = W again.
+  double sample_recoil(Particle& p, int i_shell, double W) const;
 
   //! Two-photon annihilation of a positron in flight
   //
@@ -169,7 +187,7 @@ public:
   tensor::Tensor<int> subshell_map_;
 
   // Stopping power data
-  double I_; // mean excitation energy
+  double I_ {0.0}; // mean excitation energy
   tensor::Tensor<int> n_electrons_;
   tensor::Tensor<double> ionization_energy_;
   tensor::Tensor<double> stopping_power_radiative_;

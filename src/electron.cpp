@@ -5,6 +5,7 @@
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
+#include "openmc/material.h"
 #include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
@@ -18,6 +19,7 @@
 
 #include "openmc/tensor.h"
 
+#include <algorithm> // for max, min
 #include <cmath>
 #include <fmt/core.h>
 #include <limits>
@@ -319,7 +321,7 @@ void Element::bhabha(Particle& p, int i_shell) const
       break;
   }
 
-  this->emit_knock_on(p, W, B);
+  this->emit_knock_on(p, W, B, W);
 }
 
 void Element::calculate_electron_xs(Particle& p) const
@@ -455,33 +457,92 @@ bool Element::ionization(Particle& p, int i_shell) const
       name_, i_shell, p.E(), E_knock, e_b));
   }
 
-  this->emit_knock_on(p, E_knock + e_b, e_b);
+  double W = E_knock + e_b;
+  this->emit_knock_on(p, W, e_b, this->sample_recoil(p, i_shell, W));
   return true;
 }
 
-void Element::emit_knock_on(Particle& p, double W, double e_b) const
+void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
 {
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+  double E = p.E();
   double E_knock = W - e_b;
   double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
 
-  // The knock-on is deflected according to the energy the primary actually
-  // transferred, not the kinetic energy it is left with. The two differ by the
-  // binding energy, which the atom absorbs: the momentum transfer that set the
-  // recoil direction corresponds to E_knock + e_b, so using E_knock alone
-  // ejects the electron too far sideways -- by 22% of the incident momentum
-  // for a tantalum K shell at 100 keV. This is the PENELOPE convention, and it
-  // makes the two polar angles the consistent free Moller pair for a transfer
-  // of E_knock + e_b.
-  double mu_knock = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                              (1.0 + 2.0 * MASS_ELECTRON_EV / W));
+  // Momenta of the projectile before and after, and of the transfer. The
+  // smallest momentum the collision can hand over is what is left when the
+  // projectile is not deflected at all, and every angle below is measured from
+  // there, which keeps the cancellation out of the soft collisions that
+  // dominate the count.
+  double pc = std::sqrt(E * (E + two_m));
+  double pc_out = std::sqrt((E - W) * (E - W + two_m));
+  double cq_sq = Q * (Q + two_m);
+  double cq_min = pc - pc_out;
+
+  // The projectile is deflected through the momentum transfer. Note the
+  // deflection is set by the energy the projectile actually gave up, not by
+  // the kinetic energy the knock-on carries away: the two differ by the
+  // binding energy, which the atom absorbs.
+  double mu = 1.0 - (cq_sq - cq_min * cq_min) / (2.0 * pc * pc_out);
+  p.mu() = std::max(-1.0, std::min(1.0, mu));
+
+  // The knock-on leaves along the momentum transfer. For a free collision this
+  // is the Moller partner of the angle above; for a distant one it is much
+  // closer to the forward direction, since little momentum changed hands.
+  double cq = std::sqrt(cq_sq);
+  double mu_knock = 1.0 - (cq - cq_min) * (pc + pc_out - cq) / (2.0 * pc * cq);
+  mu_knock = std::max(-1.0, std::min(1.0, mu_knock));
+
   Direction u_knock = rotate_angle(p.u(), mu_knock, &phi, p.current_seed());
   p.create_secondary(p.wgt(), u_knock, E_knock, ParticleType::electron());
 
-  p.mu() = std::sqrt((1.0 + 2.0 * MASS_ELECTRON_EV / p.E()) /
-                     (1.0 + 2.0 * MASS_ELECTRON_EV / (p.E() - E_knock - e_b)));
   phi += PI;
   p.u() = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
-  p.E() = p.E() - E_knock - e_b;
+  p.E() = E - W;
+}
+
+double Element::sample_recoil(Particle& p, int i_shell, double W) const
+{
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+  double E = p.E();
+
+  // Resonance energy of the oscillator standing for this subshell. It is a
+  // property of the material, not of the atom alone, because the outer shells
+  // are screened by the medium they sit in.
+  const auto& mat = *model::materials[p.material()];
+  double w_r = mat.oscillator_energy(index_, i_shell);
+
+  // Smallest recoil the collision can leave, reached when the projectile is
+  // not deflected
+  double pc = std::sqrt(E * (E + two_m));
+  double pc_out = std::sqrt((E - W) * (E - W + two_m));
+  double cq_min = pc - pc_out;
+  double q_min =
+    std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min * cq_min) -
+    MASS_ELECTRON_EV;
+
+  // Above the oscillator resonance the subshell is struck as though it were
+  // free, and the recoil is the whole transfer. The same holds when the
+  // kinematics leave no room below the resonance, and when the material
+  // carries no oscillator data at all.
+  if (W > w_r || q_min >= w_r)
+    return W;
+
+  // Distant interaction. The transverse part is the one the density effect
+  // acts on, and it hands over no momentum; the longitudinal part is
+  // distributed as 1/(Q(Q + 2mc^2)) between the two bounds. The two are
+  // weighted by their cross sections, whose common factor f_i / W_i cancels.
+  double beta_sq = E * (E + two_m) / ((E + MASS_ELECTRON_EV) *
+                                       (E + MASS_ELECTRON_EV));
+  double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
+  double c_tra = -std::log1p(-beta_sq) - beta_sq -
+                 mat.density_effect_correction(E);
+  if (c_tra > 0.0 && prn(p.current_seed()) * (c_tra + c_lon) < c_tra)
+    return q_min;
+
+  // Invert the longitudinal distribution
+  double a = std::exp(prn(p.current_seed()) * c_lon);
+  return two_m * a * q_min / (q_min + two_m - a * q_min);
 }
 
 int Element::sample_ionization_shell(Particle& p) const

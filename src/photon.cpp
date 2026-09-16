@@ -329,6 +329,14 @@ Element::Element(hid_t group)
       read_dataset(rgroup, "electron_energy", data::brems_e_grid);
       read_dataset(rgroup, "photon_energy", data::brems_k_grid);
     }
+
+    // Get the Sternheimer-Liljequist oscillator table. It is what the density
+    // effect is built from, and the same oscillators set the scale below which
+    // an inelastic collision excites the atom as a whole instead of striking a
+    // single electron.
+    read_dataset(rgroup, "num_electrons", n_electrons_);
+    read_dataset(rgroup, "ionization_energy", ionization_energy_);
+    read_attribute(rgroup, "I", I_);
     close_group(rgroup);
   } else if (settings::electron_treatment == ElectronTreatment::TTB) {
     // Read bremsstrahlung scaled DCS

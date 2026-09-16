@@ -3,6 +3,7 @@
 
 #include "openmc/array.h"
 #include "openmc/distribution_angle.h"
+#include "openmc/electroionization.h"
 #include "openmc/distribution_energy.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
@@ -222,7 +223,7 @@ public:
   array<tensor::Tensor<double>, 2> elastic_;
   array<AngleDistribution, 2> elastic_angle_;
   tensor::Tensor<double> electroionization_;
-  vector<unique_ptr<ContinuousTabular>> ionization_dist_;
+  vector<unique_ptr<ElectroionizationSpectrum>> ionization_dist_;
   //! Bhabha cross section above the Moller limit, per subshell, on
   //! electron_energy_. Filled by compute_bhabha_xs(), used only for positrons.
   tensor::Tensor<double> bhabha_;

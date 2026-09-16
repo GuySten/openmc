@@ -10,7 +10,6 @@
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
-#include "openmc/photon.h"
 #include "openmc/physics.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
@@ -90,7 +89,7 @@ void Element::read_electron_data(hid_t group)
     // not be remapped onto the interpolated endpoint range. See the note on
     // the ContinuousTabular constructor.
     ionization_dist_.push_back(
-      make_unique<ContinuousTabular>(shell_group, false));
+      make_unique<ElectroionizationSpectrum>(shell_group));
     close_group(shell_group);
   }
   close_group(rgroup);
@@ -408,6 +407,7 @@ void Element::calculate_electron_xs(Particle& p) const
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bhabha +
              xs.annihilation + xs.bremsstrahlung;
   xs.last_E = p.E();
+  xs.last_q = q;
 }
 
 double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
@@ -447,17 +447,18 @@ bool Element::ionization(Particle& p, int i_shell) const
       return false;
   }
 
-  // The scattered primary must be left with positive energy. A sampled
-  // knock-on energy that violates this would give a negative energy electron
-  // and a negative argument in the scattering cosine below.
-  if (E_knock + e_b >= p.E()) {
-    p.write_restart();
-    fatal_error(fmt::format(
-      "Electroionization of {} shell {} at {} eV sampled a knock-on energy of "
-      "{} eV which, with a binding energy of {} eV, exceeds the energy of the "
-      "incident electron.",
-      name_, i_shell, p.E(), E_knock, e_b));
-  }
+  // The scattered primary must be left with positive energy. The blended
+  // spectrum can exceed the kinematic limit in a band roughly 0.1 eV wide just
+  // above each subshell threshold, where the first tabulated table sits at
+  // E = B exactly: there the limit (E-B)/2 is zero while the table still
+  // carries outgoing energies. Everywhere else the blend is safe, because
+  // log((E-B)/2) is concave in log E and so the geometric chord between two
+  // tabulated maxima lies below the affine limit. Clamp rather than abort:
+  // this is a known property of the interpolation, not a corrupt library, and
+  // killing a run hours in over a 0.1 eV band would be indefensible.
+  double w_max = 0.5 * (p.E() - e_b);
+  if (E_knock > w_max)
+    E_knock = std::max(0.0, std::nextafter(w_max, 0.0));
 
   double W = E_knock + e_b;
   this->emit_knock_on(
@@ -480,7 +481,11 @@ void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
   double pc = std::sqrt(E * (E + two_m));
   double pc_out = std::sqrt((E - W) * (E - W + two_m));
   double cq_sq = Q * (Q + two_m);
-  double cq_min = pc - pc_out;
+  // (pc)^2 - (pc')^2 = W(2E - W + 2mc^2) exactly, so dividing by the sum
+  // avoids subtracting two nearly equal square roots. The soft collisions that
+  // dominate the count are precisely where that subtraction loses its digits,
+  // and the transverse channel needs this to come back exactly forward.
+  double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
 
   // The projectile is deflected through the momentum transfer. Note the
   // deflection is set by the energy the projectile actually gave up, not by
@@ -520,10 +525,12 @@ double Element::sample_recoil(
   // not deflected
   double pc = std::sqrt(E * (E + two_m));
   double pc_out = std::sqrt((E - W) * (E - W + two_m));
-  double cq_min = pc - pc_out;
+  double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
+  // Q(Q + 2mc^2) = (cq)^2 inverted without subtracting nearly equal terms
+  double cq_min_sq = cq_min * cq_min;
   double q_min =
-    std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min * cq_min) -
-    MASS_ELECTRON_EV;
+    cq_min_sq / (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
+                  MASS_ELECTRON_EV);
 
   // No room below the resonance -- or no oscillator data at all -- leaves the
   // close collision as the only possibility
@@ -641,8 +648,9 @@ namespace {
 double bremsstrahlung_cos_theta(
   int Z, double E, double E_photon, uint64_t* seed)
 {
-  // (Zeff/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
-  // electron-electron contribution. 1/111^2 = 8.116224e-5.
+  // (Zeff^(1/3)/111)^2 with Zeff^2 = Z(Z+1), the (Z+1) carrying the
+  // electron-electron contribution, so the factor is (Z(Z+1))^(1/3)/111^2.
+  // 1/111^2 = 8.116224e-5.
   double z_screen = 8.116224e-5 * std::cbrt(static_cast<double>(Z) * (Z + 1));
   double log_z_screen = -std::log(z_screen);
 
@@ -678,6 +686,7 @@ double bremsstrahlung_cos_theta(
   // rejected against the screened shape; it converges in a few iterations, but
   // cap it so that a pathological energy cannot hang a history.
   double y2 = 0.0;
+  bool accepted = false;
   for (int iter = 0; iter < 1000; ++iter) {
     double xi = prn(seed);
     double test = prn(seed);
@@ -688,12 +697,22 @@ double bremsstrahlung_cos_theta(
     double y2s = ratio * y2 / aux3_4;
     double aux4 = 16.0 * y2s - arg2;
     double aux5 = arg1 - 4.0 * y2s;
-    if (test < aux4 + aux5 * arg3)
+    if (test < aux4 + aux5 * arg3) {
+      accepted = true;
       break;
+    }
     double aux2 = std::log(aux / (1.0 + aux1 / aux3_4));
-    if (test < aux4 + aux5 * aux2)
+    if (test < aux4 + aux5 * aux2) {
+      accepted = true;
       break;
+    }
   }
+
+  // Falling out of the loop leaves y2 holding a trial that was rejected, which
+  // would be worse than no sample at all. Emit forward instead, as the
+  // degenerate cases above already do.
+  if (!accepted)
+    return 1.0;
 
   return std::max(-1.0, std::min(1.0, 1.0 - 2.0 * y2 * y2_max_inv));
 }

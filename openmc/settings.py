@@ -95,7 +95,13 @@ class Settings:
 
         .. versionadded:: 0.12
     electron_transport : bool
-        Whether to use electron transport.        
+        Whether to transport electrons and positrons as individual particles,
+        simulating every interaction as a discrete event rather than depositing
+        their energy locally or spreading it with the thick-target
+        approximation. Requires photon transport and an electron data library,
+        and makes :attr:`electron_treatment` inapplicable.
+
+        .. versionadded:: 0.15.3
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -1723,7 +1729,7 @@ class Settings:
     def _create_electron_transport_subelement(self, root):
         if self._electron_transport is not None:
             element = ET.SubElement(root, "electron_transport")
-            element.text = str(self._electron_transport).lower()            
+            element.text = str(self._electron_transport).lower()
 
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
@@ -2275,7 +2281,7 @@ class Settings:
     def _electron_transport_from_xml_element(self, root):
         text = get_text(root, 'electron_transport')
         if text is not None:
-            self.electron_transport = text in ('true', '1')            
+            self.electron_transport = text in ('true', '1')
 
     def _photon_transport_from_xml_element(self, root):
         text = get_text(root, 'photon_transport')

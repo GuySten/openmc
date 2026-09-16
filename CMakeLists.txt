@@ -323,6 +323,7 @@ list(APPEND libopenmc_SOURCES
   src/distribution.cpp
   src/distribution_angle.cpp
   src/distribution_energy.cpp
+  src/electroionization.cpp
   src/distribution_multi.cpp
   src/distribution_spatial.cpp
   src/eigenvalue.cpp

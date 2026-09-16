@@ -242,9 +242,34 @@ from MF=1, MT=458 on an ENDF evaluation.
 
 When photon transport is enabled, the ``<electron_treatment>`` element tells
 OpenMC whether to deposit all energy from electrons locally (``led``) or create
-secondary bremsstrahlung photons (``ttb``).
+secondary bremsstrahlung photons (``ttb``). It is ignored, with a warning, when
+:ref:`electron_transport` is enabled, since bremsstrahlung is then sampled one
+photon at a time.
 
   *Default*: ttb
+
+.. _electron_transport:
+
+-------------------------------
+``<electron_transport>`` Element
+-------------------------------
+
+The ``<electron_transport>`` element indicates whether electrons and positrons
+are transported as individual particles rather than having their energy
+deposited locally or spread by the thick-target approximation. Every
+interaction is simulated as a discrete event: elastic scattering from
+partial-wave cross sections, electroionization, atomic excitation,
+bremsstrahlung, and for positrons Bhabha scattering and in-flight
+annihilation. There is no condensed history.
+
+This requires photon transport, which is enabled automatically with a warning
+if it was not requested, and it requires an electron data library in the cross
+section listing. It is considerably more expensive than either of the
+``<electron_treatment>`` options and is intended for problems where the
+electron's own path matters -- depth dose, thin targets, interface dosimetry --
+rather than for shielding calculations.
+
+  *Default*: false
 
 .. _energy_mode:
 

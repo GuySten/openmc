@@ -672,17 +672,27 @@ void Material::init_electron_oscillators()
       (atom_density_[0] > 0.0) ? atom_density_[i] : -atom_density_[i] / awr;
   }
 
-  // Build an oscillator for every electroionization subshell. The table used
-  // for the density effect has a shell list of its own, which agrees with the
-  // ENDF one shell for shell except that it lumps the outermost electrons into
-  // a single conduction term. A collision has to be classified for the
-  // subshell that was actually ionized, so the resonance energies are rebuilt
-  // here on the ENDF list, with the same adjustment factor and plasma energy.
+  // Build an oscillator for every electroionization subshell. The table the
+  // density effect is solved on has a shell list of its own, which lumps the
+  // outermost electrons into a conduction term carrying no binding energy. A
+  // collision has to be classified for the subshell that was actually ionized,
+  // so the resonance energies are rebuilt here on the ENDF list.
+  //
+  // The Sternheimer factor rho was adjusted to make the FIRST list satisfy
+  // sum_i f_i ln(W_i) = ln(I). The rebuilt list does not inherit that: the
+  // electrons the density-effect model treats as free are given a real
+  // photoatomic binding energy here, which raises their resonance and moves
+  // strength from close collisions to distant ones. For a conductor that is
+  // not a small difference, so the rebuilt set is renormalised below to
+  // reproduce ln(I) in its own right.
   oscillator_element_.clear();
   oscillator_offset_.clear();
   oscillator_energy_.clear();
+  oscillator_block_.clear();
+  vector<double> strength;
   for (const auto& kv : atom_density) {
     const auto& elm = *data::elements[kv.first];
+    oscillator_block_[kv.first] = oscillator_element_.size();
     oscillator_element_.push_back(kv.first);
     oscillator_offset_.push_back(oscillator_energy_.size());
     for (int j = 0; j < elm.electron_shell_map_.size(); ++j) {
@@ -691,9 +701,27 @@ void Material::init_electron_oscillators()
       double u = shell.binding_energy;
       oscillator_energy_.push_back(std::sqrt(
         osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
+      strength.push_back(f_i);
     }
   }
   oscillator_offset_.push_back(oscillator_energy_.size());
+
+  // Renormalise so that sum_i f_i ln(W_i) = ln(I) on this list too. The
+  // oscillator strengths sum to one by construction, so a single common factor
+  // does it, and it is the same kind of scaling rho itself applies.
+  double sum_f = 0.0;
+  double sum_f_lnw = 0.0;
+  for (int i = 0; i < strength.size(); ++i) {
+    if (strength[i] > 0.0 && oscillator_energy_[i] > 0.0) {
+      sum_f += strength[i];
+      sum_f_lnw += strength[i] * std::log(oscillator_energy_[i]);
+    }
+  }
+  if (sum_f > 0.0) {
+    double scale = std::exp(osc.log_I - sum_f_lnw / sum_f);
+    for (auto& w : oscillator_energy_)
+      w *= scale;
+  }
 }
 
 double Material::density_effect_correction(double E) const
@@ -715,13 +743,12 @@ double Material::density_effect_correction(double E) const
 
 double Material::oscillator_energy(int i_element, int i_shell) const
 {
-  for (int i = 0; i < oscillator_element_.size(); ++i) {
-    if (oscillator_element_[i] != i_element)
-      continue;
-    int j = oscillator_offset_[i] + i_shell;
-    return (j < oscillator_offset_[i + 1]) ? oscillator_energy_[j] : 0.0;
-  }
-  return 0.0;
+  auto it = oscillator_block_.find(i_element);
+  if (it == oscillator_block_.end())
+    return 0.0;
+  int i = it->second;
+  int j = oscillator_offset_[i] + i_shell;
+  return (j < oscillator_offset_[i + 1]) ? oscillator_energy_[j] : 0.0;
 }
 
 void Material::init_bremsstrahlung()
@@ -1048,7 +1075,8 @@ void Material::calculate_electron_xs(Particle& p) const
 
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.electron_xs(i_element)};
-    if (p.E() != micro.last_E) {
+    int q = p.type().is_positron() ? 1 : 0;
+    if (p.E() != micro.last_E || q != micro.last_q) {
       data::elements[i_element]->calculate_electron_xs(p);
     }
 

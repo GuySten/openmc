@@ -22,6 +22,8 @@ from .photon import (_BREMSSTRAHLUNG, _SUBSHELLS, MASS_ELECTRON_EV,
 # negligible.
 _PHOTON_CUTOFF = 1.0
 
+__all__ = ['IncidentElectron']
+
 
 def _tabular_from_cdf(x, c, name):
     """Build a histogram Tabular from a tabulated cumulative distribution.
@@ -94,7 +96,7 @@ class IncidentElectron:
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_photon_cutoff = None
         self.excitation_xs = None
-        self.excitation_energy_loss = None        
+        self.excitation_energy_loss = None
         self.ionization_xs = {}  # Keyed by subshell index
         self.ionization_dist = {} # Keyed by subshell index
         self.shells = []
@@ -156,16 +158,16 @@ class IncidentElectron:
         n_energy = ace.nxs[8]
         n_xl = ace.nxs[9]
         n_subshells = ace.nxs[7]
-        
+
 
         j_shell = ace.jxs[11]           # SUBSH: subshell designators
         j_energy = ace.jxs[19]          # ESZE: electron energy grid + cross sections
         j_excitation = ace.jxs[20]      # EXCIT: excitation energy-loss table
         j_ionization = ace.jxs[23]      # EION: electroionization table info
-        
+
         data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
         data.energy_grid = ace.xss[j_energy : j_energy + n_energy]*EV_PER_MEV
-        
+
         j_xs = j_energy + n_energy
 
         # Read cross sections from the ESZE block. The layout is, in order:
@@ -189,7 +191,7 @@ class IncidentElectron:
         for s, shell in enumerate(data.shells):
             start_idx = j_subshell_xs + s * n_energy
             data.ionization_xs[shell] = ace.xss[start_idx : start_idx + n_energy]
-            
+
         ni = ace.xss[j_ionization : j_ionization + n_subshells].astype(int)
         locinfo = ace.xss[j_ionization + n_subshells: j_ionization + 2*n_subshells].astype(int)
         loctab = ace.xss[j_ionization + 2*n_subshells: j_ionization + 3*n_subshells].astype(int)
@@ -257,29 +259,29 @@ class IncidentElectron:
             group.attrs["Z"] = Z = self.atomic_number
 
             group.create_dataset("energy", data=self.energy_grid)
-            
+
             elastic_group = group.create_group("elastic")
             for particle in ('electron', 'positron'):
                 pgroup = elastic_group.create_group(particle)
                 pgroup.create_dataset("xs", data=self.elastic_xs[particle])
                 self.elastic_dist[particle].to_hdf5(
                     pgroup.create_group("distribution"))
-            
+
             excitation_group = group.create_group("excitation")
             excitation_group.create_dataset("xs", data=self.excitation_xs)
             self.excitation_energy_loss.to_hdf5(excitation_group, "energy_loss")
-            
+
             ionization_group = group.create_group("ionization")
             ionization_group.attrs['designators'] = np.array(self.shells, dtype='S')
             xs = np.zeros((len(self.shells), len(self.energy_grid)))
             for i, shell in enumerate(self.shells):
                 xs[i] = self.ionization_xs[shell]
             ionization_group.create_dataset("xs", data=xs)
-            
+
             for shell in self.shells:
                 shell_group = ionization_group.create_group(shell)
                 self.ionization_dist[shell].to_hdf5(shell_group)
-            
+
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)
             # The emitted photon energy is sampled from the scaled cross

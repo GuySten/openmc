@@ -233,8 +233,12 @@ public:
   //! Oscillator resonance energies in [eV], one per electroionization subshell,
   //! concatenated over the distinct elements of this material
   vector<double> oscillator_energy_;
-  //! Global element index of each block of oscillator_energy_
+  //! Global element index of each block of oscillator_energy_, and the
+  //! reverse lookup the transport uses -- an inelastic collision asks for a
+  //! resonance energy by element index, and a linear scan would be paid for on
+  //! every one of them
   vector<int> oscillator_element_;
+  std::unordered_map<int, int> oscillator_block_;
   //! Start of each block in oscillator_energy_, with a trailing end marker
   vector<int> oscillator_offset_;
 

@@ -865,18 +865,25 @@ void initialize_data()
       int electron = ParticleType::electron().transport_index();
       int positron = ParticleType::positron().transport_index();
 
+      // Bound the charged particles by the grid their own reactions are
+      // tabulated on. The photoatomic grid above belongs to the photon cross
+      // sections and is stored logarithmically; it says nothing about where
+      // the electron data starts and stops.
       const std::vector<int> charged = {electron, positron};
       for (const auto& elem : data::elements) {
-        if (elem->energy_.size() >= 1) {
-          int n = elem->energy_.size();
+        int n = elem->electron_energy_.size();
+        if (n >= 2) {
           for (auto t : charged) {
             data::energy_min[t] =
-              std::max(data::energy_min[t], std::exp(elem->energy_(1)));
+              std::max(data::energy_min[t], elem->electron_energy_(0));
             data::energy_max[t] =
-              std::min(data::energy_max[t], std::exp(elem->energy_(n - 1)));
+              std::min(data::energy_max[t], elem->electron_energy_(n - 1));
           }
         }
       }
+
+      // Electrons make photons and photons make electrons, so neither can be
+      // transported outside the range where both have data.
       data::energy_min[photon] =
         std::max(data::energy_min[photon], data::energy_min[electron]);
 

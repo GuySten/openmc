@@ -1,7 +1,6 @@
 #include "openmc/distribution_energy.h"
 
 #include <algorithm> // for max, min, copy, move
-#include <cmath>     // for log, pow
 #include <cstddef>   // for size_t
 #include <iterator>  // for back_inserter
 
@@ -54,8 +53,7 @@ double LevelInelastic::sample(double E, uint64_t* seed) const
 // ContinuousTabular implementation
 //==============================================================================
 
-ContinuousTabular::ContinuousTabular(hid_t group, bool unit_base)
-  : unit_base_(unit_base)
+ContinuousTabular::ContinuousTabular(hid_t group)
 {
   // Open incoming energy dataset
   hid_t dset = open_dataset(group, "energy");
@@ -148,20 +146,49 @@ ContinuousTabular::ContinuousTabular(hid_t group, bool unit_base)
   } // incoming energies
 }
 
-double ContinuousTabular::sample_table(
-  int l, double r1, bool& discrete, double* density) const
+double ContinuousTabular::sample(double E, uint64_t* seed) const
 {
-  const auto& d {distribution_[l]};
-  int n_energy_out = d.e_out.size();
-  int n_discrete = d.n_discrete;
-  double c_k = d.c[0];
+  // Read number of interpolation regions and incoming energies
+  bool histogram_interp;
+  if (n_region_ == 1) {
+    histogram_interp = (interpolation_[0] == Interpolation::histogram);
+  } else {
+    histogram_interp = false;
+  }
+
+  // Find energy bin and calculate interpolation factor -- if the energy is
+  // outside the range of the tabulated energies, choose the first or last bins
+  int i;
+  double r;
+  get_energy_index(energy_, E, i, r);
+
+  // A single tabulated incident energy leaves no bin to interpolate across,
+  // and the bracketing table accessed below would be out of bounds
+  if (energy_.size() < 2) {
+    i = 0;
+    r = 0.0;
+  }
+
+  // Sample between the ith and [i+1]th bin
+  int l;
+  if (histogram_interp || energy_.size() < 2) {
+    l = i;
+  } else {
+    l = r > prn(seed) ? i + 1 : i;
+  }
+
+  // Determine outgoing energy bin
+  int n_energy_out = distribution_[l].e_out.size();
+  int n_discrete = distribution_[l].n_discrete;
+  double r1 = prn(seed);
+  double c_k = distribution_[l].c[0];
   int k = 0;
   int end = n_energy_out - 2;
 
   // Discrete portion
   for (int j = 0; j < n_discrete; ++j) {
     k = j;
-    c_k = d.c[k];
+    c_k = distribution_[l].c[k];
     if (r1 < c_k) {
       end = j;
       break;
@@ -172,237 +199,80 @@ double ContinuousTabular::sample_table(
   double c_k1;
   for (int j = n_discrete; j < end; ++j) {
     k = j;
-    c_k1 = d.c[k + 1];
+    c_k1 = distribution_[l].c[k + 1];
     if (r1 < c_k1)
       break;
     k = j + 1;
     c_k = c_k1;
   }
 
-  discrete = (k < n_discrete);
+  double E_l_k = distribution_[l].e_out[k];
 
-  double E_l_k = d.e_out[k];
-
-  // A discrete line is returned as it stands. Falling through to the
-  // continuous branches would read e_out[k + 1] and interpolate across the gap
-  // to the next line, which is meaningless for a delta function.
-  if (discrete) {
-    // A delta function has no density
-    if (density)
-      *density = 0.0;
+  if (k < n_discrete) {
+    // Discrete case
     return E_l_k;
-  }
-
-  double p_l_k = d.p[k];
-  double E_out;
-
-  if (d.interpolation == Interpolation::histogram) {
-    E_out = (p_l_k > 0.0) ? E_l_k + (r1 - c_k) / p_l_k : E_l_k;
-    if (density)
-      *density = p_l_k;
-
-  } else if (d.interpolation == Interpolation::lin_lin) {
-    double E_l_k1 = d.e_out[k + 1];
-    double p_l_k1 = d.p[k + 1];
-
-    if (E_l_k != E_l_k1) {
-      double frac = (p_l_k1 - p_l_k) / (E_l_k1 - E_l_k);
-      if (frac == 0.0) {
+  } else {
+    // Continuous case
+    double p_l_k = distribution_[l].p[k];
+    double E_out;
+    if (distribution_[l].interpolation == Interpolation::histogram) {
+      // Histogram interpolation
+      if (p_l_k > 0.0) {
         E_out = E_l_k + (r1 - c_k) / p_l_k;
       } else {
-        E_out =
-          E_l_k +
-          (std::sqrt(std::max(0.0, p_l_k * p_l_k + 2.0 * frac * (r1 - c_k))) -
-            p_l_k) /
-            frac;
+        E_out = E_l_k;
+      }
+    } else if (distribution_[l].interpolation == Interpolation::lin_lin) {
+      // Linear-linear interpolation
+      double E_l_k1 = distribution_[l].e_out[k + 1];
+      double p_l_k1 = distribution_[l].p[k + 1];
+
+      if (E_l_k != E_l_k1) {
+        double frac = (p_l_k1 - p_l_k) / (E_l_k1 - E_l_k);
+        if (frac == 0.0) {
+          E_out = E_l_k + (r1 - c_k) / p_l_k;
+        } else {
+          E_out =
+            E_l_k +
+            (std::sqrt(std::max(0.0, p_l_k * p_l_k + 2.0 * frac * (r1 - c_k))) -
+              p_l_k) /
+              frac;
+        }
+      } else {
+        E_out = E_l_k;
       }
     } else {
-      E_out = E_l_k;
+      throw std::runtime_error {
+        "Unexpected interpolation for continuous energy "
+        "distribution."};
     }
-    if (density) {
-      double frac = (E_l_k != E_l_k1)
-                      ? (p_l_k1 - p_l_k) / (E_l_k1 - E_l_k)
-                      : 0.0;
-      *density = std::max(0.0, p_l_k + frac * (E_out - E_l_k));
-    }
-  } else {
-    throw std::runtime_error {"Unexpected interpolation for continuous energy "
-                              "distribution."};
-  }
 
-  return E_out;
-}
+    // Now interpolate between incident energy bins i and i + 1
+    if (!histogram_interp && n_energy_out > 1 && energy_.size() >= 2) {
+      // Interpolation for energy E1 and EK
+      n_energy_out = distribution_[i].e_out.size();
+      n_discrete = distribution_[i].n_discrete;
+      const double E_i_1 = distribution_[i].e_out[n_discrete];
+      const double E_i_K = distribution_[i].e_out[n_energy_out - 1];
 
-double ContinuousTabular::sample(double E, uint64_t* seed) const
-{
-  return this->sample(E, seed, nullptr);
-}
+      n_energy_out = distribution_[i + 1].e_out.size();
+      n_discrete = distribution_[i + 1].n_discrete;
+      const double E_i1_1 = distribution_[i + 1].e_out[n_discrete];
+      const double E_i1_K = distribution_[i + 1].e_out[n_energy_out - 1];
 
-double ContinuousTabular::sample(
-  double E, uint64_t* seed, double* density) const
-{
-  if (density)
-    *density = 0.0;
+      const double E_1 = E_i_1 + r * (E_i1_1 - E_i_1);
+      const double E_K = E_i_K + r * (E_i1_K - E_i_K);
 
-  // Read number of interpolation regions and incoming energies
-  bool histogram_interp;
-  bool loglog_interp;
-  if (n_region_ == 1) {
-    histogram_interp = (interpolation_[0] == Interpolation::histogram);
-    loglog_interp = (interpolation_[0] == Interpolation::log_log);
-  } else {
-    histogram_interp = false;
-    loglog_interp = false;
-  }
-
-  // Find energy bin and calculate interpolation factor -- if the energy is
-  // outside the range of the tabulated energies, choose the first or last bins
-  auto n_energy_in = energy_.size();
-  int i;
-  double r;
-  get_energy_index(energy_, E, i, r);
-
-  // With log-log interpolation the incident energy fraction is taken
-  // logarithmically. This matters when the incident energy grid is sparse: the
-  // EEDL-derived bremsstrahlung tables span ten decades in as few as ten
-  // points, where a linear fraction places essentially all the weight on the
-  // lower table. The bounds that get_energy_index returns for an energy off
-  // either end of the grid are left alone.
-  if (loglog_interp && r > 0.0 && r < 1.0 && E > 0.0 && energy_[i] > 0.0 &&
-      energy_[i + 1] > energy_[i]) {
-    r = std::log(E / energy_[i]) / std::log(energy_[i + 1] / energy_[i]);
-  }
-
-  double r1 = prn(seed);
-
-  if (histogram_interp) {
-    bool discrete;
-    return this->sample_table(i, r1, discrete, density);
-  }
-
-  // A single tabulated incident energy leaves no bin to interpolate across,
-  // and the bracketing table accessed below would be out of bounds.
-  if (n_energy_in < 2) {
-    bool discrete;
-    return this->sample_table(0, r1, discrete, density);
-  }
-
-  // Without unit-base scaling the two tables are interpolated directly at
-  // matched cumulative probability. The outgoing energy is not remapped, so a
-  // distribution anchored at a fixed lower limit keeps its shape near that
-  // limit and only its upper end moves with the incident energy.
-  //
-  // The two sampled values are combined geometrically rather than
-  // arithmetically. Across the sparse EEDL incident-energy grid they can differ
-  // by orders of magnitude, and an arithmetic mean is dominated by the larger
-  // one. For electroionization in aluminium at 22.2 MeV, an arithmetic blend
-  // gives a collision stopping power about 5% above ICRU/ESTAR while a
-  // geometric blend is within about 1%. Note this is the opposite of what a
-  // self-similar distribution such as bremsstrahlung requires, which is why it
-  // applies only on this branch.
-  if (!unit_base_) {
-    bool discrete_i, discrete_i1;
-    double p_i, p_i1;
-    double E_out_i = this->sample_table(i, r1, discrete_i, &p_i);
-    double E_out_i1 = this->sample_table(i + 1, r1, discrete_i1, &p_i1);
-    if (discrete_i || discrete_i1) {
-      return (r > prn(seed)) ? E_out_i1 : E_out_i;
-    }
-    // The geometric form is undefined if either value is non-positive, which
-    // can happen at the very bottom of a table
-    if (E_out_i > 0.0 && E_out_i1 > 0.0) {
-      double E_out = E_out_i * std::pow(E_out_i1 / E_out_i, r);
-
-      // Density of the blended distribution. Both tables were inverted at the
-      // same quantile, so the sampled value is a deterministic function of it
-      // and its density is the pushforward, 1/(dE_out/dr1). Since
-      // r1 = c_l(E_out_l), dE_out_l/dr1 is 1/p_l there. This is not the
-      // interpolation of the two tabulated densities, and it is returned from
-      // here because the inversion has already located the point in both
-      // tables -- recovering it afterwards would mean searching them again.
-      if (density && p_i > 0.0 && p_i1 > 0.0) {
-        double dE = E_out * ((1.0 - r) / (E_out_i * p_i) + r / (E_out_i1 * p_i1));
-        *density = (dE > 0.0) ? 1.0 / dE : 0.0;
+      if (l == i) {
+        return E_1 + (E_out - E_i_1) * (E_K - E_1) / (E_i_K - E_i_1);
+      } else {
+        return E_1 + (E_out - E_i1_1) * (E_K - E_1) / (E_i1_K - E_i1_1);
       }
+    } else {
       return E_out;
     }
-    return E_out_i + r * (E_out_i1 - E_out_i);
-  }
-
-  // Bounds of the scaled outgoing energy range for each bracketing table
-  auto bounds = [&](int l, double& E_1, double& E_K) {
-    int n = distribution_[l].e_out.size();
-    E_1 = distribution_[l].e_out[distribution_[l].n_discrete];
-    E_K = distribution_[l].e_out[n - 1];
-  };
-
-  double E_i_1, E_i_K, E_i1_1, E_i1_K;
-  bounds(i, E_i_1, E_i_K);
-  bounds(i + 1, E_i1_1, E_i1_K);
-
-  // The scaled interpolation bounds must be blended with the same scheme used
-  // for r, or the endpoint is wrong. For a quantity proportional to the
-  // incident energy, geometric blending with a logarithmic r reproduces the
-  // incident energy exactly, just as linear blending does with a linear r.
-  double E_1;
-  double E_K;
-  if (loglog_interp && E_i_1 > 0.0 && E_i1_1 > 0.0 && E_i_K > 0.0 &&
-      E_i1_K > 0.0) {
-    E_1 = E_i_1 * std::pow(E_i1_1 / E_i_1, r);
-    E_K = E_i_K * std::pow(E_i1_K / E_i_K, r);
-  } else {
-    E_1 = E_i_1 + r * (E_i1_1 - E_i_1);
-    E_K = E_i_K + r * (E_i1_K - E_i_K);
-  }
-
-  if (loglog_interp) {
-    // Interpolate the distributions rather than choosing between them. Both
-    // tables are inverted at the same cumulative probability and their results
-    // mapped onto a common unit scale, which interpolates the inverse CDF and
-    // therefore the distribution itself. Selecting one table stochastically,
-    // as the linear path below does, instead yields a mixture of the two
-    // shapes -- adequate on a dense grid, but not across the decade-wide gaps
-    // in the EEDL tables.
-    bool discrete_i, discrete_i1;
-    double E_out_i = this->sample_table(i, r1, discrete_i);
-    double E_out_i1 = this->sample_table(i + 1, r1, discrete_i1);
-
-    // Discrete lines are returned unscaled and cannot be blended; fall back to
-    // stochastic selection for them.
-    if (discrete_i || discrete_i1) {
-      return (r > prn(seed)) ? E_out_i1 : E_out_i;
-    }
-
-    double span_i = E_i_K - E_i_1;
-    double span_i1 = E_i1_K - E_i1_1;
-    if (span_i <= 0.0 || span_i1 <= 0.0)
-      return E_out_i;
-
-    double x_i = (E_out_i - E_i_1) / span_i;
-    double x_i1 = (E_out_i1 - E_i1_1) / span_i1;
-    double x = x_i + r * (x_i1 - x_i);
-
-    return E_1 + x * (E_K - E_1);
-  }
-
-  // Sample between the ith and [i+1]th bin
-  int l = r > prn(seed) ? i + 1 : i;
-
-  bool discrete;
-  double E_out = this->sample_table(l, r1, discrete);
-
-  // Now interpolate between incident energy bins i and i + 1
-  if (!discrete && distribution_[l].e_out.size() > 1) {
-    if (l == i) {
-      return E_1 + (E_out - E_i_1) * (E_K - E_1) / (E_i_K - E_i_1);
-    } else {
-      return E_1 + (E_out - E_i1_1) * (E_K - E_1) / (E_i1_K - E_i1_1);
-    }
-  } else {
-    return E_out;
   }
 }
-
 
 //==============================================================================
 // MaxwellEnergy implementation

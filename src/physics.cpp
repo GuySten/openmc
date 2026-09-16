@@ -587,6 +587,8 @@ void sample_electron_reaction(Particle& p)
 
     // Generate secondary knock-on electron and adjust primary energy
     element.ionization(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROIONIZATION;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -596,12 +598,12 @@ void sample_electron_reaction(Particle& p)
     return;
   }
 
-  // Bremsstrahlung
-  prob += micro.bremsstrahlung;
-  if (prob > cutoff) {
-    element.bremsstrahlung(p);
-    return;
-  }
+  // Bremsstrahlung. Last channel, so it takes whatever is left: the running
+  // total is accumulated in a different order from xs.total and rounding must
+  // not be able to leave the particle with no reaction at all.
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 void sample_positron_reaction(Particle& p)
@@ -667,6 +669,8 @@ void sample_positron_reaction(Particle& p)
     int i_shell = element.sample_ionization_shell(p);
     if (!element.ionization(p, i_shell))
       return;
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROIONIZATION;
 
     // Trigger relaxation (Fluorescence / Auger)
     if (settings::atomic_relaxation && i_shell >= 0 &&
@@ -683,6 +687,8 @@ void sample_positron_reaction(Particle& p)
   if (prob > cutoff) {
     int i_shell = element.sample_bhabha_shell(p);
     element.bhabha(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROIONIZATION;
     if (settings::atomic_relaxation && i_shell >= 0 &&
         element.has_atomic_relaxation_) {
       element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
@@ -699,12 +705,11 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
-  // Bremsstrahlung
-  prob += micro.bremsstrahlung;
-  if (prob > cutoff) {
-    element.bremsstrahlung(p);
-    return;
-  }
+  // Bremsstrahlung. Last channel, so it takes whatever is left rather than
+  // letting rounding drop the collision (see sample_electron_reaction).
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 int sample_nuclide(Particle& p)

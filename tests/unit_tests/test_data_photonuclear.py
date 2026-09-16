@@ -262,12 +262,52 @@ def test_kalbach_slope_rejects_other_projectiles():
         openmc.data.kalbach_slope(15.0e6, 3.0e6, 1003, 1, 82208)
 
 
-def test_kalbach_slope_photon_is_softer_than_neutron():
-    """The photon slope is the neutron one scaled by the momentum ratio, which
-    is well below one at these energies, times a factor of at most four."""
-    neutron = openmc.data.kalbach_slope(15.0e6, 3.0e6, 1, 1, 82208)
-    photon = openmc.data.kalbach_slope(15.0e6, 3.0e6, 0, 1, 82208)
-    assert 0.0 < photon < neutron
+@pytest.mark.parametrize('e_gamma,e_b_cm', [
+    (15.0e6, 3.0e6), (40.0e6, 10.0e6), (100.0e6, 90.0e6)])
+def test_kalbach_slope_photon(e_gamma, e_b_cm):
+    """Eq. 6.5 of the ENDF-6 Formats Manual (BNL-224854-2023, section 6.2):
+
+        a_gamma = a_n(E_gamma, E_b_cm) * sqrt(E_gamma/(2 m_n))
+                  * min(4, max(1, 9.3/sqrt(E_b_cm)))
+
+    with E_b_cm and m_n in MeV, and a_n evaluated by plugging E_gamma into
+    the incident-neutron slot. Both of those are easy to get subtly wrong --
+    the channel energy epsilon_b and the true photon compound system are the
+    tempting substitutions, and both are incorrect here -- so the formula is
+    pinned against an independent evaluation.
+    """
+    from openmc.data.data import NEUTRON_MASS_EV, EV_PER_MEV
+
+    slope_n = openmc.data.kalbach_slope(e_gamma, e_b_cm, 1, 1, 82208)
+    expected = (slope_n*np.sqrt(e_gamma/(2.0*NEUTRON_MASS_EV))
+                * min(4.0, max(1.0, 9.3/np.sqrt(e_b_cm/EV_PER_MEV))))
+
+    got = openmc.data.kalbach_slope(e_gamma, e_b_cm, 0, 1, 82208)
+    assert got == pytest.approx(expected, rel=1e-12)
+    # A photon carries less momentum than a nucleon of the same energy
+    assert 0.0 < got < slope_n
+
+
+def test_kalbach_slope_photon_clip_saturates():
+    """The clipping factor saturates at 4 below 5.41 MeV and at 1 above
+    86.5 MeV, so the ratio to the unclipped scaling is flat outside that
+    window."""
+    def ratio(e_b_cm):
+        photon = openmc.data.kalbach_slope(20.0e6, e_b_cm, 0, 1, 82208)
+        neutron = openmc.data.kalbach_slope(20.0e6, e_b_cm, 1, 1, 82208)
+        return photon/neutron
+
+    assert ratio(1.0e6) == pytest.approx(ratio(3.0e6), rel=1e-12)   # both at 4
+    assert ratio(9.0e7) == pytest.approx(ratio(1.0e8), rel=1e-12)   # both at 1
+
+
+def test_kalbach_slope_photon_zero_outgoing_energy():
+    """A zero outgoing energy is a normal first grid point of an ENDF
+    LAW=1/LANG=2 table, and must not raise a divide-by-zero warning."""
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        assert openmc.data.kalbach_slope(15.0e6, 0.0, 0, 1, 82208) >= 0.0
 
 
 @needs_njoy

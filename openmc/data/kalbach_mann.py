@@ -215,28 +215,30 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
             f'(ZA=1) and photon (ZA=0) projectiles only, got ZA={za_projectile}.')
 
     if za_projectile == 0:
-        # Slope for photons: Eq. 3 in doi:10.1080/18811248.1995.9731830, also
-        # ENDF-6 Formats Manual section 6.2.3.2. The photon slope is the
-        # neutron slope scaled by the ratio of a photon's momentum E/c to that
-        # of a nucleon of the same kinetic energy, sqrt(2mE), times a clipping
-        # factor that saturates at 4 below 5.41 MeV and at 1 above 86.5 MeV.
+        # Slope for photons, Eq. 6.5 of the ENDF-6 Formats Manual
+        # (BNL-224854-2023, section 6.2), after Chadwick, Young and Chiba,
+        # doi:10.1080/18811248.1995.9731830:
         #
-        # NOTE: two details of this expression have not been checked against
-        # the primary source, which is not reachable from here. They are
-        # recorded so the next reader with access can settle them:
-        #   1. The inner call evaluates the neutron slope as though the photon
-        #      were a neutron of the same energy, so the compound nucleus is
-        #      formed as target + n and an entrance separation energy is
-        #      applied. For a photon the compound nucleus is the target and
-        #      the entrance-channel energy is E itself. Whether Kalbach's
-        #      prescription intends the neutron-equivalent evaluation or the
-        #      correct compound system is the question.
-        #   2. The clipping factor is given the lab outgoing energy. Every
-        #      other energy in these systematics is a channel energy, so this
-        #      may be meant to be epsilon_b.
-        # Neither reaches transport today: from_endf is the only caller, and
-        # IncidentPhotonuclear.export_to_hdf5 refuses ENDF-derived data, while
-        # the ACE route reads the slope straight out of the file.
+        #   a_gamma(E_gamma, E_b_cm) = a_n(E_gamma, E_b_cm)
+        #       * sqrt(E_gamma / (2 m_n)) * min(4, max(1, 9.3/sqrt(E_b_cm)))
+        #
+        # Two things about this look wrong at first reading and are not:
+        #
+        #   1. The neutron slope is evaluated by treating the photon as a
+        #      neutron of the same energy, compound nucleus target + n and
+        #      entrance separation energy included. That IS the prescription:
+        #      "The extension to incident gammas requires one to plug E_gamma
+        #      into the spot where one would use the incident neutron energy
+        #      when computing corresponding a for neutrons to obtain a_n."
+        #   2. The clipping factor takes E_b_cm, the emitted particle energy
+        #      in the center-of-mass frame, in MeV -- not the emission channel
+        #      energy epsilon_b that the rest of these systematics use. For a
+        #      LANG=2 distribution the tabulated outgoing energies are already
+        #      center-of-mass, so energy_emitted is the right quantity.
+        #
+        # The middle factor is the ratio of a photon's momentum E/c to that of
+        # a nucleon of the same kinetic energy, sqrt(2mE); the clip saturates
+        # at 4 below 5.41 MeV and at 1 above 86.5 MeV.
         slope_n = kalbach_slope(energy_projectile, energy_emitted, 1,
                                 za_emitted, za_target)
         # A zero outgoing energy is a normal first grid point of an ENDF

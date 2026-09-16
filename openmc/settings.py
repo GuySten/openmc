@@ -101,7 +101,7 @@ class Settings:
         approximation. Requires photon transport and an electron data library,
         and makes :attr:`electron_treatment` inapplicable.
 
-        .. versionadded:: 0.15.3
+        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').

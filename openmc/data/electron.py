@@ -234,6 +234,71 @@ class IncidentElectron:
 
         return data
 
+    @classmethod
+    def from_hdf5(cls, group_or_filename):
+        """Generate incident electron data from an HDF5 group or file.
+
+        This is the inverse of :meth:`export_to_hdf5`, so a round trip through
+        the two reproduces every array the transport reads.
+
+        Parameters
+        ----------
+        group_or_filename : h5py.Group or str
+            HDF5 group containing interaction data. If given as a string it is
+            taken as a filename and the first group in it is used.
+
+        Returns
+        -------
+        openmc.data.IncidentElectron
+            Incident electron interaction data
+
+        """
+        if isinstance(group_or_filename, h5py.Group):
+            group = group_or_filename
+            need_to_close = False
+        else:
+            h5file = h5py.File(str(group_or_filename), 'r')
+            need_to_close = True
+            group = list(h5file.values())[0]
+
+        data = cls(int(group.attrs['Z']))
+        data.energy_grid = group['energy'][()]
+
+        elastic_group = group['elastic']
+        if 'energy_min' in elastic_group.attrs:
+            data.elastic_energy_range = (
+                float(elastic_group.attrs['energy_min']),
+                float(elastic_group.attrs['energy_max']))
+        for particle in ('electron', 'positron'):
+            pgroup = elastic_group[particle]
+            data.elastic_xs[particle] = pgroup['xs'][()]
+            data.elastic_dist[particle] = AngleDistribution.from_hdf5(
+                pgroup['distribution'])
+
+        excitation_group = group['excitation']
+        data.excitation_xs = excitation_group['xs'][()]
+        data.excitation_energy_loss = Tabulated1D.from_hdf5(
+            excitation_group['energy_loss'])
+
+        ionization_group = group['ionization']
+        data.shells = [s.decode() if isinstance(s, bytes) else s
+                       for s in ionization_group.attrs['designators']]
+        xs = ionization_group['xs'][()]
+        for i, shell in enumerate(data.shells):
+            data.ionization_xs[shell] = xs[i]
+            data.ionization_dist[shell] = ContinuousTabular.from_hdf5(
+                ionization_group[shell])
+
+        bremsstrahlung_group = group['bremsstrahlung']
+        data.bremsstrahlung_xs = bremsstrahlung_group['xs'][()]
+        data.bremsstrahlung_photon_cutoff = float(
+            bremsstrahlung_group.attrs['photon_cutoff'])
+
+        if need_to_close:
+            h5file.close()
+
+        return data
+
     def export_to_hdf5(self, path, mode="a", libver="earliest"):
         """Export incident electron data to an HDF5 file.
 

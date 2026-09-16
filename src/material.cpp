@@ -678,18 +678,19 @@ void Material::init_electron_oscillators()
   // collision has to be classified for the subshell that was actually ionized,
   // so the resonance energies are rebuilt here on the ENDF list.
   //
-  // The Sternheimer factor rho was adjusted to make the FIRST list satisfy
-  // sum_i f_i ln(W_i) = ln(I). The rebuilt list does not inherit that: the
-  // electrons the density-effect model treats as free are given a real
-  // photoatomic binding energy here, which raises their resonance and moves
-  // strength from close collisions to distant ones. For a conductor that is
-  // not a small difference, so the rebuilt set is renormalised below to
-  // reproduce ln(I) in its own right.
+  // The Sternheimer factor solved above belongs to the FIRST list, which lumps
+  // the outer electrons into a conduction term with no binding energy. The
+  // rebuilt list gives those electrons a real photoatomic binding energy, so it
+  // does not inherit that factor's meaning. Rather than rescale every resonance
+  // by one number -- which would move the deep shells as far as the outer ones,
+  // the opposite of what the model wants -- the adjustment is solved again
+  // below on the rebuilt list itself.
   oscillator_element_.clear();
   oscillator_offset_.clear();
   oscillator_energy_.clear();
   oscillator_block_.clear();
   vector<double> strength;
+  vector<double> binding_sq;
   for (const auto& kv : atom_density) {
     const auto& elm = *data::elements[kv.first];
     oscillator_block_[kv.first] = oscillator_element_.size();
@@ -702,25 +703,24 @@ void Material::init_electron_oscillators()
       oscillator_energy_.push_back(
         std::sqrt(osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
       strength.push_back(f_i);
+      binding_sq.push_back(u * u);
     }
   }
   oscillator_offset_.push_back(oscillator_energy_.size());
 
-  // Renormalise so that sum_i f_i ln(W_i) = ln(I) on this list too. The
-  // oscillator strengths sum to one by construction, so a single common factor
-  // does it, and it is the same kind of scaling rho itself applies.
-  double sum_f = 0.0;
-  double sum_f_lnw = 0.0;
-  for (int i = 0; i < strength.size(); ++i) {
-    if (strength[i] > 0.0 && oscillator_energy_[i] > 0.0) {
-      sum_f += strength[i];
-      sum_f_lnw += strength[i] * std::log(oscillator_energy_[i]);
+  // Re-solve the adjustment on this list, so that sum_i f_i ln(W_i) = ln(I)
+  // holds for the oscillators actually used. This is one more Newton solve per
+  // material at setup, and it scales each resonance by what the Sternheimer
+  // model asks of it rather than by a common factor: a deeply bound shell,
+  // where rho^2 U^2 dominates, moves almost in proportion, while an outer one
+  // held up by the plasma term barely moves at all.
+  if (!binding_sq.empty()) {
+    double rho = sternheimer_adjustment(
+      strength, binding_sq, osc.e_p_sq, 0.0, osc.log_I, 1.0e-6, 100);
+    for (int i = 0; i < oscillator_energy_.size(); ++i) {
+      oscillator_energy_[i] = std::sqrt(
+        rho * rho * binding_sq[i] + 2.0 / 3.0 * strength[i] * osc.e_p_sq);
     }
-  }
-  if (sum_f > 0.0) {
-    double scale = std::exp(osc.log_I - sum_f_lnw / sum_f);
-    for (auto& w : oscillator_energy_)
-      w *= scale;
   }
 }
 

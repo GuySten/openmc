@@ -92,6 +92,19 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Sample the distribution and report the density of the sampled value
+  //!
+  //! Only the branch electroionization uses is covered -- two bracketing
+  //! tables inverted at a common quantile and blended geometrically. Anything
+  //! else leaves \p density at zero to say "not available" rather than a wrong
+  //! answer, as mean() does.
+  //!
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[inout] seed Pseudorandom number seed pointer
+  //! \param[out] density Density of the sampled value in [1/eV], or zero
+  //! \return Sampled energy in [eV]
+  double sample(double E, uint64_t* seed, double* density) const;
+
   //! Mean of what sample() actually produces at a given incident energy.
   //!
   //! Integrates the sampled value over the quantile rather than estimating it
@@ -115,8 +128,10 @@ private:
   //! \param[in] l Index of the table
   //! \param[in] r1 Cumulative probability in [0,1)
   //! \param[out] discrete Whether the sample fell on a discrete line
+  //! \param[out] density Density at the sampled value in [1/eV], if wanted
   //! \return Outgoing energy in the table's own scale, in [eV]
-  double sample_table(int l, double r1, bool& discrete) const;
+  double sample_table(
+    int l, double r1, bool& discrete, double* density = nullptr) const;
 
   //! Outgoing energy for a single incoming energy
   struct CTTable {

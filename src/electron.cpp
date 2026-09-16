@@ -422,7 +422,9 @@ double Element::excitation(double E) const
 
 bool Element::ionization(Particle& p, int i_shell) const
 {
-  double E_knock = ionization_dist_[i_shell]->sample(p.E(), p.current_seed());
+  double density;
+  double E_knock =
+    ionization_dist_[i_shell]->sample(p.E(), p.current_seed(), &density);
   // Binding energies live on shells_. Note this is NOT binding_energy_, which
   // belongs to the shorter Compton Doppler broadening shell list and would be
   // indexed out of bounds here.
@@ -458,7 +460,8 @@ bool Element::ionization(Particle& p, int i_shell) const
   }
 
   double W = E_knock + e_b;
-  this->emit_knock_on(p, W, e_b, this->sample_recoil(p, i_shell, W));
+  this->emit_knock_on(
+    p, W, e_b, this->sample_recoil(p, i_shell, W, density));
   return true;
 }
 
@@ -501,7 +504,8 @@ void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
   p.E() = E - W;
 }
 
-double Element::sample_recoil(Particle& p, int i_shell, double W) const
+double Element::sample_recoil(
+  Particle& p, int i_shell, double W, double density) const
 {
   constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
   double E = p.E();
@@ -521,19 +525,53 @@ double Element::sample_recoil(Particle& p, int i_shell, double W) const
     std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min * cq_min) -
     MASS_ELECTRON_EV;
 
-  // Above the oscillator resonance the subshell is struck as though it were
-  // free, and the recoil is the whole transfer. The same holds when the
-  // kinematics leave no room below the resonance, and when the material
-  // carries no oscillator data at all.
-  if (W > w_r || q_min >= w_r)
+  // No room below the resonance -- or no oscillator data at all -- leaves the
+  // close collision as the only possibility
+  if (q_min >= w_r)
     return W;
+
+  double beta_sq =
+    E * (E + two_m) / ((E + MASS_ELECTRON_EV) * (E + MASS_ELECTRON_EV));
+
+  // Was it a close collision? The free binary cross section at this transfer
+  // is known in closed form, and whatever share of the evaluated cross section
+  // it accounts for is the share of collisions that struck a single electron:
+  //
+  //     P_close(W) = (dsigma_free/dW) / (dsigma_eval/dW)
+  //
+  // This is what PENELOPE's cut at the resonance energy amounts to for its own
+  // delta oscillator, which places all distant strength at exactly W_i. The
+  // evaluated spectra spread that strength over a range of W instead, so the
+  // cut would hand close kinematics to the part of it lying above W_i, and
+  // there is a good deal: for the carbon L3 shell it is a quarter of the
+  // collisions where the free cross section can account for a sixteenth.
+  //
+  // For a positron the evaluated spectrum is reweighted by the Bhabha-to-
+  // Moller ratio and the free cross section is Bhabha's, so the ratio cancels
+  // out of the test and the same Moller form serves both charges -- which is
+  // the same conclusion PENELOPE reaches, its distant interactions being
+  // identical for the two.
+  if (density > 0.0) {
+    const auto& xs {p.electron_xs(index_)};
+    int i_grid = xs.index_grid;
+    double sigma = electroionization_(i_shell, i_grid) +
+                   xs.interp_factor * (electroionization_(i_shell, i_grid + 1) -
+                                        electroionization_(i_shell, i_grid));
+    const auto& shell = shells_[electron_shell_map_[i_shell]];
+    FreeCollision c {E};
+    double sigma_free =
+      shell.num_electrons * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
+    if (prn(p.current_seed()) * sigma * density < sigma_free)
+      return W;
+  } else if (W > w_r) {
+    // Without the density, fall back to PENELOPE's own cut
+    return W;
+  }
 
   // Distant interaction. The transverse part is the one the density effect
   // acts on, and it hands over no momentum; the longitudinal part is
   // distributed as 1/(Q(Q + 2mc^2)) between the two bounds. The two are
   // weighted by their cross sections, whose common factor f_i / W_i cancels.
-  double beta_sq = E * (E + two_m) / ((E + MASS_ELECTRON_EV) *
-                                       (E + MASS_ELECTRON_EV));
   double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
   double c_tra = -std::log1p(-beta_sq) - beta_sq -
                  mat.density_effect_correction(E);

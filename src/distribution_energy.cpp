@@ -148,7 +148,8 @@ ContinuousTabular::ContinuousTabular(hid_t group, bool unit_base)
   } // incoming energies
 }
 
-double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
+double ContinuousTabular::sample_table(
+  int l, double r1, bool& discrete, double* density) const
 {
   const auto& d {distribution_[l]};
   int n_energy_out = d.e_out.size();
@@ -185,14 +186,20 @@ double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
   // A discrete line is returned as it stands. Falling through to the
   // continuous branches would read e_out[k + 1] and interpolate across the gap
   // to the next line, which is meaningless for a delta function.
-  if (discrete)
+  if (discrete) {
+    // A delta function has no density
+    if (density)
+      *density = 0.0;
     return E_l_k;
+  }
 
   double p_l_k = d.p[k];
   double E_out;
 
   if (d.interpolation == Interpolation::histogram) {
     E_out = (p_l_k > 0.0) ? E_l_k + (r1 - c_k) / p_l_k : E_l_k;
+    if (density)
+      *density = p_l_k;
 
   } else if (d.interpolation == Interpolation::lin_lin) {
     double E_l_k1 = d.e_out[k + 1];
@@ -212,6 +219,12 @@ double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
     } else {
       E_out = E_l_k;
     }
+    if (density) {
+      double frac = (E_l_k != E_l_k1)
+                      ? (p_l_k1 - p_l_k) / (E_l_k1 - E_l_k)
+                      : 0.0;
+      *density = std::max(0.0, p_l_k + frac * (E_out - E_l_k));
+    }
   } else {
     throw std::runtime_error {"Unexpected interpolation for continuous energy "
                               "distribution."};
@@ -222,6 +235,15 @@ double ContinuousTabular::sample_table(int l, double r1, bool& discrete) const
 
 double ContinuousTabular::sample(double E, uint64_t* seed) const
 {
+  return this->sample(E, seed, nullptr);
+}
+
+double ContinuousTabular::sample(
+  double E, uint64_t* seed, double* density) const
+{
+  if (density)
+    *density = 0.0;
+
   // Read number of interpolation regions and incoming energies
   bool histogram_interp;
   bool loglog_interp;
@@ -255,14 +277,14 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
 
   if (histogram_interp) {
     bool discrete;
-    return this->sample_table(i, r1, discrete);
+    return this->sample_table(i, r1, discrete, density);
   }
 
   // A single tabulated incident energy leaves no bin to interpolate across,
   // and the bracketing table accessed below would be out of bounds.
   if (n_energy_in < 2) {
     bool discrete;
-    return this->sample_table(0, r1, discrete);
+    return this->sample_table(0, r1, discrete, density);
   }
 
   // Without unit-base scaling the two tables are interpolated directly at
@@ -280,15 +302,29 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   // applies only on this branch.
   if (!unit_base_) {
     bool discrete_i, discrete_i1;
-    double E_out_i = this->sample_table(i, r1, discrete_i);
-    double E_out_i1 = this->sample_table(i + 1, r1, discrete_i1);
+    double p_i, p_i1;
+    double E_out_i = this->sample_table(i, r1, discrete_i, &p_i);
+    double E_out_i1 = this->sample_table(i + 1, r1, discrete_i1, &p_i1);
     if (discrete_i || discrete_i1) {
       return (r > prn(seed)) ? E_out_i1 : E_out_i;
     }
     // The geometric form is undefined if either value is non-positive, which
     // can happen at the very bottom of a table
     if (E_out_i > 0.0 && E_out_i1 > 0.0) {
-      return E_out_i * std::pow(E_out_i1 / E_out_i, r);
+      double E_out = E_out_i * std::pow(E_out_i1 / E_out_i, r);
+
+      // Density of the blended distribution. Both tables were inverted at the
+      // same quantile, so the sampled value is a deterministic function of it
+      // and its density is the pushforward, 1/(dE_out/dr1). Since
+      // r1 = c_l(E_out_l), dE_out_l/dr1 is 1/p_l there. This is not the
+      // interpolation of the two tabulated densities, and it is returned from
+      // here because the inversion has already located the point in both
+      // tables -- recovering it afterwards would mean searching them again.
+      if (density && p_i > 0.0 && p_i1 > 0.0) {
+        double dE = E_out * ((1.0 - r) / (E_out_i * p_i) + r / (E_out_i1 * p_i1));
+        *density = (dE > 0.0) ? 1.0 / dE : 0.0;
+      }
+      return E_out;
     }
     return E_out_i + r * (E_out_i1 - E_out_i);
   }

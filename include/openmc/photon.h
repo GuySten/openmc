@@ -116,13 +116,19 @@ public:
   //! subshell i_shell
   //
   //! A free electron takes up the whole transfer, Q = W. A bound one does not:
-  //! while the momentum transfer stays below the scale of the subshell's
-  //! oscillator the atom is excited as a whole, through a dipole-like
-  //! interaction whose recoil is far smaller than the binary value and which
-  //! PENELOPE splits into a longitudinal part, distributed as 1/(Q(Q+2mc^2)),
-  //! and a transverse part that carries no momentum at all. Above that scale
-  //! the subshell responds as a free electron and Q = W again.
-  double sample_recoil(Particle& p, int i_shell, double W) const;
+  //! in a distant collision the atom is excited as a whole, through a
+  //! dipole-like interaction whose recoil is far smaller than the binary value
+  //! and which PENELOPE splits into a longitudinal part, distributed as
+  //! 1/(Q(Q+2mc^2)) up to the subshell's oscillator resonance, and a transverse
+  //! part that carries no momentum at all.
+  //
+  //! Which of the two occurred is decided by how much of the evaluated cross
+  //! section at this transfer the free binary collision can account for: that
+  //! ratio is the probability the collision was close. \p density is the
+  //! evaluated spectrum's density at W, without which the decision falls back
+  //! to comparing W with the resonance energy.
+  double sample_recoil(
+    Particle& p, int i_shell, double W, double density) const;
 
   //! Two-photon annihilation of a positron in flight
   //

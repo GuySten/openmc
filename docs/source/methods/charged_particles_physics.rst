@@ -549,30 +549,120 @@ probability. As with the angular tables, the incident-energy grids are sparse
 -- aluminium's K shell jumps from 15.8 keV to 501 keV -- and are interpolated
 logarithmically.
 
-The polar deflections of both electrons are taken from the free Moller
-relation applied to each electron's own energy, and are not sampled
-independently:
+Distant and close collisions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Both polar deflections follow from the recoil energy :math:`Q` the collision
+leaves with the atom, and from nothing else. Writing :math:`p` and :math:`p'`
+for the momenta of the projectile before and after, :math:`W = T_{\text{k}} + B`
+for the energy it gave up and :math:`(cq)^2 = Q(Q + 2m_ec^2)` for the momentum
+transfer,
 
 .. math::
     :label: ionization-angles
 
+    1 - \mu = \frac{(cq)^2 - (cq_-)^2}{2\,pc\,p'c},
+    \qquad
+    1 - \mu_{\text{k}} = \frac{(cq - cq_-)(pc + p'c - cq)}{2\,pc\,cq},
+
+where :math:`cq_- = pc - p'c` is the smallest momentum the collision can hand
+over, reached when the projectile is not deflected at all. The projectile is
+deflected through the momentum transfer and the knock-on leaves along it; the
+two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
+
+Setting :math:`Q = W` recovers the free binary collision, in which these reduce
+to the familiar Moller pair
+
+.. math::
+    :label: ionization-angles-free
+
     \mu = \left[\frac{T'(T + 2m_ec^2)}{T(T' + 2m_ec^2)}\right]^{1/2},
     \quad
     \mu_{\text{k}} = \left[\frac{W(T + 2m_ec^2)}
-    {T(W + 2m_ec^2)}\right]^{1/2}, \quad W = T_{\text{k}} + B.
+    {T(W + 2m_ec^2)}\right]^{1/2}.
 
-The two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
-Both deflections are set by the energy the primary transferred, :math:`W`, and
-not by the kinetic energy the knock-on is left with: the atom absorbs the
-binding energy :math:`B` but carries away negligible momentum, so it is
-:math:`W` that fixes the recoil direction. This is the convention PENELOPE
-uses. Deflecting the knock-on by :math:`T_{\text{k}}` instead would eject it
-too far sideways, by 22% of the incident momentum for a tantalum K shell
-ionised at 100 keV. The pair is still not exactly momentum-conserving, since
-the knock-on leaves with the momentum of :math:`T_{\text{k}}` rather than of
-:math:`W`; no free-electron model of a bound target can conserve both. The
-vacancy is passed to the atomic relaxation model, which follows the full
-cascade.
+Note both are set by the energy the projectile transferred, :math:`W`, and not
+by the kinetic energy the knock-on is left with: the atom absorbs the binding
+energy :math:`B` but carries away negligible momentum. Deflecting the knock-on
+by :math:`T_{\text{k}}` instead would eject it too far sideways, by 22% of the
+incident momentum for a tantalum K shell ionised at 100 keV.
+
+A free electron takes up the whole transfer, but a bound one does not. While
+the momentum transfer stays below the scale of the subshell the atom is excited
+as a whole, through a dipole-like interaction whose recoil is far smaller than
+the binary value. Following PENELOPE, that scale is the resonance energy
+:math:`W_i` of the Sternheimer-Liljequist oscillator standing for the subshell,
+
+.. math::
+    :label: oscillator-resonance
+
+    W_i^2 = \rho^2 U_i^2 + \tfrac{2}{3} f_i \Omega_{\text{p}}^2,
+
+with :math:`U_i` the binding energy, :math:`f_i` the share of the material's
+electrons the subshell holds, :math:`\Omega_{\text{p}}` the plasma energy and
+:math:`\rho` the Sternheimer adjustment that makes
+:math:`\sum_i f_i \ln W_i = \ln I`. These are properties of the material, not
+of the atom alone, and they are the same oscillators the density-effect
+correction is built from; no data beyond what the photon library already
+carries is needed.
+
+A distant interaction is split as PENELOPE splits it. The transverse part
+carries no momentum at all, :math:`Q = Q_-`, and the longitudinal part a recoil
+distributed as :math:`1/[Q(Q + 2m_ec^2)]` between :math:`Q_-` and :math:`W_i`.
+The two are weighted by their cross sections, whose common factor
+:math:`f_i/W_i` cancels, leaving
+
+.. math::
+    :label: distant-split
+
+    \frac{P_{\text{tra}}}{P_{\text{lon}}} =
+    \frac{\ln[1/(1-\beta^2)] - \beta^2 - \delta}
+    {\ln\!\left[\dfrac{W_i(Q_- + 2m_ec^2)}{Q_-(W_i + 2m_ec^2)}\right]},
+
+with :math:`\delta` the density-effect correction of the material.
+
+Which of the two occurred is decided by how much of the evaluated cross section
+at the sampled transfer the free binary collision can account for,
+
+.. math::
+    :label: close-probability
+
+    P_{\text{close}}(W) = \min\left(1,
+    \frac{d\sigma_{\text{free}}/dW}{d\sigma_{\text{eval}}/dW}\right).
+
+PENELOPE instead cuts at :math:`W_i`, which is exact for its own delta
+oscillator because that places all distant strength at exactly :math:`W_i`. The
+evaluated spectra spread it over a range of :math:`W`, so the cut would hand
+close kinematics to the part lying above the resonance, and there is a good deal
+of it: for the carbon L\ :sub:`3` shell a quarter of the collisions land above
+:math:`W_i` where the free cross section can account for a sixteenth. Deciding
+pointwise leaves the close channel carrying the free cross section it should
+and the rest distant, without touching the energy spectrum.
+
+For a positron the evaluated spectrum is reweighted by the Bhabha-to-Moller
+ratio below and the free cross section is Bhabha's, so the ratio cancels out of
+:eq:`close-probability` and one Moller form serves both charges. This is the
+same conclusion PENELOPE reaches, its distant interactions being identical for
+the two.
+
+The pair is still not exactly momentum-conserving, since the knock-on leaves
+with the momentum of :math:`T_{\text{k}}` rather than of :math:`W`; no
+free-electron model of a bound target can conserve both. The vacancy is passed
+to the atomic relaxation model, which follows the full cascade.
+
+Excitation is left undeflected. It is a distant interaction and so has a real
+momentum transfer, but the split between the evaluated excitation and
+ionization channels is not smooth in :math:`Z` -- copper's excitation cross
+section is a hundredth of aluminium's, while their sums over both channels are
+comparable -- so treating the two differently would import that into the
+transport cross section. What it costs is bounded by the whole distant
+contribution to the transport cross section, which for an atom of :math:`Z`
+electrons is :math:`2\pi r_e^2 (m_ec^2)^2 Z / [\beta^2 (pc)^2]` -- independent
+of every resonance energy, since :math:`\sigma_{\text{dist}}` goes as
+:math:`f_i/W_i` while the deflection goes as :math:`W_i`. That is 3.6% of the
+total transport cross section for hydrogen at 4.27 MeV, 0.32% for carbon and
+under 0.05% for tungsten, so it matters in hydrogenous media and essentially
+nowhere else.
 
 A positron is given the same spectra, reweighted. The two processes differ:
 the electrons of a Moller collision are indistinguishable, so the faster is

@@ -44,8 +44,11 @@ double DiscretePhoton::sample(double E, uint64_t* seed) const
 
 LevelInelastic::LevelInelastic(hid_t group)
 {
-  // for backwards compatibility:
-  if (attribute_exists(group, "mass_ratio")) {
+  // A file written before the q_value / mass / particle form existed carries
+  // only the neutron-only attributes. One written since carries both, so the
+  // new form has to be tried first -- it is the only one that records the
+  // projectile.
+  if (!attribute_exists(group, "q_value")) {
     read_attribute(group, "threshold", b_);
     read_attribute(group, "mass_ratio", a_);
     c_ = 0.0;

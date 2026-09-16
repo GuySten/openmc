@@ -975,6 +975,19 @@ class LevelInelastic(EnergyDistribution):
         group.attrs['mass'] = self.mass
         group.attrs['particle'] = np.bytes_(self.particle)
 
+        # Also write the pre-3.1 attributes for a neutron projectile. They
+        # carry exactly the same law, so an OpenMC built before the q_value /
+        # mass / particle form existed still reads a neutron library written
+        # here correctly. Without them such a reader finds no 'threshold'
+        # attribute, and because it does not check the HDF5 status it would
+        # sample from uninitialised memory rather than fail. There is no
+        # legacy form for a photon projectile, but an older reader has no
+        # photonuclear support either, so it never sees one.
+        if self.particle == 'neutron':
+            A = self.mass
+            group.attrs['threshold'] = (A + 1.0)/A*abs(self.q_value)
+            group.attrs['mass_ratio'] = (A/(A + 1.0))**2
+
     @classmethod
     def from_hdf5(cls, group):
         """Generate level inelastic distribution from HDF5 data
@@ -990,18 +1003,21 @@ class LevelInelastic(EnergyDistribution):
             Level inelastic scattering distribution
 
         """
-        #backwards compatible read:
-        if 'threshold' in group.attrs:    
-            threshold = group.attrs['threshold']
-            mass_ratio = group.attrs['mass_ratio']
-            mass = 1.0/(1.0/sqrt(mass_ratio)-1.0)
-            q_value = -threshold * sqrt(mass_ratio)
-            return cls(q_value, mass)
-            
-        q_value = group.attrs['q_value']
-        mass = group.attrs['mass']
-        particle = group.attrs['particle'].decode()
-        return cls(q_value, mass, particle)
+        # Prefer the q_value / mass / particle form. A file written by this
+        # version carries the pre-3.1 attributes as well, and only that form
+        # records the projectile, so it has to be tried first.
+        if 'q_value' in group.attrs:
+            q_value = group.attrs['q_value']
+            mass = group.attrs['mass']
+            particle = group.attrs['particle'].decode()
+            return cls(q_value, mass, particle)
+
+        # Pre-3.1 file: recover the same law from the neutron-only form.
+        threshold = group.attrs['threshold']
+        mass_ratio = group.attrs['mass_ratio']
+        mass = 1.0/(1.0/sqrt(mass_ratio) - 1.0)
+        q_value = -threshold*sqrt(mass_ratio)
+        return cls(q_value, mass)
 
     @classmethod
     def from_ace(cls, ace, idx):
@@ -1020,15 +1036,38 @@ class LevelInelastic(EnergyDistribution):
             Level inelastic scattering distribution
 
         """
-        particle = {'u':'photon', 'c': 'neutron'}[ace.data_type.value]
+        particle = {'u': 'photon', 'c': 'neutron'}.get(ace.data_type.value)
+        if particle is None:
+            raise NotImplementedError(
+                'A level inelastic (LAW=3) distribution can only be read from '
+                'a continuous-energy neutron or photonuclear ACE table, not '
+                f'from a {ace.data_type} table.')
+
         threshold = ace.xss[idx]*EV_PER_MEV
         mass_ratio = ace.xss[idx + 1]
-        mass = 1.0/(1.0/sqrt(mass_ratio)-1.0) if particle == 'neutron' else 1.0/(1.0-mass_ratio)
-        if not isclose(ace.atomic_weight_ratio, mass):
-            warn("Level inelastic distribution mass parameter does not match ace table mass.")
-            mass = ace.atomic_weight_ratio
-        q_value = -threshold * sqrt(mass_ratio) if particle == 'neutron' else -threshold
-        return cls(q_value, mass, particle = particle)
+        if particle == 'neutron':
+            mass = 1.0/(1.0/sqrt(mass_ratio) - 1.0)
+            q_value = -threshold*sqrt(mass_ratio)
+        else:
+            mass = 1.0/(1.0 - mass_ratio)
+            q_value = -threshold
+
+        # Inverting mass_ratio amplifies its relative error by roughly
+        # (A+1)/2 -- a factor of ~120 for A=238 -- so a consistent file can
+        # still miss the default rel_tol of 1e-9. A disagreement larger than
+        # this means the two XSS words are not what they are read as here,
+        # which is a file the caller should hear about rather than have
+        # silently patched up.
+        if not isclose(ace.atomic_weight_ratio, mass, rel_tol=1e-6):
+            raise ValueError(
+                f'Level inelastic distribution in {ace.name} implies a target '
+                f'mass of {mass} neutron masses, but the table gives an atomic '
+                f'weight ratio of {ace.atomic_weight_ratio}.')
+
+        # The header value is the authoritative one, and carries no inversion
+        # error; the two now agree to 1e-6 either way.
+        mass = ace.atomic_weight_ratio
+        return cls(q_value, mass, particle=particle)
 
 
 class ContinuousTabular(EnergyDistribution):

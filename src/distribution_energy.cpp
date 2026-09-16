@@ -43,8 +43,11 @@ double DiscretePhoton::sample(double E, uint64_t* seed) const
 
 LevelInelastic::LevelInelastic(hid_t group)
 {
-  // for backwards compatibility:
-  if (attribute_exists(group, "mass_ratio")) {
+  // A file written before the q_value / mass / particle form existed carries
+  // only the neutron-only attributes. One written since carries both, so the
+  // new form has to be tried first -- it is the only one that records the
+  // projectile.
+  if (!attribute_exists(group, "q_value")) {
     read_attribute(group, "threshold", b_);
     read_attribute(group, "mass_ratio", a_);
     c_ = 0.0;
@@ -409,6 +412,17 @@ double LevelInelastic::max_energy(double E) const
 
 double ContinuousTabular::max_energy(double E) const
 {
+  // sample() returns a discrete line unscaled, and nothing orders the discrete
+  // block against the continuous one, so a line can sit above the last
+  // continuous energy. Every return below has to account for that.
+  auto max_discrete_line = [](const CTTable& d) {
+    double result = 0.0;
+    for (int j = 0; j < d.n_discrete; ++j) {
+      result = std::max(result, d.e_out[j]);
+    }
+    return result;
+  };
+
   bool histogram_interp =
     (n_region_ == 1) && (interpolation_[0] == Interpolation::histogram);
 
@@ -417,7 +431,7 @@ double ContinuousTabular::max_energy(double E) const
   auto n_energy_in = energy_.size();
   if (n_energy_in < 2) {
     const auto& d = distribution_[0];
-    return d.e_out[d.e_out.size() - 1];
+    return std::max(d.e_out[d.e_out.size() - 1], max_discrete_line(d));
   }
 
   // Find energy bin and interpolation factor exactly as sample() does
@@ -436,7 +450,7 @@ double ContinuousTabular::max_energy(double E) const
 
   if (histogram_interp) {
     const auto& d = distribution_[i];
-    return d.e_out[d.e_out.size() - 1];
+    return std::max(d.e_out[d.e_out.size() - 1], max_discrete_line(d));
   }
 
   // Continuous portion is scaled onto [E_1, E_K]; E_K is the attainable
@@ -449,9 +463,7 @@ double ContinuousTabular::max_energy(double E) const
   double result = E_i_K + r * (E_i1_K - E_i_K);
 
   for (const auto* d : {&d_i, &d_i1}) {
-    for (int j = 0; j < d->n_discrete; ++j) {
-      result = std::max(result, d->e_out[j]);
-    }
+    result = std::max(result, max_discrete_line(*d));
   }
   return result;
 }

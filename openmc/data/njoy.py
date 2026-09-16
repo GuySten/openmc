@@ -573,7 +573,7 @@ def make_ace(filename, temperatures=None, acer=True, xsdir=None,
 
     if acer:
         ace = (output_dir / "ace") if acer is True else Path(acer)
-        xsdir = (ace.parent / "xsdir") if xsdir is None else xsdir
+        xsdir = (ace.parent / "xsdir") if xsdir is None else Path(xsdir)
         with ace.open('w') as ace_file, xsdir.open('w') as xsdir_file:
             for temperature in temperatures:
                 # Get contents of ACE file
@@ -780,7 +780,7 @@ def make_ace_thermal(filename, filename_thermal, temperatures=None,
     for temperature in temperatures:
         (output_dir / f"ace_{temperature:.1f}").unlink()
         (output_dir / f"xsdir_{temperature:.1f}").unlink()
-        
+
 
 def make_ace_photonuclear(filename, acer=True, xsdir=None,
              output_dir=None, pendf=False, error=0.001,
@@ -862,7 +862,7 @@ def make_ace_photonuclear(filename, acer=True, xsdir=None,
     # acer
     if acer:
         nacer_in = nlast
-        # Extend input with an ACER run 
+        # Extend input with an ACER run
         nace = nacer_in + 1
         ndir = nace + 1
         ext = f'{1:02}'
@@ -877,7 +877,7 @@ def make_ace_photonuclear(filename, acer=True, xsdir=None,
 
     if acer:
         ace = (output_dir / "ace") if acer is True else Path(acer)
-        xsdir = (ace.parent / "xsdir") if xsdir is None else xsdir
+        xsdir = (ace.parent / "xsdir") if xsdir is None else Path(xsdir)
         with ace.open('w') as ace_file, xsdir.open('w') as xsdir_file:
             # Get contents of ACE file
             text = (output_dir / f"ace_0.0").read_text()

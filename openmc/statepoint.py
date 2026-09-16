@@ -98,7 +98,7 @@ class StatePoint:
     photon_transport : bool
         Indicate whether photon transport is active
     photonuclear_physics : bool
-        Indicate whether photo-nuclear physics is active    
+        Indicate whether photo-nuclear physics is active
     run_mode : str
         Simulation run mode, e.g. 'eigenvalue'
     runtime : dict
@@ -351,10 +351,17 @@ class StatePoint:
     @property
     def photon_transport(self):
         return self._f.attrs['photon_transport'] > 0
-        
+
     @property
     def photonuclear_physics(self):
-        return self._f.attrs['photonuclear_physics'] > 0        
+        # VERSION_STATEPOINT is unchanged, so statepoints written before
+        # photonuclear support still load and have no such attribute. The C++
+        # loader guards the same way.
+        return self._f.attrs.get('photonuclear_physics', 0) > 0
+
+    @property
+    def photoneutron_biasing(self):
+        return self._f.attrs.get('photoneutron_biasing', 0) > 0
 
     @property
     def run_mode(self):

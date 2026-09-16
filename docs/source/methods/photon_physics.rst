@@ -836,6 +836,26 @@ and the incoming energy of the photon:
 where :math:`A` is the mass of the target nucleus measured in neutron masses and
 :math:`m_n` is the neutron mass in eV.
 
+Note that unlike the corresponding neutron expression in
+:ref:`methods_neutron_physics`, :math:`E'` here is a **center-of-mass** energy:
+the invariant mass of the photon-plus-target system is
+:math:`\sqrt{s} = M\sqrt{1 + 2E/M}`, so the energy available in the center of
+mass is :math:`E - |Q| - E^2/(2 m_n A)`, of which the emitted neutron carries
+the fraction :math:`(A-1)/A`. Reactions using this law therefore declare the
+center-of-mass frame, and the transport applies the massless-projectile
+transformation to the laboratory frame after sampling.
+
+The reaction opens where :math:`E'` first becomes positive, i.e. at the smaller
+root of :math:`E^2/(2 m_n A) - E + |Q| = 0`,
+
+.. math::
+    :label: photonuclear-level-threshold
+
+    E_\text{th} = \sqrt{b}\left(\sqrt{b} - \sqrt{b - 2|Q|}\right),
+    \qquad b = A\, m_n
+
+which is the threshold recorded alongside the reaction.
+
 Energy Deposition
 -----------------
 

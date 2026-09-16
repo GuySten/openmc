@@ -18,28 +18,32 @@ from .angle_distribution import AngleDistribution
 from .angle_energy import AngleEnergy
 from .correlated import CorrelatedAngleEnergy
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
-from .endf import Evaluation, SUM_RULES, get_head_record, get_tab1_record,  get_cont_record
+from .endf import Evaluation, SUM_RULES, get_head_record, get_tab1_record
 from .fission_energy import FissionEnergyRelease
-from .function import Tabulated1D
+from .function import Tabulated1D, Sum
 from .njoy import make_ace_photonuclear
-from .reaction import Reaction, REACTION_NAME as _REACTION_NAME, FISSION_MTS, _get_products, _get_fission_products_endf, _get_photon_products_endf, _get_activation_products
-from .product import Product
-from .energy_distribution import EnergyDistribution, LevelInelastic, \
-    DiscretePhoton
-from .function import Tabulated1D, Polynomial
-from .kalbach_mann import KalbachMann
-from .laboratory import LaboratoryAngleEnergy
+from .reaction import REACTION_NAME as _REACTION_NAME, FISSION_MTS, \
+    _get_products, _get_fission_products_endf, _get_photon_products_endf, \
+    _get_activation_products
+from .energy_distribution import EnergyDistribution, LevelInelastic
 from .nbody import NBodyPhaseSpace
 from .product import Product
 from .uncorrelated import UncorrelatedAngleEnergy
 
-REACTION_NAME = {50 : '(gamma,n0)'}
-REACTION_NAME.update({key:value.replace("(n,","(gamma,") for key,value in _REACTION_NAME.items()})
+__all__ = ['IncidentPhotonuclear', 'PhotonuclearReaction']
+
+# Photonuclear reaction names, derived from the neutron ones. Deliberately
+# private: `openmc.data` star-imports this module, and an exported
+# REACTION_NAME here would shadow the neutron table for the whole package
+# depending only on the order of the imports in __init__.py.
+_REACTION_NAME_PHOTON = {50: '(gamma,n0)'}
+_REACTION_NAME_PHOTON.update({key: value.replace("(n,", "(gamma,")
+                              for key, value in _REACTION_NAME.items()})
 
 class PhotonuclearReaction(EqualityMixin):
     """A photonuclear reaction for a specific target nuclide.
 
-    .. versionadded:: 0.16.1
+    .. versionadded:: 0.17.0
 
     Parameters
     ----------
@@ -78,11 +82,12 @@ class PhotonuclearReaction(EqualityMixin):
         self.mt = mt
 
     def __repr__(self):
-        if self.mt in _REACTION_NAME:
-            return f"<PhotonuclearReaction: MT={self.mt} {REACTION_NAME[self.mt]}>"
+        if self.mt in _REACTION_NAME_PHOTON:
+            name = _REACTION_NAME_PHOTON[self.mt]
+            return f"<PhotonuclearReaction: MT={self.mt} {name}>"
         else:
             return f"<PhotonuclearReaction: MT={self.mt}>"
-    
+
     @property
     def center_of_mass(self):
         return self._center_of_mass
@@ -137,7 +142,7 @@ class PhotonuclearReaction(EqualityMixin):
     def xs(self, xs):
         cv.check_type("reaction cross section", xs, Callable)
         self._xs = xs
-        
+
     @classmethod
     def from_endf(cls, ev, mt):
         """Generate a reaction from an ENDF evaluation
@@ -163,11 +168,11 @@ class PhotonuclearReaction(EqualityMixin):
             get_head_record(file_obj)
             params, rx.xs = get_tab1_record(file_obj)
             rx.q_value = params[1]
-            
+
         # Get fission product yields (nu) as well as delayed neutron energy
         # distributions
         if mt in FISSION_MTS:
-            rx.products, rx.derived_products = _get_fission_products_endf(ev)        
+            rx.products, rx.derived_products = _get_fission_products_endf(ev)
 
         if (6, mt) in ev.section:
             # Product angle-energy distribution
@@ -207,10 +212,8 @@ class PhotonuclearReaction(EqualityMixin):
                 product = Product('neutron')
                 dist = UncorrelatedAngleEnergy()
 
-                A = ev.target['mass']
-                threshold = abs(rx.q_value)
-                mass_ratio = (A-1)/A
-                dist.energy = LevelInelastic(threshold, mass_ratio)
+                dist.energy = LevelInelastic(
+                    rx.q_value, ev.target['mass'], 'photon')
 
                 product.distribution.append(dist)
 
@@ -231,30 +234,38 @@ class PhotonuclearReaction(EqualityMixin):
         if (12, mt) in ev.section or (13, mt) in ev.section:
             rx.products += _get_photon_products_endf(ev, rx)
         return rx
-    
-    def to_hdf5(self, group):
+
+    def to_hdf5(self, group, xs=None):
         """Write reaction to an HDF5 group
 
         Parameters
         ----------
         group : h5py.Group
             HDF5 group to write to
+        xs : openmc.data.Tabulated1D, optional
+            Cross section already mapped onto the nuclide's union energy grid,
+            carrying the index of its threshold on that grid as
+            ``_threshold_idx``. Defaults to this reaction's own cross section,
+            whose threshold is then taken to be the start of the grid.
 
         """
+        if xs is None:
+            xs = self.xs
 
         group.attrs['mt'] = self.mt
-        if self.mt in REACTION_NAME:
-            group.attrs['label'] = np.bytes_(REACTION_NAME[self.mt])
+        if self.mt in _REACTION_NAME_PHOTON:
+            group.attrs['label'] = np.bytes_(_REACTION_NAME_PHOTON[self.mt])
         else:
-            group.attrs['label'] = np.bytes_(self.mt)
+            # np.bytes_ of an int is a zero-filled buffer of that length, not
+            # its decimal form, so the MT has to be stringified first
+            group.attrs['label'] = np.bytes_(f'MT={self.mt}')
         group.attrs['Q_value'] = self.q_value
         group.attrs['center_of_mass'] = 1 if self.center_of_mass else 0
         group.attrs['redundant'] = 1 if self.redundant else 0
-        
-        dset = group.create_dataset('xs', data=self.xs.y)
-        threshold_idx = getattr(self.xs, '_threshold_idx', 0)
-        dset.attrs['threshold_idx'] = threshold_idx
-        
+
+        dset = group.create_dataset('xs', data=xs.y)
+        dset.attrs['threshold_idx'] = getattr(xs, '_threshold_idx', 0)
+
         for i, p in enumerate(self.products):
             pgroup = group.create_group(f'product_{i}')
             p.to_hdf5(pgroup)
@@ -310,7 +321,7 @@ class PhotonuclearReaction(EqualityMixin):
         if i_reaction > 0:
             mt = int(ace.xss[ace.jxs[6] + i_reaction - 1])
             rx = cls(mt)
-            
+
             # Get Q-value of reaction
             rx.q_value = ace.xss[ace.jxs[7] + i_reaction - 1]*EV_PER_MEV
 
@@ -341,10 +352,10 @@ class PhotonuclearReaction(EqualityMixin):
             tabulated_xs = Tabulated1D(energy, xs)
             tabulated_xs._threshold_idx = threshold_idx
             rx.xs = tabulated_xs
-            
+
             # ==================================================================
             # YIELD AND ANGLE-ENERGY DISTRIBUTION
-            
+
             for i_typ in range(ace.nxs[5]):
                 loc = ace.jxs[10]+i_typ*ace.nxs[7]-1
                 mts = ace.xss[int(ace.xss[loc+5]):int(ace.xss[loc+5])+int(ace.xss[loc+2])].astype(int)
@@ -364,29 +375,47 @@ class PhotonuclearReaction(EqualityMixin):
                         warn(f"Unsupported secondary particle type in {ace.name} for MT={mt}. "
                             "This product will be skipped.")
                         continue
-                        
-                # Determine reference frame        
+
+                # Determine reference frame
                 ty = int(ace.xss[int(ace.xss[loc+6])+i_mtr])
-                
+
                 # Decide center of mass according to neutron product
                 if particle.particle == 'neutron':
                     rx.center_of_mass = (ty < 0)
-                
+
                 # Determine multiplicity
                 idx = int(ace.xss[loc+8])+int(ace.xss[int(ace.xss[loc+7])+i_mtr])-1
                 match int(ace.xss[idx]):
                     case 6 | 16 | 12:
-                        assert int(ace.xss[idx+1]) == mt
+                        # assert is stripped under python -O, and this is data
+                        # validation rather than an internal invariant
+                        if int(ace.xss[idx+1]) != mt:
+                            raise ValueError(
+                                f'Yield block for MT={mt} of {ace.name} is '
+                                f'labelled MT={int(ace.xss[idx+1])}.')
                         yield_ = Tabulated1D.from_ace(ace, idx+2)
                     case _:
-                        raise NotImplementedError('partial yields not implemented yet')   
+                        raise NotImplementedError('partial yields not implemented yet')
                 particle.yield_ = yield_
-                
-                   
-                # Determine locator for energy distribution  
-                idx = int(ace.xss[int(ace.xss[loc+11])+i_mtr])   
-                distribution = AngleEnergy.from_ace(ace, int(ace.xss[loc+12]), idx)
-                
+
+                # Determine locator for energy distribution. `rx` has to be
+                # passed: ACE law 66 reads the Q value off it, and without it
+                # NBodyPhaseSpace.from_ace raises AttributeError on None.
+                idx = int(ace.xss[int(ace.xss[loc+11])+i_mtr])
+                distribution = AngleEnergy.from_ace(
+                    ace, int(ace.xss[loc+12]), idx, rx)
+
+                # NBodyPhaseSpace::sample_energy() hard-codes the available
+                # energy of a NEUTRON projectile, A/(A+1)*E_in + Q. For a
+                # massless projectile it is E_in + Q - E_in^2/(2*A*m_n), so the
+                # sampled spectrum would be too soft by the A/(A+1) factor on
+                # the incident term. Reject the data rather than mis-sample it.
+                if isinstance(distribution, NBodyPhaseSpace):
+                    raise NotImplementedError(
+                        f'MT={mt} of {ace.name} uses an N-body phase space '
+                        '(LAW=66) distribution, whose kinematics are '
+                        'implemented for an incident neutron only.')
+
                 # Determine locator for angular distribution
                 idx = int(ace.xss[int(ace.xss[loc+9])+i_mtr])
                 if idx==0:
@@ -400,8 +429,8 @@ class PhotonuclearReaction(EqualityMixin):
                     pass
                 else:
                     assert idx>=0
-                    distribution.angle = AngleDistribution.from_ace(ace, int(ace.xss[loc+10]), idx)     
-                    
+                    distribution.angle = AngleDistribution.from_ace(ace, int(ace.xss[loc+10]), idx)
+
                 particle.distribution.append(distribution)
                 rx.products.append(particle)
         else:
@@ -429,22 +458,21 @@ class PhotonuclearReaction(EqualityMixin):
 class IncidentPhotonuclear(EqualityMixin):
     """photo-nuclear interaction data.
 
-    .. versionadded:: 0.16.1
+    .. versionadded:: 0.17.0
 
     This class stores data derived from an ENDF-6 format photo-nuclear interaction
     sublibrary. Instances of this class are not normally instantiated by the
     user but rather created using the factory methods
-    :meth:`Photonuclear.from_hdf5`, :meth:`Photonuclear.from_ace`, and
-    :meth:`Photonuclear.from_endf`.
+    :meth:`IncidentPhotonuclear.from_hdf5`,
+    :meth:`IncidentPhotonuclear.from_ace`, and
+    :meth:`IncidentPhotonuclear.from_endf`.
 
     Parameters
     ----------
     name : str
         Name of the nuclide using the GND naming convention
     atomic_number : int
-        Number of photo-nuclears in the target nucleus
-    atomic_number : int
-        Number of photo-nuclears in the target nucleus
+        Number of protons in the target nucleus
     mass_number : int
         Number of nucleons in the target nucleus
     metastable : int
@@ -456,14 +484,17 @@ class IncidentPhotonuclear(EqualityMixin):
     Attributes
     ----------
     atomic_number : int
-        Number of photo-nuclears in the target nucleus
+        Number of protons in the target nucleus
     atomic_symbol : str
         Atomic symbol of the nuclide, e.g., 'Zr'
     atomic_weight_ratio : float
         Atomic weight ratio of the target nuclide.
+    energy : numpy.ndarray
+        Union energy grid in [eV] that every reaction cross section is
+        tabulated on.
     fission_energy : None or openmc.data.FissionEnergyRelease
         The energy released by fission, tabulated by component (e.g. prompt
-        neutrons or beta particles) and dependent on incident neutron energy        
+        neutrons or beta particles) and dependent on incident photon energy
     mass_number : int
         Number of nucleons in the target nucleus
     metastable : int
@@ -474,7 +505,7 @@ class IncidentPhotonuclear(EqualityMixin):
     reactions : collections.OrderedDict
         Contains the cross sections, secondary angle and energy distributions,
         and other associated data for each reaction. The keys are the MT values
-        and the values are Reaction objects.
+        and the values are :class:`PhotonuclearReaction` objects.
 
     """
 
@@ -503,7 +534,7 @@ class IncidentPhotonuclear(EqualityMixin):
                 return self._get_redundant_reaction(mt, mts)
             else:
                 raise KeyError(f'No reaction with MT={mt}.')
-    
+
     def __repr__(self):
         return "<IncidentPhotonuclear: {}>".format(self.name)
 
@@ -562,7 +593,7 @@ class IncidentPhotonuclear(EqualityMixin):
         cv.check_type("atomic weight ratio", atomic_weight_ratio, Real)
         cv.check_greater_than("atomic weight ratio", atomic_weight_ratio, 0.0)
         self._atomic_weight_ratio = atomic_weight_ratio
-        
+
     @property
     def fission_energy(self):
         return self._fission_energy
@@ -571,7 +602,7 @@ class IncidentPhotonuclear(EqualityMixin):
     def fission_energy(self, fission_energy):
         cv.check_type('fission energy release', fission_energy,
                       FissionEnergyRelease)
-        self._fission_energy = fission_energy        
+        self._fission_energy = fission_energy
 
     @classmethod
     def from_endf(cls, ev_or_filename):
@@ -586,7 +617,7 @@ class IncidentPhotonuclear(EqualityMixin):
 
         Returns
         -------
-        openmc.data.Photonuclear
+        openmc.data.IncidentPhotonuclear
             photo-nuclear interaction data
 
         """
@@ -613,7 +644,16 @@ class IncidentPhotonuclear(EqualityMixin):
         for mf, mt, nc, mod in ev.reaction_list:
             if mf == 3:
                 data.reactions[mt] = PhotonuclearReaction.from_endf(ev, mt)
-                
+
+        # Union of every reaction's own grid. Without it `energy` stays the
+        # empty list it is initialised to, and the sum rules in __getitem__
+        # would build cross sections over an empty abscissa instead of failing.
+        if data.reactions:
+            energy = np.array([])
+            for rx in data.reactions.values():
+                energy = np.union1d(energy, rx.xs.x)
+            data.energy = energy
+
         # Read fission energy release (requires that we already know nu for
         # fission)
         if (1, 458) in ev.section:
@@ -642,7 +682,7 @@ class IncidentPhotonuclear(EqualityMixin):
 
         Returns
         -------
-        openmc.data.Photonuclear
+        openmc.data.IncidentPhotonuclear
             Incident photo-nuclear continuous-energy data
 
         """
@@ -672,18 +712,20 @@ class IncidentPhotonuclear(EqualityMixin):
 
         total_xs = ace.xss[ace.jxs[2] : ace.jxs[2] + n_energy]
         nonelastic_xs = ace.xss[ace.jxs[3] : ace.jxs[3] + n_energy]
-        elastic_xs = total_xs-nonelastic_xs
         heating_number = ace.xss[ace.jxs[5] : ace.jxs[5] +  n_energy] * EV_PER_MEV
         heating_number = Tabulated1D(energy, heating_number)
-            
+
         # Read each reaction
         n_reaction = ace.nxs[4] + 1
         for i in range(n_reaction):
             if i==0:
-                if ace.jxs[4]==0:
-                    assert np.allclose(total_xs, nonelastic_xs)
-                else:
-                    raise NotImplementedError('photonuclear elastic scattering is not supported.')
+                if ace.jxs[4] != 0:
+                    raise NotImplementedError(
+                        'photonuclear elastic scattering is not supported.')
+                if not np.allclose(total_xs, nonelastic_xs):
+                    raise ValueError(
+                        f'{ace} has no elastic block but its total and '
+                        'nonelastic cross sections differ.')
             else:
                 rx = PhotonuclearReaction.from_ace(ace, i)
 
@@ -697,24 +739,47 @@ class IncidentPhotonuclear(EqualityMixin):
                             e = e[e>=threshold]
                             xs = rx.xs(e)
                             xs[0] = 0.0
-                            rx.xs = Tabulated1D(e, xs)                              
+                            rx.xs = Tabulated1D(e, xs)
                 data.reactions[rx.mt] = rx
 
         data.energy = energy
 
+        # Flag the reactions that are sums of others before anything adds them
+        # up. This mirrors IncidentNeutron.from_ace; without it a redundant MT
+        # present in the MTR block is counted twice in MT=1 and MT=301, and
+        # again in the C++ total, with nothing downstream able to detect it.
+        for rx in data.reactions.values():
+            if data.get_reaction_components(rx.mt) != [rx.mt]:
+                rx.redundant = True
+            if rx.mt in (203, 204, 205, 206, 207, 444):
+                rx.redundant = True
+
         # Adjust data
-        total_xs = np.zeros_like(energy)
+        reconstructed_xs = np.zeros_like(energy)
         for rx in data.reactions.values():
             if rx.redundant:
                 continue
-            total_xs += rx.xs(energy)
-            
+            reconstructed_xs += rx.xs(energy)
+
+        # The ACE heating number is an average per collision, normalised
+        # against the table's own total cross section, so it has to be paired
+        # with that total rather than with the reconstructed sum.
+        ace_total_xs = Tabulated1D(
+            ace.xss[ace.jxs[1]:ace.jxs[1] + n_energy] * EV_PER_MEV,
+            total_xs)(energy)
+        if not np.allclose(reconstructed_xs, ace_total_xs, rtol=1e-6):
+            warn(f'{data.name}: the sum of the partial photonuclear cross '
+                 'sections differs from the total tabulated in the ACE table '
+                 'by more than 1e-6 relative.')
+
+        total_xs = reconstructed_xs
+
         # Create redundant reaction for total (MT=1)
         total = PhotonuclearReaction(1)
         total.xs = Tabulated1D(energy, total_xs)
         total.redundant = True
         data.reactions[1] = total
-        
+
         # Create redundant reaction for nonelastic (MT=3)
         nonelastic = PhotonuclearReaction(3)
         nonelastic.xs = Tabulated1D(energy, total_xs)
@@ -723,7 +788,7 @@ class IncidentPhotonuclear(EqualityMixin):
 
         # Create redundant reaction for heating (MT=301)
         heating = PhotonuclearReaction(301)
-        heating.xs = Tabulated1D(energy, heating_number(energy)*total_xs)
+        heating.xs = Tabulated1D(energy, heating_number(energy)*ace_total_xs)
         heating.redundant = True
         data.reactions[301] = heating
 
@@ -745,22 +810,12 @@ class IncidentPhotonuclear(EqualityMixin):
 
         """
 
-        # Open file and write version
-        f = h5py.File(str(path), mode, libver=libver)
-        f.attrs["filetype"] = np.bytes_("data_photonuclear")
-        if "version" not in f.attrs:
-            f.attrs["version"] = np.array(HDF5_VERSION)
-
-        # If data come from ENDF, don't allow exporting to HDF5
+        # If data come from ENDF, don't allow exporting to HDF5. This is
+        # checked before the file is opened, so a refusal does not leave a stub
+        # file and a leaked handle behind.
         if hasattr(self, '_evaluation'):
             raise NotImplementedError('Cannot export incident photonuclear data that '
                                       'originated from an ENDF file.')
-        # Write basic data
-        g = f.create_group(self.name)
-        g.attrs['Z'] = self.atomic_number
-        g.attrs['A'] = self.mass_number
-        g.attrs['metastable'] = self.metastable
-        g.attrs['atomic_weight_ratio'] = self.atomic_weight_ratio
 
         # Determine union energy grid
         union_grid = np.array([])
@@ -768,67 +823,92 @@ class IncidentPhotonuclear(EqualityMixin):
             union_grid = np.union1d(union_grid, rx.xs.x)
             for product in rx.products:
                 union_grid = np.union1d(union_grid, product.yield_.x)
-        g.create_dataset("energy", data=union_grid)
-        
-        # Update reactions according to union energy grid
+
+        # A yield table may reach above the top of every cross section, and
+        # Tabulated1D evaluates to zero outside its range. That would leave the
+        # grid -- and so the C++ energy bound -- extending over a region where
+        # every reaction reads as zero.
+        highest_xs = max(rx.xs.x[-1] for rx in self)
+        if union_grid[-1] > highest_xs:
+            raise ValueError(
+                f'{self.name}: the union energy grid reaches '
+                f'{union_grid[-1]} eV but the highest tabulated cross section '
+                f'ends at {highest_xs} eV, so every reaction would be zero in '
+                'between.')
+
+        # Map each reaction onto the union grid. The results are kept aside
+        # rather than written back onto the reactions, so that exporting does
+        # not mutate the object being exported.
+        grid_xs = {}
         for rx in self:
-          if tuple(rx.xs.interpolation) != (2,):
-              raise NotImplementedError('Only linear-linear interpolable reactions are supported.')
-              
-          # Locate the threshold on the union grid. Exact float equality is
-          # unreliable here because the union grid can contain repeated
-          # energies at reaction thresholds.
-          idx = np.searchsorted(union_grid, rx.xs.x[0], side='left')
-          if idx >= union_grid.size or not np.isclose(union_grid[idx], rx.xs.x[0]):
-              raise ValueError(
-                  f'Threshold energy {rx.xs.x[0]} eV for MT={rx.mt} was not '
-                  'found on the union energy grid.')
-          threshold_idx = int(idx)
-          xs = rx.xs(union_grid[threshold_idx:]) 
-          tab1d = Tabulated1D(union_grid[threshold_idx:], xs)
-          tab1d._threshold_idx = threshold_idx
-          rx.xs = tab1d
-                
-        # Write reaction data
-        rxs_group = g.create_group('reactions')
-        for rx in self.reactions.values():
-            # Skip writing redundant reaction if it doesn't have neutron
-            # production or is a summed transmutation reaction.
-            # Also write heating.
-            if rx.redundant:
-                neutron_rx = any(p.particle == 'neutron' for p in rx.products)
-                keep_mts = (301,)
-                if not (neutron_rx or rx.mt in keep_mts):
-                    continue
+            if tuple(rx.xs.interpolation) != (2,):
+                raise NotImplementedError(
+                    'Only linear-linear interpolable reactions are supported.')
 
-            rx_group = rxs_group.create_group(f'reaction_{rx.mt:03}')
-            rx.to_hdf5(rx_group)
-        
-        # Write total photofission neutron yield when it differs from the
-        # prompt yield stored on the fission reaction product. Without this the
-        # transport code cannot reconstruct the delayed fraction.
-        for mt in FISSION_MTS:
-            rx = self.reactions.get(mt)
-            if rx is None:
-                continue
-            has_delayed = any(
-                p.particle == 'neutron' and p.emission_mode == 'delayed'
-                for p in rx.products)
-            if has_delayed:
-                total = sum(
-                    p.yield_ for p in rx.products
-                    if p.particle == 'neutron'
-                    and p.emission_mode in ('prompt', 'delayed'))
-                nu_group = g.create_group('total_nu')
-                total.to_hdf5(nu_group, 'yield')
-            break
+            # np.union1d uniquifies, so the grid is strictly increasing and the
+            # threshold is on it exactly.
+            idx = int(np.searchsorted(union_grid, rx.xs.x[0], side='left'))
+            if idx >= union_grid.size or union_grid[idx] != rx.xs.x[0]:
+                raise ValueError(
+                    f'Threshold energy {rx.xs.x[0]} eV for MT={rx.mt} was not '
+                    'found on the union energy grid.')
+            tab1d = Tabulated1D(union_grid[idx:], rx.xs(union_grid[idx:]))
+            tab1d._threshold_idx = idx
+            grid_xs[rx.mt] = tab1d
 
-        # Write fission energy release data
-        if self.fission_energy is not None:
-            fer_group = g.create_group('fission_energy_release')
-            self.fission_energy.to_hdf5(fer_group)
-        
-        f.close()
+        # Open file and write version
+        with h5py.File(str(path), mode, libver=libver) as f:
+            f.attrs["filetype"] = np.bytes_("data_photonuclear")
+            if "version" not in f.attrs:
+                f.attrs["version"] = np.array(HDF5_VERSION)
+
+            # Write basic data
+            g = f.create_group(self.name)
+            g.attrs['Z'] = self.atomic_number
+            g.attrs['A'] = self.mass_number
+            g.attrs['metastable'] = self.metastable
+            g.attrs['atomic_weight_ratio'] = self.atomic_weight_ratio
+            g.create_dataset("energy", data=union_grid)
+
+            # Write reaction data
+            rxs_group = g.create_group('reactions')
+            for rx in self.reactions.values():
+                # Skip writing redundant reaction if it doesn't have neutron
+                # production or is a summed transmutation reaction.
+                # Also write heating.
+                if rx.redundant:
+                    neutron_rx = any(p.particle == 'neutron' for p in rx.products)
+                    keep_mts = (301,)
+                    if not (neutron_rx or rx.mt in keep_mts):
+                        continue
+
+                rx_group = rxs_group.create_group(f'reaction_{rx.mt:03}')
+                rx.to_hdf5(rx_group, grid_xs[rx.mt])
+
+            # Write total photofission neutron yield when it differs from the
+            # prompt yield stored on the fission reaction product. Without this the
+            # transport code cannot reconstruct the delayed fraction.
+            fission_mt = next((mt for mt in FISSION_MTS if mt in self.reactions),
+                              None)
+            if fission_mt is not None:
+                rx = self.reactions[fission_mt]
+                yields = [p.yield_ for p in rx.products
+                          if p.particle == 'neutron'
+                          and p.emission_mode in ('prompt', 'delayed')]
+                has_delayed = any(
+                    p.particle == 'neutron' and p.emission_mode == 'delayed'
+                    for p in rx.products)
+                if has_delayed:
+                    # Sum, not the builtin sum(): Function1D has no __radd__, so
+                    # starting from the integer 0 raises TypeError
+                    nu_group = g.create_group('total_nu')
+                    Sum(yields).to_hdf5(nu_group, 'yield')
+
+            # Write fission energy release data
+            if self.fission_energy is not None:
+                fer_group = g.create_group('fission_energy_release')
+                self.fission_energy.to_hdf5(fer_group)
+
 
     @classmethod
     def from_hdf5(cls, group_or_filename):
@@ -843,7 +923,7 @@ class IncidentPhotonuclear(EqualityMixin):
 
         Returns
         -------
-        openmc.data.Photonuclear
+        openmc.data.IncidentPhotonuclear
             photo-nuclear interaction data
 
         """
@@ -892,7 +972,7 @@ class IncidentPhotonuclear(EqualityMixin):
         # Close h5file when done if was opened
         if not isinstance(group_or_filename, h5py.Group):
             h5file.close()
-            
+
         return data
 
     @classmethod
@@ -911,7 +991,7 @@ class IncidentPhotonuclear(EqualityMixin):
 
         Returns
         -------
-        data : openmc.data.Photonuclear
+        data : openmc.data.IncidentPhotonuclear
             Incident photo-nuclear continuous-energy data
 
         """
@@ -926,7 +1006,7 @@ class IncidentPhotonuclear(EqualityMixin):
             # Create instance from ACE tables within library
             lib = Library(kwargs["acer"])
             data = cls.from_ace(lib.tables[0])
-            
+
             # Add fission energy release data
             ev = evaluation if evaluation is not None else Evaluation(filename)
             if (1, 458) in ev.section:
@@ -956,7 +1036,7 @@ class IncidentPhotonuclear(EqualityMixin):
         if mts:
             return mts
         else:
-            return [mt] if mt in self else []        
+            return [mt] if mt in self else []
 
     def _get_redundant_reaction(self, mt, mts):
         """Create redundant reaction from its components

@@ -196,7 +196,7 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
     Raises
     ------
     NotImplementedError
-        When the projectile is not a neutron
+        When the projectile is neither a neutron nor a photon
 
     Returns
     -------
@@ -205,13 +205,50 @@ def kalbach_slope(energy_projectile, energy_emitted, za_projectile,
 
     """
 
+    if za_projectile not in (0, 1):
+        # The systematics below are Kalbach's, derived and tested for incident
+        # nucleons; the za_to_M table only carries entries for a few of them.
+        # Without this the unsupported cases fail as a bare KeyError from
+        # inside a distribution reader, or silently return a number.
+        raise NotImplementedError(
+            'Kalbach-Mann slope systematics are implemented for neutron '
+            f'(ZA=1) and photon (ZA=0) projectiles only, got ZA={za_projectile}.')
+
     if za_projectile == 0:
-        # Calculate slope for photons using Eq. 3 in doi:10.1080/18811248.1995.9731830
-        # or ENDF-6 Formats Manual section 6.2.3.2
+        # Slope for photons: Eq. 3 in doi:10.1080/18811248.1995.9731830, also
+        # ENDF-6 Formats Manual section 6.2.3.2. The photon slope is the
+        # neutron slope scaled by the ratio of a photon's momentum E/c to that
+        # of a nucleon of the same kinetic energy, sqrt(2mE), times a clipping
+        # factor that saturates at 4 below 5.41 MeV and at 1 above 86.5 MeV.
+        #
+        # NOTE: two details of this expression have not been checked against
+        # the primary source, which is not reachable from here. They are
+        # recorded so the next reader with access can settle them:
+        #   1. The inner call evaluates the neutron slope as though the photon
+        #      were a neutron of the same energy, so the compound nucleus is
+        #      formed as target + n and an entrance separation energy is
+        #      applied. For a photon the compound nucleus is the target and
+        #      the entrance-channel energy is E itself. Whether Kalbach's
+        #      prescription intends the neutron-equivalent evaluation or the
+        #      correct compound system is the question.
+        #   2. The clipping factor is given the lab outgoing energy. Every
+        #      other energy in these systematics is a channel energy, so this
+        #      may be meant to be epsilon_b.
+        # Neither reaches transport today: from_endf is the only caller, and
+        # IncidentPhotonuclear.export_to_hdf5 refuses ENDF-derived data, while
+        # the ACE route reads the slope straight out of the file.
         slope_n = kalbach_slope(energy_projectile, energy_emitted, 1,
-                  za_emitted, za_target)
-        return slope_n * np.sqrt(0.5*energy_projectile/NEUTRON_MASS_EV)*np.minimum(4,np.maximum(1,9.3/np.sqrt(energy_emitted/EV_PER_MEV))) 
-        
+                                za_emitted, za_target)
+        # A zero outgoing energy is a normal first grid point of an ENDF
+        # LAW=1/LANG=2 table; the limit of the clipping factor there is 4.
+        emitted_mev = energy_emitted / EV_PER_MEV
+        clip = np.where(emitted_mev > 0.0,
+                        9.3 / np.sqrt(np.where(emitted_mev > 0.0,
+                                               emitted_mev, 1.0)),
+                        np.inf)
+        return slope_n * np.sqrt(0.5*energy_projectile/NEUTRON_MASS_EV) \
+            * np.minimum(4, np.maximum(1, clip))
+
     # Special handling of elemental carbon
     if za_emitted == 6000:
         za_emitted = 6012
@@ -288,8 +325,8 @@ class KalbachMann(AngleEnergy):
     slope : Iterable of openmc.data.Tabulated1D
         Kalbach-Chadwick angular distribution slope value 'a' as a function of
         outgoing energy for each incoming energy
-    particle : {'neutron', 'photon'} 
-        incident particle type, defaults to neutron        
+    particle : {'neutron', 'photon'}
+        incident particle type, defaults to neutron
 
     """
 
@@ -323,7 +360,7 @@ class KalbachMann(AngleEnergy):
         cv.check_type('Kalbach-Mann interpolation', interpolation,
                       Iterable, Integral)
         self._interpolation = interpolation
-        
+
     @property
     def particle(self):
         return self._particle
@@ -633,7 +670,7 @@ class KalbachMann(AngleEnergy):
             Kalbach-Mann energy-angle distribution
 
         """
-        particle = {0: 'photon', 1: 'neutron'}[za_projectile]        
+        particle = {0: 'photon', 1: 'neutron'}.get(za_projectile, 'neutron')
         params, tab2 = get_tab2_record(file_obj)
         lep = params[3]
         ne = params[5]
@@ -664,6 +701,12 @@ class KalbachMann(AngleEnergy):
             # Slope factors for Kalbach-Mann
             if n_angle == 2:
                 a_i = values[:, 3]
+                calculated_slope.append(False)
+            elif za_projectile is None:
+                # A projectile the systematics do not cover. Reading the rest
+                # of the evaluation is still useful, so fall back to isotropic
+                # emission rather than refusing the file.
+                a_i = np.zeros_like(r_i)
                 calculated_slope.append(False)
             else:
                 a_i = [kalbach_slope(energy_projectile=energy[i],

@@ -343,7 +343,7 @@ temperature-dependent data set.  For example, the data set corresponding to
 :Groups:
          - **distribution** -- Format for angle-energy distributions are
            detailed in :ref:`angle_energy`.
-           
+
 --------------------------
 Incident Photonuclear Data
 --------------------------
@@ -356,17 +356,16 @@ Incident Photonuclear Data
 **/<nuclide name>/**
 
 :Attributes: - **Z** (*int*) -- Atomic number
-             - **A** (*int*) -- Mass number. For a natural element, A=0 is given.
+             - **A** (*int*) -- Mass number. Photonuclear evaluations are
+               per-isotope, so A is always the actual mass number.
              - **metastable** (*int*) -- Metastable state (0=ground, 1=first
                excited, etc.)
              - **atomic_weight_ratio** (*double*) -- Mass in units of neutron masses
-             - **n_reaction** (*int*) -- Number of reactions
 
 :Datasets:
            - **energy** (*double[]*) -- Energies in [eV] at which cross sections
-             are tabulated
-
-**/<nuclide name>/**
+             are tabulated. Strictly increasing, and shared by every reaction
+             of this nuclide.
 
 **/<nuclide name>/reactions/reaction_<mt>/**
 
@@ -375,14 +374,16 @@ Incident Photonuclear Data
              - **Q_value** (*double*) -- Q value in eV
              - **center_of_mass** (*int*) -- Whether the reference frame for
                scattering is center-of-mass (1) or laboratory (0)
-             - **n_product** (*int*) -- Number of reaction products
-             - **redundant** (*int*) -- Whether reaction is redundant
-
-**/<nuclide name>/reactions/reaction_<mt>/**
+             - **redundant** (*int*) -- Whether the reaction is a sum of other
+               reactions present in the file, and so must be left out of any
+               total
 
 :Datasets:
-           - **xs** (*double[]*) -- Cross section values tabulated against the
-             nuclide energy grid
+           - **xs** (*double[]*) -- Cross section values in [b], tabulated
+             against the nuclide energy grid from **threshold_idx** upwards.
+             Its length is therefore exactly ``len(energy) - threshold_idx``;
+             the transport indexes it relative to the threshold and relies on
+             that.
 
              :Attributes:
                           - **threshold_idx** (*int*) -- Index on the energy
@@ -390,35 +391,48 @@ Incident Photonuclear Data
 
 **/<nuclide name>/reactions/reaction_<mt>/product_<j>/**
 
-   Reaction product data is described in :ref:`product`.
-   
+   Reaction product data is described in :ref:`product`. Products are numbered
+   in the order they are written. For a fission reaction, **product_0** must
+   be the prompt (or, when no delayed data is present, the total) neutron
+   yield, and **product_1** onwards are the delayed precursor groups.
+
+**/<nuclide name>/total_nu/**
+
+   Present only when a photofission reaction has delayed neutron products.
+
+:Datasets:
+           - **yield** (:ref:`function <1d_functions>`) -- Total photofission
+             neutron yield, prompt plus delayed, as a function of incident
+             photon energy. Without it the transport cannot reconstruct the
+             delayed fraction from the prompt yield alone.
+
 **/<nuclide name>/fission_energy_release/**
 
 :Datasets: - **fragments** (:ref:`function <1d_functions>`) -- Energy
              released in the form of fragments as a function of incident
-             neutron energy.
+             photon energy.
            - **prompt_neutrons** (:ref:`function <1d_functions>`) -- Energy
              released in the form of prompt neutrons as a function of incident
-             neutron energy.
+             photon energy.
            - **delayed_neutrons** (:ref:`function <1d_functions>`) -- Energy
              released in the form of delayed neutrons as a function of incident
-             neutron energy.
+             photon energy.
            - **prompt_photons** (:ref:`function <1d_functions>`) -- Energy
              released in the form of prompt photons as a function of incident
-             neutron energy.
+             photon energy.
            - **delayed_photons** (:ref:`function <1d_functions>`) -- Energy
              released in the form of delayed photons as a function of incident
-             neutron energy.
+             photon energy.
            - **betas** (:ref:`function <1d_functions>`) -- Energy released in
-             the form of betas as a function of incident neutron energy.
+             the form of betas as a function of incident photon energy.
            - **neutrinos** (:ref:`function <1d_functions>`) -- Energy released
-             in the form of neutrinos as a function of incident neutron energy.
+             in the form of neutrinos as a function of incident photon energy.
            - **q_prompt** (:ref:`function <1d_functions>`) -- The prompt fission
              Q-value (fragments + prompt neutrons + prompt photons - incident
              energy)
            - **q_recoverable** (:ref:`function <1d_functions>`) -- The
              recoverable fission Q-value (Q_prompt + delayed neutrons + delayed
-             photons + betas)   
+             photons + betas)
 
 .. _product:
 
@@ -749,7 +763,7 @@ Level Inelastic
 :Object type: Group
 :Attributes: - **type** (*char[]*) -- 'level'
              - **q_value** (*double*) -- Q value in eV
-             - **mass** (*double*) -- Nucleus mass A relative to neutron rest mass  
+             - **mass** (*double*) -- Nucleus mass A relative to neutron rest mass
              - **particle** (*char[]*) -- Incident particle name
 
 .. _continuous_tabular:

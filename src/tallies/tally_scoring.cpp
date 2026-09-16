@@ -9,6 +9,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/reaction_product.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
@@ -244,6 +245,25 @@ double score_fission_q(const Particle& p, int score_bin, const Tally& tally,
     }
   }
   return 0.0;
+}
+
+//! Microscopic photonuclear cross section of one nuclide, or zero
+//!
+//! \param[in] i_nuclide Index into data::nuclides, as a tally nuclide bin
+//!   carries it. Returns zero when photonuclear physics is off, when the
+//!   photon is below the photonuclear threshold, or when this nuclide has no
+//!   photonuclear data.
+double photonuclear_micro_total(const Particle& p, int i_nuclide)
+{
+  if (!settings::photonuclear_physics || p.E() < data::photonuclear_energy_min)
+    return 0.0;
+
+  auto it = data::photonuclear_map.find(data::nuclides[i_nuclide]->name_);
+  if (it == data::photonuclear_map.end())
+    return 0.0;
+
+  const auto& micro = p.photonuclear_xs(it->second);
+  return (p.E() == micro.last_E) ? micro.total : 0.0;
 }
 
 //! Helper function to obtain the kerma coefficient for a given nuclide
@@ -613,7 +633,12 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
         if (p.type().is_neutron()) {
           score = p.neutron_xs(i_nuclide).total * atom_density * flux;
         } else if (p.type().is_photon()) {
-          score = p.photon_xs(i_nuclide).total * atom_density * flux;
+          // macro_xs().total carries the photonuclear cross section too, so
+          // the per-nuclide bins have to as well or the bins no longer sum to
+          // the unfiltered score
+          score = (p.photon_xs(i_nuclide).total +
+                    photonuclear_micro_total(p, i_nuclide)) *
+                  atom_density * flux;
         }
       } else {
         score = p.macro_xs().total * flux;
@@ -657,16 +682,21 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
         if (p.type().is_neutron()) {
           score = p.neutron_xs(i_nuclide).absorption * atom_density * flux;
         } else {
+          // A photonuclear event absorbs the photon -- photonuclear_collision()
+          // sets TallyEvent::ABSORB -- so it belongs here alongside the
+          // photoelectric and pair-production channels
           const auto& xs = p.photon_xs(i_nuclide);
-          score =
-            (xs.total - xs.coherent - xs.incoherent) * atom_density * flux;
+          score = (xs.total - xs.coherent - xs.incoherent +
+                    photonuclear_micro_total(p, i_nuclide)) *
+                  atom_density * flux;
         }
       } else {
         if (p.type().is_neutron()) {
           score = p.macro_xs().absorption * flux;
         } else {
-          score =
-            (p.macro_xs().photoelectric + p.macro_xs().pair_production) * flux;
+          score = (p.macro_xs().photoelectric + p.macro_xs().pair_production +
+                    p.macro_xs().photonuclear) *
+                  flux;
         }
       }
       break;

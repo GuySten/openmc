@@ -694,6 +694,20 @@ Photonuclear data is per-nuclide rather than per-element and must be present in
 :ref:`io_cross_sections`. Nuclides without photonuclear data simply do not
 undergo photonuclear reactions.
 
+.. note::
+   Two constructs found in photonuclear evaluations are not yet supported when
+   converting data, and are reported rather than silently approximated:
+
+   - **Partial (energy-dependent per-product) yields.** Only the whole-reaction
+     yield laws are read; anything else raises ``NotImplementedError``.
+   - **N-body phase space (ACE LAW=66) distributions.** The available-energy
+     kinematics are implemented for an incident neutron only, so a photonuclear
+     table containing one is rejected instead of being sampled with the wrong
+     projectile mass.
+
+   Charged-particle products other than neutrons and photons are skipped with a
+   warning; their energy is deposited locally through the reaction Q value.
+
 Photoneutron production is a rare event compared with photoatomic interaction,
 so photoneutron tallies can converge slowly. The
 :attr:`Settings.photoneutron_biasing` attribute emits one neutron of reduced

@@ -46,6 +46,11 @@ class AngleEnergy(EqualityMixin, ABC):
             return openmc.data.IncoherentInelasticAE.from_hdf5(group)
         elif dist_type == 'mixed_elastic':
             return openmc.data.MixedElasticAE.from_hdf5(group)
+        else:
+            # Returning None here would leave the caller with a product whose
+            # distribution list is shorter than its applicability list
+            raise NotImplementedError(
+                f'Unrecognized angle-energy distribution type "{dist_type}".')
 
     @staticmethod
     def from_ace(ace, location_dist, location_start, rx=None):

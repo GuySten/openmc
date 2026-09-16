@@ -1082,13 +1082,18 @@ void check_data_version(hid_t file_id)
   if (attribute_exists(file_id, "version")) {
     vector<int> version;
     read_attribute(file_id, "version", version);
-    if (version[0] != HDF5_VERSION[0]) {
+    // A newer minor version may use datasets or attributes this build does
+    // not know about, and a missing attribute is not diagnosed anywhere below
+    // -- read_attr does not check the HDF5 status -- so refuse it here rather
+    // than transport on whatever the uninitialised member happened to hold.
+    if (version[0] != HDF5_VERSION[0] || version[1] > HDF5_VERSION[1]) {
       fatal_error("HDF5 data format uses version " +
                   std::to_string(version[0]) + "." +
                   std::to_string(version[1]) +
                   " whereas your installation of "
                   "OpenMC expects version " +
-                  std::to_string(HDF5_VERSION[0]) + ".x data.");
+                  std::to_string(HDF5_VERSION[0]) + "." +
+                  std::to_string(HDF5_VERSION[1]) + " or earlier.");
     }
   } else {
     fatal_error("HDF5 data does not indicate a version. Your installation of "
@@ -1199,27 +1204,29 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
           LibraryKey key {Library::Type::photonuclear, name};
           const auto& it = data::library_map.find(key);
           if (it == data::library_map.end()) {
+            // A nuclide without photonuclear data simply does not undergo
+            // photonuclear reactions. Fall through rather than returning: this
+            // is the last step of loading this nuclide, not of the function.
             warning(fmt::format(
               "Photonuclear data is not present for Nuclide '{}', skipping",
               name));
-            return 0;
+          } else {
+            // Get filename for library containing nuclide
+            int idx = it->second;
+            const auto& filename = data::libraries[idx].path_;
+            write_message(6, "Reading {} from {}", name, filename);
+
+            // Open file and make sure version is sufficient
+            hid_t file_id = file_open(filename, 'r');
+            check_data_version(file_id);
+
+            // Read photonuclear data from HDF5
+            hid_t group = open_group(file_id, name);
+            data::photonuclears.push_back(
+              make_unique<PhotonuclearInteraction>(group));
+            close_group(group);
+            file_close(file_id);
           }
-
-          // Get filename for library containing nuclide
-          int idx = it->second;
-          const auto& filename = data::libraries[idx].path_;
-          write_message(6, "Reading {} from {}", name, filename);
-
-          // Open file and make sure version is sufficient
-          hid_t file_id = file_open(filename, 'r');
-          check_data_version(file_id);
-
-          // Read element data from HDF5
-          hid_t group = open_group(file_id, name);
-          data::photonuclears.push_back(
-            make_unique<PhotonuclearInteraction>(group));
-          close_group(group);
-          file_close(file_id);
         }
       }
     }

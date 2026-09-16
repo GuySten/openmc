@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "openmc/constants.h"
+
 namespace openmc {
 
 //==============================================================================
@@ -36,12 +38,18 @@ public:
   //! Returned in the frame the distribution is tabulated in, so a
   //! center-of-mass distribution returns a center-of-mass energy. Used to
   //! decide, before transport begins, whether secondaries can exceed the
-  //! available transport data. Must be an attainable bound, not merely a
-  //! valid one, or the resulting guard is uselessly loose.
+  //! available transport data. The bound must be valid -- exceeding it during
+  //! transport is a hard error -- and should be as tight as is cheap, since a
+  //! loose bound needlessly lowers the maximum photon energy of the problem.
+  //!
+  //! This is deliberately not pure. Only photonuclear reaction products are
+  //! ever bounded, so most subclasses have no reason to implement it, and a
+  //! subclass forced to invent an answer is likely to invent a wrong one. The
+  //! default says "cannot bound this", which the caller already handles.
   //!
   //! \param[in] E_in Incoming energy in [eV]
-  //! \return Maximum outgoing energy in [eV]
-  virtual double max_energy(double E_in) const = 0;
+  //! \return Maximum outgoing energy in [eV], or INFTY if no bound is known
+  virtual double max_energy(double E_in) const { return INFTY; }
 
   virtual ~AngleEnergy() = default;
 };

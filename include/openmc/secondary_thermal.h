@@ -5,6 +5,7 @@
 #define OPENMC_SECONDARY_THERMAL_H
 
 #include "openmc/angle_energy.h"
+#include "openmc/constants.h"
 #include "openmc/endf.h"
 #include "openmc/search.h"
 #include "openmc/secondary_correlated.h"
@@ -14,6 +15,13 @@
 #include <hdf5.h>
 
 namespace openmc {
+
+// None of the distributions here override AngleEnergy::max_energy(). Its
+// INFTY default is the right answer: S(alpha,beta) up-scattering routinely
+// exceeds the incident energy -- a 1e-5 eV neutron in warm water emerges at
+// tenths of an eV -- so there is no cheap attainable bound, and thermal
+// distributions are never photonuclear products, which is the only thing that
+// asks for one.
 
 //==============================================================================
 //! Coherent elastic scattering angle-energy distribution
@@ -42,10 +50,6 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
-
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
 
 private:
   const CoherentElasticXS& xs_; //!< Coherent elastic scattering cross section
@@ -82,10 +86,6 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
-
 private:
   double debye_waller_;
 };
@@ -119,10 +119,6 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
-
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
 
 private:
   const vector<double>& energy_;  //!< Energies at which cosines are tabulated
@@ -164,10 +160,6 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
-
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
 
 private:
   const vector<double>& energy_; //!< Incident energies
@@ -215,10 +207,6 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
-
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
 
 private:
   //! Secondary energy/angle distribution
@@ -269,10 +257,6 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
-
-  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
-  //! few eV, so the incident energy is an adequate and attainable bound.
-  double max_energy(double E_in) const override { return E_in; }
 
 private:
   CoherentElasticAE coherent_dist_;         //!< Coherent distribution

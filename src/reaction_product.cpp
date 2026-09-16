@@ -79,6 +79,15 @@ ReactionProduct::ReactionProduct(hid_t group)
       distribution_.push_back(make_unique<NBodyPhaseSpace>(dgroup));
     } else if (temp == "kalbach-mann") {
       distribution_.push_back(make_unique<KalbachMann>(dgroup));
+    } else {
+      // applicability_ is filled for every distribution but distribution_ only
+      // for the recognised ones, so skipping here would leave the two out of
+      // step -- sample_dist() indexes distribution_ with an applicability_
+      // index -- or leave distribution_ empty entirely. 'laboratory' (ENDF
+      // MF6 LAW=7) reaches this, and photonuclear evaluations do use it.
+      fatal_error(
+        fmt::format("Unrecognized secondary distribution type \"{}\" in {}.",
+          temp, object_name(dgroup)));
     }
 
     close_group(dgroup);
@@ -143,8 +152,11 @@ double ReactionProduct::sample_energy_and_pdf(
 
 double ReactionProduct::max_energy(double E_in) const
 {
-  // sample_dist() picks among distributions using applicability_, so only
-  // distributions that can actually be selected at this energy are considered.
+  if (distribution_.empty())
+    return 0.0;
+
+  // sample_dist() picks among distributions using applicability_, so a
+  // distribution that cannot be selected at this energy need not be bounded.
   double result = 0.0;
   if (applicability_.empty()) {
     for (const auto& d : distribution_) {
@@ -156,6 +168,12 @@ double ReactionProduct::max_energy(double E_in) const
         continue;
       result = std::max(result, distribution_[i]->max_energy(E_in));
     }
+    // The applicabilities are tabulated, so they need not sum to exactly one.
+    // When the cumulative sum falls short sample_dist() falls back to the last
+    // distribution, which the loop above may just have skipped. A bound that
+    // excludes a reachable distribution is worse than a loose one: overshooting
+    // it aborts the run.
+    result = std::max(result, distribution_.back()->max_energy(E_in));
   }
   return result;
 }

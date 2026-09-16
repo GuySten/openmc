@@ -1069,17 +1069,25 @@ void Material::calculate_photon_xs(Particle& p) const
       auto& name = data::nuclides[nuclide_[i]]->name_;
 
       // Skip nuclides without photonuclear data
-      if (data::photonuclear_map.find(name) == data::photonuclear_map.end())
+      // Reuse the iterator from find() rather than calling the non-const
+      // operator[] on a map shared between threads, and to avoid a second
+      // string hash per nuclide per collision
+      auto it = data::photonuclear_map.find(name);
+      if (it == data::photonuclear_map.end())
         continue;
 
-      int i_nuclide = data::photonuclear_map[name];
+      int i_nuclide = it->second;
 
       // Calculate microscopic cross section for this nuclide
       const auto& micro {p.photonuclear_xs(i_nuclide)};
       if (p.E() != micro.last_E) {
         data::photonuclears[i_nuclide]->calculate_xs(p);
       }
-      double atom_density = atom_density_(i);
+      // Same per-cell density override every other macroscopic loop applies.
+      // Without it macro_xs().total mixes a scaled photo-atomic part with an
+      // unscaled photonuclear one, and the cutoff in sample_photon_element()
+      // can go negative.
+      double atom_density = this->atom_density(i, p.density_mult());
 
       // Add contributions to material photonuclear macroscopic cross section
       p.macro_xs().photonuclear += atom_density * micro.total;

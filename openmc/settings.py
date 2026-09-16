@@ -200,7 +200,7 @@ class Settings:
         photoneutron tallies but removes the correlation between neutrons
         emitted in the same event. Requires `photonuclear_physics` to be True.
 
-        .. versionadded:: 0.16.1
+        .. versionadded:: 0.17.0
     photonuclear_physics : bool
         Whether to use photonuclear physics. Requires `photon_transport` to be
         True. Enabling this may lower the maximum photon energy of the problem,
@@ -208,7 +208,7 @@ class Settings:
         bremsstrahlung is used, so that photoneutrons cannot be produced above
         the range of the neutron transport data.
 
-        .. versionadded:: 0.16.1
+        .. versionadded:: 0.17.0
     plot_seed : int
        Initial seed for randomly generated plot colors.
     ptables : bool
@@ -761,7 +761,7 @@ class Settings:
     def photon_transport(self, photon_transport: bool):
         cv.check_type('photon transport', photon_transport, bool)
         self._photon_transport = photon_transport
-        
+
     @property
     def photonuclear_physics(self) -> bool:
         return self._photonuclear_physics
@@ -1783,7 +1783,7 @@ class Settings:
         if self._photon_transport is not None:
             element = ET.SubElement(root, "photon_transport")
             element.text = str(self._photon_transport).lower()
-            
+
     def _create_photonuclear_physics_subelement(self, root):
         if self._photonuclear_physics is not None:
             element = ET.SubElement(root, "photonuclear_physics")
@@ -2335,7 +2335,7 @@ class Settings:
         text = get_text(root, 'photon_transport')
         if text is not None:
             self.photon_transport = text in ('true', '1')
-            
+
     def _photoneutron_biasing_from_xml_element(self, root):
         text = get_text(root, 'photoneutron_biasing')
         if text is not None:
@@ -2344,7 +2344,7 @@ class Settings:
     def _photonuclear_physics_from_xml_element(self, root):
         text = get_text(root, 'photonuclear_physics')
         if text is not None:
-            self.photonuclear_physics = text in ('true', '1')            
+            self.photonuclear_physics = text in ('true', '1')
 
     def _uniform_source_sampling_from_xml_element(self, root):
         text = get_text(root, 'uniform_source_sampling')

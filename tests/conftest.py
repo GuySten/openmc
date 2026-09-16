@@ -96,7 +96,12 @@ def run_in_tmpdir(tmpdir):
 
 @pytest.fixture(scope="module")
 def endf_data():
-    return os.environ['OPENMC_ENDF_DATA']
+    # A missing variable is a reason to skip, not a KeyError that reports as a
+    # test error
+    try:
+        return os.environ['OPENMC_ENDF_DATA']
+    except KeyError:
+        pytest.skip('OPENMC_ENDF_DATA is not set')
 
 @pytest.fixture(scope='session', autouse=True)
 def resolve_paths():

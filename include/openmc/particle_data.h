@@ -234,7 +234,6 @@ struct PhotonuclearMicroXS {
   double last_E {0.0};  //!< last evaluated energy in [eV]
   double interp_factor; //!< interpolation factor on energy grid
   double total;         //!< microscopic total photonuclear xs
-  double heating;       //!< microscopic heating xs
   double neutron_prod;  //!< microscopic neutron production xs
 };
 
@@ -643,8 +642,12 @@ public:
     return electron_xs_[i];
   }
 
-  // Microscopic photon cross sections
+  // Microscopic photonuclear cross sections
   PhotonuclearMicroXS& photonuclear_xs(int i) { return photonuclear_xs_[i]; }
+  const PhotonuclearMicroXS& photonuclear_xs(int i) const
+  {
+    return photonuclear_xs_[i];
+  }
 
   // Macroscopic cross sections
   MacroXS& macro_xs() { return macro_xs_; }

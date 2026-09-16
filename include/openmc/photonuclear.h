@@ -21,8 +21,11 @@ class PhotonuclearReaction {
 public:
   //! Construct reaction from HDF5 data
   //! \param[in] group HDF5 group containing reaction data
-  //! \param[in] name Name of the nuclide
-  explicit PhotonuclearReaction(hid_t group, std::string name);
+  //! \param[in] nuclide_name Name of the nuclide, for error messages
+  //! \param[in] n_energy Size of the nuclide's energy grid, which the cross
+  //!   section must exactly fill from its threshold index upwards
+  PhotonuclearReaction(
+    hid_t group, const std::string& nuclide_name, int64_t n_energy);
 
   //! Calculate cross section given grid index, interpolation factor
   //
@@ -35,17 +38,11 @@ public:
   //! \param[in] micro Microscopic cross section cache
   double xs(const PhotonuclearMicroXS& micro) const;
 
-  //! \brief Calculate reaction rate based on group-wise flux distribution
-  //
-  //! \param[in] energy Energy group boundaries in [eV]
-  //! \param[in] flux Flux in each energy group (not normalized per eV)
-  //! \param[in] grid Nuclide energy grid
-  //! \return Reaction rate
-  double collapse_rate(span<const double> energy, span<const double> flux,
-    const vector<double>& grid) const;
-
-  //! Cross section at a single temperature
-  struct TemperatureXS {
+  //! Cross section on the nuclide's energy grid, from a threshold index
+  //!
+  //! Photonuclear cross sections have no temperature dependence, so unlike
+  //! Reaction there is exactly one of these per reaction.
+  struct GriddedXS {
     int threshold;
     vector<double> value;
   };
@@ -54,7 +51,7 @@ public:
   double q_value_;                   //!< Reaction Q value in [eV]
   bool scatter_in_cm_;               //!< scattering system in center-of-mass?
   bool redundant_;                   //!< redundant reaction?
-  TemperatureXS xs_;                 //!< Cross section
+  GriddedXS xs_;                     //!< Cross section
   vector<ReactionProduct> products_; //!< Reaction products
 };
 
@@ -121,7 +118,6 @@ private:
   void create_derived();
 
   static int XS_TOTAL;
-  static int XS_HEATING;
   static int XS_NEUTRON_PROD;
 };
 

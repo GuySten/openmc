@@ -827,12 +827,20 @@ int sample_photonuclear_nuclide(Particle& p, bool biased)
 
     int i_nuclide = it->second;
     const auto& micro {p.photonuclear_xs(i_nuclide)};
-    double atom_density = mat->atom_density_[i];
+    double atom_density = mat->atom_density(i, p.density_mult());
 
     // Increment probability to compare to cutoff
     prob += atom_density * (biased ? micro.neutron_prod : micro.total);
-    if (prob >= cutoff)
+    if (prob >= cutoff) {
+      // Record the collision nuclide the way sample_photon_element() and
+      // sample_nuclide() do, as an index into data::nuclides. Without it
+      // score_particle_heating() takes its event_nuclide() == NUCLIDE_NONE
+      // branch and smears the deposition over every nuclide by charge
+      // fraction, so a nuclide-filtered heating tally is mis-attributed and
+      // no longer sums to the unfiltered score.
+      p.event_nuclide() = mat->nuclide_[i];
       return i_nuclide;
+    }
   }
 
   // If we reach here, no nuclide was sampled
@@ -1567,9 +1575,16 @@ void sample_photoneutron_product(
 
   // Loop through each reaction type
   const auto& nuc {data::photonuclears[i_nuclide]};
+  bool found = false;
   for (int i = 0; i < nuc->reactions_.size(); ++i) {
     // Evaluate photonuclear cross section
     const auto& rx = nuc->reactions_[i];
+
+    // A redundant reaction is a sum of others; create_derived() leaves it out
+    // of XS_NEUTRON_PROD, so it must be left out of this cdf too
+    if (rx->redundant_)
+      continue;
+
     double xs = rx->xs(micro);
 
     // if cross section is zero for this reaction, skip it
@@ -1586,14 +1601,28 @@ void sample_photoneutron_product(
         prob += xs;
         *i_rx = i;
         *i_product = j;
+        found = true;
         if (prob >= cutoff)
           return;
       }
     }
   }
-  // If we made it here, no product was sampled
-  p.write_restart();
-  fatal_error("Did not sample any photoneutron product.");
+
+  // XS_NEUTRON_PROD is built by testing each yield at the grid points and is
+  // then interpolated, while the loop above tests it at the collision energy.
+  // Between two grid points that bracket a yield threshold the two disagree by
+  // a few ulp, and the cumulative probability can fall just short of the
+  // cutoff. Keep the last product that did qualify: aborting a transport run
+  // over a rounding difference is far worse than the negligible bias.
+  if (!found) {
+    // Nothing here produces neutrons at this energy at all, which means the
+    // caller's own neutron_prod was zero and it should not have asked.
+    p.write_restart();
+    fatal_error(fmt::format(
+      "No photoneutron-producing reaction of {} is open at {} eV, but its "
+      "neutron production cross section is {}.",
+      nuc->name_, p.E(), micro.neutron_prod));
+  }
 }
 
 void photonuclear_collision(Particle& p)
@@ -1614,17 +1643,24 @@ void photonuclear_collision(Particle& p)
   for (const auto& r : nuc->reactions_) {
     if (r->redundant_)
       continue;
+    if (r->xs(micro) <= 0.0)
+      continue;
     prob += r->xs(micro);
-    if (prob >= cutoff) {
-      rx = r.get();
+    rx = r.get();
+    if (prob >= cutoff)
       break;
-    }
   }
 
+  // micro.total is interpolated from the pre-summed grid while the loop sums
+  // individually interpolated values, so the cumulative probability can fall a
+  // few ulp short of the cutoff. Keeping the last open channel is a negligible
+  // bias; aborting the run is not.
   if (rx == nullptr) {
     p.write_restart();
     fatal_error(fmt::format(
-      "Did not sample a photonuclear reaction for nuclide {}.", nuc->name_));
+      "No photonuclear reaction of {} is open at {} eV, but its total "
+      "photonuclear cross section is {}.",
+      nuc->name_, p.E(), micro.total));
   }
 
   p.event() = TallyEvent::ABSORB;
@@ -1862,8 +1898,12 @@ double emit_photonuclear_product(Particle& p,
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
 
-  // Create the secondary particle
-  p.create_secondary(wgt, u, E, product.particle_);
+  // Create the secondary particle. Below the cutoff it is not banked at all
+  // and bank_second_E() is left untouched, so report zero emitted energy --
+  // otherwise the (factor - 1)*E correction in emit_forced_photoneutron()
+  // subtracts energy that was never added and heating exceeds E_in + Q.
+  if (!p.create_secondary(wgt, u, E, product.particle_))
+    return 0.0;
 
   return E;
 }

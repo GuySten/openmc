@@ -182,7 +182,15 @@ def _get_products(ev, mt):
                 elif np.isclose(ev.projectile['mass'], 1.0, atol=1.0e-12, rtol=0.):
                     za_projectile = 1
                 else:
-                    raise NotImplementedError('Unknown projectile')
+                    # Kalbach's slope systematics are implemented for incident
+                    # neutrons and photons only. Reading a proton, deuteron or
+                    # alpha sublibrary is still useful, so warn and let the
+                    # slopes fall back to zero rather than refusing the file --
+                    # which is what this did before photonuclear support.
+                    warn("Kalbach-Mann slope calculation is only available "
+                         "with neutrons or photons as projectile. Slope "
+                         "coefficients are set to 0.")
+                    za_projectile = None
                 p.distribution = [KalbachMann.from_endf(file_obj,
                                                         za,
                                                         zat,

@@ -240,6 +240,10 @@ public:
   //! every one of them
   vector<int> oscillator_element_;
   std::unordered_map<int, int> oscillator_block_;
+  //! Oscillator block of each entry in nuclide_, or -1. The map above is what
+  //! builds this; the transport reads this, because a hash lookup per element
+  //! per cross section evaluation is not free.
+  vector<int> nuclide_block_;
   //! Start of each block in oscillator_energy_, with a trailing end marker
   vector<int> oscillator_offset_;
 
@@ -258,7 +262,19 @@ public:
   //! \param[in] i_element Global element index
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
-  double inelastic_transport_xs(int i_element, int q_index, double E) const;
+  //! First transport cross section of the grouped inelastic deflections
+  //!
+  //! Takes the grid position the caller already computed rather than the
+  //! energy: this runs for every element on every charged-particle cross
+  //! section lookup, and Element::calculate_electron_xs has just searched that
+  //! same grid for the same energy.
+  //!
+  //! \param[in] i_nuclide Index into this material's nuclide list
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] i_grid Index on the element's electron energy grid
+  //! \param[in] f Interpolation factor on that interval
+  double inelastic_transport_xs(
+    int i_nuclide, int q_index, int i_grid, double f) const;
 
 private:
   //----------------------------------------------------------------------------

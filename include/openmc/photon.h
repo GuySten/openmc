@@ -101,27 +101,11 @@ public:
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
   //! \param[inout] seed pseudorandom number seed pointer
-  double elastic_scatter_hard(int q_index, double E, uint64_t* seed) const;
+  double elastic_scatter_hard(int q_index, double E, double xs_elastic,
+    double xs_hard, uint64_t* seed) const;
 
   //! Elastic cross section in [b] at one energy
   double elastic_xs(int q_index, double E) const;
-
-  //! Transport cross sections of elastic scattering
-  //!
-  //! \f$\sigma_\ell = \sigma_{el} \langle 1 - P_\ell(\mu) \rangle\f$, the
-  //! moments a condensed-history scheme groups soft collisions by. The first
-  //! sets the transport mean free path \f$1/(n\sigma_1)\f$, over which the
-  //! mean deflection relaxes by 1/e; the second enters the width of the
-  //! grouped angular distribution.
-  //!
-  //! These are per atom and in the same units as the elastic cross section
-  //! itself. They are tabulated at load time, so this is a grid lookup.
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \param[in] order 1 or 2
-  //! \return Transport cross section in [b]
-  double elastic_transport_xs(int q_index, double E, int order) const;
 
   //! Soft/hard split of elastic scattering at one energy
   //!

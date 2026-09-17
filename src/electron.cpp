@@ -900,43 +900,23 @@ double Element::elastic_xs(int q_index, double E) const
   return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
 }
 
-double Element::elastic_scatter_hard(
-  int q_index, double E, uint64_t* seed) const
+double Element::elastic_scatter_hard(int q_index, double E, double xs_elastic,
+  double xs_hard, uint64_t* seed) const
 {
   // The hard deflections are the large ones, which sit at the bottom of the
   // cumulative distribution since mu runs from backward. So the quantile is
   // restricted to the fraction of the cross section that stayed hard, and the
   // draw is exact rather than a rejection -- which matters, that fraction
   // being one part in tens of thousands.
-  auto split = this->elastic_split(q_index, E);
-  double xs = std::max(0.0, split.xs_hard);
-  double total = elastic_xs(q_index, E);
-  double p_hard = (total > 0.0) ? std::min(1.0, xs / total) : 1.0;
+  //
+  // Both cross sections come from the caller because calculate_electron_xs has
+  // already interpolated them for this energy. Asking the element for them
+  // again searched the energy grid twice more per hard elastic collision, and
+  // hard elastic is the commonest hard channel there is.
+  double p_hard = (xs_elastic > 0.0)
+                    ? std::min(1.0, std::max(0.0, xs_hard) / xs_elastic)
+                    : 1.0;
   return elastic_angle_[q_index].sample_restricted(E, p_hard, seed);
-}
-
-double Element::elastic_transport_xs(int q_index, double E, int order) const
-{
-  const auto& moment =
-    (order == 1) ? elastic_mu1_[q_index] : elastic_mu2_[q_index];
-  int n = electron_energy_.size();
-  if (n < 2 || moment.size() != n)
-    return 0.0;
-
-  // Same clamped lookup the cross sections use: outside the tabulated range a
-  // linear extrapolation of a quantity falling as a power of the energy goes
-  // negative, and a negative transport cross section is a negative step length.
-  int i =
-    upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
-  i = std::max(0, std::min(i, n - 2));
-  double f =
-    (E - electron_energy_(i)) / (electron_energy_(i + 1) - electron_energy_(i));
-  f = std::max(0.0, std::min(1.0, f));
-
-  double xs = elastic_[q_index](i) +
-              f * (elastic_[q_index](i + 1) - elastic_[q_index](i));
-  double mu = moment(i) + f * (moment(i + 1) - moment(i));
-  return std::max(0.0, xs * mu);
 }
 
 ElasticSplit Element::elastic_split(int q_index, double E) const

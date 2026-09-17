@@ -1085,6 +1085,15 @@ void Material::init_inelastic_transport()
     inelastic_xs1_[q].assign(std::max(0, n_block), tensor::Tensor<double> {});
   }
 
+  // Resolve every nuclide's oscillator block once, here, rather than hashing
+  // for it on every lookup during transport
+  nuclide_block_.assign(nuclide_.size(), -1);
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    auto it = oscillator_block_.find(element_[i]);
+    if (it != oscillator_block_.end())
+      nuclide_block_[i] = it->second;
+  }
+
   for (int b = 0; b < n_block; ++b) {
     int i_element = oscillator_element_[b];
     const auto& element {*data::elements[i_element]};
@@ -1106,27 +1115,24 @@ void Material::init_inelastic_transport()
 }
 
 double Material::inelastic_transport_xs(
-  int i_element, int q_index, double E) const
+  int i_nuclide, int q_index, int i_grid, double f) const
 {
   // Empty whenever the run did not ask for condensed history, while the
   // oscillator blocks it is indexed by are not
   if (q_index < 0 || q_index > 1 || inelastic_xs1_[q_index].empty())
     return 0.0;
-  auto it = oscillator_block_.find(i_element);
-  if (it == oscillator_block_.end() ||
-      it->second >= inelastic_xs1_[q_index].size())
+  if (i_nuclide < 0 || i_nuclide >= nuclide_block_.size())
     return 0.0;
-  const auto& v = inelastic_xs1_[q_index][it->second];
-  const auto& grid = data::elements[i_element]->electron_energy();
-  int n = grid.size();
-  if (v.size() != n || n < 2)
+  int block = nuclide_block_[i_nuclide];
+  if (block < 0 || block >= inelastic_xs1_[q_index].size())
     return 0.0;
 
-  int i = upper_bound_index(grid.cbegin(), grid.cend(), E);
-  i = std::max(0, std::min(i, n - 2));
-  double f = (E - grid(i)) / (grid(i + 1) - grid(i));
-  f = std::max(0.0, std::min(1.0, f));
-  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+  // Tabulated on the element's own electron energy grid, which is the grid
+  // i_grid and f were found on
+  const auto& v = inelastic_xs1_[q_index][block];
+  if (v.size() < 2 || i_grid < 0 || i_grid + 1 >= v.size())
+    return 0.0;
+  return std::max(0.0, v(i_grid) + f * (v(i_grid + 1) - v(i_grid)));
 }
 
 void Material::calculate_electron_xs(Particle& p) const
@@ -1162,7 +1168,8 @@ void Material::calculate_electron_xs(Particle& p) const
     // The elastic part comes from the element; the inelastic part is this
     // material's, the recoil model having been solved with its oscillators.
     // 1 - P_2(mu) is 3(1 - mu) for deflections as small as these.
-    double xs1_inelastic = this->inelastic_transport_xs(i_element, q, p.E());
+    double xs1_inelastic =
+      this->inelastic_transport_xs(i, q, micro.index_grid, micro.interp_factor);
     p.macro_xs().step.xs1_soft +=
       atom_density * (micro.soft_xs1 + xs1_inelastic);
     p.macro_xs().step.xs2_soft +=

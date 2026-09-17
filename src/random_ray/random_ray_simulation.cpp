@@ -931,9 +931,6 @@ void RandomRaySimulation::transport_sweep()
 void RandomRaySimulation::transport_sweep_decomp(RayBank& RB)
 {
 
-  double start_time_transport = simulation::time_transport.elapsed();
-  double start_time_ray_buffering = simulation::time_ray_buffering.elapsed();
-
   simulation::time_decomposition_handling.start();
 
 // Create rays and add them to ray bank
@@ -1010,16 +1007,11 @@ void RandomRaySimulation::transport_sweep_decomp(RayBank& RB)
     num_communication_rounds++;
   }
 
-  // Calculate load per rank based on number of hits in each source region that
-  // a rank owns
-  double batch_ray_buffering_time =
-    simulation::time_ray_buffering.elapsed() - start_time_ray_buffering;
-  double batch_transport_time = simulation::time_transport.elapsed() -
-                                start_time_transport - batch_ray_buffering_time;
-
-  // Calculate rank load fractions for load balancing
+  // Calculate rank load fractions for load balancing. This is modelled from
+  // hit counts and volumes rather than measured from wall-clock time so that
+  // the resulting decomposition is reproducible between runs.
   if (simulation::current_batch <= ITER_LOAD_BALANCE) {
-    mpi::decomp_map.calculate_rank_load(domain_.get(), batch_transport_time);
+    mpi::decomp_map.calculate_rank_load(domain_.get());
   }
 
   avg_num_communication_rounds_ += num_communication_rounds;

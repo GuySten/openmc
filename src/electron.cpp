@@ -529,8 +529,10 @@ void Element::compute_soft_inelastic()
     excitation_p_hard_[q] = tensor::zeros<double>(shape_1d);
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
     ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
+    ionization_hard_xs_[q] = tensor::zeros<double>(shape_1d);
   }
   bhabha_p_hard_ = tensor::zeros<double>(shape_2d);
+  bhabha_hard_xs_ = tensor::zeros<double>(shape_1d);
 
   const auto& T = data::brems_e_grid;
   int n_brems_e = T.size();
@@ -620,6 +622,7 @@ void Element::compute_soft_inelastic()
           w2 += sigma * (m2 + 2.0 * B * m1 + B * B * m0);
         }
         ionization_p_hard_[q](i, j) = 1.0 - xi_cut;
+        ionization_hard_xs_[q](j) += sigma * (1.0 - xi_cut);
 
         // Transfers above the Moller limit, which only a positron can make.
         // They lie far above every binding energy, so this channel is usually
@@ -637,6 +640,7 @@ void Element::compute_soft_inelastic()
           double total = bhabha_moment(c, E, W_lo, E, 0);
           double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
           bhabha_p_hard_(i, j) = (total > 0.0) ? hard / total : 0.0;
+          bhabha_hard_xs_(j) += bhabha_(i, j) * bhabha_p_hard_(i, j);
         }
       }
 
@@ -812,45 +816,39 @@ void Element::calculate_electron_xs(Particle& p) const
   // is hard, which is what leaves the transport below untouched.
   if (settings::electron_max_step_deflection > 0.0 &&
       inelastic_soft_s_[q].size() == n_grid) {
-    auto split = this->elastic_split(q, E);
-    xs.hard_elastic = split.xs_hard;
+    // Every one of these is a straight interpolation on the index already in
+    // hand. They were accessor calls, each searching the energy grid again --
+    // elastic_split() and inelastic_soft() among them, so the lookup searched
+    // a grid of several hundred points a dozen times over for one energy.
+    auto on_grid = [i_grid, f](const tensor::Tensor<double>& v) {
+      return v(i_grid) + f * (v(i_grid + 1) - v(i_grid));
+    };
+
+    xs.hard_elastic = xs.elastic * on_grid(elastic_p_hard_[q]);
 
     // Elastic only. The grouped inelastic collisions deflect as well, and by
     // no small amount, but what they deflect by depends on the material -- see
     // compute_inelastic_transport() -- so Material adds that part.
-    xs.soft_xs1 = split.xs1_soft;
-    xs.soft_xs2 = split.xs2_soft;
+    xs.soft_xs1 = xs.elastic * on_grid(elastic_mu1_soft_[q]);
+    xs.soft_xs2 = xs.elastic * on_grid(elastic_mu2_soft_[q]);
 
-    xs.hard_excitation = xs.excitation * this->excitation_hard_fraction(q, E);
+    xs.hard_excitation = xs.excitation * on_grid(excitation_p_hard_[q]);
 
     // Electroionization resolves its split per subshell, so the hard part is
-    // the shell cross sections weighted by their own fractions rather than
-    // the total weighted by an average. A positron's cross section carries
-    // the majorant it is sampled with, and the fractions are quantiles of the
-    // spectrum, so the majorant passes straight through.
-    double ion_hard = 0.0;
-    for (int i = 0; i < electroionization_.shape(0); ++i) {
-      double sigma_i =
-        electroionization_(i, i_grid) +
-        f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
-      ion_hard += sigma_i * this->ionization_hard_fraction(q, i, E);
-    }
+    // the shell cross sections weighted by their own fractions rather than the
+    // total weighted by an average -- summed at load, since it depends on
+    // nothing but the energy. A positron's cross section carries the majorant
+    // it is sampled with, and the fractions are quantiles of the spectrum, so
+    // the majorant passes straight through.
+    double ion_hard = on_grid(ionization_hard_xs_[q]);
     if (p.type().is_positron()) {
-      ion_hard *= moller_majorant_(i_grid) +
-                  f * (moller_majorant_(i_grid + 1) - moller_majorant_(i_grid));
+      ion_hard *= on_grid(moller_majorant_);
     }
     xs.hard_ionization = std::min(xs.ionization, ion_hard);
 
-    double bhabha_hard = 0.0;
-    for (int i = 0; i < bhabha_.shape(0); ++i) {
-      double sigma_i =
-        bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
-      bhabha_hard += sigma_i * this->bhabha_hard_fraction(i, E);
-    }
-    xs.hard_bhabha = std::min(xs.bhabha, bhabha_hard);
+    xs.hard_bhabha = std::min(xs.bhabha, on_grid(bhabha_hard_xs_));
 
-    xs.hard_bremsstrahlung =
-      xs.bremsstrahlung * this->bremsstrahlung_hard_fraction(q, E);
+    xs.hard_bremsstrahlung = xs.bremsstrahlung * on_grid(brems_p_hard_[q]);
 
     // In-flight annihilation is never grouped. Its photons carry away more
     // than the positron's kinetic energy, so no bound on the energy the
@@ -859,7 +857,8 @@ void Element::calculate_electron_xs(Particle& p) const
     xs.hard_total = xs.hard_elastic + xs.hard_excitation + xs.hard_ionization +
                     xs.hard_bhabha + xs.annihilation + xs.hard_bremsstrahlung;
     xs.soft_rate = std::max(0.0, xs.total - xs.hard_total);
-    this->inelastic_soft(q, E, xs.soft_stopping, xs.soft_straggling);
+    xs.soft_stopping = on_grid(inelastic_soft_s_[q]);
+    xs.soft_straggling = on_grid(inelastic_soft_w2_[q]);
   } else {
     xs.hard_elastic = xs.elastic;
     xs.hard_excitation = xs.excitation;

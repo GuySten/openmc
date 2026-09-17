@@ -365,6 +365,13 @@ public:
   array<tensor::Tensor<double>, 2> ionization_p_hard_;
   array<tensor::Tensor<double>, 2> brems_p_hard_;
   tensor::Tensor<double> bhabha_p_hard_;
+  //! The same two summed over subshells, in [b], which is all a cross section
+  //! lookup wants. Summing them there instead meant walking every subshell and
+  //! searching the energy grid once per subshell, on every lookup of every
+  //! flight -- forty-four searches per lookup in tungsten, for a number that
+  //! does not depend on the particle.
+  array<tensor::Tensor<double>, 2> ionization_hard_xs_;
+  tensor::Tensor<double> bhabha_hard_xs_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross

@@ -229,6 +229,7 @@ void Element::read_electron_data(hid_t group)
 
   this->compute_moller_majorant();
   this->compute_bhabha_xs();
+  this->compute_inelastic_sums();
 
   // The soft/hard split of the inelastic channels, which needs every one of
   // them loaded and so comes last. Skipped unless a run asks for condensed
@@ -378,6 +379,37 @@ void Element::compute_moller_majorant()
     // A majorant that is a shade too small would bias the sampling, so the
     // scan's own resolution is paid for here
     moller_majorant_(j) = peak * 1.001;
+  }
+}
+
+//! Sum the per-subshell inelastic spectra over subshells, once
+//!
+//! calculate_electron_xs() needs the total at an energy and nothing else. It
+//! was taking a slice across subshells at each of the two bracketing grid
+//! points and summing that, which walks every subshell and, because a slice
+//! carries its own shape and strides, allocates twice to do it -- on every
+//! cross section lookup of every charged particle.
+void Element::compute_inelastic_sums()
+{
+  int n_shell = electroionization_.shape(0);
+  int n_energy = electron_energy_.size();
+
+  ionization_sum_ =
+    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
+  for (int s = 0; s < n_shell; ++s) {
+    for (int j = 0; j < n_energy; ++j) {
+      ionization_sum_(j) += electroionization_(s, j);
+    }
+  }
+
+  bhabha_sum_ =
+    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
+  if (bhabha_.shape(0) == n_shell) {
+    for (int s = 0; s < n_shell; ++s) {
+      for (int j = 0; j < n_energy; ++j) {
+        bhabha_sum_(j) += bhabha_(s, j);
+      }
+    }
   }
 }
 
@@ -772,9 +804,8 @@ void Element::calculate_electron_xs(Particle& p) const
     excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
 
   // Calculate microscopic ionization cross section
-  const auto ion_i = electroionization_.slice(tensor::all, i_grid).sum();
-  const auto ion_ip1 = electroionization_.slice(tensor::all, i_grid + 1).sum();
-  xs.ionization = ion_i + f * (ion_ip1 - ion_i);
+  xs.ionization = ionization_sum_(i_grid) +
+                  f * (ionization_sum_(i_grid + 1) - ionization_sum_(i_grid));
 
   xs.bhabha = 0.0;
   if (p.type().is_positron()) {
@@ -789,9 +820,8 @@ void Element::calculate_electron_xs(Particle& p) const
 
     // Transfers above the Moller limit, which the evaluated spectra cannot
     // reach at all, are a channel of their own
-    const auto bha_i = bhabha_.slice(tensor::all, i_grid).sum();
-    const auto bha_ip1 = bhabha_.slice(tensor::all, i_grid + 1).sum();
-    xs.bhabha = bha_i + f * (bha_ip1 - bha_i);
+    xs.bhabha =
+      bhabha_sum_(i_grid) + f * (bhabha_sum_(i_grid + 1) - bhabha_sum_(i_grid));
   }
 
   // In-flight annihilation is a channel a positron has and an electron does

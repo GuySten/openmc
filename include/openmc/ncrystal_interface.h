@@ -67,7 +67,7 @@ private:
 // Functions
 //==============================================================================
 
-void ncrystal_update_micro(double xs, NuclideMicroXS& micro);
+void ncrystal_update_micro(double xs, NeutronMicroXS& micro);
 
 } // namespace openmc
 

@@ -182,6 +182,18 @@ public:
   //! \return Pointer to NCrystal material object
   const NCrystalMat& ncrystal_mat() const { return ncrystal_mat_; };
 
+  //! Density-effect correction at kinetic energy \p E in [eV], interpolated
+  //! on data::brems_e_grid, which is the grid electron transport populates.
+  //! Zero unless init_electron_oscillators() has run.
+  double density_effect_correction(double E) const;
+
+  //! Resonance energy in [eV] of the Sternheimer-Liljequist oscillator
+  //! standing for electroionization subshell \p i_shell of the element with
+  //! global index \p i_element. Returns zero when this material carries no
+  //! oscillator data, which closes the distant channel and leaves every
+  //! collision a close one.
+  double oscillator_energy(int i_element, int i_shell) const;
+
   //----------------------------------------------------------------------------
   // Data
   int32_t id_ {C_NONE};                 //!< Unique ID
@@ -208,12 +220,55 @@ public:
 
   unique_ptr<Bremsstrahlung> ttb_;
 
+  //----------------------------------------------------------------------------
+  // Sternheimer-Liljequist oscillator data
+  //
+  // Empty unless electron transport is enabled; see
+  // init_electron_oscillators(). The oscillators are what PENELOPE's
+  // generalized oscillator strength model is built on, and they are used here
+  // to split an inelastic collision into a distant and a close one.
+
+  //! Density-effect correction tabulated on data::ttb_e_grid
+  tensor::Tensor<double> density_effect_;
+
+  //! Oscillator resonance energies in [eV], one per electroionization subshell,
+  //! concatenated over the distinct elements of this material
+  vector<double> oscillator_energy_;
+  //! Global element index of each block of oscillator_energy_, and the
+  //! reverse lookup the transport uses -- an inelastic collision asks for a
+  //! resonance energy by element index, and a linear scan would be paid for on
+  //! every one of them
+  vector<int> oscillator_element_;
+  std::unordered_map<int, int> oscillator_block_;
+  //! Start of each block in oscillator_energy_, with a trailing end marker
+  vector<int> oscillator_offset_;
+
 private:
   //----------------------------------------------------------------------------
   // Private methods
 
+  //! Parameters of the Sternheimer-Liljequist oscillator model of this
+  //! material, shared by the density-effect correction and by the distant /
+  //! close partition of inelastic collisions
+  struct OscillatorTable {
+    vector<double> f;        //!< strengths, normalized to one electron
+    vector<double> e_b_sq;   //!< squared binding energies in [eV^2]
+    double e_p_sq;           //!< squared plasma energy in [eV^2]
+    double n_conduction;     //!< conduction electrons per electron
+    double log_I;            //!< log of the mean excitation energy
+    double electron_density; //!< in [electron/b-cm]
+    double rho;              //!< Sternheimer adjustment factor
+  };
+
+  //! Build the oscillator table of this material
+  OscillatorTable oscillator_table() const;
+
   //! Calculate the collision stopping power
   void collision_stopping_power(double* s_col, bool positron);
+
+  //! Tabulate the density-effect correction and build an oscillator for each
+  //! electroionization subshell
+  void init_electron_oscillators();
 
   //! Initialize bremsstrahlung data
   void init_bremsstrahlung();
@@ -223,6 +278,7 @@ private:
 
   void calculate_neutron_xs(Particle& p) const;
   void calculate_photon_xs(Particle& p) const;
+  void calculate_electron_xs(Particle& p) const;
 
   //----------------------------------------------------------------------------
   // Private data members

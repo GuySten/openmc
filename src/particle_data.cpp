@@ -108,6 +108,7 @@ ParticleData::ParticleData()
   // Create microscopic cross section caches
   neutron_xs_.resize(data::nuclides.size());
   photon_xs_.resize(data::elements.size());
+  electron_xs_.resize(data::elements.size());
 
   // Creates the pulse-height storage for the particle
   if (!model::pulse_height_cells.empty()) {

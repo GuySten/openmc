@@ -79,6 +79,40 @@ void collision(Particle& p)
   // Kill particle if energy falls below cutoff
   int type = p.type().transport_index();
   if (type != C_NONE && p.E() < settings::energy_cutoff[type]) {
+    // Follow the convention sample_photon_reaction uses for a photon below the
+    // cutoff: zero the energy as well as the weight. That is what deposits the
+    // residual, since the heating score is the collision energy balance
+    // E_last + Q - E - (banked secondaries), evaluated in event_collide after
+    // this returns. Zeroing only the weight discards it.
+    //
+    // The entry checks in sample_electron_reaction and sample_positron_reaction
+    // already do this, but they only see a particle that was below the cutoff
+    // before the collision. A particle slowing down crosses the cutoff during
+    // one, and lands here instead, still carrying up to a full cutoff of
+    // kinetic energy. Over a 1 MeV history that is several percent once every
+    // knock-on is counted, and it is lost at the ends of tracks -- deepest in
+    // the target -- so it distorts a depth-deposition profile as well as the
+    // total.
+    //
+    // The weight test skips particles a reaction sampler already terminated
+    // (it zeroes both, so a positron would otherwise annihilate twice) and
+    // particles killed by Russian roulette, whose energy must not be deposited.
+    if (settings::electron_transport && p.wgt() != 0.0 &&
+        (p.type().is_electron() || p.type().is_positron())) {
+      if (p.type().is_positron()) {
+        // The one thing a charged particle cannot mirror from the photon case:
+        // a positron still annihilates at rest, and dropping the pair would
+        // discard 2 m_e c^2 that has nothing to do with the transport cutoff.
+        Direction u = isotropic_direction(p.current_seed());
+        p.create_secondary(
+          p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.create_secondary(
+          p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.event_mt() = POSITRON_ANNIHILATION;
+      }
+      p.E() = 0.0;
+      p.event() = TallyEvent::ABSORB;
+    }
     p.wgt() = 0.0;
   }
 
@@ -305,7 +339,7 @@ void sample_photon_reaction(Particle& p)
   }
 
   // Sample element within material
-  int i_element = sample_element(p);
+  int i_element = sample_photon_element(p);
   const auto& micro {p.photon_xs(i_element)};
   const auto& element {*data::elements[i_element]};
 
@@ -474,6 +508,11 @@ void process_charged_secondary(
   if (idx == C_NONE || E < settings::energy_cutoff[idx])
     return;
 
+  if (settings::electron_transport) {
+    p.create_secondary(p.wgt(), u, E, type);
+    return;
+  }
+
   if (settings::electron_treatment == ElectronTreatment::TTB) {
     thick_target_bremsstrahlung(p, type, u, E);
   }
@@ -494,35 +533,194 @@ void process_charged_secondary(
 
 void sample_electron_reaction(Particle& p)
 {
-  // TODO: create reaction types
-
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
   }
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+  int electron = ParticleType::electron().transport_index();
+  if (p.E() < settings::energy_cutoff[electron]) {
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    return;
+  }
+  // Sample element within material
+  int i_element = sample_electron_element(p);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::elements[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff = prn(p.current_seed()) * micro.total;
+
+  // Mott scattering
+  prob += micro.elastic;
+  if (prob > cutoff) {
+    p.mu() = element.elastic_scatter(0, p.E(), p.current_seed());
+    p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
+  // Excitation
+  prob += micro.excitation;
+  if (prob > cutoff) {
+    p.E() = element.excitation(p.E());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROEXCITATION;
+    return;
+  }
+
+  // Moller scattering
+  prob += micro.ionization;
+  if (prob > cutoff) {
+    // Sample which atomic subshell was ionized based on the subshell cross
+    // sections
+    int i_shell = element.sample_ionization_shell(p);
+
+    // Generate secondary knock-on electron and adjust primary energy
+    element.ionization(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    // There is no ENDF MT for total electroionization; 534 upwards name the
+    // individual subshells, which is what the data resolves anyway
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
+    }
+    return;
+  }
+
+  // Bremsstrahlung. Last channel, so it takes whatever is left: the running
+  // total is accumulated in a different order from xs.total and rounding must
+  // not be able to leave the particle with no reaction at all.
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 void sample_positron_reaction(Particle& p)
 {
-  // TODO: create reaction types
-
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
   }
 
-  // Sample angle isotropically
-  Direction u = isotropic_direction(p.current_seed());
+  int positron = ParticleType::positron().transport_index();
+  if (p.E() < settings::energy_cutoff[positron] ||
+      !settings::electron_transport) {
+    // Sample angle isotropically
+    Direction u = isotropic_direction(p.current_seed());
 
-  // Create annihilation photon pair traveling in opposite directions
-  p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
-  p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+    // Create annihilation photon pair traveling in opposite directions
+    p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+    p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    p.event_mt() = POSITRON_ANNIHILATION;
+    return;
+  }
+
+  // Sample element within material
+  int i_element = sample_electron_element(p);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::elements[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff = prn(p.current_seed()) * micro.total;
+
+  // Mott scattering
+  prob += micro.elastic;
+  if (prob > cutoff) {
+    p.mu() = element.elastic_scatter(1, p.E(), p.current_seed());
+    p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
+  // Excitation
+  prob += micro.excitation;
+  if (prob > cutoff) {
+    p.E() = element.excitation(p.E());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTROEXCITATION;
+    return;
+  }
+
+  // Bhabha scattering, below the Moller kinematic limit: the evaluated
+  // spectrum reweighted by the free Bhabha-to-Moller ratio. The cross section
+  // is a majorant, so a rejected transfer is a real outcome -- the positron
+  // simply carries on unchanged.
+  prob += micro.ionization;
+  if (prob > cutoff) {
+    int i_shell = element.sample_ionization_shell(p);
+    if (!element.ionization(p, i_shell))
+      // The reweighting declined this collision, so nothing changed. Leaving
+      // event() as KILL is correct here: the heating balance then evaluates to
+      // zero, which is right for a collision that did not happen.
+      return;
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+
+    // Trigger relaxation (Fluorescence / Auger)
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
+    }
+    return;
+  }
+
+  // Bhabha scattering, above that limit: transfers the evaluated spectra
+  // cannot reach at all, far above every binding energy and so exactly where
+  // the free cross section is the right description
+  prob += micro.bhabha;
+  if (prob > cutoff) {
+    int i_shell = element.sample_bhabha_shell(p);
+    element.bhabha(p, i_shell);
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() =
+      533 +
+      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
+    if (settings::atomic_relaxation && i_shell >= 0 &&
+        element.has_atomic_relaxation_) {
+      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
+    }
+    return;
+  }
+
+  // Two-photon annihilation in flight, which ends the history here rather
+  // than at the cutoff and sends out photons of up to T + m_e c^2 instead of
+  // a 511 keV pair
+  prob += micro.annihilation;
+  if (prob > cutoff) {
+    element.annihilation(p);
+    return;
+  }
+
+  // Bremsstrahlung. Last channel, so it takes whatever is left rather than
+  // letting rounding drop the collision (see sample_electron_reaction).
+  element.bremsstrahlung(p);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 int sample_nuclide(Particle& p)
@@ -551,7 +749,7 @@ int sample_nuclide(Particle& p)
   throw std::runtime_error {"Did not sample any nuclide during collision."};
 }
 
-int sample_element(Particle& p)
+int sample_photon_element(Particle& p)
 {
   // Sample cumulative distribution function
   double cutoff = prn(p.current_seed()) * p.macro_xs().total;
@@ -567,6 +765,37 @@ int sample_element(Particle& p)
 
     // Determine microscopic cross section
     double sigma = atom_density * p.photon_xs(i_element).total;
+
+    // Increment probability to compare to cutoff
+    prob += sigma;
+    if (prob > cutoff) {
+      // Save which nuclide particle had collision with for tally purpose
+      p.event_nuclide() = mat->nuclide_[i];
+      return i_element;
+    }
+  }
+
+  // If we made it here, no element was sampled
+  p.write_restart();
+  fatal_error("Did not sample any element during collision.");
+}
+
+int sample_electron_element(Particle& p)
+{
+  // Sample cumulative distribution function
+  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+
+  // Get pointers to elements, densities
+  const auto& mat {model::materials[p.material()]};
+
+  double prob = 0.0;
+  for (int i = 0; i < mat->element_.size(); ++i) {
+    // Find atom density
+    int i_element = mat->element_[i];
+    double atom_density = mat->atom_density(i, p.density_mult());
+
+    // Determine microscopic cross section
+    double sigma = atom_density * p.electron_xs(i_element).total;
 
     // Increment probability to compare to cutoff
     prob += sigma;

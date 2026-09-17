@@ -24,7 +24,7 @@
 
 namespace openmc {
 
-constexpr int PhotonInteraction::MAX_STACK_SIZE;
+constexpr int Element::MAX_STACK_SIZE;
 
 //==============================================================================
 // Global variables
@@ -33,17 +33,19 @@ constexpr int PhotonInteraction::MAX_STACK_SIZE;
 namespace data {
 
 tensor::Tensor<double> compton_profile_pz;
+tensor::Tensor<double> brems_e_grid;
+tensor::Tensor<double> brems_k_grid;
 
 std::unordered_map<std::string, int> element_map;
-vector<unique_ptr<PhotonInteraction>> elements;
+vector<unique_ptr<Element>> elements;
 
 } // namespace data
 
 //==============================================================================
-// PhotonInteraction implementation
+// Element implementation
 //==============================================================================
 
-PhotonInteraction::PhotonInteraction(hid_t group)
+Element::Element(hid_t group)
 {
   // Set index of element in global vector
   index_ = data::elements.size();
@@ -161,6 +163,9 @@ PhotonInteraction::PhotonInteraction(hid_t group)
     if (attribute_exists(tgroup, "binding_energy")) {
       has_atomic_relaxation_ = true;
       read_attribute(tgroup, "binding_energy", shell.binding_energy);
+    }
+    if (attribute_exists(tgroup, "num_electrons")) {
+      read_attribute(tgroup, "num_electrons", shell.num_electrons);
     }
 
     // Read subshell cross section
@@ -313,7 +318,27 @@ PhotonInteraction::PhotonInteraction(hid_t group)
   // Calculate total pair production
   pair_production_total_ = pair_production_nuclear_ + pair_production_electron_;
 
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
+  if (settings::electron_transport) {
+    // Read the bremsstrahlung scaled DCS. The electron library carries only
+    // the cross section, which is an integral of this table above a threshold
+    // it records, so the emitted photon energy is sampled from the table
+    // itself rather than from a second copy of it stored as a distribution.
+    rgroup = open_group(group, "bremsstrahlung");
+    read_dataset(rgroup, "dcs", dcs_);
+    if (data::brems_e_grid.size() == 0) {
+      read_dataset(rgroup, "electron_energy", data::brems_e_grid);
+      read_dataset(rgroup, "photon_energy", data::brems_k_grid);
+    }
+
+    // Get the Sternheimer-Liljequist oscillator table. It is what the density
+    // effect is built from, and the same oscillators set the scale below which
+    // an inelastic collision excites the atom as a whole instead of striking a
+    // single electron.
+    read_dataset(rgroup, "num_electrons", n_electrons_);
+    read_dataset(rgroup, "ionization_energy", ionization_energy_);
+    read_attribute(rgroup, "I", I_);
+    close_group(rgroup);
+  } else if (settings::electron_treatment == ElectronTreatment::TTB) {
     // Read bremsstrahlung scaled DCS
     rgroup = open_group(group, "bremsstrahlung");
     read_dataset(rgroup, "dcs", dcs_);
@@ -409,12 +434,12 @@ PhotonInteraction::PhotonInteraction(hid_t group)
   heating_ = tensor::where(heating_ > limit, tensor::log(heating_), -900.0);
 }
 
-PhotonInteraction::~PhotonInteraction()
+Element::~Element()
 {
   data::element_map.erase(name_);
 }
 
-int PhotonInteraction::calc_max_stack_size() const
+int Element::calc_max_stack_size() const
 {
   // Table to store solutions to sub-problems
   std::unordered_map<int, int> visited;
@@ -429,7 +454,7 @@ int PhotonInteraction::calc_max_stack_size() const
   return max_size;
 }
 
-int PhotonInteraction::calc_helper(
+int Element::calc_helper(
   std::unordered_map<int, int>& visited, int i_shell) const
 {
   // No transitions for this subshell, so this is the only shell in the stack
@@ -462,8 +487,8 @@ int PhotonInteraction::calc_helper(
   return max_size;
 }
 
-void PhotonInteraction::compton_scatter(double alpha, bool doppler,
-  double* alpha_out, double* mu, int* i_shell, uint64_t* seed) const
+void Element::compton_scatter(double alpha, bool doppler, double* alpha_out,
+  double* mu, int* i_shell, uint64_t* seed) const
 {
   double form_factor_xmax = 0.0;
   while (true) {
@@ -497,7 +522,7 @@ void PhotonInteraction::compton_scatter(double alpha, bool doppler,
   }
 }
 
-double PhotonInteraction::compton_profile_cdf(int i_shell, double pz) const
+double Element::compton_profile_cdf(int i_shell, double pz) const
 {
   if (pz <= 0.0)
     return 0.0;
@@ -524,8 +549,7 @@ double PhotonInteraction::compton_profile_cdf(int i_shell, double pz) const
   return std::min(0.5, c);
 }
 
-double PhotonInteraction::invert_compton_profile_cdf(
-  int i_shell, double c) const
+double Element::invert_compton_profile_cdf(int i_shell, double c) const
 {
   auto n = data::compton_profile_pz.size();
   double integral = c;
@@ -558,7 +582,7 @@ double PhotonInteraction::invert_compton_profile_cdf(
   return pz_l + 2.0 * delta_c / denominator;
 }
 
-PhotonInteraction::ShellKinematics PhotonInteraction::compton_shell_kinematics(
+Element::ShellKinematics Element::compton_shell_kinematics(
   double alpha, double mu, double E, int i_shell) const
 {
   ShellKinematics kinematics {};
@@ -583,8 +607,8 @@ PhotonInteraction::ShellKinematics PhotonInteraction::compton_shell_kinematics(
   return kinematics;
 }
 
-bool PhotonInteraction::sample_compton_momentum(double alpha, double mu,
-  double E, int i_shell, const ShellKinematics& kinematics, double* E_out,
+bool Element::sample_compton_momentum(double alpha, double mu, double E,
+  int i_shell, const ShellKinematics& kinematics, double* E_out,
   uint64_t* seed) const
 {
   double c_negative = profile_negative_mass_(i_shell);
@@ -622,8 +646,8 @@ bool PhotonInteraction::sample_compton_momentum(double alpha, double mu,
   return prn(seed) <= energy_ratio;
 }
 
-bool PhotonInteraction::compton_doppler_conditional(double alpha, double mu,
-  double E, double* E_out, int* i_shell, uint64_t* seed) const
+bool Element::compton_doppler_conditional(double alpha, double mu, double E,
+  double* E_out, int* i_shell, uint64_t* seed) const
 {
   array<ShellKinematics, SUBSHELLS.size()> shell_data;
   array<double, SUBSHELLS.size()> shell_cdf;
@@ -660,7 +684,7 @@ bool PhotonInteraction::compton_doppler_conditional(double alpha, double mu,
   return false;
 }
 
-void PhotonInteraction::compton_doppler(
+void Element::compton_doppler(
   double alpha, double mu, double* E_out, int* i_shell, uint64_t* seed) const
 {
   // Implements the approximate RIA Doppler-broadening algorithm in Sec. 3.4.8
@@ -708,7 +732,7 @@ void PhotonInteraction::compton_doppler(
   *E_out = alpha / (1.0 + alpha * (1.0 - mu)) * MASS_ELECTRON_EV;
 }
 
-void PhotonInteraction::calculate_xs(Particle& p) const
+void Element::calculate_xs(Particle& p) const
 {
   // Perform binary search on the element energy grid in order to determine
   // which points to interpolate between
@@ -766,7 +790,7 @@ void PhotonInteraction::calculate_xs(Particle& p) const
   xs.last_E = p.E();
 }
 
-double PhotonInteraction::rayleigh_scatter(double alpha, uint64_t* seed) const
+double Element::rayleigh_scatter(double alpha, uint64_t* seed) const
 {
   double mu;
   while (true) {
@@ -795,7 +819,7 @@ double PhotonInteraction::rayleigh_scatter(double alpha, uint64_t* seed) const
   return mu;
 }
 
-void PhotonInteraction::pair_production(double alpha, double* E_electron,
+void Element::pair_production(double alpha, double* E_electron,
   double* E_positron, double* mu_electron, double* mu_positron,
   uint64_t* seed) const
 {
@@ -921,7 +945,7 @@ void PhotonInteraction::pair_production(double alpha, double* E_electron,
   *mu_positron = (rn + beta) / (rn * beta + 1.0);
 }
 
-void PhotonInteraction::atomic_relaxation(int i_shell, Particle& p) const
+void Element::atomic_relaxation(int i_shell, Particle& p) const
 {
   // Return if no atomic relaxation data is present or if the binding energy is
   // larger than the incident particle energy
@@ -1119,6 +1143,8 @@ void free_memory_photon()
   data::compton_profile_pz.resize({0});
   data::ttb_e_grid.resize({0});
   data::ttb_k_grid.resize({0});
+  data::brems_e_grid.resize({0});
+  data::brems_k_grid.resize({0});
 }
 
 } // namespace openmc

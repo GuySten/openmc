@@ -147,7 +147,7 @@ private:
 //! energy
 //==============================================================================
 
-struct NuclideMicroXS {
+struct NeutronMicroXS {
   // Microscopic cross sections in barns
   double total;      //!< total cross section
   double absorption; //!< absorption (disappearance)
@@ -186,7 +186,7 @@ struct NuclideMicroXS {
 //! current energy
 //==============================================================================
 
-struct ElementMicroXS {
+struct PhotoAtomicMicroXS {
   int index_grid;         //!< index on element energy grid
   double last_E {0.0};    //!< last evaluated energy in [eV]
   double interp_factor;   //!< interpolation factor on energy grid
@@ -195,6 +195,33 @@ struct ElementMicroXS {
   double incoherent;      //!< microscopic incoherent xs
   double photoelectric;   //!< microscopic photoelectric xs
   double pair_production; //!< microscopic pair production xs
+};
+
+//==============================================================================
+//! Cached microscopic electron cross sections for a particular element at the
+//! current energy
+//==============================================================================
+
+struct ElectroAtomicMicroXS {
+  int index_grid;      //!< index on element energy grid
+  double last_E {0.0}; //!< last evaluated energy in [eV]
+  //! Charge of the projectile these were evaluated for: 0 for an electron, 1
+  //! for a positron. Almost everything below is charge dependent -- the
+  //! elastic table, the majorant on the ionization cross section, Bhabha,
+  //! annihilation, the Salvat factor on bremsstrahlung -- so energy alone is
+  //! not a sufficient cache key.
+  int last_q {-1};
+  double interp_factor;  //!< interpolation factor on energy grid
+  double total;          //!< microscopic total electron xs
+  double elastic;        //!< microscopic elastic xs
+  double excitation;     //!< microscopic excitation xs
+  double ionization;     //!< microscopic ionization xs; for a positron this is
+                         //!< a majorant, made exact by rejection
+  double bhabha;         //!< microscopic Bhabha xs above the Moller limit,
+                         //!< zero for electrons
+  double annihilation;   //!< microscopic in-flight annihilation xs, zero for
+                         //!< electrons
+  double bremsstrahlung; //!< microscopic bremsstrahlung xs
 };
 
 //==============================================================================
@@ -493,8 +520,9 @@ private:
   //==========================================================================
   // Data members -- see public: below for descriptions
 
-  vector<NuclideMicroXS> neutron_xs_;
-  vector<ElementMicroXS> photon_xs_;
+  vector<NeutronMicroXS> neutron_xs_;
+  vector<PhotoAtomicMicroXS> photon_xs_;
+  vector<ElectroAtomicMicroXS> electron_xs_;
   MacroXS macro_xs_;
   CacheDataMG mg_xs_cache_;
 
@@ -584,11 +612,19 @@ public:
 
   // Cross section caches
   // Microscopic neutron cross sections
-  NuclideMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
-  const NuclideMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
+  NeutronMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
+  const NeutronMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
 
   // Microscopic photon cross sections
-  ElementMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  PhotoAtomicMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  const PhotoAtomicMicroXS& photon_xs(int i) const { return photon_xs_[i]; }
+
+  // Microscopic electron cross sections
+  ElectroAtomicMicroXS& electron_xs(int i) { return electron_xs_[i]; }
+  const ElectroAtomicMicroXS& electron_xs(int i) const
+  {
+    return electron_xs_[i];
+  }
 
   // Macroscopic cross sections
   MacroXS& macro_xs() { return macro_xs_; }

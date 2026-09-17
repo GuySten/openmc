@@ -54,6 +54,7 @@ bool confidence_intervals {false};
 bool create_delayed_neutrons {true};
 bool create_fission_neutrons {true};
 bool delayed_photon_scaling {true};
+bool electron_transport {false};
 bool entropy_on {false};
 bool event_based {false};
 bool ifp_delayed_group_on {false};
@@ -635,6 +636,33 @@ void read_settings_xml(pugi::xml_node root)
     if (!run_CE && photon_transport) {
       fatal_error("Photon transport is not currently supported in "
                   "multigroup mode");
+    }
+  }
+
+  // Check for electron transport
+  if (check_for_node(root, "electron_transport")) {
+    electron_transport = get_node_value_bool(root, "electron_transport");
+
+    if (!run_CE && electron_transport) {
+      fatal_error("Electron transport is not currently supported in "
+                  "multigroup mode");
+    }
+
+    if (electron_transport) {
+      // Electron transport is meaningless without photon transport, and the
+      // per-element data it needs is only loaded when photon transport is on.
+      if (!photon_transport) {
+        warning("Electron transport requires photon transport; enabling it.");
+        photon_transport = true;
+      }
+      // The thick-target approximation stands in for electrons that are not
+      // transported, and sample_electron_reaction() ignores it when they are.
+      // Turning it off here keeps its tables from being built at all.
+      if (electron_treatment == ElectronTreatment::TTB) {
+        warning("Electron treatment 'ttb' is ignored when electron transport "
+                "is enabled; bremsstrahlung is sampled per event instead.");
+      }
+      electron_treatment = ElectronTreatment::LED;
     }
   }
 

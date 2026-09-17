@@ -1,6 +1,10 @@
 #ifndef OPENMC_PHOTON_H
 #define OPENMC_PHOTON_H
 
+#include "openmc/array.h"
+#include "openmc/distribution_angle.h"
+#include "openmc/distribution_energy.h"
+#include "openmc/electroionization.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -16,7 +20,12 @@
 namespace openmc {
 
 //==============================================================================
-//! Photon interaction data for a single element
+//! Interaction data for a single element
+//!
+//! Holds the photoatomic cross sections and atomic relaxation data, the
+//! Compton profiles, the stopping powers and scaled bremsstrahlung cross
+//! sections used by the thick-target approximation, and -- when electron
+//! transport is enabled -- the electron interaction data as well.
 //==============================================================================
 
 class ElectronSubshell {
@@ -34,14 +43,15 @@ public:
   int index_subshell; //!< index in SUBSHELLS
   int threshold;
   double binding_energy;
+  double num_electrons {0.0}; //!< occupancy, needed by Bhabha scattering
   vector<Transition> transitions;
 };
 
-class PhotonInteraction {
+class Element {
 public:
   // Constructors/destructor
-  PhotonInteraction(hid_t group);
-  ~PhotonInteraction();
+  Element(hid_t group);
+  ~Element();
 
   // Methods
   void calculate_xs(Particle& p) const;
@@ -55,6 +65,93 @@ public:
     double* mu_electron, double* mu_positron, uint64_t* seed) const;
 
   void atomic_relaxation(int i_shell, Particle& p) const;
+
+  //! Read the electron interaction data for this element.
+  //
+  //! Called only when electron transport is enabled, from a group in the
+  //! electron library rather than the photoatomic one. Everything it fills is
+  //! left empty otherwise, which costs a few hundred bytes per element and no
+  //! heap at all.
+  void read_electron_data(hid_t group);
+
+  void calculate_electron_xs(Particle& p) const;
+
+  //! Sample an elastic deflection. \param q_index 0 for an electron, 1 for a
+  //! positron; the two differ little in rate and a great deal in first moment
+  double elastic_scatter(int q_index, double E, uint64_t* seed) const;
+
+  double excitation(double E) const;
+
+  //! Electroionization: Moller scattering for an electron, Bhabha for a
+  //! positron. Returns false when a positron's sampled transfer is rejected,
+  //! which leaves the particle untouched -- see compute_moller_majorant().
+  bool ionization(Particle& p, int i_shell) const;
+
+  int sample_ionization_shell(Particle& p) const;
+
+  void bremsstrahlung(Particle& p) const;
+
+  //! Bhabha scattering above the Moller kinematic limit
+  //
+  //! A Moller collision cannot transfer more than half of what is left after
+  //! the binding energy is paid, so the evaluated knock-on spectra stop there
+  //! and a positron's larger transfers are simply absent from them. This is
+  //! that missing range, which lies far above every binding energy and is
+  //! therefore free-electron territory.
+  void bhabha(Particle& p, int i_shell) const;
+
+  //! Sample the subshell in which such a collision occurs
+  int sample_bhabha_shell(Particle& p) const;
+
+  //! Emit the knock-on electron and deflect the projectile, for a transfer of
+  //! W out of which the atom keeps the binding energy e_b, the collision
+  //! having handed the atom a recoil energy Q
+  //
+  //! Both polar angles follow from Q alone: the projectile is deflected
+  //! through the momentum transfer and the knock-on leaves along it. Setting
+  //! Q = W recovers the free binary collision, in which the two are the
+  //! familiar Moller pair.
+  void emit_knock_on(Particle& p, double W, double e_b, double Q) const;
+
+  //! Sample the recoil energy of an inelastic collision transferring W out of
+  //! subshell i_shell
+  //
+  //! A free electron takes up the whole transfer, Q = W. A bound one does not:
+  //! in a distant collision the atom is excited as a whole, through a
+  //! dipole-like interaction whose recoil is far smaller than the binary value
+  //! and which PENELOPE splits into a longitudinal part, distributed as
+  //! 1/(Q(Q+2mc^2)) up to the subshell's oscillator resonance, and a transverse
+  //! part that carries no momentum at all.
+  //
+  //! Which of the two occurred is decided by how much of the evaluated cross
+  //! section at this transfer the free binary collision can account for: that
+  //! ratio is the probability the collision was close. \p density is the
+  //! evaluated spectrum's density at W, without which the decision falls back
+  //! to comparing W with the resonance energy.
+  double sample_recoil(
+    Particle& p, int i_shell, double W, double density) const;
+
+  //! Two-photon annihilation of a positron in flight
+  //
+  //! The positron annihilates with a bound electron, which is taken to be free
+  //! and at rest, and is replaced by two photons sharing its kinetic energy
+  //! plus both rest masses. Unlike annihilation at the transport cutoff, the
+  //! photons are not 511 keV: they carry up to T + m_e c^2 each.
+  void annihilation(Particle& p) const;
+
+  //! Cross section for in-flight annihilation, per atom, in [b]
+  //
+  //! Heitler's two-photon result for a free electron at rest, multiplied by
+  //! the Z electrons of the atom. It is a closed form in the incident energy
+  //! alone, so it is evaluated exactly at the energy wanted rather than
+  //! tabulated on the grid and interpolated.
+  double annihilation_xs(double E) const;
+
+  //! Sample the energy of a bremsstrahlung photon from the scaled cross
+  //! sections of the photon library, above the threshold the electron
+  //! library's cross section was integrated from. Returns zero when the
+  //! incident energy leaves no room above that threshold.
+  double sample_bremsstrahlung_energy(double E, uint64_t* seed) const;
 
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
@@ -97,7 +194,7 @@ public:
   tensor::Tensor<int> subshell_map_;
 
   // Stopping power data
-  double I_; // mean excitation energy
+  double I_ {0.0}; // mean excitation energy
   tensor::Tensor<int> n_electrons_;
   tensor::Tensor<double> ionization_energy_;
   tensor::Tensor<double> stopping_power_radiative_;
@@ -108,10 +205,61 @@ public:
   // Whether atomic relaxation data is present
   bool has_atomic_relaxation_ {false};
 
+  //============================================================================
+  // Electron interaction data
+  //
+  // Empty unless electron transport is enabled; see read_electron_data(). The
+  // energy grid is the electron library's own and is not the photon grid
+  // above, so it is named separately.
+
+  //! For each electroionization subshell, the index of the matching subshell in
+  //! shells_. The two lists are not guaranteed to have the same length or
+  //! ordering, so they are matched by ENDF designator rather than by position.
+  vector<int> electron_shell_map_;
+
+  tensor::Tensor<double> electron_energy_;
+  //! Elastic cross sections and angular distributions, indexed by projectile
+  //! charge: 0 for an electron, 1 for a positron
+  array<tensor::Tensor<double>, 2> elastic_;
+  array<AngleDistribution, 2> elastic_angle_;
+  //! Range the partial-wave data actually covers. Outside it the elastic cross
+  //! sections are clamped to the endpoints, which is tolerable for the total --
+  //! nearly flat at high energy -- but not for the first transport cross
+  //! section, which is still falling as 1/E^2.
+  double elastic_energy_min_ {0.0};
+  double elastic_energy_max_ {INFTY};
+  tensor::Tensor<double> electroionization_;
+  vector<unique_ptr<ElectroionizationSpectrum>> ionization_dist_;
+  //! Bhabha cross section above the Moller limit, per subshell, on
+  //! electron_energy_. Filled by compute_bhabha_xs(), used only for positrons.
+  tensor::Tensor<double> bhabha_;
+
+  //! Largest value the Bhabha-to-Moller ratio takes at each grid energy.
+  //! Filled by compute_moller_majorant(), used only for positrons.
+  tensor::Tensor<double> moller_majorant_;
+
+  tensor::Tensor<double> excitation_;
+  Tabulated1D excitation_energy_loss_;
+  tensor::Tensor<double> electron_bremsstrahlung_;
+
+  //! Lowest emitted photon energy the bremsstrahlung cross section above was
+  //! integrated from; the spectrum has to be sampled above the same one
+  double bremsstrahlung_photon_cutoff_ {0.0};
+
   // Constant data
   static constexpr int MAX_STACK_SIZE =
     7; //!< maximum possible size of atomic relaxation stack
 private:
+  //! Integrate the free Bhabha differential cross section over the transfers
+  //! the evaluated knock-on spectra cannot reach, for every subshell and every
+  //! point of the electron energy grid
+  void compute_bhabha_xs();
+
+  //! Tabulate the largest Bhabha-to-Moller ratio at each grid energy, which is
+  //! the factor by which a positron's electroionization cross section is
+  //! raised to make it a majorant of the true one
+  void compute_moller_majorant();
+
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)
     double c_limit;      //!< Half-profile integral K_i(|pz_max|), Eq. (3.117)
@@ -181,9 +329,15 @@ namespace data {
 extern tensor::Tensor<double>
   compton_profile_pz; //! Compton profile momentum grid
 
-//! Photon interaction data for each element
+//! Grids of the Seltzer-Berger scaled bremsstrahlung cross sections, read when
+//! electron transport is enabled: incident electron kinetic energies in [eV]
+//! and reduced photon energies kappa = k/T
+extern tensor::Tensor<double> brems_e_grid;
+extern tensor::Tensor<double> brems_k_grid;
+
+//! Interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
-extern vector<unique_ptr<PhotonInteraction>> elements;
+extern vector<unique_ptr<Element>> elements;
 
 } // namespace data
 

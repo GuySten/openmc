@@ -18,7 +18,14 @@ namespace openmc {
 class AngleDistribution {
 public:
   AngleDistribution() = default;
-  explicit AngleDistribution(hid_t group);
+
+  //! \param[in] group HDF5 group to read the distribution from
+  //! \param[in] energy_interp ENDF interpolation rule to apply between the
+  //!   tabulated incident energies -- the TAB2 rule, distinct from the rule
+  //!   used within each distribution. lin_lin is the default and reproduces
+  //!   the historical behaviour, so existing data and callers are unaffected.
+  explicit AngleDistribution(
+    hid_t group, Interpolation energy_interp = Interpolation::lin_lin);
 
   //! Sample an angle given an incident particle energy
   //! \param[in] E Particle energy in [eV]
@@ -39,6 +46,7 @@ public:
 private:
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;
+  Interpolation energy_interp_ = Interpolation::lin_lin;
 };
 
 } // namespace openmc

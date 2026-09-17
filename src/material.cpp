@@ -6,6 +6,7 @@
 #include <iterator>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include "openmc/tensor.h"
@@ -404,6 +405,11 @@ void Material::finalize()
       this->init_bremsstrahlung();
     }
 
+    // Build the oscillator model used by the inelastic angular partition
+    if (settings::electron_transport) {
+      this->init_electron_oscillators();
+    }
+
     // Assign thermal scattering tables
     this->init_thermal();
   }
@@ -523,7 +529,7 @@ void Material::init_thermal()
   thermal_tables_ = tables;
 }
 
-void Material::collision_stopping_power(double* s_col, bool positron)
+Material::OscillatorTable Material::oscillator_table() const
 {
   // Average electron number and average atomic weight
   double electron_density = 0.0;
@@ -574,9 +580,31 @@ void Material::collision_stopping_power(double* s_col, bool positron)
     PLANCK_C * PLANCK_C * PLANCK_C * N_AVOGADRO * electron_density * density /
     (2.0 * PI * PI * FINE_STRUCTURE * MASS_ELECTRON_EV * mass_density);
 
+  OscillatorTable osc;
+  osc.f = std::move(f);
+  osc.e_b_sq = std::move(e_b_sq);
+  osc.e_p_sq = e_p_sq;
+  osc.n_conduction = n_conduction;
+  osc.log_I = log_I;
+  osc.electron_density = electron_density;
+
   // Get the Sternheimer adjustment factor
-  double rho =
-    sternheimer_adjustment(f, e_b_sq, e_p_sq, n_conduction, log_I, 1.0e-6, 100);
+  osc.rho = sternheimer_adjustment(
+    osc.f, osc.e_b_sq, e_p_sq, n_conduction, log_I, 1.0e-6, 100);
+
+  return osc;
+}
+
+void Material::collision_stopping_power(double* s_col, bool positron)
+{
+  auto osc = this->oscillator_table();
+  const auto& f = osc.f;
+  const auto& e_b_sq = osc.e_b_sq;
+  double e_p_sq = osc.e_p_sq;
+  double n_conduction = osc.n_conduction;
+  double log_I = osc.log_I;
+  double electron_density = osc.electron_density;
+  double rho = osc.rho;
 
   // Classical electron radius in cm
   constexpr double CM_PER_ANGSTROM {1.0e-8};
@@ -618,6 +646,109 @@ void Material::collision_stopping_power(double* s_col, bool positron)
       c / beta_sq *
       (2.0 * (std::log(E) - log_I) + std::log(1.0 + tau / 2.0) + F - delta);
   }
+}
+
+void Material::init_electron_oscillators()
+{
+  auto osc = this->oscillator_table();
+
+  // Tabulate the density-effect correction. It enters the distant transverse
+  // term of the angular partition below, and the Newton solve behind it is far
+  // too expensive to repeat at every collision.
+  auto n_e = data::brems_e_grid.size();
+  density_effect_ = tensor::Tensor<double>({n_e});
+  for (int i = 0; i < n_e; ++i) {
+    density_effect_(i) = density_effect(osc.f, osc.e_b_sq, osc.e_p_sq,
+      osc.n_conduction, osc.rho, data::brems_e_grid(i), 1.0e-6, 100);
+  }
+
+  // Sum the atom density of each distinct element over its nuclides: the
+  // oscillator strength of a subshell is the share it holds of all the
+  // electrons in the material, so every isotope of the element contributes.
+  std::unordered_map<int, double> atom_density;
+  for (int i = 0; i < element_.size(); ++i) {
+    double awr = data::nuclides[nuclide_[i]]->awr_;
+    atom_density[element_[i]] +=
+      (atom_density_[0] > 0.0) ? atom_density_[i] : -atom_density_[i] / awr;
+  }
+
+  // Build an oscillator for every electroionization subshell. The table the
+  // density effect is solved on has a shell list of its own, which lumps the
+  // outermost electrons into a conduction term carrying no binding energy. A
+  // collision has to be classified for the subshell that was actually ionized,
+  // so the resonance energies are rebuilt here on the ENDF list.
+  //
+  // The Sternheimer factor solved above belongs to the FIRST list, which lumps
+  // the outer electrons into a conduction term with no binding energy. The
+  // rebuilt list gives those electrons a real photoatomic binding energy, so it
+  // does not inherit that factor's meaning. Rather than rescale every resonance
+  // by one number -- which would move the deep shells as far as the outer ones,
+  // the opposite of what the model wants -- the adjustment is solved again
+  // below on the rebuilt list itself.
+  oscillator_element_.clear();
+  oscillator_offset_.clear();
+  oscillator_energy_.clear();
+  oscillator_block_.clear();
+  vector<double> strength;
+  vector<double> binding_sq;
+  for (const auto& kv : atom_density) {
+    const auto& elm = *data::elements[kv.first];
+    oscillator_block_[kv.first] = oscillator_element_.size();
+    oscillator_element_.push_back(kv.first);
+    oscillator_offset_.push_back(oscillator_energy_.size());
+    for (int j = 0; j < elm.electron_shell_map_.size(); ++j) {
+      const auto& shell = elm.shells_[elm.electron_shell_map_[j]];
+      double f_i = shell.num_electrons * kv.second / osc.electron_density;
+      double u = shell.binding_energy;
+      oscillator_energy_.push_back(
+        std::sqrt(osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
+      strength.push_back(f_i);
+      binding_sq.push_back(u * u);
+    }
+  }
+  oscillator_offset_.push_back(oscillator_energy_.size());
+
+  // Re-solve the adjustment on this list, so that sum_i f_i ln(W_i) = ln(I)
+  // holds for the oscillators actually used. This is one more Newton solve per
+  // material at setup, and it scales each resonance by what the Sternheimer
+  // model asks of it rather than by a common factor: a deeply bound shell,
+  // where rho^2 U^2 dominates, moves almost in proportion, while an outer one
+  // held up by the plasma term barely moves at all.
+  if (!binding_sq.empty()) {
+    double rho = sternheimer_adjustment(
+      strength, binding_sq, osc.e_p_sq, 0.0, osc.log_I, 1.0e-6, 100);
+    for (int i = 0; i < oscillator_energy_.size(); ++i) {
+      oscillator_energy_[i] = std::sqrt(
+        rho * rho * binding_sq[i] + 2.0 / 3.0 * strength[i] * osc.e_p_sq);
+    }
+  }
+}
+
+double Material::density_effect_correction(double E) const
+{
+  auto n = density_effect_.size();
+  if (n == 0)
+    return 0.0;
+
+  const auto& grid = data::brems_e_grid;
+  if (E <= grid(0))
+    return density_effect_(0);
+  if (E >= grid(n - 1))
+    return density_effect_(n - 1);
+
+  int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
+  double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
+  return density_effect_(i) + f * (density_effect_(i + 1) - density_effect_(i));
+}
+
+double Material::oscillator_energy(int i_element, int i_shell) const
+{
+  auto it = oscillator_block_.find(i_element);
+  if (it == oscillator_block_.end())
+    return 0.0;
+  int i = it->second;
+  int j = oscillator_offset_[i] + i_shell;
+  return (j < oscillator_offset_[i + 1]) ? oscillator_energy_[j] : 0.0;
 }
 
 void Material::init_bremsstrahlung()
@@ -687,14 +818,7 @@ void Material::init_bremsstrahlung()
     // Issy-les-Moulineaux, France (2011).
     if (positron) {
       for (int i = 0; i < n_e; ++i) {
-        double t = std::log(
-          1.0 + 1.0e6 * data::ttb_e_grid(i) / (Z_eq_sq * MASS_ELECTRON_EV));
-        double r =
-          1.0 -
-          std::exp(-1.2359e-1 * t + 6.1274e-2 * std::pow(t, 2) -
-                   3.1516e-2 * std::pow(t, 3) + 7.7446e-3 * std::pow(t, 4) -
-                   1.0595e-3 * std::pow(t, 5) + 7.0568e-5 * std::pow(t, 6) -
-                   1.808e-6 * std::pow(t, 7));
+        double r = salvat_factor(Z_eq_sq, data::ttb_e_grid(i));
         stopping_power_radiative(i) *= r;
         tensor::View<double> dcs_i = dcs.slice(i);
         dcs_i *= r;
@@ -822,6 +946,9 @@ void Material::calculate_xs(Particle& p) const
     this->calculate_neutron_xs(p);
   } else if (p.type().is_photon()) {
     this->calculate_photon_xs(p);
+  } else if (p.type().is_electron() || p.type().is_positron()) {
+    if (settings::electron_transport)
+      this->calculate_electron_xs(p);
   }
 }
 
@@ -932,6 +1059,34 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().incoherent += atom_density * micro.incoherent;
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
     p.macro_xs().pair_production += atom_density * micro.pair_production;
+  }
+}
+
+void Material::calculate_electron_xs(Particle& p) const
+{
+  // Add contribution from each nuclide in material
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    // ========================================================================
+    // CALCULATE MICROSCOPIC CROSS SECTION
+
+    // Determine microscopic cross sections for this nuclide
+    int i_element = element_[i];
+
+    // Calculate microscopic cross section for this nuclide
+    const auto& micro {p.electron_xs(i_element)};
+    int q = p.type().is_positron() ? 1 : 0;
+    if (p.E() != micro.last_E || q != micro.last_q) {
+      data::elements[i_element]->calculate_electron_xs(p);
+    }
+
+    // ========================================================================
+    // ADD TO MACROSCOPIC CROSS SECTION
+
+    // Copy atom density of nuclide in material
+    double atom_density = this->atom_density(i, p.density_mult());
+
+    // Add contributions to material macroscopic cross sections
+    p.macro_xs().total += atom_density * micro.total;
   }
 }
 
@@ -1051,6 +1206,11 @@ void Material::set_densities(
   if (settings::photon_transport &&
       settings::electron_treatment == ElectronTreatment::TTB) {
     this->init_bremsstrahlung();
+  }
+
+  // Build the oscillator model used by the inelastic angular partition
+  if (settings::electron_transport) {
+    this->init_electron_oscillators();
   }
 
   // Assign S(a,b) tables

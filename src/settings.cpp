@@ -119,8 +119,8 @@ ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 // them. Against single-event transport it agrees everywhere to 2.1 standard
 // errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
 // once the angular ceiling is applied and is left as a guard.
-double electron_c1 {0.005};
-double electron_c2 {0.05};
+double electron_max_step_deflection {0.005};
+double electron_max_step_energy_loss {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -642,20 +642,25 @@ void read_settings_xml(pugi::xml_node root)
   // PENELOPE's C1: the average angular deflection, measured as <1-mu>, that
   // the grouped soft collisions accumulate between two hard ones. Zero is the
   // default and leaves every collision hard, which is single-event transport.
-  if (check_for_node(root, "electron_c1")) {
-    electron_c1 = std::stod(get_node_value(root, "electron_c1"));
-    if (electron_c1 < 0.0 || electron_c1 > 1.0) {
-      fatal_error("electron_c1 must be between 0 and 1.");
+  if (check_for_node(root, "electron_max_step_deflection")) {
+    electron_max_step_deflection =
+      std::stod(get_node_value(root, "electron_max_step_deflection"));
+    if (electron_max_step_deflection < 0.0 ||
+        electron_max_step_deflection > 1.0) {
+      fatal_error("electron_max_step_deflection must be between 0 and 1.");
     }
   }
 
   // The companion bound on the energy a step may lose to the grouped
   // collisions, which is what keeps the restricted stopping power evaluated
   // near the energy it belongs to.
-  if (check_for_node(root, "electron_c2")) {
-    electron_c2 = std::stod(get_node_value(root, "electron_c2"));
-    if (electron_c2 <= 0.0 || electron_c2 > 1.0) {
-      fatal_error("electron_c2 must be greater than 0 and at most 1.");
+  if (check_for_node(root, "electron_max_step_energy_loss")) {
+    electron_max_step_energy_loss =
+      std::stod(get_node_value(root, "electron_max_step_energy_loss"));
+    if (electron_max_step_energy_loss <= 0.0 ||
+        electron_max_step_energy_loss > 1.0) {
+      fatal_error(
+        "electron_max_step_energy_loss must be greater than 0 and at most 1.");
     }
   }
 

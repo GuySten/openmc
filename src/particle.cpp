@@ -318,12 +318,13 @@ double Particle::sample_condensed_step()
   // projectile below its own transport cutoff: past that it should have
   // stopped where it was, and a positron should have annihilated there.
   int q = type().is_positron() ? 1 : 0;
-  double max_loss =
-    std::min(settings::electron_c2 * E(), soft_projectile_headroom(q, E()));
+  double max_loss = std::min(settings::electron_max_step_energy_loss * E(),
+    soft_projectile_headroom(q, E()));
 
   auto step = sample_mixed_step(xs.electron_hard, xs.electron_soft_rate,
-    xs.electron_xs1_soft, xs.electron_stopping, max_loss, settings::electron_c1,
-    boundary().distance(), current_seed());
+    xs.electron_xs1_soft, xs.electron_stopping, max_loss,
+    settings::electron_max_step_deflection, boundary().distance(),
+    current_seed());
 
   // Not worth grouping over this step, so it is transported one collision at
   // a time from the full cross section -- the single-event scheme the mixed
@@ -381,7 +382,7 @@ void Particle::event_advance()
     type() == ParticleType::electron() || type() == ParticleType::positron();
   if (!settings::electron_transport && charged) {
     collision_distance() = material() == MATERIAL_VOID ? INFINITY : 0.0;
-  } else if (charged && settings::electron_c1 > 0.0 &&
+  } else if (charged && settings::electron_max_step_deflection > 0.0 &&
              material() != MATERIAL_VOID) {
     collision_distance() = this->sample_condensed_step();
   } else if (macro_xs().total == 0.0) {

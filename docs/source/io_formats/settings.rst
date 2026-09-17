@@ -248,17 +248,19 @@ photon at a time.
 
   *Default*: ttb
 
-.. _electron_c1:
+.. _electron_max_step_deflection:
 
-------------------------
-``<electron_c1>`` Element
-------------------------
+------------------------------------------
+``<electron_max_step_deflection>`` Element
+------------------------------------------
 
-The ``<electron_c1>`` element sets the largest angular deflection, measured as
-:math:`\langle 1-\mu \rangle`, that the grouped collisions of a
-condensed-history step may accumulate. It both decides where each interaction
-channel is cut into a soft part the step groups and a hard part transported one
-collision at a time, and bounds how far a step may run.
+The ``<electron_max_step_deflection>`` element sets the largest deflection the
+grouped collisions of one condensed-history step may accumulate, measured as
+:math:`\langle 1-\mu \rangle`: zero for a step that does not turn the particle
+at all, one for a step that leaves it with no memory of the direction it came
+from. It both decides where each interaction channel is cut into a soft part the
+step groups and a hard part transported one collision at a time, and bounds how
+far a step may run.
 
 Where the split falls is not a free parameter beyond this: a collision may be
 grouped only when nothing it produces would have been transported anyway, so the
@@ -273,18 +275,18 @@ Setting it to zero transports every interaction discretely.
   collisions deflect the most -- it agrees with single-event transport to 2.1
   standard errors in every resolved bin, where 0.01 differs by 4.9.
 
--------------------------
-``<electron_c2>`` Element
--------------------------
+-------------------------------------------
+``<electron_max_step_energy_loss>`` Element
+-------------------------------------------
 
-The ``<electron_c2>`` element sets the largest fraction of its kinetic energy a
-charged particle may give to the grouped collisions of one step, which is what
-keeps the restricted stopping power evaluated near the energy it belongs to. A
-step is never allowed to carry a particle below its own transport cutoff either,
-whichever bound is tighter.
+The ``<electron_max_step_energy_loss>`` element sets the largest fraction of its
+kinetic energy a charged particle may give to the grouped collisions of one
+step, which keeps the restricted stopping power evaluated near the energy it
+belongs to. A step is never allowed to carry a particle below its own transport
+cutoff either, whichever bound is tighter.
 
   *Default*: 0.05. It rarely binds, the angular ceiling of
-  :ref:`electron_c1` almost always coming first.
+  :ref:`electron_max_step_deflection` almost always coming first.
 
 .. _electron_transport:
 
@@ -299,7 +301,7 @@ interaction is simulated as a discrete event: elastic scattering from
 partial-wave cross sections, electroionization, atomic excitation,
 bremsstrahlung, and for positrons Bhabha scattering and in-flight
 annihilation. Interactions too small to be worth following one at a time are
-grouped into a condensed-history step, which :ref:`electron_c1` controls and
+grouped into a condensed-history step, which :ref:`electron_max_step_deflection` controls and
 can switch off.
 
 This requires photon transport, which is enabled automatically with a warning

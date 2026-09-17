@@ -127,7 +127,7 @@ public:
   //!
   //! All three cross sections are per atom and in the same units as the
   //! elastic cross section itself. The split is tabulated at load time from
-  //! settings::electron_c1, so this is a grid lookup.
+  //! settings::electron_max_step_deflection, so this is a grid lookup.
   //!
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
@@ -339,12 +339,13 @@ public:
   //! on the electron energy grid, indexed by projectile charge
   array<tensor::Tensor<double>, 2> elastic_mu1_;
   array<tensor::Tensor<double>, 2> elastic_mu2_;
-  //! Soft/hard split of the elastic distribution at settings::electron_c1, on
-  //! the electron energy grid, indexed by projectile charge. The cutoff is
-  //! held as the deflection 1-mu rather than as the cosine: at C1 = 0.001 and
-  //! 100 MeV it is 1.1e-4 in tungsten, so four digits of the cosine carry no
-  //! information, and both the interpolation between grid points and the
-  //! deflection the sampler works in would inherit the loss.
+  //! Soft/hard split of the elastic distribution at
+  //! settings::electron_max_step_deflection, on the electron energy grid,
+  //! indexed by projectile charge. The cutoff is held as the deflection 1-mu
+  //! rather than as the cosine: at C1 = 0.001 and 100 MeV it is 1.1e-4 in
+  //! tungsten, so four digits of the cosine carry no information, and both the
+  //! interpolation between grid points and the deflection the sampler works in
+  //! would inherit the loss.
   array<tensor::Tensor<double>, 2> elastic_dcut_;
   array<tensor::Tensor<double>, 2> elastic_p_hard_;
   array<tensor::Tensor<double>, 2> elastic_mu1_soft_;

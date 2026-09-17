@@ -1071,7 +1071,7 @@ void Material::calculate_photon_xs(Particle& p) const
 
 void Material::init_inelastic_transport()
 {
-  if (settings::electron_c1 <= 0.0)
+  if (settings::electron_max_step_deflection <= 0.0)
     return;
 
   int n_block = oscillator_offset_.size() - 1;

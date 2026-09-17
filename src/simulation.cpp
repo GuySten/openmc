@@ -88,6 +88,24 @@ int openmc_simulation_init()
     initialize_data();
   }
 
+  // Say which of the two charged-particle schemes is about to run. The choice
+  // is made by a cutoff that is easy to leave unset, the two differ by more
+  // than an order of magnitude in speed, and nothing else in the output
+  // distinguishes them -- so a run that was meant to be one and was the other
+  // looks exactly like a run that was not.
+  if (settings::electron_transport) {
+    if (settings::deflection_cutoff > 0.0) {
+      write_message(fmt::format("Charged particles: condensed history, "
+                                "deflection {} and energy_loss {} per step.",
+                      settings::deflection_cutoff, settings::energy_loss_cutoff),
+        6);
+    } else {
+      write_message("Charged particles: single-event transport, every "
+                    "collision sampled (deflection cutoff is zero).",
+        6);
+    }
+  }
+
   // Determine how much work each process should do
   calculate_work(settings::n_particles);
 

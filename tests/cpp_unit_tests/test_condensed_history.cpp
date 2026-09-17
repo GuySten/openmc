@@ -198,6 +198,7 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
   double xs_soft = 1.0e5; // plenty to group
   double E = 1.0e7;
   double c2 = 0.05;
+  double max_loss = c2 * E;
 
   SECTION("a hard collision ends the ordinary step")
   {
@@ -209,7 +210,7 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
     bool always_grouped = true;
     for (int i = 0; i < n; ++i) {
       auto s = openmc::sample_mixed_step(
-        xs_hard, xs_soft, 0.0, E, c2, openmc::INFTY, &seed);
+        xs_hard, xs_soft, 0.0, max_loss, openmc::INFTY, &seed);
       always_grouped = always_grouped && s.grouped;
       hinge_inside = hinge_inside && s.hinge >= 0.0 && s.hinge <= s.length;
       sum += s.length;
@@ -229,7 +230,7 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
     double stopping_power = c2 * E / 0.01;
     for (int i = 0; i < 1000; ++i) {
       auto s = openmc::sample_mixed_step(
-        xs_hard, xs_soft, stopping_power, E, c2, openmc::INFTY, &seed);
+        xs_hard, xs_soft, stopping_power, max_loss, openmc::INFTY, &seed);
       CHECK(s.length <= 0.01 * (1.0 + 1.0e-12));
     }
   }
@@ -237,8 +238,8 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
   SECTION("geometry has the last word")
   {
     for (int i = 0; i < 1000; ++i) {
-      auto s =
-        openmc::sample_mixed_step(xs_hard, xs_soft, 0.0, E, c2, 0.001, &seed);
+      auto s = openmc::sample_mixed_step(
+        xs_hard, xs_soft, 0.0, max_loss, 0.001, &seed);
       CHECK(s.length <= 0.001);
       CHECK(!s.ends_in_collision);
     }
@@ -254,7 +255,7 @@ TEST_CASE("a step with too little in it is not grouped")
   // the scheme must hand every step back to the single-event transport
   for (int i = 0; i < 1000; ++i) {
     auto s =
-      openmc::sample_mixed_step(1.0, 0.0, 0.0, E, 0.05, openmc::INFTY, &seed);
+      openmc::sample_mixed_step(1.0, 0.0, 0.0, 0.05 * E, openmc::INFTY, &seed);
     CHECK(!s.grouped);
   }
 
@@ -266,9 +267,9 @@ TEST_CASE("a step with too little in it is not grouped")
   double thin = 0.5 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
   double thick = 2.0 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
   for (int i = 0; i < 1000; ++i) {
-    CHECK(!openmc::sample_mixed_step(1.0, xs_soft, 0.0, E, 0.05, thin, &seed)
+    CHECK(!openmc::sample_mixed_step(1.0, xs_soft, 0.0, 0.05 * E, thin, &seed)
              .grouped);
-    CHECK(openmc::sample_mixed_step(1.0, xs_soft, 0.0, E, 0.05, thick, &seed)
+    CHECK(openmc::sample_mixed_step(1.0, xs_soft, 0.0, 0.05 * E, thick, &seed)
             .grouped);
   }
 }
@@ -287,9 +288,34 @@ TEST_CASE("the grouping decision does not bias the step length")
   double sum = 0.0;
   for (int i = 0; i < n; ++i) {
     auto s = openmc::sample_mixed_step(
-      xs_hard, xs_soft, 0.0, 1.0e7, 0.05, openmc::INFTY, &seed);
+      xs_hard, xs_soft, 0.0, 0.05 * 1.0e7, openmc::INFTY, &seed);
     REQUIRE(s.grouped);
     sum += s.length;
   }
   CHECK_THAT(sum / n, WithinRel(1.0 / xs_hard, 0.01));
+}
+
+TEST_CASE("a step cannot carry the projectile past its own cutoff")
+{
+  // The energy ceiling is not only C2. A step that took a charged particle
+  // below its transport cutoff would carry it past the point where it should
+  // have stopped where it was -- and a positron past the energy at which it
+  // should have annihilated, which is the whole reason a photoneutron run sets
+  // that cutoff below the others. So the loss is capped by the headroom above
+  // the cutoff too, and near the cutoff that is the smaller of the two.
+  uint64_t seed = 8080;
+  double stopping_power = 1.0e6; // eV/cm
+  double E = 1.05e7;
+  double cutoff = 1.0e7;
+  double headroom = E - cutoff;
+  double max_loss = std::min(0.05 * E, headroom);
+  CHECK(
+    max_loss == headroom); // C2 alone would allow 5.25e5 eV, past the cutoff
+
+  for (int i = 0; i < 1000; ++i) {
+    auto s = openmc::sample_mixed_step(
+      1.0e-6, 1.0e6, stopping_power, max_loss, openmc::INFTY, &seed);
+    REQUIRE(s.grouped);
+    CHECK(s.length * stopping_power <= headroom * (1.0 + 1.0e-12));
+  }
 }

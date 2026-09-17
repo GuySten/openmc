@@ -314,9 +314,15 @@ double Particle::sample_condensed_step()
                             : INFINITY;
   }
 
+  // The step may take a fraction C2 of the energy, and it may not take the
+  // projectile below its own transport cutoff: past that it should have
+  // stopped where it was, and a positron should have annihilated there.
+  int q = type().is_positron() ? 1 : 0;
+  double max_loss =
+    std::min(settings::electron_c2 * E(), soft_projectile_headroom(q, E()));
+
   auto step = sample_mixed_step(xs.electron_hard, xs.electron_soft_rate,
-    xs.electron_stopping, E(), settings::electron_c2, boundary().distance(),
-    current_seed());
+    xs.electron_stopping, max_loss, boundary().distance(), current_seed());
 
   // Not worth grouping over this step, so it is transported one collision at
   // a time from the full cross section -- the single-event scheme the mixed

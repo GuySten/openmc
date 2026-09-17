@@ -49,43 +49,51 @@ void collision(Particle& p)
   // energy the grouped collisions took along the way is deposited here. The
   // heating score is the balance E_last - E, and returning before it would
   // throw that energy away.
-  if (p.apply_condensed_hinge()) {
+  // It does not skip the energy cutoff below, though, and that is the whole
+  // reason this is not an early return. Under condensed history a charged
+  // particle slows down continuously along the step rather than in jumps at
+  // its collisions, so the energy at which it crosses its cutoff is almost
+  // always inside a step and not at an interaction. Returning here would let
+  // it carry on below its cutoff until its next hard collision, which the
+  // scheme has made rare -- and would let a positron pass the energy at which
+  // it should have stopped and annihilated.
+  bool hinge = p.apply_condensed_hinge();
+  if (hinge) {
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
-    return;
-  }
+  } else {
+    // Add to collision counter for particle
+    ++(p.n_collision());
+    p.secondary_bank_index() = p.local_secondary_bank().size();
 
-  // Add to collision counter for particle
-  ++(p.n_collision());
-  p.secondary_bank_index() = p.local_secondary_bank().size();
+    // Sample reaction for the material the particle is in
+    switch (p.type().pdg_number()) {
+    case PDG_NEUTRON:
+      sample_neutron_reaction(p);
+      break;
+    case PDG_PHOTON:
+      sample_photon_reaction(p);
+      break;
+    case PDG_ELECTRON:
+      sample_electron_reaction(p);
+      break;
+    case PDG_POSITRON:
+      sample_positron_reaction(p);
+      break;
+    default:
+      fatal_error("Unsupported particle PDG for collision sampling.");
+    }
 
-  // Sample reaction for the material the particle is in
-  switch (p.type().pdg_number()) {
-  case PDG_NEUTRON:
-    sample_neutron_reaction(p);
-    break;
-  case PDG_PHOTON:
-    sample_photon_reaction(p);
-    break;
-  case PDG_ELECTRON:
-    sample_electron_reaction(p);
-    break;
-  case PDG_POSITRON:
-    sample_positron_reaction(p);
-    break;
-  default:
-    fatal_error("Unsupported particle PDG for collision sampling.");
-  }
-
-  if (settings::weight_windows_on) {
-    auto [ww_found, ww] = search_weight_window(p);
-    if (!ww_found && p.type() == ParticleType::neutron()) {
-      // if the weight window is not valid, apply russian roulette for neutrons
-      // (regardless of weight window collision checkpoint setting)
-      apply_russian_roulette(p);
-    } else if (settings::weight_window_checkpoint_collision) {
-      // if collision checkpointing is on, apply weight window
-      apply_weight_window(p, ww);
+    if (settings::weight_windows_on) {
+      auto [ww_found, ww] = search_weight_window(p);
+      if (!ww_found && p.type() == ParticleType::neutron()) {
+        // if the weight window is not valid, apply russian roulette for
+        // neutrons (regardless of weight window collision checkpoint setting)
+        apply_russian_roulette(p);
+      } else if (settings::weight_window_checkpoint_collision) {
+        // if collision checkpointing is on, apply weight window
+        apply_weight_window(p, ww);
+      }
     }
   }
 

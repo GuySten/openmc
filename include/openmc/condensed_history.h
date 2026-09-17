@@ -111,15 +111,18 @@ constexpr double MIN_GROUPED_COLLISIONS = 10.0;
 //! \param[in] xs_soft Macroscopic rate of the collisions being grouped, in
 //!   [1/cm], which decides only whether grouping is worth it
 //! \param[in] stopping_power Restricted stopping power in [eV/cm]
-//! \param[in] E Kinetic energy in [eV]
-//! \param[in] c2 Largest fraction of its energy the projectile may lose to
-//!   the grouped collisions over one step
+//! \param[in] max_loss Most the projectile may lose to the grouped collisions
+//!   over one step, in [eV]. Two things bound it: a fraction \f$C_2\f$ of the
+//!   kinetic energy, which keeps the restricted stopping power evaluated near
+//!   the energy it belongs to; and the energy left above the projectile's own
+//!   transport cutoff, since a step that carried it past that would take it
+//!   beyond the point where it should have stopped -- and, for a positron,
+//!   past the energy at which it should have annihilated.
 //! \param[in] max_distance Distance beyond which the step cannot usefully
 //!   run, normally the distance to the nearest boundary, in [cm]
 //! \param[inout] seed Pseudorandom number seed pointer
 MixedStep sample_mixed_step(double xs_hard, double xs_soft,
-  double stopping_power, double E, double c2, double max_distance,
-  uint64_t* seed);
+  double stopping_power, double max_loss, double max_distance, uint64_t* seed);
 
 } // namespace openmc
 

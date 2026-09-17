@@ -87,8 +87,7 @@ double sample_soft_energy_loss(double mean, double variance, uint64_t* seed)
 }
 
 MixedStep sample_mixed_step(double xs_hard, double xs_soft,
-  double stopping_power, double E, double c2, double max_distance,
-  uint64_t* seed)
+  double stopping_power, double max_loss, double max_distance, uint64_t* seed)
 {
   MixedStep step;
 
@@ -98,8 +97,9 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft,
   // from an exponential with its lower end cut off, which is a longer mean
   // free path to the hard collision than the cross section says.
   double mfp = (xs_hard > 0.0) ? 1.0 / xs_hard : INFTY;
-  double s_energy =
-    (stopping_power > 0.0 && c2 > 0.0) ? c2 * E / stopping_power : INFTY;
+  double s_energy = (stopping_power > 0.0 && max_loss > 0.0)
+                      ? max_loss / stopping_power
+                      : INFTY;
   double reach = std::min(std::min(mfp, s_energy), max_distance);
   if (!(reach > 0.0) || xs_soft * reach < MIN_GROUPED_COLLISIONS)
     return step;
@@ -112,10 +112,9 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft,
   double s = (xs_hard > 0.0) ? -std::log(prn(seed)) / xs_hard : INFTY;
   step.ends_in_collision = true;
 
-  // The grouped loss is described by a mean and a variance, which stops being
-  // a fair description once the mean is a large part of what the projectile
-  // has. Capping it at a fraction of the energy is also what keeps the
-  // restricted stopping power evaluated near the energy it belongs to.
+  // The energy ceiling: see max_loss. It stops the grouped loss from being a
+  // large part of what the projectile has, and stops the step from carrying it
+  // past its own cutoff.
   if (s_energy < s) {
     s = s_energy;
     step.ends_in_collision = false;

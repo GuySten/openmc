@@ -15,17 +15,27 @@ namespace openmc {
 // | b d e |
 // | c e f |
 //
-// We first check the determinant to ensure it is non-zero before proceeding
-// with the inversion. If the determinant is zero, we return a matrix of zeros.
-// Inversion is calculated by computing the adjoint matrix first, and then the
-// inverse can be computed as: A^-1  = 1/det(A) * adj(A)
+// We first check that the matrix is far enough from singular to invert
+// before proceeding. If it is not, we return a matrix of zeros. Inversion is
+// calculated by computing the adjoint matrix first, and then the inverse can
+// be computed as: A^-1  = 1/det(A) * adj(A)
 MomentMatrix MomentMatrix::inverse() const
 {
   MomentMatrix inv;
 
-  // Check if the determinant is zero
+  // Check whether the matrix is too close to singular to invert. The matrix
+  // holds volume-normalized second spatial moments, so its entries carry
+  // units of length squared and its determinant units of length to the
+  // sixth. A fixed threshold on the determinant is therefore a threshold on
+  // how big the region is rather than on how close to singular the matrix
+  // is. The mean diagonal entry cubed carries the same units, so comparing
+  // against it tests the matrix's shape alone and is invariant to the
+  // region's size. The comparison is written so that a non-positive or
+  // non-finite determinant, which a symmetric positive semi-definite matrix
+  // can only reach through roundoff, also falls back.
   double det = determinant();
-  if (det < std::abs(1.0e-10)) {
+  double scale = (a + d + f) / 3.0;
+  if (!(det > MOMENT_MATRIX_SINGULAR_TOL * scale * scale * scale)) {
     // Set the inverse to zero. In effect, this will
     // result in all the linear terms of the source becoming
     // zero, leaving just the flat source.

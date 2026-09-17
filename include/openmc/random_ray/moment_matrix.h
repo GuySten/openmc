@@ -13,6 +13,14 @@ namespace openmc {
 // TODO: This class could in theory have 32-bit instead of 64-bit FP values.
 using MomentArray = Position;
 
+// Smallest ratio of a moment matrix's determinant to the cube of its mean
+// diagonal entry for which the matrix is still inverted. The ratio is
+// dimensionless and is about 3.4 times the smallest eigenvalue over the
+// largest for a matrix that is near singular in one direction, so this
+// admits regions whose sampled extent along one axis is down to roughly
+// 1e-6 of their extent along another.
+constexpr double MOMENT_MATRIX_SINGULAR_TOL {1.0e-12};
+
 // The MomentMatrix class is a sparse representation a 3x3 symmetric
 // matrix, with elements labeled as follows:
 //

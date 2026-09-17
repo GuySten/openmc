@@ -86,8 +86,9 @@ double sample_soft_energy_loss(double mean, double variance, uint64_t* seed)
   return w * (xi / one_minus_a);
 }
 
-MixedStep sample_mixed_step(double xs_hard, double xs_soft,
-  double stopping_power, double max_loss, double max_distance, uint64_t* seed)
+MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
+  double stopping_power, double max_loss, double max_deflection,
+  double max_distance, uint64_t* seed)
 {
   MixedStep step;
 
@@ -100,7 +101,11 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft,
   double s_energy = (stopping_power > 0.0 && max_loss > 0.0)
                       ? max_loss / stopping_power
                       : INFTY;
-  double reach = std::min(std::min(mfp, s_energy), max_distance);
+  double s_angle = (xs1_soft > 0.0 && max_deflection > 0.0)
+                     ? max_deflection / xs1_soft
+                     : INFTY;
+  double reach =
+    std::min(std::min(mfp, s_energy), std::min(s_angle, max_distance));
   if (!(reach > 0.0) || xs_soft * reach < MIN_GROUPED_COLLISIONS)
     return step;
   step.grouped = true;
@@ -117,6 +122,14 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft,
   // past its own cutoff.
   if (s_energy < s) {
     s = s_energy;
+    step.ends_in_collision = false;
+  }
+
+  // The angular ceiling: see max_deflection. One artificial deflection stands
+  // in for the grouped ones and is applied at a single point in the step, so
+  // how far the step may run is set by how much turning it may cover.
+  if (s_angle < s) {
+    s = s_angle;
     step.ends_in_collision = false;
   }
 

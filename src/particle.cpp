@@ -322,7 +322,8 @@ double Particle::sample_condensed_step()
     std::min(settings::electron_c2 * E(), soft_projectile_headroom(q, E()));
 
   auto step = sample_mixed_step(xs.electron_hard, xs.electron_soft_rate,
-    xs.electron_stopping, max_loss, boundary().distance(), current_seed());
+    xs.electron_xs1_soft, xs.electron_stopping, max_loss, settings::electron_c1,
+    boundary().distance(), current_seed());
 
   // Not worth grouping over this step, so it is transported one collision at
   // a time from the full cross section -- the single-event scheme the mixed

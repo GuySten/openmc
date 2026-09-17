@@ -248,6 +248,44 @@ photon at a time.
 
   *Default*: ttb
 
+.. _electron_c1:
+
+------------------------
+``<electron_c1>`` Element
+------------------------
+
+The ``<electron_c1>`` element sets the largest angular deflection, measured as
+:math:`\langle 1-\mu \rangle`, that the grouped collisions of a
+condensed-history step may accumulate. It both decides where each interaction
+channel is cut into a soft part the step groups and a hard part transported one
+collision at a time, and bounds how far a step may run.
+
+Where the split falls is not a free parameter beyond this: a collision may be
+grouped only when nothing it produces would have been transported anyway, so the
+transport cutoffs decide it. Raising the electron and photon cutoffs therefore
+makes the method faster on its own, with nothing else to set -- on a 1 MeV
+electron in carbon, by a factor of 3 at a 1 keV cutoff and 12 at 100 keV.
+
+Setting it to zero transports every interaction discretely.
+
+  *Default*: 0.005, the largest value that does not move the answer. On a 1 MeV
+  depth dose in carbon -- a light target at the energy where the grouped
+  collisions deflect the most -- it agrees with single-event transport to 2.1
+  standard errors in every resolved bin, where 0.01 differs by 4.9.
+
+-------------------------
+``<electron_c2>`` Element
+-------------------------
+
+The ``<electron_c2>`` element sets the largest fraction of its kinetic energy a
+charged particle may give to the grouped collisions of one step, which is what
+keeps the restricted stopping power evaluated near the energy it belongs to. A
+step is never allowed to carry a particle below its own transport cutoff either,
+whichever bound is tighter.
+
+  *Default*: 0.05. It rarely binds, the angular ceiling of
+  :ref:`electron_c1` almost always coming first.
+
 .. _electron_transport:
 
 --------------------------------
@@ -260,7 +298,9 @@ deposited locally or spread by the thick-target approximation. Every
 interaction is simulated as a discrete event: elastic scattering from
 partial-wave cross sections, electroionization, atomic excitation,
 bremsstrahlung, and for positrons Bhabha scattering and in-flight
-annihilation. There is no condensed history.
+annihilation. Interactions too small to be worth following one at a time are
+grouped into a condensed-history step, which :ref:`electron_c1` controls and
+can switch off.
 
 This requires photon transport, which is enabled automatically with a warning
 if it was not requested, and it requires an electron data library in the cross

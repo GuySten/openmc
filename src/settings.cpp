@@ -112,7 +112,14 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
-double electron_c1 {0.0};
+// The fastest condensed history that does not move the answer. Measured on a
+// 1 MeV depth dose in carbon, the hardest case of the benchmarks this was
+// written for -- the lightest target, at the energy where the grouped
+// collisions deflect the most and elastic scattering is the smallest share of
+// them. Against single-event transport it agrees everywhere to 2.1 standard
+// errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
+// once the angular ceiling is applied and is left as a guard.
+double electron_c1 {0.005};
 double electron_c2 {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};

@@ -110,6 +110,8 @@ constexpr double MIN_GROUPED_COLLISIONS = 10.0;
 //! \param[in] xs_hard Macroscopic hard cross section in [1/cm]
 //! \param[in] xs_soft Macroscopic rate of the collisions being grouped, in
 //!   [1/cm], which decides only whether grouping is worth it
+//! \param[in] xs1_soft First transport cross section of the grouped
+//!   deflections, in [1/cm]
 //! \param[in] stopping_power Restricted stopping power in [eV/cm]
 //! \param[in] max_loss Most the projectile may lose to the grouped collisions
 //!   over one step, in [eV]. Two things bound it: a fraction \f$C_2\f$ of the
@@ -118,11 +120,21 @@ constexpr double MIN_GROUPED_COLLISIONS = 10.0;
 //!   transport cutoff, since a step that carried it past that would take it
 //!   beyond the point where it should have stopped -- and, for a positron,
 //!   past the energy at which it should have annihilated.
+//! \param[in] max_deflection Most the grouped collisions may turn the
+//!   projectile over one step, as \f$\langle 1-\mu \rangle\f$. This is what
+//!   \f$C_1\f$ names and, in PENELOPE, gets by construction: there the step is
+//!   one hard mean free path, so the soft deflection over it is
+//!   \f$\sigma_{1,soft}/\sigma_{hard}\f$ by definition. Here the step is a
+//!   sampled flight, which runs past a mean free path as often as not, and
+//!   the energy ceiling and the geometry cut it short besides -- so the bound
+//!   the parameter names has to be applied rather than assumed. It needs no
+//!   tabulating to follow the material: \f$\sigma_{1,soft}\f$ already does.
 //! \param[in] max_distance Distance beyond which the step cannot usefully
 //!   run, normally the distance to the nearest boundary, in [cm]
 //! \param[inout] seed Pseudorandom number seed pointer
-MixedStep sample_mixed_step(double xs_hard, double xs_soft,
-  double stopping_power, double max_loss, double max_distance, uint64_t* seed);
+MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
+  double stopping_power, double max_loss, double max_deflection,
+  double max_distance, uint64_t* seed);
 
 } // namespace openmc
 

@@ -210,7 +210,7 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
     bool always_grouped = true;
     for (int i = 0; i < n; ++i) {
       auto s = openmc::sample_mixed_step(
-        xs_hard, xs_soft, 0.0, max_loss, openmc::INFTY, &seed);
+        xs_hard, xs_soft, 0.0, 0.0, max_loss, 0.0, openmc::INFTY, &seed);
       always_grouped = always_grouped && s.grouped;
       hinge_inside = hinge_inside && s.hinge >= 0.0 && s.hinge <= s.length;
       sum += s.length;
@@ -229,8 +229,8 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
     // hundredth of the hard mean free path
     double stopping_power = c2 * E / 0.01;
     for (int i = 0; i < 1000; ++i) {
-      auto s = openmc::sample_mixed_step(
-        xs_hard, xs_soft, stopping_power, max_loss, openmc::INFTY, &seed);
+      auto s = openmc::sample_mixed_step(xs_hard, xs_soft, 0.0, stopping_power,
+        max_loss, 0.0, openmc::INFTY, &seed);
       CHECK(s.length <= 0.01 * (1.0 + 1.0e-12));
     }
   }
@@ -239,7 +239,7 @@ TEST_CASE("the step is bounded by collisions, by energy and by geometry")
   {
     for (int i = 0; i < 1000; ++i) {
       auto s = openmc::sample_mixed_step(
-        xs_hard, xs_soft, 0.0, max_loss, 0.001, &seed);
+        xs_hard, xs_soft, 0.0, 0.0, max_loss, 0.0, 0.001, &seed);
       CHECK(s.length <= 0.001);
       CHECK(!s.ends_in_collision);
     }
@@ -254,8 +254,8 @@ TEST_CASE("a step with too little in it is not grouped")
   // Nothing soft to group, which is what C1 = 0 and no cutoffs leave behind:
   // the scheme must hand every step back to the single-event transport
   for (int i = 0; i < 1000; ++i) {
-    auto s =
-      openmc::sample_mixed_step(1.0, 0.0, 0.0, 0.05 * E, openmc::INFTY, &seed);
+    auto s = openmc::sample_mixed_step(
+      1.0, 0.0, 0.0, 0.0, 0.05 * E, 0.0, openmc::INFTY, &seed);
     CHECK(!s.grouped);
   }
 
@@ -267,9 +267,11 @@ TEST_CASE("a step with too little in it is not grouped")
   double thin = 0.5 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
   double thick = 2.0 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
   for (int i = 0; i < 1000; ++i) {
-    CHECK(!openmc::sample_mixed_step(1.0, xs_soft, 0.0, 0.05 * E, thin, &seed)
+    CHECK(!openmc::sample_mixed_step(
+      1.0, xs_soft, 0.0, 0.0, 0.05 * E, 0.0, thin, &seed)
              .grouped);
-    CHECK(openmc::sample_mixed_step(1.0, xs_soft, 0.0, 0.05 * E, thick, &seed)
+    CHECK(openmc::sample_mixed_step(
+      1.0, xs_soft, 0.0, 0.0, 0.05 * E, 0.0, thick, &seed)
             .grouped);
   }
 }
@@ -288,7 +290,7 @@ TEST_CASE("the grouping decision does not bias the step length")
   double sum = 0.0;
   for (int i = 0; i < n; ++i) {
     auto s = openmc::sample_mixed_step(
-      xs_hard, xs_soft, 0.0, 0.05 * 1.0e7, openmc::INFTY, &seed);
+      xs_hard, xs_soft, 0.0, 0.0, 0.05 * 1.0e7, 0.0, openmc::INFTY, &seed);
     REQUIRE(s.grouped);
     sum += s.length;
   }
@@ -314,7 +316,7 @@ TEST_CASE("a step cannot carry the projectile past its own cutoff")
 
   for (int i = 0; i < 1000; ++i) {
     auto s = openmc::sample_mixed_step(
-      1.0e-6, 1.0e6, stopping_power, max_loss, openmc::INFTY, &seed);
+      1.0e-6, 1.0e6, 0.0, stopping_power, max_loss, 0.0, openmc::INFTY, &seed);
     REQUIRE(s.grouped);
     CHECK(s.length * stopping_power <= headroom * (1.0 + 1.0e-12));
   }

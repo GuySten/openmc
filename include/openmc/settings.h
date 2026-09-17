@@ -126,8 +126,9 @@ extern int64_t
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
   electron_treatment;      //!< how to treat secondary electrons
-extern double electron_c1; //!< soft angular deflection per hard elastic
-                           //!< collision; zero transports every collision
+extern double electron_c1; //!< most the grouped collisions may deflect a
+                           //!< charged particle over one condensed-history
+                           //!< step; zero transports every collision
 extern double electron_c2; //!< largest fraction of its energy a charged
                            //!< particle may give the grouped collisions in
                            //!< one condensed-history step

@@ -372,6 +372,13 @@ public:
   double elastic_energy_min_ {0.0};
   double elastic_energy_max_ {INFTY};
   tensor::Tensor<double> electroionization_;
+  //! Electroionization summed over subshells, and Bhabha likewise, on the
+  //! electron energy grid. The transport wants only the total at an energy,
+  //! and summing a slice for it on every cross section lookup meant walking
+  //! every subshell and heap-allocating the slice's shape and strides to do
+  //! it. Summed once here instead.
+  tensor::Tensor<double> ionization_sum_;
+  tensor::Tensor<double> bhabha_sum_;
   vector<unique_ptr<ElectroionizationSpectrum>> ionization_dist_;
   //! Bhabha cross section above the Moller limit, per subshell, on
   //! electron_energy_. Filled by compute_bhabha_xs(), used only for positrons.
@@ -397,6 +404,9 @@ private:
   //! the evaluated knock-on spectra cannot reach, for every subshell and every
   //! point of the electron energy grid
   void compute_bhabha_xs();
+
+  //! Sum the per-subshell inelastic spectra over subshells, once at load
+  void compute_inelastic_sums();
 
   //! Tabulate the largest Bhabha-to-Moller ratio at each grid energy, which is
   //! the factor by which a positron's electroionization cross section is

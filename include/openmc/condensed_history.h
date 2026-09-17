@@ -96,14 +96,29 @@ struct MixedStep {
 
 //! Fewest grouped collisions a step must contain to be worth grouping
 //!
-//! Below this the trade is bad in both directions. Two moments describe the
-//! sum of many collisions well and of a few badly, the central limit theorem
-//! not having set in; and there are too few collisions removed for it to be
-//! faster anyway. This is what decides, step by step and with no input from
-//! the user, where a run stops being condensed history and becomes the
-//! single-event transport it is built to agree with -- in a thin foil, near an
-//! interface, or wherever the geometry cuts the step short.
-constexpr double MIN_GROUPED_COLLISIONS = 10.0;
+//! Below this the trade is bad in both directions. A step describes the
+//! collisions it swallows by two moments, which is a fair account of a sum of
+//! N of them to about \f$1/\sqrt{N}\f$ and no better, so a hundred of them
+//! buys a ten per cent description and ten of them a thirty per cent one; and
+//! a step that removes ten collisions was not going to be much faster than
+//! simulating them anyway.
+//!
+//! The reasoning fixes the shape of the criterion and measurement fixes the
+//! number. At thirty, a 100 keV depth dose in carbon comes back identical to
+//! the single-event one -- every step declines to group -- where at ten the
+//! two differ by 3.6 standard errors for a speedup of only 1.9. A 1 MeV one
+//! keeps a speedup of 4.0 either way and the same 2.1 standard errors, so the
+//! low-energy end is what the number is bought from, and it costs the high
+//! end a factor of two.
+//!
+//! This is what decides, step by step and with no input from the user, where a
+//! run stops being condensed history and becomes the single-event transport it
+//! is built to agree with: in a thin foil, near an interface, wherever the
+//! geometry cuts the step short -- and at low energy, where collisions are
+//! violent enough that few of them fit under the angular ceiling. A 10 keV
+//! electron in carbon fits 4 and is transported one collision at a time; a
+//! 1 MeV one fits 150, and a 22 MeV one 16000.
+constexpr double MIN_GROUPED_COLLISIONS = 30.0;
 
 //! Sample the next step
 //!

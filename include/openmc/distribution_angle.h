@@ -43,6 +43,27 @@ public:
   //! \return Whether distribution is empty
   bool empty() const { return energy_.empty(); }
 
+  //! Legendre transport moments of each tabulated distribution
+  //!
+  //! Returns \f$\langle 1 - P_\ell(\mu) \rangle\f$ for \f$\ell = 1, 2\f$,
+  //! the quantities a condensed-history scheme groups soft collisions by. The
+  //! first is what sets the transport mean free path: after a path \f$s\f$ in
+  //! a medium of atom density \f$n\f$, \f$\langle\mu\rangle =
+  //! \exp(-s n \sigma_{el} \langle 1-\mu \rangle)\f$.
+  //!
+  //! The integrals are exact for each tabulated segment rather than
+  //! trapezoidal: the integrand is the product of the interpolated density
+  //! with a polynomial in \f$\mu\f$, and the elastic distributions are so
+  //! sharply forward-peaked that a quadrature error would show up directly in
+  //! the step length.
+  //!
+  //! \param[out] energy Incident energies the moments are tabulated at, in [eV]
+  //! \param[out] mu1 \f$\langle 1 - \mu \rangle\f$ at each energy
+  //! \param[out] mu2 \f$\langle \frac{3}{2}(1 - \mu^2) \rangle\f$ at each
+  //! energy
+  void transport_moments(
+    vector<double>& energy, vector<double>& mu1, vector<double>& mu2) const;
+
 private:
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;

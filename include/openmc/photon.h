@@ -80,6 +80,23 @@ public:
   //! positron; the two differ little in rate and a great deal in first moment
   double elastic_scatter(int q_index, double E, uint64_t* seed) const;
 
+  //! Transport cross sections of elastic scattering
+  //!
+  //! \f$\sigma_\ell = \sigma_{el} \langle 1 - P_\ell(\mu) \rangle\f$, the
+  //! moments a condensed-history scheme groups soft collisions by. The first
+  //! sets the transport mean free path \f$1/(n\sigma_1)\f$, over which the
+  //! mean deflection relaxes by 1/e; the second enters the width of the
+  //! grouped angular distribution.
+  //!
+  //! These are per atom and in the same units as the elastic cross section
+  //! itself. They are tabulated at load time, so this is a grid lookup.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[in] order 1 or 2
+  //! \return Transport cross section in [b]
+  double elastic_transport_xs(int q_index, double E, int order) const;
+
   double excitation(double E) const;
 
   //! Electroionization: Moller scattering for an electron, Bhabha for a
@@ -222,6 +239,10 @@ public:
   //! charge: 0 for an electron, 1 for a positron
   array<tensor::Tensor<double>, 2> elastic_;
   array<AngleDistribution, 2> elastic_angle_;
+  //! Transport moments <1-mu> and <(3/2)(1-mu^2)> of the elastic distribution,
+  //! on the electron energy grid, indexed by projectile charge
+  array<tensor::Tensor<double>, 2> elastic_mu1_;
+  array<tensor::Tensor<double>, 2> elastic_mu2_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross

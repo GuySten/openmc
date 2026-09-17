@@ -120,6 +120,56 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
   return mu;
 }
 
+void AngleDistribution::transport_moments(
+  vector<double>& energy, vector<double>& mu1, vector<double>& mu2) const
+{
+  energy = energy_;
+  mu1.clear();
+  mu2.clear();
+  mu1.reserve(distribution_.size());
+  mu2.reserve(distribution_.size());
+
+  for (const auto& dist : distribution_) {
+    const auto& x = dist->x();
+    const auto& p = dist->p();
+    bool histogram = dist->interp() == Interpolation::histogram;
+
+    double norm = 0.0;
+    double m1 = 0.0;
+    double m2 = 0.0;
+    for (int k = 0; k + 1 < x.size(); ++k) {
+      double x0 = x[k];
+      double x1 = x[k + 1];
+      double h = x1 - x0;
+      if (h <= 0.0)
+        continue;
+
+      // Integrals of p(mu), p(mu)(1-mu) and p(mu)(3/2)(1-mu^2) over the
+      // segment, exact for the interpolation law in force. `a` is the constant
+      // term of the density on the segment and `m` its slope in u = mu - x0.
+      double a = p[k];
+      double m = histogram ? 0.0 : (p[k + 1] - p[k]) / h;
+
+      double c = 1.0 - x0;      // (1 - mu) = c - u
+      double d = 1.0 - x0 * x0; // (1 - mu^2) = d - 2*x0*u - u^2
+
+      norm += a * h + 0.5 * m * h * h;
+      m1 += a * c * h + 0.5 * (m * c - a) * h * h - m * h * h * h / 3.0;
+      m2 += 1.5 *
+            (a * d * h + 0.5 * (m * d - 2.0 * a * x0) * h * h +
+              (-2.0 * m * x0 - a) * h * h * h / 3.0 - 0.25 * m * h * h * h * h);
+    }
+
+    if (norm > 0.0) {
+      mu1.push_back(m1 / norm);
+      mu2.push_back(m2 / norm);
+    } else {
+      mu1.push_back(0.0);
+      mu2.push_back(0.0);
+    }
+  }
+}
+
 double AngleDistribution::evaluate(double E, double mu) const
 {
   // Find energy bin and calculate interpolation factor

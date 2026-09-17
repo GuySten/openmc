@@ -35,6 +35,48 @@ namespace openmc {
 // Electron interaction data, read into Element
 //==============================================================================
 
+namespace {
+
+//! Put a quantity tabulated on the partial-wave energy grid onto the (denser)
+//! electron grid, interpolating log-log.
+//!
+//! Both transport moments fall as a power of the energy across each interval
+//! of the geometric partial-wave grid, so a linear blend across an interval
+//! spanning a factor of 1.2 is a chord across a convex curve. This is the same
+//! argument that makes the angular distributions themselves log-log
+//! interpolated in energy.
+tensor::Tensor<double> moments_on_grid(const tensor::Tensor<double>& grid,
+  const vector<double>& energy, const vector<double>& value)
+{
+  int n = grid.size();
+  auto out = tensor::zeros<double>({n});
+  if (energy.size() < 2)
+    return out;
+
+  for (int i = 0; i < n; ++i) {
+    double E = grid(i);
+    int k = lower_bound_index(energy.begin(), energy.end(), E);
+    k = std::max(0, std::min(k, static_cast<int>(energy.size()) - 2));
+
+    double v0 = value[k];
+    double v1 = value[k + 1];
+    double e0 = energy[k];
+    double e1 = energy[k + 1];
+    if (v0 > 0.0 && v1 > 0.0 && e0 > 0.0 && e1 > e0 && E > 0.0) {
+      double f = std::log(E / e0) / std::log(e1 / e0);
+      out(i) = std::exp((1.0 - f) * std::log(v0) + f * std::log(v1));
+    } else if (e1 > e0) {
+      double f = (E - e0) / (e1 - e0);
+      out(i) = std::max(0.0, v0 + f * (v1 - v0));
+    } else {
+      out(i) = v0;
+    }
+  }
+  return out;
+}
+
+} // namespace
+
 void Element::read_electron_data(hid_t group)
 {
   // name_, Z_ and index_ are already set from the photoatomic data; only the
@@ -72,6 +114,17 @@ void Element::read_electron_data(hid_t group)
     elastic_angle_[q] = AngleDistribution {qdist, Interpolation::log_log};
     close_group(qdist);
     close_group(qgroup);
+
+    // Transport moments of the elastic distribution, tabulated once here onto
+    // the electron energy grid. <1-mu> is what sets the scale a condensed
+    // history step may cover: after a path s the mean deflection is
+    // exp(-s n sigma_el <1-mu>), so 1/(n sigma_el <1-mu>) is the first
+    // transport mean free path. Computing them at load costs one pass over
+    // data already in memory and needs nothing the library does not ship.
+    vector<double> m_energy, m1, m2;
+    elastic_angle_[q].transport_moments(m_energy, m1, m2);
+    elastic_mu1_[q] = moments_on_grid(electron_energy_, m_energy, m1);
+    elastic_mu2_[q] = moments_on_grid(electron_energy_, m_energy, m2);
   }
   close_group(rgroup);
 
@@ -421,6 +474,30 @@ void Element::calculate_electron_xs(Particle& p) const
 double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
 {
   return elastic_angle_[q_index].sample(E, seed);
+}
+
+double Element::elastic_transport_xs(int q_index, double E, int order) const
+{
+  const auto& moment =
+    (order == 1) ? elastic_mu1_[q_index] : elastic_mu2_[q_index];
+  int n = electron_energy_.size();
+  if (n < 2 || moment.size() != n)
+    return 0.0;
+
+  // Same clamped lookup the cross sections use: outside the tabulated range a
+  // linear extrapolation of a quantity falling as a power of the energy goes
+  // negative, and a negative transport cross section is a negative step length.
+  int i =
+    upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
+  i = std::max(0, std::min(i, n - 2));
+  double f =
+    (E - electron_energy_(i)) / (electron_energy_(i + 1) - electron_energy_(i));
+  f = std::max(0.0, std::min(1.0, f));
+
+  double xs = elastic_[q_index](i) +
+              f * (elastic_[q_index](i + 1) - elastic_[q_index](i));
+  double mu = moment(i) + f * (moment(i + 1) - moment(i));
+  return std::max(0.0, xs * mu);
 }
 
 double Element::excitation(double E) const

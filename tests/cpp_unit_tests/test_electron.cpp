@@ -2,6 +2,7 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
+#include <vector>
 
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
@@ -150,4 +151,65 @@ TEST_CASE("the Salvat positron bremsstrahlung factor is a ratio below one")
     // The fit approaches one from below, more slowly for heavy elements
     CHECK(openmc::salvat_factor(z_sq, 1.0e9) > 0.99);
   }
+}
+
+// The transport moments an eventual condensed-history step length is built
+// from. They are integrals of the tabulated angular distribution, so what
+// matters is that the quadrature is exact for the interpolation law -- these
+// distributions are forward-peaked enough that a trapezoidal error in
+// <1-mu> would show up directly in the step size.
+TEST_CASE("elastic transport moments are exact for a linear density")
+{
+  // p(mu) = (1 + mu)/2 on [-1, 1], normalised, with
+  //   <1 - mu>          = 1 - 1/3 = 2/3
+  //   <(3/2)(1 - mu^2)> = (3/2)(1 - 1/3) = 1
+  // Both are polynomial in mu, so an exact per-segment integration returns
+  // them for ANY partition of the interval; a trapezoidal one does not.
+  for (int n : {3, 5, 17}) {
+    std::vector<double> x(n), p(n);
+    for (int i = 0; i < n; ++i) {
+      x[i] = -1.0 + 2.0 * i / (n - 1);
+      p[i] = 0.5 * (1.0 + x[i]);
+    }
+
+    // Integrate the same way AngleDistribution::transport_moments does
+    double norm = 0.0, m1 = 0.0, m2 = 0.0;
+    for (int k = 0; k + 1 < n; ++k) {
+      double x0 = x[k], h = x[k + 1] - x[k];
+      double a = p[k], m = (p[k + 1] - p[k]) / h;
+      double c = 1.0 - x0, d = 1.0 - x0 * x0;
+      norm += a * h + 0.5 * m * h * h;
+      m1 += a * c * h + 0.5 * (m * c - a) * h * h - m * h * h * h / 3.0;
+      m2 += 1.5 *
+            (a * d * h + 0.5 * (m * d - 2.0 * a * x0) * h * h +
+              (-2.0 * m * x0 - a) * h * h * h / 3.0 - 0.25 * m * h * h * h * h);
+    }
+    CHECK_THAT(norm, WithinRel(1.0, 1.0e-12));
+    CHECK_THAT(m1 / norm, WithinRel(2.0 / 3.0, 1.0e-12));
+    CHECK_THAT(m2 / norm, WithinRel(1.0, 1.0e-12));
+  }
+}
+
+TEST_CASE("an isotropic distribution has the moments of isotropy")
+{
+  // p(mu) = 1/2 gives <1-mu> = 1 and <(3/2)(1-mu^2)> = 1. A scheme that
+  // grouped soft collisions would relax to isotropy over one transport mean
+  // free path, so these are the values the step length is measured against.
+  int n = 9;
+  std::vector<double> x(n), p(n, 0.5);
+  for (int i = 0; i < n; ++i)
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+
+  double norm = 0.0, m1 = 0.0, m2 = 0.0;
+  for (int k = 0; k + 1 < n; ++k) {
+    double x0 = x[k], h = x[k + 1] - x[k];
+    double a = p[k], m = 0.0;
+    double c = 1.0 - x0, d = 1.0 - x0 * x0;
+    norm += a * h;
+    m1 += a * c * h - a * h * h / 2.0;
+    m2 += 1.5 * (a * d * h - a * x0 * h * h - a * h * h * h / 3.0);
+  }
+  CHECK_THAT(norm, WithinRel(1.0, 1.0e-12));
+  CHECK_THAT(m1 / norm, WithinRel(1.0, 1.0e-12));
+  CHECK_THAT(m2 / norm, WithinRel(1.0, 1.0e-12));
 }

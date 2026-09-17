@@ -117,30 +117,6 @@ class Settings:
         and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
-    electron_transport : bool
-        Whether to transport electrons and positrons as individual particles,
-        simulating every interaction as a discrete event rather than depositing
-        their energy locally or spreading it with the thick-target
-        approximation. Requires photon transport and an electron data library,
-        and makes :attr:`electron_treatment` inapplicable.
-
-        .. versionadded:: 0.17.0
-    electron_transport : bool
-        Whether to transport electrons and positrons as individual particles,
-        simulating every interaction as a discrete event rather than depositing
-        their energy locally or spreading it with the thick-target
-        approximation. Requires photon transport and an electron data library,
-        and makes :attr:`electron_treatment` inapplicable.
-
-        .. versionadded:: 0.17.0
-    electron_transport : bool
-        Whether to transport electrons and positrons as individual particles,
-        simulating every interaction as a discrete event rather than depositing
-        their energy locally or spreading it with the thick-target
-        approximation. Requires photon transport and an electron data library,
-        and makes :attr:`electron_treatment` inapplicable.
-
-        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').

@@ -140,16 +140,18 @@ public:
   //!
   //! Multiply the channel's cross section by this to get the rate of hard
   //! collisions. For electroionization the fraction is a quantile of the
-  //! knock-on spectrum, so it is the same for both projectiles: a positron's
-  //! collisions are the tabulated ones reweighted by rejection, and rejecting
-  //! within the hard part leaves that part's quantile range alone.
+  //! knock-on spectrum, which is what lets a positron's collisions keep using
+  //! rejection: rejecting within the hard part leaves that part's quantile
+  //! range alone. The two projectiles still differ, because their thresholds
+  //! do. Bhabha scattering exists only for a positron and takes no charge.
   //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
   //! \param[in] i_shell Index into the electroionization subshell list
-  double excitation_hard_fraction(double E) const;
-  double ionization_hard_fraction(int i_shell, double E) const;
+  double excitation_hard_fraction(int q_index, double E) const;
+  double ionization_hard_fraction(int q_index, int i_shell, double E) const;
   double bhabha_hard_fraction(int i_shell, double E) const;
-  double bremsstrahlung_hard_fraction(double E) const;
+  double bremsstrahlung_hard_fraction(int q_index, double E) const;
 
   double excitation(double E) const;
 
@@ -314,12 +316,14 @@ public:
   array<tensor::Tensor<double>, 2> inelastic_soft_s_;
   array<tensor::Tensor<double>, 2> inelastic_soft_w2_;
   //! Fraction of each inelastic channel that stays a discrete collision, on
-  //! the electron energy grid. The electroionization and Bhabha ones carry a
-  //! subshell index as well. Atomic excitation has no entry here: it puts
-  //! nothing on the stack, so no threshold bounds it and it is grouped whole.
-  tensor::Tensor<double> ionization_p_hard_;
+  //! the electron energy grid and indexed by projectile charge, since the two
+  //! projectiles have different cutoffs and so different thresholds. The
+  //! electroionization one carries a subshell index as well. Bhabha scattering
+  //! exists only for a positron, so it takes no charge index.
+  array<tensor::Tensor<double>, 2> excitation_p_hard_;
+  array<tensor::Tensor<double>, 2> ionization_p_hard_;
+  array<tensor::Tensor<double>, 2> brems_p_hard_;
   tensor::Tensor<double> bhabha_p_hard_;
-  tensor::Tensor<double> brems_p_hard_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross
@@ -462,34 +466,53 @@ extern vector<unique_ptr<Element>> elements;
 // Non-member functions
 //==============================================================================
 
+//! Energy a grouped event may take from the projectile itself
+//!
+//! A soft collision must not be able to carry the projectile across the energy
+//! at which it stops being transported. Below its own cutoff the projectile
+//! would have been killed where it was -- and for a positron, killed means
+//! annihilated at rest, which makes two 511 keV photons where an annihilation
+//! in flight would have made one of up to \f$T + 1.5 m_e c^2\f$. A grouped
+//! event that stepped over that energy would swap one outcome for the other,
+//! so the transfer is bounded by how far the projectile is above it.
+//!
+//! \param[in] q_index 0 for an electron, 1 for a positron
+//! \param[in] E Kinetic energy in [eV]
+//! \return Headroom in [eV]
+double soft_projectile_headroom(int q_index, double E);
+
 //! Largest energy transfer a collision may make and still be grouped
 //!
-//! An electroionization or excitation collision that transfers \f$W\f$ puts on
-//! the stack a knock-on electron of \f$W - B\f$, and, from the vacancy it
-//! leaves, fluorescence photons and Auger electrons of at most \f$B\f$. Every
-//! one of them carries less than \f$W\f$. So if \f$W\f$ is below both the
-//! electron and the photon transport cutoff, every particle the collision could
-//! produce would be killed on creation and its energy deposited on the spot,
-//! and grouping the collision into a restricted stopping power discards
-//! nothing that would have been transported.
+//! Two things have to hold. Nothing the collision produces may be lost: a
+//! collision transferring \f$W\f$ puts on the stack a knock-on electron of
+//! \f$W - B\f$ and, from the vacancy it leaves, fluorescence photons and Auger
+//! electrons of at most \f$B\f$, every one of them below \f$W\f$ itself, so a
+//! transfer under both the electron and the photon cutoff produces nothing
+//! that would have been transported. And the projectile has to survive it,
+//! which is soft_projectile_headroom().
 //!
-//! The positron cutoff does not enter: no soft collision channel produces a
-//! positron. It bounds the step instead, since a step may not carry a positron
-//! past the energy at which it would have stopped and annihilated.
+//! All three cutoffs therefore bear on the threshold: the photon and electron
+//! ones through what the collision emits, the positron one through what the
+//! projectile becomes.
 //!
+//! \param[in] q_index 0 for an electron, 1 for a positron
+//! \param[in] E Kinetic energy in [eV]
 //! \return Cutoff in [eV]; zero means nothing may be grouped
-double soft_collision_cutoff();
+double soft_collision_cutoff(int q_index, double E);
 
 //! Largest bremsstrahlung photon energy that may be grouped
 //!
-//! A bremsstrahlung collision produces one photon and leaves the electron in
-//! flight, so only the photon cutoff bears on it. This is larger than
-//! soft_collision_cutoff() whenever the electron cutoff is the lower of the
-//! two -- including the default, where the electron cutoff is zero and no
-//! collision may be grouped while radiative losses still may.
+//! A bremsstrahlung collision produces one photon and leaves the projectile in
+//! flight, so of what it emits only the photon cutoff bears on it. The
+//! projectile bound matters more here than anywhere else: a single photon may
+//! carry off nearly the whole kinetic energy, and without that bound a grouped
+//! emission could take an electron from just above its cutoff to nearly at
+//! rest and then smear the loss along the step.
 //!
+//! \param[in] q_index 0 for an electron, 1 for a positron
+//! \param[in] E Kinetic energy in [eV]
 //! \return Cutoff in [eV]
-double soft_radiative_cutoff();
+double soft_radiative_cutoff(int q_index, double E);
 
 } // namespace openmc
 

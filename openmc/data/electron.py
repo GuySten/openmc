@@ -374,9 +374,8 @@ class IncidentElectron:
 
         References
         ----------
-        The data are computed with ELSEPA. If you use them in your research, please
-        cite Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
-        (2005) 157-190.
+        Computed with ELSEPA, the Dirac partial-wave code of Salvat, Jablonski
+        and Powell, *Computer Physics Communications* **165** (2005) 157-190.
 
         Notes
         -----

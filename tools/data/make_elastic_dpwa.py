@@ -27,13 +27,12 @@ settings under which the published DPWA databases are built.  Run for carbon,
 the output reproduces PENELOPE's own ELSEPA-derived database to four decimal
 places in all three cross sections from 100 keV to 100 MeV.
 
-ELSEPA is Apache-2.0, repackaged by J. Hidding of the Netherlands eScience
-Center at https://github.com/eScienceCenter/elsepa.  Point --elscata and
---elsepa-data at a built copy.  If you use this data in your research, please
-cite
-
-    Salvat, Jablonski and Powell, Computer Physics Communications 165 (2005)
-    157-190, https://www.sciencedirect.com/science/article/pii/S0010465504004795
+ELSEPA is the Dirac partial-wave code of Salvat, Jablonski and Powell,
+Computer Physics Communications 165 (2005) 157-190,
+https://www.sciencedirect.com/science/article/pii/S0010465504004795.  It is
+Apache-2.0, repackaged by J. Hidding of the Netherlands eScience Center at
+https://github.com/eScienceCenter/elsepa.  Point --elscata and --elsepa-data
+at a built copy.
 """
 
 import argparse

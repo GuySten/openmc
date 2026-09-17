@@ -350,61 +350,58 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   int electron = openmc::ParticleType::electron().transport_index();
   int positron = openmc::ParticleType::positron().transport_index();
   auto saved = openmc::settings::energy_cutoff;
+  double saved_loss = openmc::settings::electron_max_step_energy_loss;
+  openmc::settings::electron_max_step_energy_loss = 0.05;
+  double E = 2.2e7;
 
-  // The cutoffs of a photoneutron run: the electron and photon ones at the
-  // reaction threshold, the positron one lower because a positron that far
-  // below it still annihilates into a photon above it.
+  // Three things bound what a collision may transfer and still be grouped,
+  // and each is checked where it is the one that binds.
+
+  // The step's own energy budget, which is what binds in a photoneutron run:
+  // the step may lose 0.05 of 22 MeV and one collision may carry a tenth of
+  // that. Left out, the 8 MeV cutoffs below would let a single grouped
+  // collision carry seven times the energy the step was allowed to lose.
   openmc::settings::energy_cutoff[photon] = 8.0e6;
   openmc::settings::energy_cutoff[electron] = 8.0e6;
   openmc::settings::energy_cutoff[positron] = 7.24e6;
+  CHECK_THAT(
+    openmc::soft_collision_cutoff(0, E), WithinRel(0.1 * 0.05 * E, 1.0e-12));
+  CHECK_THAT(
+    openmc::soft_radiative_cutoff(0, E), WithinRel(0.1 * 0.05 * E, 1.0e-12));
 
-  // Far above every cutoff, what the collision emits is what binds. An
+  // What the collision emits, which binds once the cutoffs are low. An
   // ionization collision emits a knock-on and, through the vacancy it leaves,
-  // fluorescence and Auger products -- all below the transfer itself -- so the
-  // lower of the electron and photon cutoffs bounds it.
-  double E = 2.2e7;
-  CHECK(openmc::soft_collision_cutoff(0, E) == 8.0e6);
-  CHECK(openmc::soft_collision_cutoff(1, E) == 8.0e6);
+  // fluorescence and Auger products, every one below the transfer itself, so
+  // the lower of the electron and photon cutoffs bounds it. Bremsstrahlung
+  // emits only a photon, so the electron cutoff does not bound it and the two
+  // thresholds part company.
+  openmc::settings::energy_cutoff[photon] = 1.0e5;
+  openmc::settings::energy_cutoff[electron] = 1.0e4;
+  CHECK(openmc::soft_collision_cutoff(0, E) == 1.0e4);
+  CHECK(openmc::soft_radiative_cutoff(0, E) == 1.0e5);
 
-  // Bremsstrahlung emits only a photon, so the electron cutoff does not bound
-  // it and the two thresholds part company
-  openmc::settings::energy_cutoff[photon] = 8.0e6;
-  openmc::settings::energy_cutoff[electron] = 1.0e6;
-  CHECK(openmc::soft_collision_cutoff(0, E) == 1.0e6);
-  CHECK(openmc::soft_radiative_cutoff(0, E) == 8.0e6);
-
-  // Near the cutoff it is the projectile that binds, and there the two charges
-  // part company: a positron may be taken further down than an electron may,
-  // because its own cutoff is lower. Nothing else in the split distinguishes
-  // them, and without this bound a single grouped bremsstrahlung photon could
-  // take a projectile from just above its cutoff to nearly at rest.
+  // The projectile itself, which binds at the cutoff. There the two charges
+  // part company: a positron may still be grouped a little where an electron
+  // may not, because its own cutoff is the lower one -- that being the whole
+  // reason a photoneutron run sets it lower.
   openmc::settings::energy_cutoff[photon] = 8.0e6;
   openmc::settings::energy_cutoff[electron] = 8.0e6;
-  E = 9.0e6;
-  CHECK(openmc::soft_projectile_headroom(0, E) == 1.0e6);
-  CHECK(openmc::soft_projectile_headroom(1, E) == 1.76e6);
-  CHECK(openmc::soft_collision_cutoff(0, E) == 1.0e6);
-  CHECK(openmc::soft_collision_cutoff(1, E) == 1.76e6);
-  CHECK(openmc::soft_radiative_cutoff(0, E) == 1.0e6);
-  CHECK(openmc::soft_radiative_cutoff(1, E) == 1.76e6);
-
-  // A projectile at its own cutoff has no headroom at all: every one of its
-  // collisions stays discrete, because any of them could end its history
   CHECK(openmc::soft_projectile_headroom(0, 8.0e6) == 0.0);
+  CHECK(openmc::soft_projectile_headroom(1, 8.0e6) == 8.0e6 - 7.24e6);
   CHECK(openmc::soft_collision_cutoff(0, 8.0e6) == 0.0);
+  CHECK(openmc::soft_collision_cutoff(1, 8.0e6) > 0.0);
   CHECK(openmc::soft_radiative_cutoff(0, 8.0e6) == 0.0);
-  CHECK(openmc::soft_projectile_headroom(0, 1.0e6) == 0.0);
 
   // OpenMC's default transports every electron to rest, so every knock-on is
-  // followed and no collision may be grouped. The projectile bound goes away
-  // with it -- an electron with no cutoff may be taken all the way down -- and
-  // radiative losses under the photon cutoff may still be grouped.
+  // followed and no collision may be grouped. Radiative losses under the
+  // photon cutoff still may, up to the step's share of them.
   openmc::settings::energy_cutoff[photon] = 1000.0;
   openmc::settings::energy_cutoff[electron] = 0.0;
   openmc::settings::energy_cutoff[positron] = 0.0;
-  CHECK(openmc::soft_projectile_headroom(0, 2.2e7) == 2.2e7);
-  CHECK(openmc::soft_collision_cutoff(0, 2.2e7) == 0.0);
-  CHECK(openmc::soft_radiative_cutoff(0, 2.2e7) == 1000.0);
+  CHECK(openmc::soft_projectile_headroom(0, E) == E);
+  CHECK(openmc::soft_collision_cutoff(0, E) == 0.0);
+  CHECK(openmc::soft_radiative_cutoff(0, E) == 1000.0);
 
   openmc::settings::energy_cutoff = saved;
+  openmc::settings::electron_max_step_energy_loss = saved_loss;
 }

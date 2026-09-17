@@ -430,21 +430,44 @@ double soft_projectile_headroom(int q_index, double E)
   return std::max(0.0, E - own_cutoff(q_index));
 }
 
+namespace {
+
+//! Largest share of a step's energy budget one grouped collision may carry
+//!
+//! The step describes that energy by two moments, and the transfers are
+//! distributed as 1/W^2, so the variance sits in the few largest of them. A
+//! tenth leaves about ten of them to share it, which is the fewest that makes
+//! a mean and a variance mean anything.
+constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
+
+//! Energy a step is allowed to lose to the grouped collisions
+double soft_loss_budget(int q_index, double E)
+{
+  return std::min(settings::electron_max_step_energy_loss * E,
+    soft_projectile_headroom(q_index, E));
+}
+
+} // namespace
+
 double soft_collision_cutoff(int q_index, double E)
 {
   double photon =
     settings::energy_cutoff[ParticleType::photon().transport_index()];
   double electron =
     settings::energy_cutoff[ParticleType::electron().transport_index()];
-  return std::max(0.0,
-    std::min(std::min(photon, electron), soft_projectile_headroom(q_index, E)));
+  return std::max(
+    0.0, std::min(std::min(photon, electron),
+           std::min(soft_projectile_headroom(q_index, E),
+             MAX_SOFT_LOSS_SHARE * soft_loss_budget(q_index, E))));
 }
 
 double soft_radiative_cutoff(int q_index, double E)
 {
   double photon =
     settings::energy_cutoff[ParticleType::photon().transport_index()];
-  return std::max(0.0, std::min(photon, soft_projectile_headroom(q_index, E)));
+  return std::max(0.0,
+    std::min(photon, std::min(soft_projectile_headroom(q_index, E),
+                       MAX_SOFT_LOSS_SHARE * soft_loss_budget(q_index, E))));
 }
 
 namespace {

@@ -536,6 +536,21 @@ double soft_projectile_headroom(int q_index, double E);
 //! ones through what the collision emits, the positron one through what the
 //! projectile becomes.
 //!
+//! One more thing bounds it, and it has nothing to do with what is lost. A
+//! step describes the energy its grouped collisions take by a mean and a
+//! variance, which is a fair account only if many of them contribute. The
+//! spectrum of transfers falls as \f$1/W^2\f$, so the variance is carried by
+//! the largest of them, and a transfer comparable to the step's whole energy
+//! budget would leave that budget in the hands of one or two collisions. So
+//! the threshold is also capped at a fraction of what the step may lose. In
+//! a photoneutron run this is what binds: an 8 MeV electron cutoff would
+//! otherwise let a single grouped collision carry seven times the energy the
+//! step was allowed to lose, which is not a description of anything.
+//!
+//! PENELOPE leaves W_cc to the user and PenRed sets it to a hundredth of the
+//! absorption energy, capped at 5 keV, which is the same guard reached from
+//! the other end.
+//!
 //! \param[in] q_index 0 for an electron, 1 for a positron
 //! \param[in] E Kinetic energy in [eV]
 //! \return Cutoff in [eV]; zero means nothing may be grouped

@@ -47,6 +47,22 @@ public:
   vector<Transition> transitions;
 };
 
+//==============================================================================
+//! Soft/hard split of elastic scattering at one energy
+//!
+//! A mixed (class II) condensed-history step is bounded by a hard elastic
+//! collision and carries the soft ones as a single artificial deflection. The
+//! first transport cross section of the soft part sets the size of that
+//! deflection, the second its shape.
+//==============================================================================
+
+struct ElasticSplit {
+  double mu_cut {1.0};   //!< cosine below which a deflection is hard
+  double xs_hard {0.0};  //!< hard elastic cross section in [b]
+  double xs1_soft {0.0}; //!< first transport cross section of the soft part
+  double xs2_soft {0.0}; //!< second transport cross section of the soft part
+};
+
 class Element {
 public:
   // Constructors/destructor
@@ -96,6 +112,17 @@ public:
   //! \param[in] order 1 or 2
   //! \return Transport cross section in [b]
   double elastic_transport_xs(int q_index, double E, int order) const;
+
+  //! Soft/hard split of elastic scattering at one energy
+  //!
+  //! All three cross sections are per atom and in the same units as the
+  //! elastic cross section itself. The split is tabulated at load time from
+  //! settings::electron_c1, so this is a grid lookup.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return The cutoff and the cross sections it implies
+  ElasticSplit elastic_split(int q_index, double E) const;
 
   double excitation(double E) const;
 
@@ -243,6 +270,16 @@ public:
   //! on the electron energy grid, indexed by projectile charge
   array<tensor::Tensor<double>, 2> elastic_mu1_;
   array<tensor::Tensor<double>, 2> elastic_mu2_;
+  //! Soft/hard split of the elastic distribution at settings::electron_c1, on
+  //! the electron energy grid, indexed by projectile charge. The cutoff is
+  //! held as the deflection 1-mu rather than as the cosine: at C1 = 0.001 and
+  //! 100 MeV it is 1.1e-4 in tungsten, so four digits of the cosine carry no
+  //! information, and both the interpolation between grid points and the
+  //! deflection the sampler works in would inherit the loss.
+  array<tensor::Tensor<double>, 2> elastic_dcut_;
+  array<tensor::Tensor<double>, 2> elastic_p_hard_;
+  array<tensor::Tensor<double>, 2> elastic_mu1_soft_;
+  array<tensor::Tensor<double>, 2> elastic_mu2_soft_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross

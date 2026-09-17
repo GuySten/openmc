@@ -6,6 +6,7 @@
 
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
+#include "openmc/distribution_angle.h"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
@@ -172,21 +173,10 @@ TEST_CASE("elastic transport moments are exact for a linear density")
       p[i] = 0.5 * (1.0 + x[i]);
     }
 
-    // Integrate the same way AngleDistribution::transport_moments does
-    double norm = 0.0, m1 = 0.0, m2 = 0.0;
-    for (int k = 0; k + 1 < n; ++k) {
-      double x0 = x[k], h = x[k + 1] - x[k];
-      double a = p[k], m = (p[k + 1] - p[k]) / h;
-      double c = 1.0 - x0, d = 1.0 - x0 * x0;
-      norm += a * h + 0.5 * m * h * h;
-      m1 += a * c * h + 0.5 * (m * c - a) * h * h - m * h * h * h / 3.0;
-      m2 += 1.5 *
-            (a * d * h + 0.5 * (m * d - 2.0 * a * x0) * h * h +
-              (-2.0 * m * x0 - a) * h * h * h / 3.0 - 0.25 * m * h * h * h * h);
-    }
-    CHECK_THAT(norm, WithinRel(1.0, 1.0e-12));
-    CHECK_THAT(m1 / norm, WithinRel(2.0 / 3.0, 1.0e-12));
-    CHECK_THAT(m2 / norm, WithinRel(1.0, 1.0e-12));
+    double mu1, mu2;
+    openmc::angular_moments(x, p, false, mu1, mu2);
+    CHECK_THAT(mu1, WithinRel(2.0 / 3.0, 1.0e-12));
+    CHECK_THAT(mu2, WithinRel(1.0, 1.0e-12));
   }
 }
 
@@ -200,16 +190,113 @@ TEST_CASE("an isotropic distribution has the moments of isotropy")
   for (int i = 0; i < n; ++i)
     x[i] = -1.0 + 2.0 * i / (n - 1);
 
-  double norm = 0.0, m1 = 0.0, m2 = 0.0;
-  for (int k = 0; k + 1 < n; ++k) {
-    double x0 = x[k], h = x[k + 1] - x[k];
-    double a = p[k], m = 0.0;
-    double c = 1.0 - x0, d = 1.0 - x0 * x0;
-    norm += a * h;
-    m1 += a * c * h - a * h * h / 2.0;
-    m2 += 1.5 * (a * d * h - a * x0 * h * h - a * h * h * h / 3.0);
+  double mu1, mu2;
+  openmc::angular_moments(x, p, true, mu1, mu2);
+  CHECK_THAT(mu1, WithinRel(1.0, 1.0e-12));
+  CHECK_THAT(mu2, WithinRel(1.0, 1.0e-12));
+}
+
+// The soft/hard split a mixed condensed-history step is built on. The cutoff
+// is defined implicitly, by C1 = sigma_1_soft / sigma_hard, so what has to be
+// checked is that the solver lands on the cosine that equation names.
+TEST_CASE("the soft/hard split solves for the cutoff C1 asks for")
+{
+  // p(mu) = (1 + mu)/2 again. Putting the cutoff at mu = 0 leaves
+  //   P_hard   = (1 + mu_c)^2/4                 = 1/4
+  //   <1-mu>_s = (1/2)(2/3 - mu_c + mu_c^3/3)   = 1/3
+  //   <(3/2)(1-mu^2)>_s                         = 11/16
+  // so C1 = (1/3)/(1/4) = 4/3 must put it exactly there. n = 6 is included
+  // because it has no node at mu = 0: the root then falls strictly inside a
+  // segment and the bisection, not the partition, has to find it.
+  for (int n : {3, 5, 6, 17}) {
+    std::vector<double> x(n), p(n);
+    for (int i = 0; i < n; ++i) {
+      x[i] = -1.0 + 2.0 * i / (n - 1);
+      p[i] = 0.5 * (1.0 + x[i]);
+    }
+
+    double mu_cut, p_hard, mu1_soft, mu2_soft;
+    openmc::restricted_angular_moments(
+      x, p, false, 4.0 / 3.0, mu_cut, p_hard, mu1_soft, mu2_soft);
+    CHECK_THAT(mu_cut, WithinAbs(0.0, 1.0e-12));
+    CHECK_THAT(p_hard, WithinRel(0.25, 1.0e-12));
+    CHECK_THAT(mu1_soft, WithinRel(1.0 / 3.0, 1.0e-12));
+    CHECK_THAT(mu2_soft, WithinRel(11.0 / 16.0, 1.0e-12));
   }
-  CHECK_THAT(norm, WithinRel(1.0, 1.0e-12));
-  CHECK_THAT(m1 / norm, WithinRel(1.0, 1.0e-12));
-  CHECK_THAT(m2 / norm, WithinRel(1.0, 1.0e-12));
+
+  // The same for a histogram density: p = 1/2 cut at mu = 0 leaves P_hard =
+  // 1/2 and <1-mu>_soft = 1/4, so C1 = 1/2 names that cutoff.
+  int n = 9;
+  std::vector<double> x(n), p(n, 0.5);
+  for (int i = 0; i < n; ++i)
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+
+  double mu_cut, p_hard, mu1_soft, mu2_soft;
+  openmc::restricted_angular_moments(
+    x, p, true, 0.5, mu_cut, p_hard, mu1_soft, mu2_soft);
+  CHECK_THAT(mu_cut, WithinAbs(0.0, 1.0e-12));
+  CHECK_THAT(p_hard, WithinRel(0.5, 1.0e-12));
+  CHECK_THAT(mu1_soft, WithinRel(0.25, 1.0e-12));
+  CHECK_THAT(mu2_soft, WithinRel(0.5, 1.0e-12));
+}
+
+TEST_CASE("C1 = 0 is exactly single-event transport")
+{
+  // Nothing may be grouped: the cutoff sits at the top of the range, the whole
+  // cross section is hard and both soft moments vanish. A mixed scheme that
+  // did not reduce to this could not be checked against the transport it
+  // replaces.
+  int n = 11;
+  std::vector<double> x(n), p(n);
+  for (int i = 0; i < n; ++i) {
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+    p[i] = 0.5 * (1.0 + x[i]);
+  }
+
+  double mu_cut, p_hard, mu1_soft, mu2_soft;
+  openmc::restricted_angular_moments(
+    x, p, false, 0.0, mu_cut, p_hard, mu1_soft, mu2_soft);
+  CHECK(mu_cut == 1.0);
+  CHECK(p_hard == 1.0);
+  CHECK(mu1_soft == 0.0);
+  CHECK(mu2_soft == 0.0);
+}
+
+TEST_CASE("the split moves monotonically with C1 and conserves the total")
+{
+  // A forward-peaked density, closer to what the elastic data look like than
+  // anything polynomial: p(mu) ~ 1/(1 + a - mu)^2 with a small, the Wentzel
+  // form. Raising C1 must move the cutoff away from forward, take cross
+  // section out of the hard part and put first moment into the soft one --
+  // and the soft moment can never exceed the total.
+  int n = 4001;
+  double a = 1.0e-3;
+  std::vector<double> x(n), p(n);
+  for (int i = 0; i < n; ++i) {
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+    p[i] = 1.0 / ((1.0 + a - x[i]) * (1.0 + a - x[i]));
+  }
+
+  double mu1_total, mu2_total;
+  openmc::angular_moments(x, p, false, mu1_total, mu2_total);
+
+  double last_cut = 1.0, last_hard = 1.0, last_m1 = 0.0;
+  for (double c1 : {0.01, 0.02, 0.05, 0.1, 0.2}) {
+    double mu_cut, p_hard, mu1_soft, mu2_soft;
+    openmc::restricted_angular_moments(
+      x, p, false, c1, mu_cut, p_hard, mu1_soft, mu2_soft);
+
+    // The defining equation, which is the whole point of the solver
+    CHECK_THAT(mu1_soft, WithinRel(c1 * p_hard, 1.0e-10));
+
+    CHECK(mu_cut < last_cut);
+    CHECK(p_hard < last_hard);
+    CHECK(mu1_soft > last_m1);
+    CHECK(mu1_soft < mu1_total);
+    CHECK(mu2_soft < mu2_total);
+    CHECK(p_hard > 0.0);
+    last_cut = mu_cut;
+    last_hard = p_hard;
+    last_m1 = mu1_soft;
+  }
 }

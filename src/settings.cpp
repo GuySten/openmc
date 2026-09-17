@@ -112,6 +112,7 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
+double electron_c1 {0.0};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -626,6 +627,17 @@ void read_settings_xml(pugi::xml_node root)
       electron_treatment = ElectronTreatment::TTB;
     } else {
       fatal_error("Unrecognized electron treatment: " + temp_str + ".");
+    }
+  }
+
+  // Soft/hard split of elastic scattering for condensed history. This is
+  // PENELOPE's C1: the average angular deflection, measured as <1-mu>, that
+  // the grouped soft collisions accumulate between two hard ones. Zero is the
+  // default and leaves every collision hard, which is single-event transport.
+  if (check_for_node(root, "electron_c1")) {
+    electron_c1 = std::stod(get_node_value(root, "electron_c1"));
+    if (electron_c1 < 0.0 || electron_c1 > 1.0) {
+      fatal_error("electron_c1 must be between 0 and 1.");
     }
   }
 

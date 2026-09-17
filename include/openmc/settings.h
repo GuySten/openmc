@@ -125,7 +125,9 @@ extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
-  electron_treatment; //!< how to treat secondary electrons
+  electron_treatment;      //!< how to treat secondary electrons
+extern double electron_c1; //!< soft angular deflection per hard elastic
+                           //!< collision; zero transports every collision
 extern array<double, 4>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
 extern array<double, 4>

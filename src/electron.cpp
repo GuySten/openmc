@@ -125,6 +125,25 @@ void Element::read_electron_data(hid_t group)
     elastic_angle_[q].transport_moments(m_energy, m1, m2);
     elastic_mu1_[q] = moments_on_grid(electron_energy_, m_energy, m1);
     elastic_mu2_[q] = moments_on_grid(electron_energy_, m_energy, m2);
+
+    // Where the same distribution splits into soft and hard, for a mixed
+    // condensed-history step. C1 = 0 is the default and means every collision
+    // is hard, so this costs nothing until a run asks for it.
+    if (settings::electron_c1 > 0.0) {
+      vector<double> s_energy, mu_cut, p_hard, m1_soft, m2_soft;
+      elastic_angle_[q].restricted_moments(
+        settings::electron_c1, s_energy, mu_cut, p_hard, m1_soft, m2_soft);
+      vector<double> dcut(mu_cut.size());
+      for (int i = 0; i < mu_cut.size(); ++i) {
+        dcut[i] = std::max(0.0, 1.0 - mu_cut[i]);
+      }
+      elastic_dcut_[q] = moments_on_grid(electron_energy_, s_energy, dcut);
+      elastic_p_hard_[q] = moments_on_grid(electron_energy_, s_energy, p_hard);
+      elastic_mu1_soft_[q] =
+        moments_on_grid(electron_energy_, s_energy, m1_soft);
+      elastic_mu2_soft_[q] =
+        moments_on_grid(electron_energy_, s_energy, m2_soft);
+    }
   }
   close_group(rgroup);
 
@@ -498,6 +517,42 @@ double Element::elastic_transport_xs(int q_index, double E, int order) const
               f * (elastic_[q_index](i + 1) - elastic_[q_index](i));
   double mu = moment(i) + f * (moment(i + 1) - moment(i));
   return std::max(0.0, xs * mu);
+}
+
+ElasticSplit Element::elastic_split(int q_index, double E) const
+{
+  ElasticSplit split;
+  int n = electron_energy_.size();
+  if (n < 2 || elastic_[q_index].size() != n)
+    return split;
+
+  // Same clamped lookup the cross sections use
+  int i =
+    upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
+  i = std::max(0, std::min(i, n - 2));
+  double f =
+    (E - electron_energy_(i)) / (electron_energy_(i + 1) - electron_energy_(i));
+  f = std::max(0.0, std::min(1.0, f));
+
+  auto interp = [i, f](const tensor::Tensor<double>& v) {
+    return v(i) + f * (v(i + 1) - v(i));
+  };
+
+  double xs = std::max(0.0, interp(elastic_[q_index]));
+
+  // Single-event transport, which is what C1 = 0 asks for and what a library
+  // without the split tabulated gets: the cutoff sits at mu = 1, every
+  // collision is hard and nothing is grouped.
+  if (elastic_p_hard_[q_index].size() != n) {
+    split.xs_hard = xs;
+    return split;
+  }
+
+  split.mu_cut = 1.0 - std::max(0.0, interp(elastic_dcut_[q_index]));
+  split.xs_hard = std::max(0.0, xs * interp(elastic_p_hard_[q_index]));
+  split.xs1_soft = std::max(0.0, xs * interp(elastic_mu1_soft_[q_index]));
+  split.xs2_soft = std::max(0.0, xs * interp(elastic_mu2_soft_[q_index]));
+  return split;
 }
 
 double Element::excitation(double E) const

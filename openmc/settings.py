@@ -102,6 +102,16 @@ class Settings:
         and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
+    electron_c1 : float
+        Average angular deflection, measured as :math:`\\langle 1-\\mu
+        \\rangle`, that grouped soft elastic collisions may accumulate between
+        two hard ones. This is PENELOPE's :math:`C_1`, and it sets where the
+        elastic distribution is cut into a soft part carried by a condensed
+        history step and a hard part transported as discrete collisions. Zero,
+        the default, leaves every collision hard and is single-event transport.
+        Only meaningful with :attr:`electron_transport`.
+
+        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -440,6 +450,7 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
+        self._electron_c1 = None
         self._electron_transport = None
         self._photon_transport = None
         self._atomic_relaxation = None
@@ -704,6 +715,17 @@ class Settings:
     def electron_transport(self, electron_transport: bool):
         cv.check_type('electron transport', electron_transport, bool)
         self._electron_transport = electron_transport
+
+    @property
+    def electron_c1(self) -> float:
+        return self._electron_c1
+
+    @electron_c1.setter
+    def electron_c1(self, electron_c1: float):
+        cv.check_type('electron C1', electron_c1, Real)
+        cv.check_greater_than('electron C1', electron_c1, 0.0, equality=True)
+        cv.check_less_than('electron C1', electron_c1, 1.0, equality=True)
+        self._electron_c1 = electron_c1
 
     @property
     def electron_treatment(self) -> str:
@@ -1731,6 +1753,11 @@ class Settings:
             element = ET.SubElement(root, "electron_transport")
             element.text = str(self._electron_transport).lower()
 
+    def _create_electron_c1_subelement(self, root):
+        if self._electron_c1 is not None:
+            element = ET.SubElement(root, "electron_c1")
+            element.text = str(self._electron_c1)
+
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2258,6 +2285,11 @@ class Settings:
         if text is not None:
             self.confidence_intervals = text in ('true', '1')
 
+    def _electron_c1_from_xml_element(self, root):
+        text = get_text(root, 'electron_c1')
+        if text is not None:
+            self.electron_c1 = float(text)
+
     def _electron_treatment_from_xml_element(self, root):
         text = get_text(root, 'electron_treatment')
         if text is not None:
@@ -2643,6 +2675,7 @@ class Settings:
         self._create_collision_track_subelement(element)
         self._create_confidence_intervals(element)
         self._create_electron_treatment_subelement(element)
+        self._create_electron_c1_subelement(element)
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
@@ -2763,6 +2796,7 @@ class Settings:
         settings._collision_track_from_xml_element(elem)
         settings._confidence_intervals_from_xml_element(elem)
         settings._electron_treatment_from_xml_element(elem)
+        settings._electron_c1_from_xml_element(elem)
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)

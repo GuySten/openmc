@@ -124,6 +124,33 @@ public:
   //! \return The cutoff and the cross sections it implies
   ElasticSplit elastic_split(int q_index, double E) const;
 
+  //! Soft inelastic energy loss, per atom and per unit path
+  //!
+  //! The stopping power restricted to collisions the mixed scheme groups, and
+  //! the second moment of the same energy loss, which is the straggling that
+  //! grouping would otherwise throw away.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[out] s Restricted stopping power in [b eV]
+  //! \param[out] w2 Second moment of the restricted loss in [b eV^2]
+  void inelastic_soft(int q_index, double E, double& s, double& w2) const;
+
+  //! Fraction of a channel that stays a discrete collision
+  //!
+  //! Multiply the channel's cross section by this to get the rate of hard
+  //! collisions. For electroionization the fraction is a quantile of the
+  //! knock-on spectrum, so it is the same for both projectiles: a positron's
+  //! collisions are the tabulated ones reweighted by rejection, and rejecting
+  //! within the hard part leaves that part's quantile range alone.
+  //!
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[in] i_shell Index into the electroionization subshell list
+  double excitation_hard_fraction(double E) const;
+  double ionization_hard_fraction(int i_shell, double E) const;
+  double bhabha_hard_fraction(int i_shell, double E) const;
+  double bremsstrahlung_hard_fraction(double E) const;
+
   double excitation(double E) const;
 
   //! Electroionization: Moller scattering for an electron, Bhabha for a
@@ -280,6 +307,19 @@ public:
   array<tensor::Tensor<double>, 2> elastic_p_hard_;
   array<tensor::Tensor<double>, 2> elastic_mu1_soft_;
   array<tensor::Tensor<double>, 2> elastic_mu2_soft_;
+  //! Soft inelastic stopping power and straggling in [b eV] and [b eV^2] per
+  //! atom, on the electron energy grid, indexed by projectile charge. Every
+  //! channel a mixed step groups is summed into these, the bremsstrahlung one
+  //! with the positron's radiative yield factor already applied.
+  array<tensor::Tensor<double>, 2> inelastic_soft_s_;
+  array<tensor::Tensor<double>, 2> inelastic_soft_w2_;
+  //! Fraction of each inelastic channel that stays a discrete collision, on
+  //! the electron energy grid. The electroionization and Bhabha ones carry a
+  //! subshell index as well. Atomic excitation has no entry here: it puts
+  //! nothing on the stack, so no threshold bounds it and it is grouped whole.
+  tensor::Tensor<double> ionization_p_hard_;
+  tensor::Tensor<double> bhabha_p_hard_;
+  tensor::Tensor<double> brems_p_hard_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross
@@ -317,6 +357,14 @@ private:
   //! the factor by which a positron's electroionization cross section is
   //! raised to make it a majorant of the true one
   void compute_moller_majorant();
+
+  //! Tabulate the soft/hard split of the inelastic channels
+  //!
+  //! The thresholds are not free parameters: they follow from the transport
+  //! cutoffs, since a collision whose every product would be killed on
+  //! creation is one that nothing is lost by grouping. See
+  //! soft_collision_cutoff() and soft_radiative_cutoff().
+  void compute_soft_inelastic();
 
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)
@@ -372,6 +420,17 @@ double invert_compton_profile_tail(
 //! Calculate the outgoing-to-incident energy ratio for signed electron momentum
 double compton_energy_ratio(double alpha, double mu, double pz);
 
+//! Integral of \f$W^{order}\f$ times the free Bhabha cross section over a
+//! range of energy transfers, with the leading constant dropped
+//!
+//! Order 0 is the cross section a positron's transfers above the Moller limit
+//! contribute, 1 the stopping power and 2 the straggling.
+//!
+//! \param[in] E Incident kinetic energy in [eV]
+//! \param[in] W_lo, W_hi Range of energy transfer in [eV]
+//! \param[in] order 0, 1 or 2
+double bhabha_moment(double E, double W_lo, double W_hi, int order);
+
 } // namespace detail
 
 std::pair<double, double> klein_nishina(double alpha, uint64_t* seed);
@@ -398,6 +457,39 @@ extern std::unordered_map<std::string, int> element_map;
 extern vector<unique_ptr<Element>> elements;
 
 } // namespace data
+
+//==============================================================================
+// Non-member functions
+//==============================================================================
+
+//! Largest energy transfer a collision may make and still be grouped
+//!
+//! An electroionization or excitation collision that transfers \f$W\f$ puts on
+//! the stack a knock-on electron of \f$W - B\f$, and, from the vacancy it
+//! leaves, fluorescence photons and Auger electrons of at most \f$B\f$. Every
+//! one of them carries less than \f$W\f$. So if \f$W\f$ is below both the
+//! electron and the photon transport cutoff, every particle the collision could
+//! produce would be killed on creation and its energy deposited on the spot,
+//! and grouping the collision into a restricted stopping power discards
+//! nothing that would have been transported.
+//!
+//! The positron cutoff does not enter: no soft collision channel produces a
+//! positron. It bounds the step instead, since a step may not carry a positron
+//! past the energy at which it would have stopped and annihilated.
+//!
+//! \return Cutoff in [eV]; zero means nothing may be grouped
+double soft_collision_cutoff();
+
+//! Largest bremsstrahlung photon energy that may be grouped
+//!
+//! A bremsstrahlung collision produces one photon and leaves the electron in
+//! flight, so only the photon cutoff bears on it. This is larger than
+//! soft_collision_cutoff() whenever the electron cutoff is the lower of the
+//! two -- including the default, where the electron cutoff is zero and no
+//! collision may be grouped while radiative losses still may.
+//!
+//! \return Cutoff in [eV]
+double soft_radiative_cutoff();
 
 } // namespace openmc
 

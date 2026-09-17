@@ -7,6 +7,9 @@
 #include "openmc/bremsstrahlung.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_angle.h"
+#include "openmc/particle_data.h"
+#include "openmc/photon.h"
+#include "openmc/settings.h"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
@@ -299,4 +302,82 @@ TEST_CASE("the split moves monotonically with C1 and conserves the total")
     last_hard = p_hard;
     last_m1 = mu1_soft;
   }
+}
+
+// The free Bhabha moments, which carry a positron's transfers above the Moller
+// limit into the stopping power and the straggling. The shape itself is
+// PENELOPE's and is not restated here; what is checked are the properties any
+// correct set of moments has, which a wrong power or a dropped term breaks.
+TEST_CASE("the Bhabha moments are additive and bracket their own range")
+{
+  double E = 1.0e7;
+  for (double W_lo : {6.0e6, 8.0e6}) {
+    double W_mid = 0.5 * (W_lo + E);
+    for (int order : {0, 1, 2}) {
+      double whole = openmc::detail::bhabha_moment(E, W_lo, E, order);
+      double lower = openmc::detail::bhabha_moment(E, W_lo, W_mid, order);
+      double upper = openmc::detail::bhabha_moment(E, W_mid, E, order);
+      CHECK_THAT(lower + upper, WithinRel(whole, 1.0e-12));
+      CHECK(whole > 0.0);
+    }
+
+    // Each moment is the cross section times a mean of W^order over the
+    // range, so it lies between the endpoints raised to that power
+    double m0 = openmc::detail::bhabha_moment(E, W_lo, E, 0);
+    double m1 = openmc::detail::bhabha_moment(E, W_lo, E, 1);
+    double m2 = openmc::detail::bhabha_moment(E, W_lo, E, 2);
+    CHECK(m1 > W_lo * m0);
+    CHECK(m1 < E * m0);
+    CHECK(m2 > W_lo * W_lo * m0);
+    CHECK(m2 < E * E * m0);
+
+    // Cauchy-Schwarz on the same measure
+    CHECK(m1 * m1 <= m0 * m2);
+
+    // An empty range carries nothing
+    CHECK(openmc::detail::bhabha_moment(E, E, E, 1) == 0.0);
+    CHECK(openmc::detail::bhabha_moment(E, E, W_lo, 1) == 0.0);
+  }
+}
+
+// Where the soft/hard split of the inelastic channels falls is not a free
+// parameter: it follows from the cutoffs, because a collision whose every
+// product would be killed on creation is one that grouping cannot lose.
+TEST_CASE("the inelastic thresholds follow the transport cutoffs")
+{
+  int photon = openmc::ParticleType::photon().transport_index();
+  int electron = openmc::ParticleType::electron().transport_index();
+  int positron = openmc::ParticleType::positron().transport_index();
+  auto saved = openmc::settings::energy_cutoff;
+
+  // An ionization collision puts out a knock-on and, through the vacancy it
+  // leaves, fluorescence and Auger products -- all of them below the transfer
+  // itself. So the lower of the electron and photon cutoffs bounds it.
+  openmc::settings::energy_cutoff[photon] = 1.0e6;
+  openmc::settings::energy_cutoff[electron] = 8.0e6;
+  openmc::settings::energy_cutoff[positron] = 7.24e6;
+  CHECK(openmc::soft_collision_cutoff() == 1.0e6);
+  CHECK(openmc::soft_radiative_cutoff() == 1.0e6);
+
+  // Bremsstrahlung emits only a photon, so the electron cutoff does not bound
+  // it and the two thresholds part company
+  openmc::settings::energy_cutoff[photon] = 8.0e6;
+  openmc::settings::energy_cutoff[electron] = 1.0e6;
+  CHECK(openmc::soft_collision_cutoff() == 1.0e6);
+  CHECK(openmc::soft_radiative_cutoff() == 8.0e6);
+
+  // The positron cutoff never enters either. Nothing a soft collision or a
+  // soft photon emission produces is a positron; that cutoff bounds the step,
+  // which must stop a positron where it would have annihilated.
+  openmc::settings::energy_cutoff[positron] = 1.0;
+  CHECK(openmc::soft_collision_cutoff() == 1.0e6);
+  CHECK(openmc::soft_radiative_cutoff() == 8.0e6);
+
+  // OpenMC's default transports every electron to rest, so nothing at all may
+  // be grouped out of the collision channels
+  openmc::settings::energy_cutoff[electron] = 0.0;
+  CHECK(openmc::soft_collision_cutoff() == 0.0);
+  CHECK(openmc::soft_radiative_cutoff() == 8.0e6);
+
+  openmc::settings::energy_cutoff = saved;
 }

@@ -217,6 +217,13 @@ void Element::read_electron_data(hid_t group)
 
   this->compute_moller_majorant();
   this->compute_bhabha_xs();
+
+  // The soft/hard split of the inelastic channels, which needs every one of
+  // them loaded and so comes last. Skipped unless a run asks for condensed
+  // history, since it is the only thing that reads it.
+  if (settings::electron_c1 > 0.0) {
+    this->compute_soft_inelastic();
+  }
 }
 
 namespace {
@@ -262,20 +269,60 @@ struct FreeCollision {
   double ratio(double x) const { return this->bhabha(x) / this->moller(x); }
 };
 
-//! Integral of the Bhabha cross section shape over W, with the leading
-//! constant dropped. Every term is elementary.
-double bhabha_integral(
-  const FreeCollision& c, double E, double W_lo, double W_hi)
+//! Integral of W^order times the Bhabha cross section shape over W, with the
+//! leading constant dropped. Every term is elementary.
+//!
+//! Order 0 is the cross section, 1 the stopping power it contributes and 2 the
+//! straggling. The shape is a Laurent polynomial in x = W/E, so raising the
+//! order shifts every term by one and nothing but the leading 1/x^2 ever needs
+//! care.
+double bhabha_moment(
+  const FreeCollision& c, double E, double W_lo, double W_hi, int order)
 {
-  if (W_hi <= W_lo)
+  if (W_hi <= W_lo || E <= 0.0)
     return 0.0;
   double x_lo = W_lo / E;
   double x_hi = W_hi / E;
-  return (1.0 / x_lo - 1.0 / x_hi - c.b1 * std::log(x_hi / x_lo) +
-           c.b2 * (x_hi - x_lo) - 0.5 * c.b3 * (x_hi * x_hi - x_lo * x_lo) +
-           c.b4 * (x_hi * x_hi * x_hi - x_lo * x_lo * x_lo) / 3.0) /
-         E;
+  double d1 = x_hi - x_lo;
+  double d2 = x_hi * x_hi - x_lo * x_lo;
+  double d3 = x_hi * x_hi * x_hi - x_lo * x_lo * x_lo;
+  double d4 = x_hi * x_hi * x_hi * x_hi - x_lo * x_lo * x_lo * x_lo;
+  double d5 = d4 * x_hi + x_lo * x_lo * x_lo * x_lo * d1;
+  double log_ratio = std::log(x_hi / x_lo);
+
+  double a;
+  if (order == 0) {
+    a = 1.0 / x_lo - 1.0 / x_hi - c.b1 * log_ratio + c.b2 * d1 -
+        0.5 * c.b3 * d2 + c.b4 * d3 / 3.0;
+  } else if (order == 1) {
+    a = log_ratio - c.b1 * d1 + 0.5 * c.b2 * d2 - c.b3 * d3 / 3.0 +
+        0.25 * c.b4 * d4;
+  } else {
+    a = d1 - 0.5 * c.b1 * d2 + c.b2 * d3 / 3.0 - 0.25 * c.b3 * d4 +
+        0.2 * c.b4 * d5;
+  }
+  return std::pow(E, order) * a / E;
 }
+
+//! The cross section itself, which is the zeroth moment
+double bhabha_integral(
+  const FreeCollision& c, double E, double W_lo, double W_hi)
+{
+  return bhabha_moment(c, E, W_lo, W_hi, 0);
+}
+
+} // namespace
+
+namespace detail {
+
+double bhabha_moment(double E, double W_lo, double W_hi, int order)
+{
+  return openmc::bhabha_moment(FreeCollision {E}, E, W_lo, W_hi, order);
+}
+
+} // namespace detail
+
+namespace {
 
 //! 2 pi r_e^2 m_e c^2 in [b eV], the constant both cross sections carry. The
 //! classical electron radius is written as alpha^2 a_0 so that it follows from
@@ -350,6 +397,219 @@ void Element::compute_bhabha_xs()
       double beta_sq = 1.0 - 1.0 / (gamma * gamma);
       bhabha_(i, j) =
         n_e * COLLISION_CONST / beta_sq * bhabha_integral(c, E, W_lo, E);
+    }
+  }
+}
+
+double soft_collision_cutoff()
+{
+  double photon =
+    settings::energy_cutoff[ParticleType::photon().transport_index()];
+  double electron =
+    settings::energy_cutoff[ParticleType::electron().transport_index()];
+  return std::max(0.0, std::min(photon, electron));
+}
+
+double soft_radiative_cutoff()
+{
+  return std::max(
+    0.0, settings::energy_cutoff[ParticleType::photon().transport_index()]);
+}
+
+namespace {
+
+//! Integrals of the scaled bremsstrahlung cross section over a range of kappa
+//!
+//! chi is linear in kappa between tabulated points, which is what the sampler
+//! assumes, so each interval integrates in closed form and the rate stays an
+//! integral of exactly the distribution that is sampled.
+//!
+//! \param[in] chi The scaled cross section, already blended across the two
+//!   bracketing incident energies
+//! \param[in] k_lo, k_hi Range of kappa
+//! \param[in] order Power of kappa the integrand carries beyond chi/kappa, so
+//!   that order 0 gives the cross section, 1 the radiated energy and 2 its
+//!   second moment, each still missing its power of the incident energy
+double chi_integral(
+  const vector<double>& chi, double k_lo, double k_hi, int order)
+{
+  const auto& kappa = data::brems_k_grid;
+  int n = kappa.size();
+  double total = 0.0;
+  for (int j = 0; j + 1 < n; ++j) {
+    double x1 = std::max(kappa(j), k_lo);
+    double x2 = std::min(kappa(j + 1), k_hi);
+    if (x2 <= x1)
+      continue;
+
+    double h = kappa(j + 1) - kappa(j);
+    double b = (chi[j + 1] - chi[j]) / h;
+    double a = chi[j] - b * kappa(j);
+
+    // int (a + b k) k^(order-1) dk
+    if (order == 0) {
+      total += a * std::log(x2 / x1) + b * (x2 - x1);
+    } else if (order == 1) {
+      total += a * (x2 - x1) + 0.5 * b * (x2 * x2 - x1 * x1);
+    } else {
+      total +=
+        0.5 * a * (x2 * x2 - x1 * x1) + b * (x2 * x2 * x2 - x1 * x1 * x1) / 3.0;
+    }
+  }
+  return total;
+}
+
+} // namespace
+
+void Element::compute_soft_inelastic()
+{
+  double w_cc = soft_collision_cutoff();
+  double w_cr = soft_radiative_cutoff();
+
+  int n_energy = electron_energy_.size();
+  int n_shell = electroionization_.shape(0);
+  auto shape_1d = std::vector<size_t> {static_cast<size_t>(n_energy)};
+  auto shape_2d = std::vector<size_t> {
+    static_cast<size_t>(n_shell), static_cast<size_t>(n_energy)};
+
+  for (int q = 0; q < 2; ++q) {
+    inelastic_soft_s_[q] = tensor::zeros<double>(shape_1d);
+    inelastic_soft_w2_[q] = tensor::zeros<double>(shape_1d);
+  }
+  brems_p_hard_ = tensor::zeros<double>(shape_1d);
+  ionization_p_hard_ = tensor::zeros<double>(shape_2d);
+  bhabha_p_hard_ = tensor::zeros<double>(shape_2d);
+
+  const auto& T = data::brems_e_grid;
+  int n_brems_e = T.size();
+  int n_kappa = data::brems_k_grid.size();
+  vector<double> chi(n_kappa);
+
+  for (int j = 0; j < n_energy; ++j) {
+    double E = electron_energy_(j);
+    double s[2] = {0.0, 0.0};
+    double w2[2] = {0.0, 0.0};
+
+    // Atomic excitation, which no threshold bounds. It puts nothing on the
+    // stack at all -- OpenMC deposits the de-excitation energy where the
+    // collision happened -- so there is no product whose cutoff could be
+    // crossed and nothing a grouped excitation can lose. The evaluated loss is
+    // one number per collision rather than a distribution, so its second
+    // moment is the square of that loss.
+    double loss = std::max(0.0, E - this->excitation(E));
+    if (loss > 0.0) {
+      for (int q = 0; q < 2; ++q) {
+        s[q] += excitation_(j) * loss;
+        w2[q] += excitation_(j) * loss * loss;
+      }
+    }
+
+    // Electroionization, subshell by subshell. The cut is on the energy the
+    // projectile gives up, so it sits at W_cc - B in the knock-on spectrum:
+    // the atom keeps the binding energy and only the rest is carried away.
+    FreeCollision c {E};
+    double gamma = 1.0 + E / MASS_ELECTRON_EV;
+    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+
+    for (int i = 0; i < n_shell; ++i) {
+      const auto& shell {shells_[electron_shell_map_[i]]};
+      double B = shell.binding_energy;
+      double sigma = electroionization_(i, j);
+      double e_cut = w_cc - B;
+
+      double xi_cut = 0.0;
+      if (sigma > 0.0 && e_cut > 0.0) {
+        double m0, m1, m2;
+        ionization_dist_[i]->restricted_moments(
+          E, e_cut, nullptr, xi_cut, m0, m1, m2);
+        s[0] += sigma * (m1 + B * m0);
+        w2[0] += sigma * (m2 + 2.0 * B * m1 + B * B * m0);
+
+        // The same collisions for a positron, whose spectrum is this one
+        // reweighted by the free Bhabha-to-Moller ratio. The weighting is
+        // applied inside the integral rather than to the result: it varies
+        // across the spectrum, and it is exactly what the rejection in
+        // ionization() applies collision by collision.
+        std::function<double(double)> weight = [&c, B, E](double e_out) {
+          return c.ratio((e_out + B) / E);
+        };
+        double p0, p1, p2, xi_positron;
+        ionization_dist_[i]->restricted_moments(
+          E, e_cut, &weight, xi_positron, p0, p1, p2);
+        s[1] += sigma * (p1 + B * p0);
+        w2[1] += sigma * (p2 + 2.0 * B * p1 + B * B * p0);
+      }
+      ionization_p_hard_(i, j) = 1.0 - xi_cut;
+
+      // Transfers above the Moller limit, which only a positron can make.
+      // They lie far above every binding energy, so this channel is usually
+      // hard in its entirety -- but not for a projectile barely above the
+      // cutoff, where half its energy is still below W_cc.
+      double n_e = shell.num_electrons;
+      double W_lo = 0.5 * (E + B);
+      if (n_e > 0.0 && E > B && W_lo < E) {
+        double K = n_e * COLLISION_CONST / beta_sq;
+        double W_soft = std::min(w_cc, E);
+        if (W_soft > W_lo) {
+          s[1] += K * bhabha_moment(c, E, W_lo, W_soft, 1);
+          w2[1] += K * bhabha_moment(c, E, W_lo, W_soft, 2);
+        }
+        double total = bhabha_moment(c, E, W_lo, E, 0);
+        double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
+        bhabha_p_hard_(i, j) = (total > 0.0) ? hard / total : 0.0;
+      }
+    }
+
+    // Bremsstrahlung. The rate is taken from the library rather than rebuilt
+    // here, and only the fraction of it that falls below the cutoff is
+    // computed from the scaled cross section, so the total emission rate stays
+    // exactly what the single-event transport uses.
+    double k_min = bremsstrahlung_photon_cutoff_;
+    double k_cut = std::min(w_cr, E);
+    if (n_brems_e > 1 && E > k_min && k_cut > k_min) {
+      int i_brems;
+      double f;
+      if (E <= T(0)) {
+        i_brems = 0;
+        f = 0.0;
+      } else if (E >= T(n_brems_e - 1)) {
+        i_brems = n_brems_e - 2;
+        f = 1.0;
+      } else {
+        i_brems = lower_bound_index(T.cbegin(), T.cend(), E);
+        f = std::log(E / T(i_brems)) / std::log(T(i_brems + 1) / T(i_brems));
+      }
+      for (int k = 0; k < n_kappa; ++k) {
+        chi[k] =
+          dcs_(i_brems, k) + f * (dcs_(i_brems + 1, k) - dcs_(i_brems, k));
+      }
+
+      double kappa_min = k_min / E;
+      double kappa_cut = std::min(1.0, k_cut / E);
+      double total = chi_integral(chi, kappa_min, 1.0, 0);
+      if (total > 0.0) {
+        double soft = chi_integral(chi, kappa_min, kappa_cut, 0);
+        brems_p_hard_(j) = std::max(0.0, 1.0 - soft / total);
+
+        // Mean radiated energy below the cutoff, per unit of the library's
+        // bremsstrahlung cross section
+        double loss1 = E * chi_integral(chi, kappa_min, kappa_cut, 1) / total;
+        double loss2 =
+          E * E * chi_integral(chi, kappa_min, kappa_cut, 2) / total;
+        double xs = electron_bremsstrahlung_(j);
+        s[0] += xs * loss1;
+        w2[0] += xs * loss2;
+        double positron_xs = xs * salvat_factor(Z_ * Z_, E);
+        s[1] += positron_xs * loss1;
+        w2[1] += positron_xs * loss2;
+      }
+    } else {
+      brems_p_hard_(j) = 1.0;
+    }
+
+    for (int q = 0; q < 2; ++q) {
+      inelastic_soft_s_[q](j) = s[q];
+      inelastic_soft_w2_[q](j) = w2[q];
     }
   }
 }
@@ -553,6 +813,81 @@ ElasticSplit Element::elastic_split(int q_index, double E) const
   split.xs1_soft = std::max(0.0, xs * interp(elastic_mu1_soft_[q_index]));
   split.xs2_soft = std::max(0.0, xs * interp(elastic_mu2_soft_[q_index]));
   return split;
+}
+
+namespace {
+
+//! Clamped linear lookup on the electron energy grid
+int grid_index(const tensor::Tensor<double>& grid, double E, double& f)
+{
+  int n = grid.size();
+  int i = upper_bound_index(grid.cbegin(), grid.cend(), E);
+  i = std::max(0, std::min(i, n - 2));
+  f = (E - grid(i)) / (grid(i + 1) - grid(i));
+  f = std::max(0.0, std::min(1.0, f));
+  return i;
+}
+
+} // namespace
+
+void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
+{
+  s = 0.0;
+  w2 = 0.0;
+  int n = electron_energy_.size();
+  if (n < 2 || inelastic_soft_s_[q_index].size() != n)
+    return;
+
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  const auto& sv = inelastic_soft_s_[q_index];
+  const auto& wv = inelastic_soft_w2_[q_index];
+  s = std::max(0.0, sv(i) + f * (sv(i + 1) - sv(i)));
+  w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
+}
+
+double Element::excitation_hard_fraction(double E) const
+{
+  // Nothing of this channel stays discrete once the split is tabulated: see
+  // compute_soft_inelastic() for why no threshold bounds it.
+  int n = electron_energy_.size();
+  return (n >= 2 && inelastic_soft_s_[0].size() == n) ? 0.0 : 1.0;
+}
+
+double Element::ionization_hard_fraction(int i_shell, double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || ionization_p_hard_.size() != n * electroionization_.shape(0))
+    return 1.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  double p =
+    ionization_p_hard_(i_shell, i) +
+    f * (ionization_p_hard_(i_shell, i + 1) - ionization_p_hard_(i_shell, i));
+  return std::max(0.0, std::min(1.0, p));
+}
+
+double Element::bhabha_hard_fraction(int i_shell, double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || bhabha_p_hard_.size() != n * electroionization_.shape(0))
+    return 1.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  double p = bhabha_p_hard_(i_shell, i) +
+             f * (bhabha_p_hard_(i_shell, i + 1) - bhabha_p_hard_(i_shell, i));
+  return std::max(0.0, std::min(1.0, p));
+}
+
+double Element::bremsstrahlung_hard_fraction(double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || brems_p_hard_.size() != n)
+    return 1.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  double p = brems_p_hard_(i) + f * (brems_p_hard_(i + 1) - brems_p_hard_(i));
+  return std::max(0.0, std::min(1.0, p));
 }
 
 double Element::excitation(double E) const

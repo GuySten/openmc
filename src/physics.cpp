@@ -3,6 +3,7 @@
 #include "openmc/bank.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
@@ -636,7 +637,8 @@ void sample_electron_reaction(Particle& p)
   // Bremsstrahlung. Last channel, so it takes whatever is left: the running
   // total is accumulated in a different order from xs.total and rounding must
   // not be able to leave the particle with no reaction at all.
-  element.bremsstrahlung(p, hard ? soft_radiative_cutoff(0, p.E()) : 0.0);
+  element.bremsstrahlung(
+    p, hard ? soft_radiative_cutoff(p.type(), p.E()) : 0.0);
   p.event() = TallyEvent::SCATTER;
   p.event_mt() = ELECTRON_BREMS;
 }
@@ -736,7 +738,8 @@ void sample_positron_reaction(Particle& p)
   prob += hard ? micro.hard_bhabha : micro.bhabha;
   if (prob > cutoff) {
     int i_shell = element.sample_bhabha_shell(p, hard);
-    element.bhabha(p, i_shell, hard ? soft_collision_cutoff(1, p.E()) : 0.0);
+    element.bhabha(
+      p, i_shell, hard ? soft_collision_cutoff(p.type(), p.E()) : 0.0);
     p.event() = TallyEvent::SCATTER;
     p.event_mt() =
       533 +
@@ -759,7 +762,8 @@ void sample_positron_reaction(Particle& p)
 
   // Bremsstrahlung. Last channel, so it takes whatever is left rather than
   // letting rounding drop the collision (see sample_electron_reaction).
-  element.bremsstrahlung(p, hard ? soft_radiative_cutoff(1, p.E()) : 0.0);
+  element.bremsstrahlung(
+    p, hard ? soft_radiative_cutoff(p.type(), p.E()) : 0.0);
   p.event() = TallyEvent::SCATTER;
   p.event_mt() = ELECTRON_BREMS;
 }

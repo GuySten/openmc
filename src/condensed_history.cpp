@@ -4,7 +4,9 @@
 #include <cmath>     // for abs, exp, sqrt
 
 #include "openmc/constants.h"
+#include "openmc/particle_data.h"
 #include "openmc/random_lcg.h"
+#include "openmc/settings.h"
 
 namespace openmc {
 
@@ -142,6 +144,60 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
   step.length = s;
   step.hinge = s * prn(seed);
   return step;
+}
+
+namespace {
+
+//! Transport cutoff of the projectile itself, whatever it is
+double own_cutoff(ParticleType type)
+{
+  int index = type.transport_index();
+  return (index == C_NONE) ? 0.0 : settings::energy_cutoff[index];
+}
+
+} // namespace
+
+double soft_projectile_headroom(ParticleType type, double E)
+{
+  return std::max(0.0, E - own_cutoff(type));
+}
+
+namespace {
+
+//! Largest share of a step's energy budget one grouped collision may carry
+//!
+//! The step describes that energy by two moments, and the transfers are
+//! distributed as 1/W^2, so the variance sits in the few largest of them. A
+//! tenth leaves about ten of them to share it, which is the fewest that makes
+//! a mean and a variance mean anything.
+constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
+
+} // namespace
+
+double soft_loss_budget(ParticleType type, double E)
+{
+  return std::min(
+    settings::energy_loss_cutoff * E, soft_projectile_headroom(type, E));
+}
+
+double soft_collision_cutoff(ParticleType type, double E)
+{
+  double photon =
+    settings::energy_cutoff[ParticleType::photon().transport_index()];
+  double electron =
+    settings::energy_cutoff[ParticleType::electron().transport_index()];
+  return std::max(0.0, std::min(std::min(photon, electron),
+                         std::min(soft_projectile_headroom(type, E),
+                           MAX_SOFT_LOSS_SHARE * soft_loss_budget(type, E))));
+}
+
+double soft_radiative_cutoff(ParticleType type, double E)
+{
+  double photon =
+    settings::energy_cutoff[ParticleType::photon().transport_index()];
+  return std::max(
+    0.0, std::min(photon, std::min(soft_projectile_headroom(type, E),
+                            MAX_SOFT_LOSS_SHARE * soft_loss_budget(type, E))));
 }
 
 } // namespace openmc

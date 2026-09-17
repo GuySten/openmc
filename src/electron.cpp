@@ -2,6 +2,7 @@
 
 #include "openmc/array.h"
 #include "openmc/bremsstrahlung.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/hdf5_interface.h"
@@ -140,10 +141,10 @@ void Element::read_electron_data(hid_t group)
     // Where the same distribution splits into soft and hard, for a mixed
     // condensed-history step. C1 = 0 is the default and means every collision
     // is hard, so this costs nothing until a run asks for it.
-    if (settings::step_deflection > 0.0) {
+    if (settings::deflection_cutoff > 0.0) {
       vector<double> s_energy, mu_cut, p_hard, m1_soft, m2_soft;
-      elastic_angle_[q].restricted_moments(
-        settings::step_deflection, s_energy, mu_cut, p_hard, m1_soft, m2_soft);
+      elastic_angle_[q].restricted_moments(settings::deflection_cutoff,
+        s_energy, mu_cut, p_hard, m1_soft, m2_soft);
       vector<double> dcut(mu_cut.size());
       for (int i = 0; i < mu_cut.size(); ++i) {
         dcut[i] = std::max(0.0, 1.0 - mu_cut[i]);
@@ -232,7 +233,7 @@ void Element::read_electron_data(hid_t group)
   // The soft/hard split of the inelastic channels, which needs every one of
   // them loaded and so comes last. Skipped unless a run asks for condensed
   // history, since it is the only thing that reads it.
-  if (settings::step_deflection > 0.0) {
+  if (settings::deflection_cutoff > 0.0) {
     this->compute_soft_inelastic();
   }
 }
@@ -414,63 +415,6 @@ void Element::compute_bhabha_xs()
 
 namespace {
 
-//! Transport cutoff of the projectile itself
-double own_cutoff(int q_index)
-{
-  int index = (q_index == 0) ? ParticleType::electron().transport_index()
-                             : ParticleType::positron().transport_index();
-  return settings::energy_cutoff[index];
-}
-
-} // namespace
-
-double soft_projectile_headroom(int q_index, double E)
-{
-  return std::max(0.0, E - own_cutoff(q_index));
-}
-
-namespace {
-
-//! Largest share of a step's energy budget one grouped collision may carry
-//!
-//! The step describes that energy by two moments, and the transfers are
-//! distributed as 1/W^2, so the variance sits in the few largest of them. A
-//! tenth leaves about ten of them to share it, which is the fewest that makes
-//! a mean and a variance mean anything.
-constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
-
-//! Energy a step is allowed to lose to the grouped collisions
-double soft_loss_budget(int q_index, double E)
-{
-  return std::min(
-    settings::step_energy_loss * E, soft_projectile_headroom(q_index, E));
-}
-
-} // namespace
-
-double soft_collision_cutoff(int q_index, double E)
-{
-  double photon =
-    settings::energy_cutoff[ParticleType::photon().transport_index()];
-  double electron =
-    settings::energy_cutoff[ParticleType::electron().transport_index()];
-  return std::max(
-    0.0, std::min(std::min(photon, electron),
-           std::min(soft_projectile_headroom(q_index, E),
-             MAX_SOFT_LOSS_SHARE * soft_loss_budget(q_index, E))));
-}
-
-double soft_radiative_cutoff(int q_index, double E)
-{
-  double photon =
-    settings::energy_cutoff[ParticleType::photon().transport_index()];
-  return std::max(0.0,
-    std::min(photon, std::min(soft_projectile_headroom(q_index, E),
-                       MAX_SOFT_LOSS_SHARE * soft_loss_budget(q_index, E))));
-}
-
-namespace {
-
 //! Integrals of the scaled bremsstrahlung cross section over a range of kappa
 //!
 //! chi is linear in kappa between tabulated points, which is what the sampler
@@ -574,9 +518,13 @@ void Element::compute_soft_inelastic()
     // differ: a positron's own cutoff bounds how much a grouped event may take
     // from it, and that cutoff is not the electron's.
     for (int q = 0; q < 2; ++q) {
-      double w_cc = soft_collision_cutoff(q, E);
-      double w_cr = soft_radiative_cutoff(q, E);
-      double headroom = soft_projectile_headroom(q, E);
+      // The electron library covers exactly two projectiles, so this is
+      // where its charge index becomes a particle again
+      ParticleType projectile =
+        (q == 0) ? ParticleType::electron() : ParticleType::positron();
+      double w_cc = soft_collision_cutoff(projectile, E);
+      double w_cr = soft_radiative_cutoff(projectile, E);
+      double headroom = soft_projectile_headroom(projectile, E);
       double s = 0.0;
       double w2 = 0.0;
 
@@ -695,7 +643,9 @@ void Element::compute_soft_inelastic()
   for (int q = 0; q < 2; ++q) {
     for (int j = 0; j < n_energy; ++j) {
       double E = electron_energy_(j);
-      double lowest = E - soft_loss_budget(q, E);
+      ParticleType projectile =
+        (q == 0) ? ParticleType::electron() : ParticleType::positron();
+      double lowest = E - soft_loss_budget(projectile, E);
       double peak = hard_total_[q](j);
       for (int k = j; k >= 0 && electron_energy_(k) >= lowest; --k) {
         peak = std::max(peak, hard_total_[q](k));
@@ -847,7 +797,7 @@ void Element::calculate_electron_xs(Particle& p) const
   // Split it into the part a condensed-history step transports one collision
   // at a time and the part it groups. Without condensed history every channel
   // is hard, which is what leaves the transport below untouched.
-  if (settings::step_deflection > 0.0 &&
+  if (settings::deflection_cutoff > 0.0 &&
       inelastic_soft_s_[q].size() == n_grid) {
     // Every one of these is a straight interpolation on the index already in
     // hand. They were accessor calls, each searching the energy grid again --
@@ -1029,12 +979,14 @@ void Element::compute_inelastic_transport(int q_index,
   int n_shell = electroionization_.shape(0);
   xs1 =
     tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
-  if (settings::step_deflection <= 0.0 || w_r.size() != n_shell)
+  if (settings::deflection_cutoff <= 0.0 || w_r.size() != n_shell)
     return;
 
   for (int j = 0; j < n_energy; ++j) {
     double E = electron_energy_(j);
-    double w_cc = soft_collision_cutoff(q_index, E);
+    ParticleType projectile =
+      (q_index == 0) ? ParticleType::electron() : ParticleType::positron();
+    double w_cc = soft_collision_cutoff(projectile, E);
     if (!(w_cc > 0.0) || E <= 0.0)
       continue;
 

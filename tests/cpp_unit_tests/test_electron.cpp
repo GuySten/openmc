@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "openmc/bremsstrahlung.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_angle.h"
 #include "openmc/particle_data.h"
@@ -350,8 +351,8 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   int electron = openmc::ParticleType::electron().transport_index();
   int positron = openmc::ParticleType::positron().transport_index();
   auto saved = openmc::settings::energy_cutoff;
-  double saved_loss = openmc::settings::step_energy_loss;
-  openmc::settings::step_energy_loss = 0.05;
+  double saved_loss = openmc::settings::energy_loss_cutoff;
+  openmc::settings::energy_loss_cutoff = 0.05;
   double E = 2.2e7;
 
   // Three things bound what a collision may transfer and still be grouped,
@@ -364,10 +365,10 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   openmc::settings::energy_cutoff[photon] = 8.0e6;
   openmc::settings::energy_cutoff[electron] = 8.0e6;
   openmc::settings::energy_cutoff[positron] = 7.24e6;
-  CHECK_THAT(
-    openmc::soft_collision_cutoff(0, E), WithinRel(0.1 * 0.05 * E, 1.0e-12));
-  CHECK_THAT(
-    openmc::soft_radiative_cutoff(0, E), WithinRel(0.1 * 0.05 * E, 1.0e-12));
+  CHECK_THAT(openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E),
+    WithinRel(0.1 * 0.05 * E, 1.0e-12));
+  CHECK_THAT(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E),
+    WithinRel(0.1 * 0.05 * E, 1.0e-12));
 
   // What the collision emits, which binds once the cutoffs are low. An
   // ionization collision emits a knock-on and, through the vacancy it leaves,
@@ -377,8 +378,10 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   // thresholds part company.
   openmc::settings::energy_cutoff[photon] = 1.0e5;
   openmc::settings::energy_cutoff[electron] = 1.0e4;
-  CHECK(openmc::soft_collision_cutoff(0, E) == 1.0e4);
-  CHECK(openmc::soft_radiative_cutoff(0, E) == 1.0e5);
+  CHECK(openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E) ==
+        1.0e4);
+  CHECK(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E) ==
+        1.0e5);
 
   // The projectile itself, which binds at the cutoff. There the two charges
   // part company: a positron may still be grouped a little where an electron
@@ -386,11 +389,16 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   // reason a photoneutron run sets it lower.
   openmc::settings::energy_cutoff[photon] = 8.0e6;
   openmc::settings::energy_cutoff[electron] = 8.0e6;
-  CHECK(openmc::soft_projectile_headroom(0, 8.0e6) == 0.0);
-  CHECK(openmc::soft_projectile_headroom(1, 8.0e6) == 8.0e6 - 7.24e6);
-  CHECK(openmc::soft_collision_cutoff(0, 8.0e6) == 0.0);
-  CHECK(openmc::soft_collision_cutoff(1, 8.0e6) > 0.0);
-  CHECK(openmc::soft_radiative_cutoff(0, 8.0e6) == 0.0);
+  CHECK(openmc::soft_projectile_headroom(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
+  CHECK(openmc::soft_projectile_headroom(
+          openmc::ParticleType::positron(), 8.0e6) == 8.0e6 - 7.24e6);
+  CHECK(openmc::soft_collision_cutoff(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
+  CHECK(openmc::soft_collision_cutoff(openmc::ParticleType::positron(), 8.0e6) >
+        0.0);
+  CHECK(openmc::soft_radiative_cutoff(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
 
   // OpenMC's default transports every electron to rest, so every knock-on is
   // followed and no collision may be grouped. Radiative losses under the
@@ -398,10 +406,13 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   openmc::settings::energy_cutoff[photon] = 1000.0;
   openmc::settings::energy_cutoff[electron] = 0.0;
   openmc::settings::energy_cutoff[positron] = 0.0;
-  CHECK(openmc::soft_projectile_headroom(0, E) == E);
-  CHECK(openmc::soft_collision_cutoff(0, E) == 0.0);
-  CHECK(openmc::soft_radiative_cutoff(0, E) == 1000.0);
+  CHECK(
+    openmc::soft_projectile_headroom(openmc::ParticleType::electron(), E) == E);
+  CHECK(
+    openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E) == 0.0);
+  CHECK(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E) ==
+        1000.0);
 
   openmc::settings::energy_cutoff = saved;
-  openmc::settings::step_energy_loss = saved_loss;
+  openmc::settings::energy_loss_cutoff = saved_loss;
 }

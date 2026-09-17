@@ -6,6 +6,8 @@
 
 #include <cstdint>
 
+#include "openmc/particle_data.h"
+
 namespace openmc {
 
 //==============================================================================
@@ -141,15 +143,16 @@ constexpr double MAX_STEP_COARSENESS = 0.2;
 //!   deflections, in [1/cm]
 //! \param[in] stopping_power Restricted stopping power in [eV/cm]
 //! \param[in] max_loss Most the projectile may lose to the grouped collisions
-//!   over one step, in [eV]. Two things bound it: a fraction \f$C_2\f$ of the
-//!   kinetic energy, which keeps the restricted stopping power evaluated near
-//!   the energy it belongs to; and the energy left above the projectile's own
-//!   transport cutoff, since a step that carried it past that would take it
-//!   beyond the point where it should have stopped -- and, for a positron,
-//!   past the energy at which it should have annihilated.
+//!   over one step, in [eV]. Two things bound it: the energy_loss cutoff as a
+//!   fraction of the kinetic energy, which keeps the restricted stopping power
+//!   evaluated near the energy it belongs to; and the energy left above the
+//!   projectile's own transport cutoff, since a step that carried it past that
+//!   would take it beyond the point where it should have stopped -- and, for a
+//!   positron, past the energy at which it should have annihilated.
 //! \param[in] max_deflection Most the grouped collisions may turn the
-//!   projectile over one step, as \f$\langle 1-\mu \rangle\f$. This is what
-//!   \f$C_1\f$ names and, in PENELOPE, gets by construction: there the step is
+//!   projectile over one step, as \f$\langle 1-\mu \rangle\f$. This is the
+//!   deflection cutoff, which PENELOPE calls \f$C_1\f$ and gets by
+//!   construction: there the step is
 //!   one hard mean free path, so the soft deflection over it is
 //!   \f$\sigma_{1,soft}/\sigma_{hard}\f$ by definition. Here the step is a
 //!   sampled flight, which runs past a mean free path as often as not, and
@@ -162,6 +165,89 @@ constexpr double MAX_STEP_COARSENESS = 0.2;
 MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
   double stopping_power, double max_loss, double max_deflection,
   double max_distance, uint64_t* seed);
+
+//==============================================================================
+// What may be grouped
+//
+// These say which interactions a step is allowed to swallow, and they are
+// written for a charged particle rather than for an electron. Nothing in them
+// asks what the projectile is made of: they ask what it would emit, and how
+// far it is above the energy at which it stops being followed. A heavier
+// particle reaches the same rules through the same three calls.
+//==============================================================================
+
+//! Energy a grouped event may take from the projectile itself
+//!
+//! A soft collision must not be able to carry the projectile across the energy
+//! at which it stops being transported. Below its own cutoff the projectile
+//! would have been killed where it was -- and for a positron, killed means
+//! annihilated at rest, which makes two 511 keV photons where an annihilation
+//! in flight would have made one of up to \f$T + 1.5 m_e c^2\f$. A grouped
+//! event that stepped over that energy would swap one outcome for the other,
+//! so the transfer is bounded by how far the projectile is above it.
+//!
+//! \param[in] type The charged particle being transported
+//! \param[in] E Kinetic energy in [eV]
+//! \return Headroom in [eV]
+double soft_projectile_headroom(ParticleType type, double E);
+
+//! Energy a step is allowed to lose to the grouped collisions
+//!
+//! A fraction of the kinetic energy, or what is left above the projectile's
+//! own transport cutoff, whichever is the smaller.
+//!
+//! \param[in] type The charged particle being transported
+//! \param[in] E Kinetic energy in [eV]
+//! \return Budget in [eV]
+double soft_loss_budget(ParticleType type, double E);
+
+//! Largest energy transfer a collision may make and still be grouped
+//!
+//! Two things have to hold. Nothing the collision produces may be lost: a
+//! collision transferring \f$W\f$ puts on the stack a knock-on electron of
+//! \f$W - B\f$ and, from the vacancy it leaves, fluorescence photons and Auger
+//! electrons of at most \f$B\f$, every one of them below \f$W\f$ itself, so a
+//! transfer under both the electron and the photon cutoff produces nothing
+//! that would have been transported. And the projectile has to survive it,
+//! which is soft_projectile_headroom().
+//!
+//! All three cutoffs therefore bear on the threshold: the photon and electron
+//! ones through what the collision emits, the positron one through what the
+//! projectile becomes.
+//!
+//! One more thing bounds it, and it has nothing to do with what is lost. A
+//! step describes the energy its grouped collisions take by a mean and a
+//! variance, which is a fair account only if many of them contribute. The
+//! spectrum of transfers falls as \f$1/W^2\f$, so the variance is carried by
+//! the largest of them, and a transfer comparable to the step's whole energy
+//! budget would leave that budget in the hands of one or two collisions. So
+//! the threshold is also capped at a fraction of soft_loss_budget(). In
+//! a photoneutron run this is what binds: an 8 MeV electron cutoff would
+//! otherwise let a single grouped collision carry seven times the energy the
+//! step was allowed to lose, which is not a description of anything.
+//!
+//! PENELOPE leaves W_cc to the user and PenRed sets it to a hundredth of the
+//! absorption energy, capped at 5 keV, which is the same guard reached from
+//! the other end.
+//!
+//! \param[in] type The charged particle being transported
+//! \param[in] E Kinetic energy in [eV]
+//! \return Cutoff in [eV]; zero means nothing may be grouped
+double soft_collision_cutoff(ParticleType type, double E);
+
+//! Largest bremsstrahlung photon energy that may be grouped
+//!
+//! A bremsstrahlung collision produces one photon and leaves the projectile in
+//! flight, so of what it emits only the photon cutoff bears on it. The
+//! projectile bound matters more here than anywhere else: a single photon may
+//! carry off nearly the whole kinetic energy, and without that bound a grouped
+//! emission could take an electron from just above its cutoff to nearly at
+//! rest and then smear the loss along the step.
+//!
+//! \param[in] type The charged particle being transported
+//! \param[in] E Kinetic energy in [eV]
+//! \return Cutoff in [eV]
+double soft_radiative_cutoff(ParticleType type, double E);
 
 } // namespace openmc
 

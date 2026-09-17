@@ -127,7 +127,7 @@ public:
   //!
   //! All three cross sections are per atom and in the same units as the
   //! elastic cross section itself. The split is tabulated at load time from
-  //! settings::step_deflection, so this is a grid lookup.
+  //! settings::deflection_cutoff, so this is a grid lookup.
   //!
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
@@ -340,7 +340,7 @@ public:
   array<tensor::Tensor<double>, 2> elastic_mu1_;
   array<tensor::Tensor<double>, 2> elastic_mu2_;
   //! Soft/hard split of the elastic distribution at
-  //! settings::step_deflection, on the electron energy grid,
+  //! settings::deflection_cutoff, on the electron energy grid,
   //! indexed by projectile charge. The cutoff is held as the deflection 1-mu
   //! rather than as the cosine: at C1 = 0.001 and 100 MeV it is 1.1e-4 in
   //! tungsten, so four digits of the cosine carry no information, and both the
@@ -522,69 +522,6 @@ extern vector<unique_ptr<Element>> elements;
 //==============================================================================
 // Non-member functions
 //==============================================================================
-
-//! Energy a grouped event may take from the projectile itself
-//!
-//! A soft collision must not be able to carry the projectile across the energy
-//! at which it stops being transported. Below its own cutoff the projectile
-//! would have been killed where it was -- and for a positron, killed means
-//! annihilated at rest, which makes two 511 keV photons where an annihilation
-//! in flight would have made one of up to \f$T + 1.5 m_e c^2\f$. A grouped
-//! event that stepped over that energy would swap one outcome for the other,
-//! so the transfer is bounded by how far the projectile is above it.
-//!
-//! \param[in] q_index 0 for an electron, 1 for a positron
-//! \param[in] E Kinetic energy in [eV]
-//! \return Headroom in [eV]
-double soft_projectile_headroom(int q_index, double E);
-
-//! Largest energy transfer a collision may make and still be grouped
-//!
-//! Two things have to hold. Nothing the collision produces may be lost: a
-//! collision transferring \f$W\f$ puts on the stack a knock-on electron of
-//! \f$W - B\f$ and, from the vacancy it leaves, fluorescence photons and Auger
-//! electrons of at most \f$B\f$, every one of them below \f$W\f$ itself, so a
-//! transfer under both the electron and the photon cutoff produces nothing
-//! that would have been transported. And the projectile has to survive it,
-//! which is soft_projectile_headroom().
-//!
-//! All three cutoffs therefore bear on the threshold: the photon and electron
-//! ones through what the collision emits, the positron one through what the
-//! projectile becomes.
-//!
-//! One more thing bounds it, and it has nothing to do with what is lost. A
-//! step describes the energy its grouped collisions take by a mean and a
-//! variance, which is a fair account only if many of them contribute. The
-//! spectrum of transfers falls as \f$1/W^2\f$, so the variance is carried by
-//! the largest of them, and a transfer comparable to the step's whole energy
-//! budget would leave that budget in the hands of one or two collisions. So
-//! the threshold is also capped at a fraction of what the step may lose. In
-//! a photoneutron run this is what binds: an 8 MeV electron cutoff would
-//! otherwise let a single grouped collision carry seven times the energy the
-//! step was allowed to lose, which is not a description of anything.
-//!
-//! PENELOPE leaves W_cc to the user and PenRed sets it to a hundredth of the
-//! absorption energy, capped at 5 keV, which is the same guard reached from
-//! the other end.
-//!
-//! \param[in] q_index 0 for an electron, 1 for a positron
-//! \param[in] E Kinetic energy in [eV]
-//! \return Cutoff in [eV]; zero means nothing may be grouped
-double soft_collision_cutoff(int q_index, double E);
-
-//! Largest bremsstrahlung photon energy that may be grouped
-//!
-//! A bremsstrahlung collision produces one photon and leaves the projectile in
-//! flight, so of what it emits only the photon cutoff bears on it. The
-//! projectile bound matters more here than anywhere else: a single photon may
-//! carry off nearly the whole kinetic energy, and without that bound a grouped
-//! emission could take an electron from just above its cutoff to nearly at
-//! rest and then smear the loss along the step.
-//!
-//! \param[in] q_index 0 for an electron, 1 for a positron
-//! \param[in] E Kinetic energy in [eV]
-//! \return Cutoff in [eV]
-double soft_radiative_cutoff(int q_index, double E);
 
 } // namespace openmc
 

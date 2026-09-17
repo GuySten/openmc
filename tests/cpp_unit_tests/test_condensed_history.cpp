@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "openmc/condensed_history.h"
+#include "openmc/constants.h"
 #include "openmc/math_functions.h"
 #include "openmc/position.h"
 #include "openmc/random_lcg.h"
@@ -186,4 +187,109 @@ TEST_CASE("short steps compose into a long one")
       CHECK_THAT(sum_p2 / n, WithinAbs(std::exp(-ratio * s_total), tol));
     }
   }
+}
+
+// What bounds a step, and the decision -- taken step by step, from nothing but
+// the step itself -- of whether to group at all.
+TEST_CASE("the step is bounded by collisions, by energy and by geometry")
+{
+  uint64_t seed = 99;
+  double xs_hard = 1.0;   // one hard collision per cm
+  double xs_soft = 1.0e5; // plenty to group
+  double E = 1.0e7;
+  double c2 = 0.05;
+
+  SECTION("a hard collision ends the ordinary step")
+  {
+    // With no stopping power and no boundary in the way, the length is
+    // exponentially distributed about the hard mean free path
+    double sum = 0.0;
+    int n = 200000;
+    bool hinge_inside = true;
+    bool always_grouped = true;
+    for (int i = 0; i < n; ++i) {
+      auto s = openmc::sample_mixed_step(
+        xs_hard, xs_soft, 0.0, E, c2, openmc::INFTY, &seed);
+      always_grouped = always_grouped && s.grouped;
+      hinge_inside = hinge_inside && s.hinge >= 0.0 && s.hinge <= s.length;
+      sum += s.length;
+    }
+    CHECK(hinge_inside);
+    // Whether to group is decided before the length is drawn, so a run of
+    // short steps cannot turn some of them into single-event flights -- which
+    // is what would bias the mean below
+    CHECK(always_grouped);
+    CHECK_THAT(sum / n, WithinRel(1.0 / xs_hard, 0.02));
+  }
+
+  SECTION("the energy ceiling shortens it")
+  {
+    // A stopping power steep enough that c2 of the energy is gone in a
+    // hundredth of the hard mean free path
+    double stopping_power = c2 * E / 0.01;
+    for (int i = 0; i < 1000; ++i) {
+      auto s = openmc::sample_mixed_step(
+        xs_hard, xs_soft, stopping_power, E, c2, openmc::INFTY, &seed);
+      CHECK(s.length <= 0.01 * (1.0 + 1.0e-12));
+    }
+  }
+
+  SECTION("geometry has the last word")
+  {
+    for (int i = 0; i < 1000; ++i) {
+      auto s =
+        openmc::sample_mixed_step(xs_hard, xs_soft, 0.0, E, c2, 0.001, &seed);
+      CHECK(s.length <= 0.001);
+      CHECK(!s.ends_in_collision);
+    }
+  }
+}
+
+TEST_CASE("a step with too little in it is not grouped")
+{
+  uint64_t seed = 4242;
+  double E = 1.0e7;
+
+  // Nothing soft to group, which is what C1 = 0 and no cutoffs leave behind:
+  // the scheme must hand every step back to the single-event transport
+  for (int i = 0; i < 1000; ++i) {
+    auto s =
+      openmc::sample_mixed_step(1.0, 0.0, 0.0, E, 0.05, openmc::INFTY, &seed);
+    CHECK(!s.grouped);
+  }
+
+  // A foil thin enough that the step holds fewer than the minimum number of
+  // collisions is transported one collision at a time, however the run was
+  // configured. This is the whole of the switch, and it is made from the step
+  // rather than from the geometry.
+  double xs_soft = 1.0e4;
+  double thin = 0.5 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
+  double thick = 2.0 * openmc::MIN_GROUPED_COLLISIONS / xs_soft;
+  for (int i = 0; i < 1000; ++i) {
+    CHECK(!openmc::sample_mixed_step(1.0, xs_soft, 0.0, E, 0.05, thin, &seed)
+             .grouped);
+    CHECK(openmc::sample_mixed_step(1.0, xs_soft, 0.0, E, 0.05, thick, &seed)
+            .grouped);
+  }
+}
+
+TEST_CASE("the grouping decision does not bias the step length")
+{
+  // Sitting just above the threshold is where deciding from a sampled length
+  // would do its damage: the short steps would be handed to the single-event
+  // path and the ones left behind would be drawn from an exponential with its
+  // lower end removed, which is a longer mean free path than the cross
+  // section says. The mean has to come back as the mean free path itself.
+  uint64_t seed = 31337;
+  double xs_hard = 1.0;
+  double xs_soft = 1.1 * openmc::MIN_GROUPED_COLLISIONS * xs_hard;
+  int n = 400000;
+  double sum = 0.0;
+  for (int i = 0; i < n; ++i) {
+    auto s = openmc::sample_mixed_step(
+      xs_hard, xs_soft, 0.0, 1.0e7, 0.05, openmc::INFTY, &seed);
+    REQUIRE(s.grouped);
+    sum += s.length;
+  }
+  CHECK_THAT(sum / n, WithinRel(1.0 / xs_hard, 0.01));
 }

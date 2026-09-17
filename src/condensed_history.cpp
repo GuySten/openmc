@@ -3,6 +3,7 @@
 #include <algorithm> // for max, min
 #include <cmath>     // for abs, exp, sqrt
 
+#include "openmc/constants.h"
 #include "openmc/random_lcg.h"
 
 namespace openmc {
@@ -83,6 +84,52 @@ double sample_soft_energy_loss(double mean, double variance, uint64_t* seed)
   if (xi >= one_minus_a)
     return 0.0;
   return w * (xi / one_minus_a);
+}
+
+MixedStep sample_mixed_step(double xs_hard, double xs_soft,
+  double stopping_power, double E, double c2, double max_distance,
+  uint64_t* seed)
+{
+  MixedStep step;
+
+  // Whether to group is settled before anything is sampled, from the step this
+  // material and this geometry allow rather than from a sampled one. Sampling
+  // first and declining the short ones would leave the grouped steps drawn
+  // from an exponential with its lower end cut off, which is a longer mean
+  // free path to the hard collision than the cross section says.
+  double mfp = (xs_hard > 0.0) ? 1.0 / xs_hard : INFTY;
+  double s_energy =
+    (stopping_power > 0.0 && c2 > 0.0) ? c2 * E / stopping_power : INFTY;
+  double reach = std::min(std::min(mfp, s_energy), max_distance);
+  if (!(reach > 0.0) || xs_soft * reach < MIN_GROUPED_COLLISIONS)
+    return step;
+  step.grouped = true;
+
+  // Path to the next hard interaction, which is the step the scheme wants.
+  // Everything below only shortens it, and shortening costs nothing: the
+  // exponential has no memory, so a step cut short and resumed is the same
+  // flight as an uncut one.
+  double s = (xs_hard > 0.0) ? -std::log(prn(seed)) / xs_hard : INFTY;
+  step.ends_in_collision = true;
+
+  // The grouped loss is described by a mean and a variance, which stops being
+  // a fair description once the mean is a large part of what the projectile
+  // has. Capping it at a fraction of the energy is also what keeps the
+  // restricted stopping power evaluated near the energy it belongs to.
+  if (s_energy < s) {
+    s = s_energy;
+    step.ends_in_collision = false;
+  }
+
+  // Geometry has the last word on length
+  if (max_distance < s) {
+    s = max_distance;
+    step.ends_in_collision = false;
+  }
+
+  step.length = s;
+  step.hinge = s * prn(seed);
+  return step;
 }
 
 } // namespace openmc

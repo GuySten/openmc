@@ -72,6 +72,55 @@ double sample_soft_deflection(
 //! \return Energy lost in [eV], never negative
 double sample_soft_energy_loss(double mean, double variance, uint64_t* seed);
 
+//==============================================================================
+//! One mixed condensed-history step
+//!
+//! The step runs from one hard interaction to the next, with the grouped soft
+//! effects applied at a single point inside it. That point is where the
+//! spatial accuracy comes from: putting the whole deflection at the end would
+//! leave the particle travelling in a straight line for the length of the
+//! step and lose the lateral spread, while putting it at the start would
+//! overstate it. Uniformly along the step is PENELOPE's random hinge.
+//==============================================================================
+
+struct MixedStep {
+  double length {0.0}; //!< path the step covers in [cm]
+  double hinge {0.0};  //!< distance into it at which the soft effects act
+  //! Whether anything is being grouped. False hands the step back to the
+  //! single-event transport, and leaves every other field unset.
+  bool grouped {false};
+  //! Whether a hard interaction waits at the end. False when the energy
+  //! ceiling or the geometry cut the step short, and the next one resumes.
+  bool ends_in_collision {false};
+};
+
+//! Fewest grouped collisions a step must contain to be worth grouping
+//!
+//! Below this the trade is bad in both directions. Two moments describe the
+//! sum of many collisions well and of a few badly, the central limit theorem
+//! not having set in; and there are too few collisions removed for it to be
+//! faster anyway. This is what decides, step by step and with no input from
+//! the user, where a run stops being condensed history and becomes the
+//! single-event transport it is built to agree with -- in a thin foil, near an
+//! interface, or wherever the geometry cuts the step short.
+constexpr double MIN_GROUPED_COLLISIONS = 10.0;
+
+//! Sample the next step
+//!
+//! \param[in] xs_hard Macroscopic hard cross section in [1/cm]
+//! \param[in] xs_soft Macroscopic rate of the collisions being grouped, in
+//!   [1/cm], which decides only whether grouping is worth it
+//! \param[in] stopping_power Restricted stopping power in [eV/cm]
+//! \param[in] E Kinetic energy in [eV]
+//! \param[in] c2 Largest fraction of its energy the projectile may lose to
+//!   the grouped collisions over one step
+//! \param[in] max_distance Distance beyond which the step cannot usefully
+//!   run, normally the distance to the nearest boundary, in [cm]
+//! \param[inout] seed Pseudorandom number seed pointer
+MixedStep sample_mixed_step(double xs_hard, double xs_soft,
+  double stopping_power, double E, double c2, double max_distance,
+  uint64_t* seed);
+
 } // namespace openmc
 
 #endif // OPENMC_CONDENSED_HISTORY_H

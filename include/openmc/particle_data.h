@@ -247,17 +247,31 @@ struct ElectroAtomicMicroXS {
 // particle is traveling through
 //==============================================================================
 
+//==============================================================================
+//! Everything a condensed-history step needs from the material it runs through
+//!
+//! Macroscopic, at the projectile's current energy: [1/cm] for the rates,
+//! [eV/cm] for the stopping power and [eV^2/cm] for the straggling. Only
+//! meaningful while a charged particle is being tracked.
+//!
+//! These say nothing about which charged particle it is. The step machinery
+//! reads them and the material fills them; what species-specific data went
+//! into filling them stays on the far side of this seam, which is what a
+//! second charged particle would supply its own version of.
+//==============================================================================
+
+struct StepXS {
+  double hard {0.0};          //!< rate of the interactions that stay discrete
+  double hard_majorant {0.0}; //!< bound on `hard` over one step
+  double soft_rate {0.0};     //!< rate of the grouped ones
+  double stopping {0.0};      //!< restricted stopping power
+  double straggling {0.0};    //!< second moment of the restricted loss
+  double xs1_soft {0.0};      //!< first transport xs of the grouped deflections
+  double xs2_soft {0.0};      //!< second
+};
+
 struct MacroXS {
-  double total; //!< macroscopic total xs
-  //! Macroscopic form of the soft/hard split, in [1/cm], [eV/cm] and
-  //! [eV^2/cm]. Only meaningful while a charged particle is being tracked.
-  double electron_hard;
-  double electron_hard_majorant;
-  double electron_soft_rate;
-  double electron_stopping;
-  double electron_straggling;
-  double electron_xs1_soft;
-  double electron_xs2_soft;
+  double total;       //!< macroscopic total xs
   double absorption;  //!< macroscopic absorption xs
   double fission;     //!< macroscopic fission xs
   double nu_fission;  //!< macroscopic production xs
@@ -268,6 +282,12 @@ struct MacroXS {
   double incoherent;      //!< macroscopic incoherent xs
   double photoelectric;   //!< macroscopic photoelectric xs
   double pair_production; //!< macroscopic pair production xs
+
+  //! The condensed-history step, last so that it stays out of the way. Every
+  //! neutron transported reads total, absorption, fission and nu_fission
+  //! together, and seven doubles in the middle of them put those four in
+  //! different cache lines.
+  StepXS step;
 };
 
 //==============================================================================

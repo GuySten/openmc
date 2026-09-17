@@ -942,19 +942,16 @@ void Material::calculate_xs(Particle& p) const
   p.macro_xs().absorption = 0.0;
   p.macro_xs().fission = 0.0;
   p.macro_xs().nu_fission = 0.0;
-  p.macro_xs().electron_hard = 0.0;
-  p.macro_xs().electron_hard_majorant = 0.0;
-  p.macro_xs().electron_soft_rate = 0.0;
-  p.macro_xs().electron_stopping = 0.0;
-  p.macro_xs().electron_straggling = 0.0;
-  p.macro_xs().electron_xs1_soft = 0.0;
-  p.macro_xs().electron_xs2_soft = 0.0;
 
   if (p.type().is_neutron()) {
     this->calculate_neutron_xs(p);
   } else if (p.type().is_photon()) {
     this->calculate_photon_xs(p);
   } else if (p.type().is_electron() || p.type().is_positron()) {
+    // The step description is zeroed with the charged particle that reads it
+    // rather than with every particle, this being on the path of every cross
+    // section lookup in the run
+    p.macro_xs().step = StepXS {};
     if (settings::electron_transport)
       this->calculate_electron_xs(p);
   }
@@ -1149,18 +1146,18 @@ void Material::calculate_electron_xs(Particle& p) const
 
     // Add contributions to material macroscopic cross sections
     p.macro_xs().total += atom_density * micro.total;
-    p.macro_xs().electron_hard += atom_density * micro.hard_total;
-    p.macro_xs().electron_hard_majorant += atom_density * micro.hard_majorant;
-    p.macro_xs().electron_soft_rate += atom_density * micro.soft_rate;
-    p.macro_xs().electron_stopping += atom_density * micro.soft_stopping;
-    p.macro_xs().electron_straggling += atom_density * micro.soft_straggling;
+    p.macro_xs().step.hard += atom_density * micro.hard_total;
+    p.macro_xs().step.hard_majorant += atom_density * micro.hard_majorant;
+    p.macro_xs().step.soft_rate += atom_density * micro.soft_rate;
+    p.macro_xs().step.stopping += atom_density * micro.soft_stopping;
+    p.macro_xs().step.straggling += atom_density * micro.soft_straggling;
     // The elastic part comes from the element; the inelastic part is this
     // material's, the recoil model having been solved with its oscillators.
     // 1 - P_2(mu) is 3(1 - mu) for deflections as small as these.
     double xs1_inelastic = this->inelastic_transport_xs(i_element, q, p.E());
-    p.macro_xs().electron_xs1_soft +=
+    p.macro_xs().step.xs1_soft +=
       atom_density * (micro.soft_xs1 + xs1_inelastic);
-    p.macro_xs().electron_xs2_soft +=
+    p.macro_xs().step.xs2_soft +=
       atom_density * (micro.soft_xs2 + 3.0 * xs1_inelastic);
   }
 }

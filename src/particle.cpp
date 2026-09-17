@@ -343,7 +343,7 @@ bool Particle::apply_condensed_hinge()
       // A delta interaction: the flight was drawn from a bound on the hard
       // cross section, and this is where the excess is given back. Nothing
       // happens, and the next step starts from here.
-      double ratio = macro_xs().electron_hard / ch_majorant();
+      double ratio = macro_xs().step.hard / ch_majorant();
 
       // The whole scheme rests on that bound holding, and a bound that does
       // not hold fails silently: the rejection below simply never fires, the
@@ -375,7 +375,7 @@ double Particle::sample_condensed_step()
   }
 
   const auto& xs {macro_xs()};
-  if (xs.electron_hard <= 0.0 && xs.electron_soft_rate <= 0.0) {
+  if (xs.step.hard <= 0.0 && xs.step.soft_rate <= 0.0) {
     this->ch_reset();
     return (xs.total > 0.0) ? -std::log(prn(current_seed())) / xs.total
                             : INFINITY;
@@ -392,11 +392,11 @@ double Particle::sample_condensed_step()
   // the value here belongs to the energy it started with. What the bound
   // overcounts is taken back at the end of the step, by declining that
   // fraction of the interactions.
-  ch_majorant() = xs.electron_hard_majorant;
+  ch_majorant() = xs.step.hard_majorant;
 
-  auto step = sample_mixed_step(ch_majorant(), xs.electron_soft_rate,
-    xs.electron_xs1_soft, xs.electron_stopping, max_loss,
-    settings::deflection_cutoff, boundary().distance(), current_seed());
+  auto step = sample_mixed_step(ch_majorant(), xs.step.soft_rate,
+    xs.step.xs1_soft, xs.step.stopping, max_loss, settings::deflection_cutoff,
+    boundary().distance(), current_seed());
 
   // Not worth grouping over this step, so it is transported one collision at
   // a time from the full cross section -- the single-event scheme the mixed
@@ -410,8 +410,8 @@ double Particle::sample_condensed_step()
   // Optical depths the grouped deflections accumulate over the whole step.
   // They are held rather than the length so that the hinge needs nothing but
   // the particle, the cross sections having possibly moved on by then.
-  ch_s_lambda1() = step.length * xs.electron_xs1_soft;
-  ch_s_lambda2() = step.length * xs.electron_xs2_soft;
+  ch_s_lambda1() = step.length * xs.step.xs1_soft;
+  ch_s_lambda2() = step.length * xs.step.xs2_soft;
   ch_length() = step.length - step.hinge;
   ch_at_hinge() = true;
   ch_in_step() = true;
@@ -422,11 +422,11 @@ double Particle::sample_condensed_step()
 void Particle::apply_soft_energy_loss(double distance)
 {
   const auto& xs {macro_xs()};
-  if (distance <= 0.0 || xs.electron_stopping <= 0.0)
+  if (distance <= 0.0 || xs.step.stopping <= 0.0)
     return;
 
-  double loss = sample_soft_energy_loss(distance * xs.electron_stopping,
-    distance * xs.electron_straggling, current_seed());
+  double loss = sample_soft_energy_loss(
+    distance * xs.step.stopping, distance * xs.step.straggling, current_seed());
 
   // The cross sections were evaluated at the energy the step started from and
   // are now stale, and nothing else in the loop knows the energy moved

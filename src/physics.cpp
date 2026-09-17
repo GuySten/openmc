@@ -828,7 +828,7 @@ int sample_photon_element(Particle& p)
 int sample_electron_element(Particle& p, bool hard)
 {
   // Sample cumulative distribution function
-  double total = hard ? p.macro_xs().electron_hard : p.macro_xs().total;
+  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
   double cutoff = prn(p.current_seed()) * total;
 
   // Get pointers to elements, densities

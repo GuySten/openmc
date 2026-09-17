@@ -89,16 +89,16 @@ class Settings:
         cutoff parameters will be applied relative to the particle's starting
         weight or to its current weight.
 
-        Two further keys, 'step_deflection' and 'step_energy_loss', bound one
+        Two further keys, 'deflection' and 'energy_loss', bound one
         condensed-history step of a charged particle. They carry no particle
-        name because nothing about them is particular to the electron: any
-        charged particle the transport learns to follow is bounded the same
-        way. 'step_deflection' is the largest deflection the collisions grouped
-        into a step may accumulate, measured as :math:`\\langle 1-\\mu
-        \\rangle`. It decides where each interaction channel is cut into a
+        name: they say how finely a step is integrated rather than which
+        particles matter, so one value serves every charged particle the
+        transport follows. 'deflection' is the largest deflection the
+        collisions grouped into a step may accumulate, measured as
+        :math:`\\langle 1-\\mu \\rangle`. It cuts elastic scattering into a
         grouped part and a part transported one collision at a time, and it
-        bounds how far a step may run; setting it to zero groups nothing, which
-        is single-event transport. 'step_energy_loss' is the largest fraction
+        bounds how far one step may run; setting it to zero groups nothing,
+        which is single-event transport. 'energy_loss' is the largest fraction
         of its kinetic energy a particle may give those collisions over one
         step. They default to 0.005 and 0.05 and are capped at 0.2, where
         PENELOPE caps its :math:`C_1` and :math:`C_2`. Only meaningful with
@@ -1228,17 +1228,17 @@ class Settings:
                          'energy_positron']:
                 cv.check_type('energy cutoff', cutoff[key], Real)
                 cv.check_greater_than('energy cutoff', cutoff[key], 0.0)
-            elif key == 'step_deflection':
-                cv.check_type('step deflection cutoff', cutoff[key], Real)
-                cv.check_greater_than('step deflection cutoff', cutoff[key],
+            elif key == 'deflection':
+                cv.check_type('deflection cutoff', cutoff[key], Real)
+                cv.check_greater_than('deflection cutoff', cutoff[key],
                                       0.0, equality=True)
-                cv.check_less_than('step deflection cutoff', cutoff[key], 0.2,
+                cv.check_less_than('deflection cutoff', cutoff[key], 0.2,
                                    equality=True)
-            elif key == 'step_energy_loss':
-                cv.check_type('step energy loss cutoff', cutoff[key], Real)
-                cv.check_greater_than('step energy loss cutoff', cutoff[key],
+            elif key == 'energy_loss':
+                cv.check_type('energy loss cutoff', cutoff[key], Real)
+                cv.check_greater_than('energy loss cutoff', cutoff[key],
                                       0.0)
-                cv.check_less_than('step energy loss cutoff', cutoff[key], 0.2,
+                cv.check_less_than('energy loss cutoff', cutoff[key], 0.2,
                                    equality=True)
             else:
                 msg = f'Unable to set cutoff to "{key}" which is unsupported ' \
@@ -2386,7 +2386,7 @@ class Settings:
             for key in ('energy_neutron', 'energy_photon', 'energy_electron',
                         'energy_positron', 'weight', 'weight_avg', 'time_neutron',
                         'time_photon', 'time_electron', 'time_positron',
-                        'step_deflection', 'step_energy_loss',
+                        'deflection', 'energy_loss',
                         'survival_normalization'):
                 value = get_text(elem, key)
                 if value is not None:

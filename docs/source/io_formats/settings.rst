@@ -157,7 +157,7 @@ fission.
 ``<cutoff>`` Element
 --------------------
 
-The ``<cutoff>`` element indicates three kinds of cutoffs. The first is the
+The ``<cutoff>`` element indicates four kinds of cutoffs. The first is the
 weight cutoff used below which particles undergo Russian roulette. Surviving
 particles are assigned a user-determined weight. Note that weight cutoffs and
 Russian rouletting are not turned on by default. The second is the energy cutoff
@@ -165,7 +165,10 @@ which is used to kill particles under certain energy. The energy cutoff should
 not be used unless you know particles under the energy are of no importance to
 results you care. The third is the time cutoff used to kill particles whose time
 exceeds a specific cutoff. Particles will be killed exactly at the specified
-time.
+time. The fourth bounds how far one condensed-history step of a charged
+particle may run, in deflection and in energy loss. Those two carry no particle
+name: they say how finely a step is integrated rather than which particles
+matter, so one value serves every charged particle the transport follows.
 
   :weight:
     The weight below which particles undergo Russian roulette.
@@ -225,33 +228,25 @@ time.
 
     *Default*: Infinity
 
-
-The ``<cutoff>`` element also carries two limits on how far a
-condensed-history step of a charged particle may run. They take no particle
-name because nothing about them is particular to the electron: any charged
-particle the transport learns to follow is bounded the same way, and
-everything they are measured against -- the energy cutoffs above -- is in this
-same element.
-
-  :step_deflection:
+  :deflection:
     Largest deflection the collisions grouped into one step may accumulate,
     measured as :math:`\langle 1-\mu \rangle`: zero for a step that does not
     turn the particle at all, one for a step that leaves it with no memory of
-    the direction it came from. It decides where each interaction channel is
-    cut into a grouped part and a part transported one collision at a time, and
-    it bounds how far a step may run. Setting it to zero groups nothing, which
-    is single-event transport.
-
-    Where the split falls is not otherwise a free parameter: a collision may be
-    grouped only when nothing it produces would have been transported anyway,
-    so the energy cutoffs decide it. Raising them therefore makes the method
-    faster on its own, with nothing else to set.
+    the direction it came from. It cuts elastic scattering into a grouped part
+    and a part transported one collision at a time, and it bounds how far one
+    step may run. Setting it to zero groups nothing, which is single-event
+    transport. The inelastic channels are cut by the energy cutoffs above
+    rather than by anything set here, since a collision may be grouped only
+    when nothing it produces would have been transported anyway -- so raising
+    those cutoffs makes the method faster on its own.
 
     *Default*: 0.005, the largest value that does not move the answer. On a
     1 MeV depth dose in carbon it agrees with single-event transport to 2.1
-    standard errors in every resolved bin, where 0.01 differs by 4.9.
+    standard errors in every resolved bin, where 0.01 differs by 4.9. Values
+    above 0.2 are reduced to it with a warning, past which a step is no longer
+    describing a path; PENELOPE caps its :math:`C_1` at the same place.
 
-  :step_energy_loss:
+  :energy_loss:
     Largest fraction of its kinetic energy a particle may give the grouped
     collisions of one step, which keeps the restricted stopping power evaluated
     near the energy it belongs to. A step is never allowed to carry a particle
@@ -259,11 +254,8 @@ same element.
     collision carry more than a tenth of this.
 
     *Default*: 0.05. It rarely binds, the deflection limit almost always coming
-    first.
+    first. Capped at 0.2 the same way, where PENELOPE caps its :math:`C_2`.
 
-Both are capped at 0.2, past which a step is no longer describing a path;
-larger values are reduced to it with a warning. PENELOPE caps its :math:`C_1`
-and :math:`C_2` at the same place.
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------
@@ -300,7 +292,7 @@ interaction is simulated as a discrete event: elastic scattering from
 partial-wave cross sections, electroionization, atomic excitation,
 bremsstrahlung, and for positrons Bhabha scattering and in-flight
 annihilation. Interactions too small to be worth following one at a time are
-grouped into a condensed-history step, which the ``step_deflection`` cutoff controls and
+grouped into a condensed-history step, which the ``deflection`` cutoff controls and
 can switch off.
 
 This requires photon transport, which is enabled automatically with a warning

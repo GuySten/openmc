@@ -120,8 +120,8 @@ ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 // them. Against single-event transport it agrees everywhere to 2.1 standard
 // errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
 // once the angular ceiling is applied and is left as a guard.
-double step_deflection {0.005};
-double step_energy_loss {0.05};
+double deflection_cutoff {0.005};
+double energy_loss_cutoff {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -811,39 +811,38 @@ void read_settings_xml(pugi::xml_node root)
     // against is here: the step may not carry a charged particle below the
     // energy cutoff of its own kind, and what a grouped collision may emit is
     // bounded by the electron and photon cutoffs above. They carry no
-    // particle name because nothing about them is particular to the electron
-    // -- any charged particle the transport learns to follow is bounded the
-    // same way.
-    if (check_for_node(node_cutoff, "step_deflection")) {
-      step_deflection =
-        std::stod(get_node_value(node_cutoff, "step_deflection"));
-      if (step_deflection < 0.0) {
-        fatal_error("Step deflection cutoff cannot be negative.");
+    // particle name because they say how finely a step is integrated rather
+    // than which particles matter, so one value serves every charged particle
+    // the transport follows.
+    if (check_for_node(node_cutoff, "deflection")) {
+      deflection_cutoff = std::stod(get_node_value(node_cutoff, "deflection"));
+      if (deflection_cutoff < 0.0) {
+        fatal_error("Deflection cutoff cannot be negative.");
       }
       // Clamped rather than refused: a coarser step than this is still a
       // request for the coarsest step there is, and stopping a run over a
       // quality knob helps nobody. The Python interface refuses it at the
       // point of assignment, where saying so is more use.
-      if (step_deflection > MAX_STEP_COARSENESS) {
-        warning(fmt::format("Step deflection cutoff of {} is past the {} a "
+      if (deflection_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Deflection cutoff of {} is past the {} a "
                             "condensed-history step is meaningful up to, and "
                             "has been reduced to it.",
-          step_deflection, MAX_STEP_COARSENESS));
-        step_deflection = MAX_STEP_COARSENESS;
+          deflection_cutoff, MAX_STEP_COARSENESS));
+        deflection_cutoff = MAX_STEP_COARSENESS;
       }
     }
-    if (check_for_node(node_cutoff, "step_energy_loss")) {
-      step_energy_loss =
-        std::stod(get_node_value(node_cutoff, "step_energy_loss"));
-      if (step_energy_loss <= 0.0) {
-        fatal_error("Step energy loss cutoff must be greater than zero.");
+    if (check_for_node(node_cutoff, "energy_loss")) {
+      energy_loss_cutoff =
+        std::stod(get_node_value(node_cutoff, "energy_loss"));
+      if (energy_loss_cutoff <= 0.0) {
+        fatal_error("Energy loss cutoff must be greater than zero.");
       }
-      if (step_energy_loss > MAX_STEP_COARSENESS) {
-        warning(fmt::format("Step energy loss cutoff of {} is past the {} a "
+      if (energy_loss_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Energy loss cutoff of {} is past the {} a "
                             "condensed-history step is meaningful up to, and "
                             "has been reduced to it.",
-          step_energy_loss, MAX_STEP_COARSENESS));
-        step_energy_loss = MAX_STEP_COARSENESS;
+          energy_loss_cutoff, MAX_STEP_COARSENESS));
+        energy_loss_cutoff = MAX_STEP_COARSENESS;
       }
     }
     if (check_for_node(node_cutoff, "energy_positron")) {

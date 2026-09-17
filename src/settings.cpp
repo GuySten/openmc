@@ -13,6 +13,7 @@
 
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
 #include "openmc/distribution.h"
@@ -645,9 +646,19 @@ void read_settings_xml(pugi::xml_node root)
   if (check_for_node(root, "electron_max_step_deflection")) {
     electron_max_step_deflection =
       std::stod(get_node_value(root, "electron_max_step_deflection"));
-    if (electron_max_step_deflection < 0.0 ||
-        electron_max_step_deflection > 1.0) {
-      fatal_error("electron_max_step_deflection must be between 0 and 1.");
+    if (electron_max_step_deflection < 0.0) {
+      fatal_error("electron_max_step_deflection cannot be negative.");
+    }
+    // Clamped rather than refused: a coarser step than this is still a
+    // request for the coarsest step there is, and stopping a run over a
+    // quality knob helps nobody. The Python interface refuses it at the point
+    // of assignment, where saying so is more use.
+    if (electron_max_step_deflection > MAX_STEP_COARSENESS) {
+      warning(fmt::format("electron_max_step_deflection of {} is past the {} "
+                          "a condensed-history step is meaningful up to, and "
+                          "has been reduced to it.",
+        electron_max_step_deflection, MAX_STEP_COARSENESS));
+      electron_max_step_deflection = MAX_STEP_COARSENESS;
     }
   }
 
@@ -657,10 +668,15 @@ void read_settings_xml(pugi::xml_node root)
   if (check_for_node(root, "electron_max_step_energy_loss")) {
     electron_max_step_energy_loss =
       std::stod(get_node_value(root, "electron_max_step_energy_loss"));
-    if (electron_max_step_energy_loss <= 0.0 ||
-        electron_max_step_energy_loss > 1.0) {
-      fatal_error(
-        "electron_max_step_energy_loss must be greater than 0 and at most 1.");
+    if (electron_max_step_energy_loss <= 0.0) {
+      fatal_error("electron_max_step_energy_loss must be greater than 0.");
+    }
+    if (electron_max_step_energy_loss > MAX_STEP_COARSENESS) {
+      warning(fmt::format("electron_max_step_energy_loss of {} is past the {} "
+                          "a condensed-history step is meaningful up to, and "
+                          "has been reduced to it.",
+        electron_max_step_energy_loss, MAX_STEP_COARSENESS));
+      electron_max_step_energy_loss = MAX_STEP_COARSENESS;
     }
   }
 

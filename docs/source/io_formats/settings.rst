@@ -268,7 +268,11 @@ transport cutoffs decide it. Raising the electron and photon cutoffs therefore
 makes the method faster on its own, with nothing else to set -- on a 1 MeV
 electron in carbon, by a factor of 3 at a 1 keV cutoff and 12 at 100 keV.
 
-Setting it to zero transports every interaction discretely.
+Setting it to zero transports every interaction discretely. Values above 0.2
+are reduced to it with a warning: a step turning the particle through
+:math:`\langle 1-\mu \rangle = 0.2` has turned it through some 37 degrees, and
+standing all of that on one deflection at one point of the step is no longer
+describing a path. PENELOPE caps its :math:`C_1` at the same place.
 
   *Default*: 0.005, the largest value that does not move the answer. On a 1 MeV
   depth dose in carbon -- a light target at the energy where the grouped
@@ -283,7 +287,10 @@ The ``<electron_max_step_energy_loss>`` element sets the largest fraction of its
 kinetic energy a charged particle may give to the grouped collisions of one
 step, which keeps the restricted stopping power evaluated near the energy it
 belongs to. A step is never allowed to carry a particle below its own transport
-cutoff either, whichever bound is tighter.
+cutoff either, nor to let one grouped collision carry more than a tenth of
+this, whichever bound is tighter. Values above 0.2 are reduced to it with a
+warning, a step that has lost a fifth of its energy having moved far enough
+that the cross sections it began with belong to a different particle.
 
   *Default*: 0.05. It rarely binds, the angular ceiling of
   :ref:`electron_max_step_deflection` almost always coming first.

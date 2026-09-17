@@ -117,8 +117,11 @@ class Settings:
         The default of 0.005 is the largest value that does not move the
         answer: on a 1 MeV depth dose in carbon it agrees with single-event
         transport to 2.1 standard errors in every resolved bin, where 0.01
-        differs by 4.9. Larger values are faster and coarser. Only meaningful
-        with :attr:`electron_transport`.
+        differs by 4.9. Larger values are faster and coarser, up to a limit of
+        0.2 -- a step turning the particle through 37 degrees and standing all
+        of it on one deflection at one point is no longer describing a path.
+        PENELOPE caps its :math:`C_1` at the same place. Only meaningful with
+        :attr:`electron_transport`.
 
         .. versionadded:: 0.17.0
     electron_max_step_energy_loss : float
@@ -128,11 +131,13 @@ class Settings:
         is PENELOPE's :math:`C_2`, and EGSnrc's ESTEPE.
 
         A step is never allowed to carry a particle below its own transport
-        cutoff either, whichever bound is the tighter. Defaults to 0.05, which
-        rarely binds: the angular ceiling of
-        :attr:`electron_max_step_deflection` almost always comes first. Only
-        meaningful with :attr:`electron_transport` and a positive
-        :attr:`electron_max_step_deflection`.
+        cutoff either, nor to let one grouped collision carry more than a tenth
+        of this, whichever bound is the tighter. Defaults to 0.05, which rarely
+        binds: the angular ceiling of :attr:`electron_max_step_deflection`
+        almost always comes first. Capped at 0.2, past which a step has moved
+        far enough that the cross sections it began with belong to a different
+        particle. Only meaningful with :attr:`electron_transport` and a
+        positive :attr:`electron_max_step_deflection`.
 
         .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
@@ -746,9 +751,12 @@ class Settings:
 
     @electron_max_step_deflection.setter
     def electron_max_step_deflection(self, electron_max_step_deflection: float):
-        cv.check_type('electron max step deflection', electron_max_step_deflection, Real)
-        cv.check_greater_than('electron max step deflection', electron_max_step_deflection, 0.0, equality=True)
-        cv.check_less_than('electron max step deflection', electron_max_step_deflection, 1.0, equality=True)
+        cv.check_type('electron max step deflection',
+                      electron_max_step_deflection, Real)
+        cv.check_greater_than('electron max step deflection',
+                              electron_max_step_deflection, 0.0, equality=True)
+        cv.check_less_than('electron max step deflection',
+                           electron_max_step_deflection, 0.2, equality=True)
         self._electron_max_step_deflection = electron_max_step_deflection
 
     @property
@@ -757,9 +765,12 @@ class Settings:
 
     @electron_max_step_energy_loss.setter
     def electron_max_step_energy_loss(self, electron_max_step_energy_loss: float):
-        cv.check_type('electron max step energy loss', electron_max_step_energy_loss, Real)
-        cv.check_greater_than('electron max step energy loss', electron_max_step_energy_loss, 0.0)
-        cv.check_less_than('electron max step energy loss', electron_max_step_energy_loss, 1.0, equality=True)
+        cv.check_type('electron max step energy loss',
+                      electron_max_step_energy_loss, Real)
+        cv.check_greater_than('electron max step energy loss',
+                              electron_max_step_energy_loss, 0.0)
+        cv.check_less_than('electron max step energy loss',
+                           electron_max_step_energy_loss, 0.2, equality=True)
         self._electron_max_step_energy_loss = electron_max_step_energy_loss
 
     @property

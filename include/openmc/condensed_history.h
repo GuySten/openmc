@@ -120,6 +120,18 @@ struct MixedStep {
 //! 1 MeV one fits 150, and a 22 MeV one 16000.
 constexpr double MIN_GROUPED_COLLISIONS = 30.0;
 
+//! Coarsest a step is ever allowed to be, for either of the two bounds
+//!
+//! Past this the mixed scheme has left the ground it stands on. A step turning
+//! the particle through \f$\langle 1-\mu \rangle = 0.2\f$ has turned it
+//! through some 37 degrees, and standing all of that on one artificial
+//! deflection at one point of the step is no longer a description of a path;
+//! a step taking a fifth of the kinetic energy has moved far enough that the
+//! cross sections it was begun with belong to a different particle. PENELOPE
+//! caps both parameters here and PenRed enforces it in code, and there is no
+//! reason to allow what neither of them does.
+constexpr double MAX_STEP_COARSENESS = 0.2;
+
 //! Sample the next step
 //!
 //! \param[in] xs_hard Macroscopic hard cross section in [1/cm]

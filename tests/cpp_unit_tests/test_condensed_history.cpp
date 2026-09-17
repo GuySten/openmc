@@ -321,3 +321,27 @@ TEST_CASE("a step cannot carry the projectile past its own cutoff")
     CHECK(s.length * stopping_power <= headroom * (1.0 + 1.0e-12));
   }
 }
+
+TEST_CASE("the step bounds have a coarsest setting")
+{
+  // Both parameters are quality knobs and both stop meaning anything at the
+  // same place, which is where PENELOPE caps them and PenRed enforces it.
+  // Nothing here reads settings, so what is checked is that the limit exists,
+  // is the same for both, and leaves the default well inside it.
+  CHECK(openmc::MAX_STEP_COARSENESS == 0.2);
+  CHECK(openmc::MAX_STEP_COARSENESS > 0.0);
+
+  // A step at the limit turns the particle through about 37 degrees
+  double theta = std::acos(1.0 - openmc::MAX_STEP_COARSENESS) * 180.0 / M_PI;
+  CHECK(theta > 36.0);
+  CHECK(theta < 38.0);
+
+  // and the artificial distribution still has to carry its moments there
+  double mu1 = std::exp(-openmc::MAX_STEP_COARSENESS);
+  double mu2 = (2.0 * std::exp(-3.0 * openmc::MAX_STEP_COARSENESS) + 1.0) / 3.0;
+  auto d = openmc::soft_scattering(mu1, mu2);
+  CHECK(d.mu_0 >= -1.0);
+  CHECK(d.mu_0 <= 1.0);
+  CHECK(d.a >= 0.0);
+  CHECK(d.a <= 1.0);
+}

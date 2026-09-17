@@ -722,10 +722,20 @@ public:
   //! Abandon any condensed-history step in progress
   //!
   //! The step is built from the material it started in and from a straight
-  //! line through it, so neither survives a surface crossing.
+  //! line through it, so neither survives a surface crossing. It does not
+  //! survive the particle either: one of these objects is reused for every
+  //! history on a thread, so a step left in progress by a particle that died
+  //! inside it would otherwise be inherited by whatever is tracked next.
+  //!
+  //! Everything is cleared, not just the flags the readers are guarded by.
+  //! Leaving the optical depths and the majorant behind costs nothing while
+  //! the guards hold, and costs a great deal the moment one does not.
   void ch_reset()
   {
     ch_length_ = 0.0;
+    ch_s_lambda1_ = 0.0;
+    ch_s_lambda2_ = 0.0;
+    ch_majorant_ = 0.0;
     ch_at_hinge_ = false;
     ch_in_step_ = false;
     ch_hard_at_end_ = false;

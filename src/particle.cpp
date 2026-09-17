@@ -158,6 +158,11 @@ void Particle::from_source(const SourceSite* src)
   surface() = SURFACE_NONE;
   cell_born() = C_NONE;
   material() = C_NONE;
+  // Whatever held this slot before may have died inside a condensed-history
+  // step -- killed by a time cutoff, by the event limit, or lost -- and none
+  // of that unwinds the step on the way out. This is the one place every
+  // particle passes through, source and secondary alike.
+  ch_reset();
   n_collision() = src->n_collision;
   fission() = false;
   zero_flux_derivs();
@@ -278,6 +283,13 @@ void Particle::event_calculate_xs()
 
 bool Particle::apply_condensed_hinge()
 {
+  // Only a charged particle ever has a step to be in the middle of. The check
+  // is cheap, and without it a photon inheriting a stale flag would have its
+  // reaction replaced by a deflection -- silently, and for the rest of its
+  // life, since nothing but a surface crossing would clear it.
+  if (!type().is_electron() && !type().is_positron())
+    return false;
+
   if (ch_at_hinge()) {
     // The grouped deflections of the whole step, applied at one point in it
     double mu =

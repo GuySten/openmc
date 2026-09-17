@@ -41,7 +41,8 @@ def test_export_to_xml(run_in_tmpdir):
                 'energy_photon': 1000.0, 'energy_electron': 1.0e-5,
                 'energy_positron': 1.0e-5, 'time_neutron': 1.0e-5,
                 'time_photon': 1.0e-5, 'time_electron': 1.0e-5,
-                'time_positron': 1.0e-5}
+                'time_positron': 1.0e-5, 'deflection': 0.01,
+                'energy_loss': 0.1}
     mesh = openmc.RegularMesh()
     mesh.lower_left = (-10., -10., -10.)
     mesh.upper_right = (10., 10., 10.)
@@ -68,6 +69,7 @@ def test_export_to_xml(run_in_tmpdir):
     s.create_delayed_neutrons = False
     s.log_grid_bins = 2000
     s.photon_transport = False
+    s.electron_transport = False
     s.electron_treatment = 'led'
     s.atomic_relaxation = False
     s.write_initial_source = True
@@ -134,7 +136,8 @@ def test_export_to_xml(run_in_tmpdir):
                         'energy_neutron': 1.0e-5, 'energy_photon': 1000.0,
                         'energy_electron': 1.0e-5, 'energy_positron': 1.0e-5,
                         'time_neutron': 1.0e-5, 'time_photon': 1.0e-5,
-                        'time_electron': 1.0e-5, 'time_positron': 1.0e-5}
+                        'time_electron': 1.0e-5, 'time_positron': 1.0e-5,
+                        'deflection': 0.01, 'energy_loss': 0.1}
     assert isinstance(s.entropy_mesh, openmc.RegularMesh)
     assert s.entropy_mesh.lower_left == [-10., -10., -10.]
     assert s.entropy_mesh.upper_right == [10., 10., 10.]
@@ -160,6 +163,7 @@ def test_export_to_xml(run_in_tmpdir):
     assert not s.create_delayed_neutrons
     assert s.log_grid_bins == 2000
     assert not s.photon_transport
+    assert not s.electron_transport
     assert s.electron_treatment == 'led'
     assert not s.atomic_relaxation
     assert s.write_initial_source
@@ -248,3 +252,30 @@ def test_properties_file_load(tmp_path, mpi_intracomm):
             assert mat.get_density('atom/b-cm') == pytest.approx(
                 orig_density * density_factor, rel=1e-5
             )
+
+
+def test_condensed_history_cutoffs():
+    """The two step bounds are quality knobs, and refuse values that are not"""
+    s = openmc.Settings()
+
+    # Zero deflection is the way to ask for single-event transport, so it has
+    # to be accepted where zero energy loss -- a step that may take no energy
+    # and so can never end -- must not be
+    s.cutoff = {'deflection': 0.0}
+    assert s.cutoff['deflection'] == 0.0
+    with pytest.raises(ValueError):
+        s.cutoff = {'energy_loss': 0.0}
+
+    # Neither may be negative
+    with pytest.raises(ValueError):
+        s.cutoff = {'deflection': -0.01}
+    with pytest.raises(ValueError):
+        s.cutoff = {'energy_loss': -0.01}
+
+    # Both stop at the coarsest step that still describes a path
+    s.cutoff = {'deflection': 0.2, 'energy_loss': 0.2}
+    assert s.cutoff == {'deflection': 0.2, 'energy_loss': 0.2}
+    with pytest.raises(ValueError):
+        s.cutoff = {'deflection': 0.21}
+    with pytest.raises(ValueError):
+        s.cutoff = {'energy_loss': 0.21}

@@ -128,6 +128,9 @@ extern ElectronTreatment
   electron_treatment;      //!< how to treat secondary electrons
 extern double electron_c1; //!< soft angular deflection per hard elastic
                            //!< collision; zero transports every collision
+extern double electron_c2; //!< largest fraction of its energy a charged
+                           //!< particle may give the grouped collisions in
+                           //!< one condensed-history step
 extern array<double, 4>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
 extern array<double, 4>

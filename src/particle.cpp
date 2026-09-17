@@ -9,6 +9,7 @@
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/collision_track.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/dagmc.h"
 #include "openmc/error.h"
@@ -16,6 +17,7 @@
 #include "openmc/hdf5_interface.h"
 #include "openmc/lattice.h"
 #include "openmc/material.h"
+#include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
@@ -274,6 +276,92 @@ void Particle::event_calculate_xs()
   }
 }
 
+bool Particle::apply_condensed_hinge()
+{
+  if (ch_at_hinge()) {
+    // The grouped deflections of the whole step, applied at one point in it
+    double mu =
+      sample_soft_deflection(ch_s_lambda1(), ch_s_lambda2(), current_seed());
+    this->mu() = mu;
+    u() = rotate_angle(u(), mu, nullptr, current_seed());
+
+    // The direction has changed, so the distance to the boundary has too
+    material_last() = C_NONE;
+    surface() = SURFACE_NONE;
+    return true;
+  }
+
+  // The end of a step that no hard interaction waits at
+  if (ch_in_step() && !ch_hard_at_end()) {
+    this->ch_reset();
+    return true;
+  }
+  return false;
+}
+
+double Particle::sample_condensed_step()
+{
+  // A step already under way: this advance is the part of it beyond the hinge
+  if (ch_at_hinge()) {
+    ch_at_hinge() = false;
+    return ch_length();
+  }
+
+  const auto& xs {macro_xs()};
+  if (xs.electron_hard <= 0.0 && xs.electron_soft_rate <= 0.0) {
+    this->ch_reset();
+    return (xs.total > 0.0) ? -std::log(prn(current_seed())) / xs.total
+                            : INFINITY;
+  }
+
+  auto step = sample_mixed_step(xs.electron_hard, xs.electron_soft_rate,
+    xs.electron_stopping, E(), settings::electron_c2, boundary().distance(),
+    current_seed());
+
+  // Not worth grouping over this step, so it is transported one collision at
+  // a time from the full cross section -- the single-event scheme the mixed
+  // one is built to agree with
+  if (!step.grouped) {
+    this->ch_reset();
+    return (xs.total > 0.0) ? -std::log(prn(current_seed())) / xs.total
+                            : INFINITY;
+  }
+
+  // Optical depths the grouped deflections accumulate over the whole step.
+  // They are held rather than the length so that the hinge needs nothing but
+  // the particle, the cross sections having possibly moved on by then.
+  ch_s_lambda1() = step.length * xs.electron_xs1_soft;
+  ch_s_lambda2() = step.length * xs.electron_xs2_soft;
+  ch_length() = step.length - step.hinge;
+  ch_at_hinge() = true;
+  ch_in_step() = true;
+  ch_hard_at_end() = step.ends_in_collision;
+  return step.hinge;
+}
+
+void Particle::apply_soft_energy_loss(double distance)
+{
+  const auto& xs {macro_xs()};
+  if (distance <= 0.0 || xs.electron_stopping <= 0.0)
+    return;
+
+  double loss = sample_soft_energy_loss(distance * xs.electron_stopping,
+    distance * xs.electron_straggling, current_seed());
+
+  // The cross sections were evaluated at the energy the step started from and
+  // are now stale, and nothing else in the loop knows the energy moved
+  material_last() = C_NONE;
+
+  // The step may not take more than the particle has. Reaching that is the
+  // energy ceiling failing to do its job, so it is worth noticing rather than
+  // silently clamping.
+  if (loss >= E()) {
+    loss = E();
+    this->ch_reset();
+  }
+  E() -= loss;
+}
+
 void Particle::event_advance()
 {
   // Find the distance to the nearest boundary
@@ -282,9 +370,13 @@ void Particle::event_advance()
   // Sample a distance to collision. Without electron transport, charged
   // particles are slowed down in place at their point of birth, so the
   // collision distance is zero whenever they are in a material.
-  if (!settings::electron_transport && (type() == ParticleType::electron() ||
-                                         type() == ParticleType::positron())) {
+  bool charged =
+    type() == ParticleType::electron() || type() == ParticleType::positron();
+  if (!settings::electron_transport && charged) {
     collision_distance() = material() == MATERIAL_VOID ? INFINITY : 0.0;
+  } else if (charged && settings::electron_c1 > 0.0 &&
+             material() != MATERIAL_VOID) {
+    collision_distance() = this->sample_condensed_step();
   } else if (macro_xs().total == 0.0) {
     collision_distance() = INFINITY;
   } else {
@@ -326,6 +418,15 @@ void Particle::event_advance()
     score_track_derivative(*this, distance);
   }
 
+  // Hand the grouped collisions the path they were sampled over. The loss is
+  // applied here, over the distance actually travelled, rather than at the
+  // hinge over the distance the step planned: energy losses add along a path,
+  // so this stays exact however the step is cut short, which a boundary or a
+  // deflection at the hinge may do at any time.
+  if (ch_in_step()) {
+    this->apply_soft_energy_loss(distance);
+  }
+
   // Set particle weight to zero if it hit the time boundary
   if (distance == distance_cutoff) {
     wgt() = 0.0;
@@ -338,6 +439,10 @@ void Particle::event_advance()
 
 void Particle::event_cross_surface()
 {
+  // A condensed-history step is built from the material it started in, so it
+  // does not survive the crossing
+  this->ch_reset();
+
   // Saving previous cell data
   for (int j = 0; j < n_coord(); ++j) {
     cell_last(j) = coord(j).cell();

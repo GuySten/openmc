@@ -113,6 +113,7 @@ int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 double electron_c1 {0.0};
+double electron_c2 {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -638,6 +639,16 @@ void read_settings_xml(pugi::xml_node root)
     electron_c1 = std::stod(get_node_value(root, "electron_c1"));
     if (electron_c1 < 0.0 || electron_c1 > 1.0) {
       fatal_error("electron_c1 must be between 0 and 1.");
+    }
+  }
+
+  // The companion bound on the energy a step may lose to the grouped
+  // collisions, which is what keeps the restricted stopping power evaluated
+  // near the energy it belongs to.
+  if (check_for_node(root, "electron_c2")) {
+    electron_c2 = std::stod(get_node_value(root, "electron_c2"));
+    if (electron_c2 <= 0.0 || electron_c2 > 1.0) {
+      fatal_error("electron_c2 must be greater than 0 and at most 1.");
     }
   }
 

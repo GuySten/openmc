@@ -70,6 +70,24 @@ public:
 
   // Coarse-grained particle events
   void event_calculate_xs();
+  //! Sample the distance to the next event for a charged particle under
+  //! condensed history
+  //!
+  //! Returns the distance to the hinge of a new grouped step, to the end of
+  //! one already begun, or -- when the step would group too little to be
+  //! worth it -- to an ordinary single-event collision.
+  double sample_condensed_step();
+
+  //! Handle a condensed-history event that is not an interaction
+  //!
+  //! Returns true when this event was the hinge of a step, or the end of one
+  //! that no hard interaction waits at, in which case nothing may be scored
+  //! for it.
+  bool apply_condensed_hinge();
+
+  //! Take the grouped energy loss over a distance travelled
+  void apply_soft_energy_loss(double distance);
+
   void event_advance();
   void event_cross_surface();
   void event_collide();

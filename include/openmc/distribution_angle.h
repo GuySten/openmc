@@ -33,6 +33,21 @@ public:
   //! \return Cosine of the angle in the range [-1,1]
   double sample(double E, uint64_t* seed) const;
 
+  //! Sample an angle from the part of the distribution below a quantile
+  //!
+  //! What a mixed condensed-history scheme needs when a hard elastic
+  //! collision ends a step: the deflections it did not group, which are the
+  //! large ones. Those sit at the bottom of the cumulative distribution, mu
+  //! being measured from backward, so restricting the quantile to
+  //! \f$[0, \xi_{max}]\f$ selects exactly them -- with no rejection, which
+  //! matters because the hard part can be one ten-thousandth of the whole.
+  //!
+  //! \param[in] E Particle energy in [eV]
+  //! \param[in] xi_max Largest quantile the sample may come from
+  //! \param[inout] seed pseudorandom number seed pointer
+  //! \return Cosine of the angle in the range [-1,1]
+  double sample_restricted(double E, double xi_max, uint64_t* seed) const;
+
   //! Evaluate the angular PDF at a given energy and cosine
   //! \param[in] E Particle energy in [eV]
   //! \param[in] mu Cosine of the scattering angle
@@ -96,6 +111,9 @@ public:
     vector<double>& mu2_soft) const;
 
 private:
+  //! Shared implementation of sample() and sample_restricted()
+  double sample_impl(double E, double xi_max, uint64_t* seed) const;
+
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;
   Interpolation energy_interp_ = Interpolation::lin_lin;

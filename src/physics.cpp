@@ -42,6 +42,19 @@ namespace openmc {
 
 void collision(Particle& p)
 {
+  // A condensed-history hinge is not an interaction: it is the point inside a
+  // step where the grouped deflections are applied, and a step that its energy
+  // ceiling or the geometry ended has no interaction at its end either. So no
+  // reaction is sampled -- but the event still has to be scored, because the
+  // energy the grouped collisions took along the way is deposited here. The
+  // heating score is the balance E_last - E, and returning before it would
+  // throw that energy away.
+  if (p.apply_condensed_hinge()) {
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
   // Add to collision counter for particle
   ++(p.n_collision());
   p.secondary_bank_index() = p.local_secondary_bank().size();
@@ -549,20 +562,28 @@ void sample_electron_reaction(Particle& p)
     p.wgt() = 0.0;
     return;
   }
+  // A collision ending a grouped step may only be one of the interactions
+  // that step did not group. Without condensed history the hard cross
+  // sections are the whole cross sections, so this is one code path.
+  bool hard = p.ch_hard_at_end();
+  p.ch_reset();
+
   // Sample element within material
-  int i_element = sample_electron_element(p);
+  int i_element = sample_electron_element(p, hard);
   const auto& micro {p.electron_xs(i_element)};
   const auto& element {*data::elements[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
   double prob = 0.0;
-  double cutoff = prn(p.current_seed()) * micro.total;
+  double cutoff =
+    prn(p.current_seed()) * (hard ? micro.hard_total : micro.total);
 
   // Mott scattering
-  prob += micro.elastic;
+  prob += hard ? micro.hard_elastic : micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(0, p.E(), p.current_seed());
+    p.mu() = hard ? element.elastic_scatter_hard(0, p.E(), p.current_seed())
+                  : element.elastic_scatter(0, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
@@ -570,7 +591,7 @@ void sample_electron_reaction(Particle& p)
   }
 
   // Excitation
-  prob += micro.excitation;
+  prob += hard ? micro.hard_excitation : micro.excitation;
   if (prob > cutoff) {
     p.E() = element.excitation(p.E());
     p.event() = TallyEvent::SCATTER;
@@ -579,14 +600,16 @@ void sample_electron_reaction(Particle& p)
   }
 
   // Moller scattering
-  prob += micro.ionization;
+  prob += hard ? micro.hard_ionization : micro.ionization;
   if (prob > cutoff) {
     // Sample which atomic subshell was ionized based on the subshell cross
     // sections
-    int i_shell = element.sample_ionization_shell(p);
+    int i_shell = element.sample_ionization_shell(p, hard);
 
     // Generate secondary knock-on electron and adjust primary energy
-    element.ionization(p, i_shell);
+    double xi_min =
+      hard ? 1.0 - element.ionization_hard_fraction(0, i_shell, p.E()) : 0.0;
+    element.ionization(p, i_shell, xi_min);
     p.event() = TallyEvent::SCATTER;
     // There is no ENDF MT for total electroionization; 534 upwards name the
     // individual subshells, which is what the data resolves anyway
@@ -605,7 +628,7 @@ void sample_electron_reaction(Particle& p)
   // Bremsstrahlung. Last channel, so it takes whatever is left: the running
   // total is accumulated in a different order from xs.total and rounding must
   // not be able to leave the particle with no reaction at all.
-  element.bremsstrahlung(p);
+  element.bremsstrahlung(p, hard ? soft_radiative_cutoff(0, p.E()) : 0.0);
   p.event() = TallyEvent::SCATTER;
   p.event_mt() = ELECTRON_BREMS;
 }
@@ -635,20 +658,28 @@ void sample_positron_reaction(Particle& p)
     return;
   }
 
+  // Only the interactions a grouped step did not group may end it; see
+  // sample_electron_reaction. Bhabha scattering above the Moller limit takes
+  // its own hard fraction, and annihilation is never grouped at all.
+  bool hard = p.ch_hard_at_end();
+  p.ch_reset();
+
   // Sample element within material
-  int i_element = sample_electron_element(p);
+  int i_element = sample_electron_element(p, hard);
   const auto& micro {p.electron_xs(i_element)};
   const auto& element {*data::elements[i_element]};
 
   // For tallying purposes, this routine might be called directly. In that
   // case, we need to sample a reaction via the cutoff variable
   double prob = 0.0;
-  double cutoff = prn(p.current_seed()) * micro.total;
+  double cutoff =
+    prn(p.current_seed()) * (hard ? micro.hard_total : micro.total);
 
   // Mott scattering
-  prob += micro.elastic;
+  prob += hard ? micro.hard_elastic : micro.elastic;
   if (prob > cutoff) {
-    p.mu() = element.elastic_scatter(1, p.E(), p.current_seed());
+    p.mu() = hard ? element.elastic_scatter_hard(1, p.E(), p.current_seed())
+                  : element.elastic_scatter(1, p.E(), p.current_seed());
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
@@ -656,7 +687,7 @@ void sample_positron_reaction(Particle& p)
   }
 
   // Excitation
-  prob += micro.excitation;
+  prob += hard ? micro.hard_excitation : micro.excitation;
   if (prob > cutoff) {
     p.E() = element.excitation(p.E());
     p.event() = TallyEvent::SCATTER;
@@ -668,10 +699,12 @@ void sample_positron_reaction(Particle& p)
   // spectrum reweighted by the free Bhabha-to-Moller ratio. The cross section
   // is a majorant, so a rejected transfer is a real outcome -- the positron
   // simply carries on unchanged.
-  prob += micro.ionization;
+  prob += hard ? micro.hard_ionization : micro.ionization;
   if (prob > cutoff) {
-    int i_shell = element.sample_ionization_shell(p);
-    if (!element.ionization(p, i_shell))
+    int i_shell = element.sample_ionization_shell(p, hard);
+    double xi_min =
+      hard ? 1.0 - element.ionization_hard_fraction(1, i_shell, p.E()) : 0.0;
+    if (!element.ionization(p, i_shell, xi_min))
       // The reweighting declined this collision, so nothing changed. Leaving
       // event() as KILL is correct here: the heating balance then evaluates to
       // zero, which is right for a collision that did not happen.
@@ -692,10 +725,10 @@ void sample_positron_reaction(Particle& p)
   // Bhabha scattering, above that limit: transfers the evaluated spectra
   // cannot reach at all, far above every binding energy and so exactly where
   // the free cross section is the right description
-  prob += micro.bhabha;
+  prob += hard ? micro.hard_bhabha : micro.bhabha;
   if (prob > cutoff) {
-    int i_shell = element.sample_bhabha_shell(p);
-    element.bhabha(p, i_shell);
+    int i_shell = element.sample_bhabha_shell(p, hard);
+    element.bhabha(p, i_shell, hard ? soft_collision_cutoff(1, p.E()) : 0.0);
     p.event() = TallyEvent::SCATTER;
     p.event_mt() =
       533 +
@@ -718,7 +751,7 @@ void sample_positron_reaction(Particle& p)
 
   // Bremsstrahlung. Last channel, so it takes whatever is left rather than
   // letting rounding drop the collision (see sample_electron_reaction).
-  element.bremsstrahlung(p);
+  element.bremsstrahlung(p, hard ? soft_radiative_cutoff(1, p.E()) : 0.0);
   p.event() = TallyEvent::SCATTER;
   p.event_mt() = ELECTRON_BREMS;
 }
@@ -780,10 +813,11 @@ int sample_photon_element(Particle& p)
   fatal_error("Did not sample any element during collision.");
 }
 
-int sample_electron_element(Particle& p)
+int sample_electron_element(Particle& p, bool hard)
 {
   // Sample cumulative distribution function
-  double cutoff = prn(p.current_seed()) * p.macro_xs().total;
+  double total = hard ? p.macro_xs().electron_hard : p.macro_xs().total;
+  double cutoff = prn(p.current_seed()) * total;
 
   // Get pointers to elements, densities
   const auto& mat {model::materials[p.material()]};
@@ -795,7 +829,8 @@ int sample_electron_element(Particle& p)
     double atom_density = mat->atom_density(i, p.density_mult());
 
     // Determine microscopic cross section
-    double sigma = atom_density * p.electron_xs(i_element).total;
+    const auto& micro {p.electron_xs(i_element)};
+    double sigma = atom_density * (hard ? micro.hard_total : micro.total);
 
     // Increment probability to compare to cutoff
     prob += sigma;

@@ -103,6 +103,18 @@ AngleDistribution::AngleDistribution(hid_t group, Interpolation energy_interp)
 
 double AngleDistribution::sample(double E, uint64_t* seed) const
 {
+  return this->sample_impl(E, 1.0, seed);
+}
+
+double AngleDistribution::sample_restricted(
+  double E, double xi_max, uint64_t* seed) const
+{
+  return this->sample_impl(E, std::max(0.0, std::min(1.0, xi_max)), seed);
+}
+
+double AngleDistribution::sample_impl(
+  double E, double xi_max, uint64_t* seed) const
+{
   // Find energy bin and calculate interpolation factor
   int i;
   double r;
@@ -124,7 +136,7 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
     // one table at random with a probability linear in energy. That reproduces
     // the linear average of the two distributions, which is adequate where
     // they are closely spaced.
-    double xi = prn(seed);
+    double xi = xi_max * prn(seed);
     double mu_low = distribution_[i]->sample_at(xi);
     double mu_high = distribution_[i + 1]->sample_at(xi);
 
@@ -147,8 +159,15 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
     if (r > prn(seed))
       ++i;
 
-    // Sample i-th distribution
-    mu = distribution_[i]->sample(seed).first;
+    // Sample i-th distribution. The unrestricted call is left exactly as it
+    // was: this branch carries every neutron angular distribution in the
+    // library, and sample() runs through the biasing machinery that
+    // sample_at() does not.
+    if (xi_max >= 1.0) {
+      mu = distribution_[i]->sample(seed).first;
+    } else {
+      mu = distribution_[i]->sample_at(xi_max * prn(seed));
+    }
   }
 
   // Make sure mu is in range [-1,1] and return

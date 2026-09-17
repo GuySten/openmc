@@ -75,6 +75,17 @@ tensor::Tensor<double> moments_on_grid(const tensor::Tensor<double>& grid,
   return out;
 }
 
+//! Clamped linear lookup on the electron energy grid
+int grid_index(const tensor::Tensor<double>& grid, double E, double& f)
+{
+  int n = grid.size();
+  int i = upper_bound_index(grid.cbegin(), grid.cend(), E);
+  i = std::max(0, std::min(i, n - 2));
+  f = (E - grid(i)) / (grid(i + 1) - grid(i));
+  f = std::max(0.0, std::min(1.0, f));
+  return i;
+}
+
 } // namespace
 
 void Element::read_electron_data(hid_t group)
@@ -491,6 +502,7 @@ void Element::compute_soft_inelastic()
   for (int q = 0; q < 2; ++q) {
     inelastic_soft_s_[q] = tensor::zeros<double>(shape_1d);
     inelastic_soft_w2_[q] = tensor::zeros<double>(shape_1d);
+    inelastic_soft_xs1_[q] = tensor::zeros<double>(shape_1d);
     excitation_p_hard_[q] = tensor::zeros<double>(shape_1d);
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
     ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
@@ -541,6 +553,10 @@ void Element::compute_soft_inelastic()
       double headroom = soft_projectile_headroom(q, E);
       double s = 0.0;
       double w2 = 0.0;
+      // The part of the loss that goes to collisions rather than to radiation.
+      // Only it deflects the projectile: a bremsstrahlung photon takes its
+      // momentum very nearly straight ahead.
+      double s_collision = 0.0;
 
       // Atomic excitation, which emits nothing at all -- OpenMC deposits the
       // de-excitation energy where the collision happened -- so the only bound
@@ -551,6 +567,7 @@ void Element::compute_soft_inelastic()
       if (loss > 0.0 && loss < headroom) {
         s += excitation_(j) * loss;
         w2 += excitation_(j) * loss * loss;
+        s_collision += excitation_(j) * loss;
       } else {
         excitation_p_hard_[q](j) = 1.0;
       }
@@ -579,6 +596,7 @@ void Element::compute_soft_inelastic()
             E, e_cut, q == 0 ? nullptr : &weight, xi_cut, m0, m1, m2);
           s += sigma * (m1 + B * m0);
           w2 += sigma * (m2 + 2.0 * B * m1 + B * B * m0);
+          s_collision += sigma * (m1 + B * m0);
         }
         ionization_p_hard_[q](i, j) = 1.0 - xi_cut;
 
@@ -594,6 +612,7 @@ void Element::compute_soft_inelastic()
           if (W_soft > W_lo) {
             s += K * bhabha_moment(c, E, W_lo, W_soft, 1);
             w2 += K * bhabha_moment(c, E, W_lo, W_soft, 2);
+            s_collision += K * bhabha_moment(c, E, W_lo, W_soft, 1);
           }
           double total = bhabha_moment(c, E, W_lo, E, 0);
           double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
@@ -625,38 +644,56 @@ void Element::compute_soft_inelastic()
 
       inelastic_soft_s_[q](j) = s;
       inelastic_soft_w2_[q](j) = w2;
+
+      // A collision transferring W turns the projectile through
+      //   1 - cos(theta) = m W / (E (E + 2m))
+      // to first order in W, which is the binary-encounter relation between
+      // the scattering angle and the energy loss. Every grouped collision is
+      // soft by construction, so first order is the right order, and the
+      // channel's first transport cross section is that factor times the
+      // energy it takes. A distant collision leaves less momentum behind than
+      // a free one does, so this is the larger of the two and the deflection
+      // it gives is an upper bound.
+      inelastic_soft_xs1_[q](j) =
+        MASS_ELECTRON_EV * s_collision / (E * (E + 2.0 * MASS_ELECTRON_EV));
     }
   }
 }
 
-int Element::sample_bhabha_shell(Particle& p) const
+int Element::sample_bhabha_shell(Particle& p, bool hard) const
 {
   const auto& xs {p.electron_xs(index_)};
   int n_shell = bhabha_.shape(0);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
 
+  auto weight = [&](int i) {
+    double sigma =
+      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    return hard ? sigma * this->bhabha_hard_fraction(i, p.E()) : sigma;
+  };
+
   double total = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    total +=
-      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    total += weight(i);
   }
   double cutoff = prn(p.current_seed()) * total;
   double prob = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    prob +=
-      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+    prob += weight(i);
     if (prob > cutoff)
       return i;
   }
   return n_shell - 1;
 }
 
-void Element::bhabha(Particle& p, int i_shell) const
+void Element::bhabha(Particle& p, int i_shell, double w_min) const
 {
   double E = p.E();
   double B = shells_[electron_shell_map_[i_shell]].binding_energy;
-  double W_lo = 0.5 * (E + B);
+  // A collision ending a condensed-history step transfers more than the
+  // step's cutoff; below it the channel was grouped into the stopping power
+  double W_lo = std::max(0.5 * (E + B), w_min);
   if (W_lo >= E)
     return;
 
@@ -761,6 +798,78 @@ void Element::calculate_electron_xs(Particle& p) const
   // Calculate microscopic total cross section
   xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bhabha +
              xs.annihilation + xs.bremsstrahlung;
+
+  // Split it into the part a condensed-history step transports one collision
+  // at a time and the part it groups. Without condensed history every channel
+  // is hard, which is what leaves the transport below untouched.
+  if (settings::electron_c1 > 0.0 && inelastic_soft_s_[q].size() == n_grid) {
+    auto split = this->elastic_split(q, E);
+    xs.hard_elastic = split.xs_hard;
+
+    // The grouped deflections are not the elastic ones alone. Grouping an
+    // inelastic collision takes its deflection away along with its energy, and
+    // in carbon that is a quarter of what elastic scattering contributes --
+    // enough, left out, to run the tracks visibly too straight. Only in a
+    // heavy element, where Z^2 puts nuclear elastic scattering far ahead, is
+    // it the per cent it is usually assumed to be.
+    double xs1_inelastic = this->inelastic_soft_transport_xs(q, E);
+    xs.soft_xs1 = split.xs1_soft + xs1_inelastic;
+    // 1 - P_2(mu) is 3(1 - mu) for the small deflections these are
+    xs.soft_xs2 = split.xs2_soft + 3.0 * xs1_inelastic;
+
+    xs.hard_excitation = xs.excitation * this->excitation_hard_fraction(q, E);
+
+    // Electroionization resolves its split per subshell, so the hard part is
+    // the shell cross sections weighted by their own fractions rather than
+    // the total weighted by an average. A positron's cross section carries
+    // the majorant it is sampled with, and the fractions are quantiles of the
+    // spectrum, so the majorant passes straight through.
+    double ion_hard = 0.0;
+    for (int i = 0; i < electroionization_.shape(0); ++i) {
+      double sigma_i =
+        electroionization_(i, i_grid) +
+        f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
+      ion_hard += sigma_i * this->ionization_hard_fraction(q, i, E);
+    }
+    if (p.type().is_positron()) {
+      ion_hard *= moller_majorant_(i_grid) +
+                  f * (moller_majorant_(i_grid + 1) - moller_majorant_(i_grid));
+    }
+    xs.hard_ionization = std::min(xs.ionization, ion_hard);
+
+    double bhabha_hard = 0.0;
+    for (int i = 0; i < bhabha_.shape(0); ++i) {
+      double sigma_i =
+        bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
+      bhabha_hard += sigma_i * this->bhabha_hard_fraction(i, E);
+    }
+    xs.hard_bhabha = std::min(xs.bhabha, bhabha_hard);
+
+    xs.hard_bremsstrahlung =
+      xs.bremsstrahlung * this->bremsstrahlung_hard_fraction(q, E);
+
+    // In-flight annihilation is never grouped. Its photons carry away more
+    // than the positron's kinetic energy, so no bound on the energy the
+    // projectile gives up bounds what they can reach, and a grouped
+    // annihilation would be an annihilation that did not happen.
+    xs.hard_total = xs.hard_elastic + xs.hard_excitation + xs.hard_ionization +
+                    xs.hard_bhabha + xs.annihilation + xs.hard_bremsstrahlung;
+    xs.soft_rate = std::max(0.0, xs.total - xs.hard_total);
+    this->inelastic_soft(q, E, xs.soft_stopping, xs.soft_straggling);
+  } else {
+    xs.hard_elastic = xs.elastic;
+    xs.hard_excitation = xs.excitation;
+    xs.hard_ionization = xs.ionization;
+    xs.hard_bhabha = xs.bhabha;
+    xs.hard_bremsstrahlung = xs.bremsstrahlung;
+    xs.hard_total = xs.total;
+    xs.soft_rate = 0.0;
+    xs.soft_stopping = 0.0;
+    xs.soft_straggling = 0.0;
+    xs.soft_xs1 = 0.0;
+    xs.soft_xs2 = 0.0;
+  }
+
   xs.last_E = p.E();
   xs.last_q = q;
 }
@@ -768,6 +877,33 @@ void Element::calculate_electron_xs(Particle& p) const
 double Element::elastic_scatter(int q_index, double E, uint64_t* seed) const
 {
   return elastic_angle_[q_index].sample(E, seed);
+}
+
+//! Elastic cross section on the electron grid, clamped as the others are
+double Element::elastic_xs(int q_index, double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || elastic_[q_index].size() != n)
+    return 0.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  const auto& v = elastic_[q_index];
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
+double Element::elastic_scatter_hard(
+  int q_index, double E, uint64_t* seed) const
+{
+  // The hard deflections are the large ones, which sit at the bottom of the
+  // cumulative distribution since mu runs from backward. So the quantile is
+  // restricted to the fraction of the cross section that stayed hard, and the
+  // draw is exact rather than a rejection -- which matters, that fraction
+  // being one part in tens of thousands.
+  auto split = this->elastic_split(q_index, E);
+  double xs = std::max(0.0, split.xs_hard);
+  double total = elastic_xs(q_index, E);
+  double p_hard = (total > 0.0) ? std::min(1.0, xs / total) : 1.0;
+  return elastic_angle_[q_index].sample_restricted(E, p_hard, seed);
 }
 
 double Element::elastic_transport_xs(int q_index, double E, int order) const
@@ -830,21 +966,6 @@ ElasticSplit Element::elastic_split(int q_index, double E) const
   return split;
 }
 
-namespace {
-
-//! Clamped linear lookup on the electron energy grid
-int grid_index(const tensor::Tensor<double>& grid, double E, double& f)
-{
-  int n = grid.size();
-  int i = upper_bound_index(grid.cbegin(), grid.cend(), E);
-  i = std::max(0, std::min(i, n - 2));
-  f = (E - grid(i)) / (grid(i + 1) - grid(i));
-  f = std::max(0.0, std::min(1.0, f));
-  return i;
-}
-
-} // namespace
-
 void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
 {
   s = 0.0;
@@ -859,6 +980,17 @@ void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
   const auto& wv = inelastic_soft_w2_[q_index];
   s = std::max(0.0, sv(i) + f * (sv(i + 1) - sv(i)));
   w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
+}
+
+double Element::inelastic_soft_transport_xs(int q_index, double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || inelastic_soft_xs1_[q_index].size() != n)
+    return 0.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  const auto& v = inelastic_soft_xs1_[q_index];
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
 }
 
 double Element::excitation_hard_fraction(int q_index, double E) const
@@ -916,11 +1048,15 @@ double Element::excitation(double E) const
   return std::max(0.0, E - excitation_energy_loss_(E));
 }
 
-bool Element::ionization(Particle& p, int i_shell) const
+bool Element::ionization(Particle& p, int i_shell, double xi_min) const
 {
+  // Restricting the quantile to what a step did not group is all a hard
+  // electroionization collision needs: the map from quantile to knock-on
+  // energy rises, so the transfers above the cutoff are the quantiles above
+  // it, and no rejection is involved.
   double density;
-  double E_knock =
-    ionization_dist_[i_shell]->sample(p.E(), p.current_seed(), &density);
+  double xi = xi_min + (1.0 - xi_min) * prn(p.current_seed());
+  double E_knock = ionization_dist_[i_shell]->at_quantile(p.E(), xi, &density);
   // Binding energies live on shells_. Note this is NOT binding_energy_, which
   // belongs to the shorter Compton Doppler broadening shell list and would be
   // indexed out of bounds here.
@@ -1085,32 +1221,38 @@ double Element::sample_recoil(
   return two_m * a * q_min / (q_min + two_m - a * q_min);
 }
 
-int Element::sample_ionization_shell(Particle& p) const
+int Element::sample_ionization_shell(Particle& p, bool hard) const
 {
   const auto& xs {p.electron_xs(index_)};
   int n_shell = electroionization_.shape(0);
   int i_grid = xs.index_grid;
   double f = xs.interp_factor;
+  int q = p.type().is_positron() ? 1 : 0;
+
+  // For a collision ending a condensed-history step the weights are the hard
+  // parts of the shell cross sections, which differ shell by shell: the cut
+  // sits at W_cc - B, so a deeply bound shell keeps more of its spectrum.
+  auto weight = [&](int i) {
+    double sigma =
+      electroionization_(i, i_grid) +
+      f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
+    return hard ? sigma * this->ionization_hard_fraction(q, i, p.E()) : sigma;
+  };
 
   // Summed here rather than taken from xs.ionization, which for a positron
   // carries the majorant factor. Only the relative weights matter, and a
   // factor common to every shell cancels out of them.
   double total = 0.0;
   for (int i = 0; i < n_shell; ++i) {
-    total +=
-      electroionization_(i, i_grid) +
-      f * (electroionization_(i, i_grid + 1) - electroionization_(i, i_grid));
+    total += weight(i);
   }
   double cutoff = prn(p.current_seed()) * total;
 
   int i_shell;
   double prob = 0.0;
   for (i_shell = 0; i_shell < n_shell; ++i_shell) {
-    double sigma = electroionization_(i_shell, i_grid) +
-                   f * (electroionization_(i_shell, i_grid + 1) -
-                         electroionization_(i_shell, i_grid));
     // Increment probability to compare to cutoff
-    prob += sigma;
+    prob += weight(i_shell);
     if (prob > cutoff)
       return i_shell;
   }
@@ -1214,9 +1356,10 @@ double bremsstrahlung_cos_theta(
 
 } // namespace
 
-double Element::sample_bremsstrahlung_energy(double E, uint64_t* seed) const
+double Element::sample_bremsstrahlung_energy(
+  double E, uint64_t* seed, double k_min_hard) const
 {
-  double k_min = bremsstrahlung_photon_cutoff_;
+  double k_min = std::max(bremsstrahlung_photon_cutoff_, k_min_hard);
   if (E <= k_min)
     return 0.0;
 
@@ -1343,9 +1486,10 @@ void Element::annihilation(Particle& p) const
   p.event_mt() = POSITRON_ANNIHILATION;
 }
 
-void Element::bremsstrahlung(Particle& p) const
+void Element::bremsstrahlung(Particle& p, double k_min) const
 {
-  double E_photon = this->sample_bremsstrahlung_energy(p.E(), p.current_seed());
+  double E_photon =
+    this->sample_bremsstrahlung_energy(p.E(), p.current_seed(), k_min);
   if (E_photon <= 0.0)
     return;
   double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());

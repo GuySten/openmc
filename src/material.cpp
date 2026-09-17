@@ -941,6 +941,12 @@ void Material::calculate_xs(Particle& p) const
   p.macro_xs().absorption = 0.0;
   p.macro_xs().fission = 0.0;
   p.macro_xs().nu_fission = 0.0;
+  p.macro_xs().electron_hard = 0.0;
+  p.macro_xs().electron_soft_rate = 0.0;
+  p.macro_xs().electron_stopping = 0.0;
+  p.macro_xs().electron_straggling = 0.0;
+  p.macro_xs().electron_xs1_soft = 0.0;
+  p.macro_xs().electron_xs2_soft = 0.0;
 
   if (p.type().is_neutron()) {
     this->calculate_neutron_xs(p);
@@ -1087,6 +1093,12 @@ void Material::calculate_electron_xs(Particle& p) const
 
     // Add contributions to material macroscopic cross sections
     p.macro_xs().total += atom_density * micro.total;
+    p.macro_xs().electron_hard += atom_density * micro.hard_total;
+    p.macro_xs().electron_soft_rate += atom_density * micro.soft_rate;
+    p.macro_xs().electron_stopping += atom_density * micro.soft_stopping;
+    p.macro_xs().electron_straggling += atom_density * micro.soft_straggling;
+    p.macro_xs().electron_xs1_soft += atom_density * micro.soft_xs1;
+    p.macro_xs().electron_xs2_soft += atom_density * micro.soft_xs2;
   }
 }
 

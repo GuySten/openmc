@@ -96,6 +96,16 @@ public:
   //! positron; the two differ little in rate and a great deal in first moment
   double elastic_scatter(int q_index, double E, uint64_t* seed) const;
 
+  //! Sample a hard elastic deflection, the part a step did not group
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[inout] seed pseudorandom number seed pointer
+  double elastic_scatter_hard(int q_index, double E, uint64_t* seed) const;
+
+  //! Elastic cross section in [b] at one energy
+  double elastic_xs(int q_index, double E) const;
+
   //! Transport cross sections of elastic scattering
   //!
   //! \f$\sigma_\ell = \sigma_{el} \langle 1 - P_\ell(\mu) \rangle\f$, the
@@ -136,6 +146,9 @@ public:
   //! \param[out] w2 Second moment of the restricted loss in [b eV^2]
   void inelastic_soft(int q_index, double E, double& s, double& w2) const;
 
+  //! First transport cross section of the grouped inelastic collisions, in [b]
+  double inelastic_soft_transport_xs(int q_index, double E) const;
+
   //! Fraction of a channel that stays a discrete collision
   //!
   //! Multiply the channel's cross section by this to get the rate of hard
@@ -158,11 +171,13 @@ public:
   //! Electroionization: Moller scattering for an electron, Bhabha for a
   //! positron. Returns false when a positron's sampled transfer is rejected,
   //! which leaves the particle untouched -- see compute_moller_majorant().
-  bool ionization(Particle& p, int i_shell) const;
+  bool ionization(Particle& p, int i_shell, double xi_min = 0.0) const;
 
-  int sample_ionization_shell(Particle& p) const;
+  //! \param[in] hard Restrict the choice to the hard part of each subshell's
+  //!   cross section, for a collision that ends a condensed-history step
+  int sample_ionization_shell(Particle& p, bool hard = false) const;
 
-  void bremsstrahlung(Particle& p) const;
+  void bremsstrahlung(Particle& p, double k_min = 0.0) const;
 
   //! Bhabha scattering above the Moller kinematic limit
   //
@@ -171,10 +186,10 @@ public:
   //! and a positron's larger transfers are simply absent from them. This is
   //! that missing range, which lies far above every binding energy and is
   //! therefore free-electron territory.
-  void bhabha(Particle& p, int i_shell) const;
+  void bhabha(Particle& p, int i_shell, double w_min = 0.0) const;
 
   //! Sample the subshell in which such a collision occurs
-  int sample_bhabha_shell(Particle& p) const;
+  int sample_bhabha_shell(Particle& p, bool hard = false) const;
 
   //! Emit the knock-on electron and deflect the projectile, for a transfer of
   //! W out of which the atom keeps the binding energy e_b, the collision
@@ -224,7 +239,8 @@ public:
   //! sections of the photon library, above the threshold the electron
   //! library's cross section was integrated from. Returns zero when the
   //! incident energy leaves no room above that threshold.
-  double sample_bremsstrahlung_energy(double E, uint64_t* seed) const;
+  double sample_bremsstrahlung_energy(
+    double E, uint64_t* seed, double k_min = 0.0) const;
 
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
@@ -315,6 +331,11 @@ public:
   //! with the positron's radiative yield factor already applied.
   array<tensor::Tensor<double>, 2> inelastic_soft_s_;
   array<tensor::Tensor<double>, 2> inelastic_soft_w2_;
+  //! First transport cross section of the grouped inelastic collisions, in
+  //! [b]. Grouping them takes their deflection away with their energy loss,
+  //! and in a light element that deflection is a quarter of what elastic
+  //! scattering contributes -- not something a step may drop.
+  array<tensor::Tensor<double>, 2> inelastic_soft_xs1_;
   //! Fraction of each inelastic channel that stays a discrete collision, on
   //! the electron energy grid and indexed by projectile charge, since the two
   //! projectiles have different cutoffs and so different thresholds. The

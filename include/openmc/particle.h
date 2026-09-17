@@ -103,6 +103,13 @@ public:
   //! \return Whether the particle was stopped
   bool stop_below_cutoff();
 
+  //! Score the energy a step gave up before a surface cut it short
+  //!
+  //! The deposition reaches a tally only through the collision energy balance,
+  //! and a surface crossing scores none, so it would otherwise be lost. See
+  //! the implementation for what makes the event it claims to be harmless.
+  void score_truncated_step();
+
   void event_advance();
   void event_cross_surface();
   void event_collide();

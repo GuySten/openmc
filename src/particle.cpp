@@ -564,28 +564,43 @@ void Particle::event_advance()
     surface() = SURFACE_NONE;
 }
 
+void Particle::score_truncated_step()
+{
+  // A step cut short by a surface still gave energy to its grouped collisions
+  // along the way, and that energy was deposited in the cell just left. It
+  // reaches a tally only through the collision energy balance E_last - E, and
+  // a surface crossing scores no balance, so without this the deposition is
+  // simply lost. It is lost often: the hinge turns the particle, which moves
+  // the surface it was heading for, so a step is cut by geometry whenever one
+  // is nearby. In a homogeneous slab cut into fifty cells by surfaces that are
+  // not there physically, this was 1.1 per cent of the beam energy going
+  // missing, against nothing at all in single-event transport.
+  //
+  // What is scored is not a collision, and the event it claims to be -- an
+  // elastic scatter -- is a fiction the scoring routines need in order to
+  // reach the balance. That is only harmless because of three things, and it
+  // stops being harmless if any of them changes:
+  //
+  //   - score_collision_tally and score_analog_tally_ce both give a charged
+  //     particle a flux of zero, so no flux is invented here;
+  //   - nothing has been banked at this point, so a production filter is not
+  //     told of secondaries that do not exist;
+  //   - the coordinate levels still hold the cell just left, which is the cell
+  //     the energy belongs to, so a cell filter attributes it correctly.
+  if (!ch_in_step() || E() == E_last() || !settings::run_CE || !alive())
+    return;
+
+  event() = TallyEvent::SCATTER;
+  event_mt() = ELECTRON_ELASTIC;
+  if (!model::active_collision_tallies.empty())
+    score_collision_tally(*this);
+  if (!model::active_analog_tallies.empty())
+    score_analog_tally_ce(*this);
+}
+
 void Particle::event_cross_surface()
 {
-  // A step cut short by this surface still gave energy to its grouped
-  // collisions along the way, and that energy was deposited in the cell just
-  // left. It reaches a tally only through the collision energy balance
-  // E_last - E, and a surface crossing scores no balance, so without this the
-  // deposition is simply lost. It is lost often: the hinge turns the particle,
-  // which moves the surface it was heading for, so a step is cut by geometry
-  // whenever one is nearby. In a homogeneous slab cut into fifty cells by
-  // surfaces that are not there physically, this was 1.1 per cent of the beam
-  // energy going missing, against nothing at all in single-event transport.
-  //
-  // Scoring costs no flux: score_collision_tally gives a charged particle a
-  // flux of zero, so only the balance-based scores see this at all.
-  if (ch_in_step() && E() != E_last() && settings::run_CE && alive()) {
-    event() = TallyEvent::SCATTER;
-    event_mt() = ELECTRON_ELASTIC;
-    if (!model::active_collision_tallies.empty())
-      score_collision_tally(*this);
-    if (!model::active_analog_tallies.empty())
-      score_analog_tally_ce(*this);
-  }
+  this->score_truncated_step();
 
   // A condensed-history step is built from the material it started in, so it
   // does not survive the crossing

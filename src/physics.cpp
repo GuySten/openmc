@@ -569,6 +569,10 @@ void sample_electron_reaction(Particle& p)
   if (p.E() < settings::energy_cutoff[electron]) {
     p.E() = 0.0;
     p.wgt() = 0.0;
+    // The energy is deposited here, so this is an absorption, and an analog
+    // tally filtering on the event has to see it as one. The positron path
+    // below says so at its own cutoff check; this one did not.
+    p.event() = TallyEvent::ABSORB;
     return;
   }
   // A collision ending a grouped step may only be one of the interactions

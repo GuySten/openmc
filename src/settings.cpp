@@ -628,7 +628,9 @@ void read_settings_xml(pugi::xml_node root)
   }
 
   // Check for electron treatment
+  bool electron_treatment_set = false;
   if (check_for_node(root, "electron_treatment")) {
+    electron_treatment_set = true;
     auto temp_str = get_node_value(root, "electron_treatment", true, true);
     if (temp_str == "led") {
       electron_treatment = ElectronTreatment::LED;
@@ -668,7 +670,11 @@ void read_settings_xml(pugi::xml_node root)
       // The thick-target approximation stands in for electrons that are not
       // transported, and sample_electron_reaction() ignores it when they are.
       // Turning it off here keeps its tables from being built at all.
-      if (electron_treatment == ElectronTreatment::TTB) {
+      // Only worth saying to someone who asked for it. It is the default, so
+      // warning whenever it is merely still set tells every user of electron
+      // transport about a setting they never touched.
+      if (electron_treatment_set &&
+          electron_treatment == ElectronTreatment::TTB) {
         warning("Electron treatment 'ttb' is ignored when electron transport "
                 "is enabled; bremsstrahlung is sampled per event instead.");
       }
@@ -804,7 +810,7 @@ void read_settings_xml(pugi::xml_node root)
     }
     if (check_for_node(node_cutoff, "energy_electron")) {
       energy_cutoff[2] =
-        std::stof(get_node_value(node_cutoff, "energy_electron"));
+        std::stod(get_node_value(node_cutoff, "energy_electron"));
     }
     // How far a condensed-history step may run before it has to stop and
     // look again. These sit here because everything they are measured

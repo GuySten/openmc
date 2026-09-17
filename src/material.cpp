@@ -692,7 +692,15 @@ void Material::init_electron_oscillators()
   oscillator_block_.clear();
   vector<double> strength;
   vector<double> binding_sq;
-  for (const auto& kv : atom_density) {
+  // Ordered, not in whatever order the hash map happens to hold them. What is
+  // built below is indexed by position, so the order decides the layout of
+  // every table derived from it -- and a layout that depends on the standard
+  // library's bucketing is one that can differ between builds.
+  vector<std::pair<int, double>> ordered(
+    atom_density.begin(), atom_density.end());
+  std::sort(ordered.begin(), ordered.end(),
+    [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto& kv : ordered) {
     const auto& elm = *data::elements[kv.first];
     oscillator_block_[kv.first] = oscillator_element_.size();
     oscillator_element_.push_back(kv.first);

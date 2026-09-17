@@ -127,7 +127,7 @@ public:
   //!
   //! All three cross sections are per atom and in the same units as the
   //! elastic cross section itself. The split is tabulated at load time from
-  //! settings::electron_max_step_deflection, so this is a grid lookup.
+  //! settings::step_deflection, so this is a grid lookup.
   //!
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
@@ -340,7 +340,7 @@ public:
   array<tensor::Tensor<double>, 2> elastic_mu1_;
   array<tensor::Tensor<double>, 2> elastic_mu2_;
   //! Soft/hard split of the elastic distribution at
-  //! settings::electron_max_step_deflection, on the electron energy grid,
+  //! settings::step_deflection, on the electron energy grid,
   //! indexed by projectile charge. The cutoff is held as the deflection 1-mu
   //! rather than as the cosine: at C1 = 0.001 and 100 MeV it is 1.1e-4 in
   //! tungsten, so four digits of the cosine carry no information, and both the

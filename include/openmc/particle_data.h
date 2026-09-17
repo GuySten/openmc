@@ -227,7 +227,7 @@ struct ElectroAtomicMicroXS {
   //! hard cross sections are the parts of the channels above that stay
   //! discrete; what is left of them is described by the three soft quantities
   //! instead. All zero, and hard_total equal to total, unless the run asked
-  //! for condensed history with settings::electron_max_step_deflection.
+  //! for condensed history with the step_deflection cutoff.
   double hard_elastic;
   double hard_excitation;
   double hard_ionization;

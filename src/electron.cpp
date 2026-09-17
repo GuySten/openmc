@@ -140,11 +140,10 @@ void Element::read_electron_data(hid_t group)
     // Where the same distribution splits into soft and hard, for a mixed
     // condensed-history step. C1 = 0 is the default and means every collision
     // is hard, so this costs nothing until a run asks for it.
-    if (settings::electron_max_step_deflection > 0.0) {
+    if (settings::step_deflection > 0.0) {
       vector<double> s_energy, mu_cut, p_hard, m1_soft, m2_soft;
       elastic_angle_[q].restricted_moments(
-        settings::electron_max_step_deflection, s_energy, mu_cut, p_hard,
-        m1_soft, m2_soft);
+        settings::step_deflection, s_energy, mu_cut, p_hard, m1_soft, m2_soft);
       vector<double> dcut(mu_cut.size());
       for (int i = 0; i < mu_cut.size(); ++i) {
         dcut[i] = std::max(0.0, 1.0 - mu_cut[i]);
@@ -233,7 +232,7 @@ void Element::read_electron_data(hid_t group)
   // The soft/hard split of the inelastic channels, which needs every one of
   // them loaded and so comes last. Skipped unless a run asks for condensed
   // history, since it is the only thing that reads it.
-  if (settings::electron_max_step_deflection > 0.0) {
+  if (settings::step_deflection > 0.0) {
     this->compute_soft_inelastic();
   }
 }
@@ -443,8 +442,8 @@ constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
 //! Energy a step is allowed to lose to the grouped collisions
 double soft_loss_budget(int q_index, double E)
 {
-  return std::min(settings::electron_max_step_energy_loss * E,
-    soft_projectile_headroom(q_index, E));
+  return std::min(
+    settings::step_energy_loss * E, soft_projectile_headroom(q_index, E));
 }
 
 } // namespace
@@ -848,7 +847,7 @@ void Element::calculate_electron_xs(Particle& p) const
   // Split it into the part a condensed-history step transports one collision
   // at a time and the part it groups. Without condensed history every channel
   // is hard, which is what leaves the transport below untouched.
-  if (settings::electron_max_step_deflection > 0.0 &&
+  if (settings::step_deflection > 0.0 &&
       inelastic_soft_s_[q].size() == n_grid) {
     // Every one of these is a straight interpolation on the index already in
     // hand. They were accessor calls, each searching the energy grid again --
@@ -1030,7 +1029,7 @@ void Element::compute_inelastic_transport(int q_index,
   int n_shell = electroionization_.shape(0);
   xs1 =
     tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
-  if (settings::electron_max_step_deflection <= 0.0 || w_r.size() != n_shell)
+  if (settings::step_deflection <= 0.0 || w_r.size() != n_shell)
     return;
 
   for (int j = 0; j < n_energy; ++j) {

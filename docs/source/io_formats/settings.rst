@@ -225,6 +225,45 @@ time.
 
     *Default*: Infinity
 
+
+The ``<cutoff>`` element also carries two limits on how far a
+condensed-history step of a charged particle may run. They take no particle
+name because nothing about them is particular to the electron: any charged
+particle the transport learns to follow is bounded the same way, and
+everything they are measured against -- the energy cutoffs above -- is in this
+same element.
+
+  :step_deflection:
+    Largest deflection the collisions grouped into one step may accumulate,
+    measured as :math:`\langle 1-\mu \rangle`: zero for a step that does not
+    turn the particle at all, one for a step that leaves it with no memory of
+    the direction it came from. It decides where each interaction channel is
+    cut into a grouped part and a part transported one collision at a time, and
+    it bounds how far a step may run. Setting it to zero groups nothing, which
+    is single-event transport.
+
+    Where the split falls is not otherwise a free parameter: a collision may be
+    grouped only when nothing it produces would have been transported anyway,
+    so the energy cutoffs decide it. Raising them therefore makes the method
+    faster on its own, with nothing else to set.
+
+    *Default*: 0.005, the largest value that does not move the answer. On a
+    1 MeV depth dose in carbon it agrees with single-event transport to 2.1
+    standard errors in every resolved bin, where 0.01 differs by 4.9.
+
+  :step_energy_loss:
+    Largest fraction of its kinetic energy a particle may give the grouped
+    collisions of one step, which keeps the restricted stopping power evaluated
+    near the energy it belongs to. A step is never allowed to carry a particle
+    below the energy cutoff of its own kind either, nor to let one grouped
+    collision carry more than a tenth of this.
+
+    *Default*: 0.05. It rarely binds, the deflection limit almost always coming
+    first.
+
+Both are capped at 0.2, past which a step is no longer describing a path;
+larger values are reduced to it with a warning. PENELOPE caps its :math:`C_1`
+and :math:`C_2` at the same place.
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------
@@ -248,53 +287,6 @@ photon at a time.
 
   *Default*: ttb
 
-.. _electron_max_step_deflection:
-
-------------------------------------------
-``<electron_max_step_deflection>`` Element
-------------------------------------------
-
-The ``<electron_max_step_deflection>`` element sets the largest deflection the
-grouped collisions of one condensed-history step may accumulate, measured as
-:math:`\langle 1-\mu \rangle`: zero for a step that does not turn the particle
-at all, one for a step that leaves it with no memory of the direction it came
-from. It both decides where each interaction channel is cut into a soft part the
-step groups and a hard part transported one collision at a time, and bounds how
-far a step may run.
-
-Where the split falls is not a free parameter beyond this: a collision may be
-grouped only when nothing it produces would have been transported anyway, so the
-transport cutoffs decide it. Raising the electron and photon cutoffs therefore
-makes the method faster on its own, with nothing else to set -- on a 1 MeV
-electron in carbon, by a factor of 3 at a 1 keV cutoff and 12 at 100 keV.
-
-Setting it to zero transports every interaction discretely. Values above 0.2
-are reduced to it with a warning: a step turning the particle through
-:math:`\langle 1-\mu \rangle = 0.2` has turned it through some 37 degrees, and
-standing all of that on one deflection at one point of the step is no longer
-describing a path. PENELOPE caps its :math:`C_1` at the same place.
-
-  *Default*: 0.005, the largest value that does not move the answer. On a 1 MeV
-  depth dose in carbon -- a light target at the energy where the grouped
-  collisions deflect the most -- it agrees with single-event transport to 2.1
-  standard errors in every resolved bin, where 0.01 differs by 4.9.
-
--------------------------------------------
-``<electron_max_step_energy_loss>`` Element
--------------------------------------------
-
-The ``<electron_max_step_energy_loss>`` element sets the largest fraction of its
-kinetic energy a charged particle may give to the grouped collisions of one
-step, which keeps the restricted stopping power evaluated near the energy it
-belongs to. A step is never allowed to carry a particle below its own transport
-cutoff either, nor to let one grouped collision carry more than a tenth of
-this, whichever bound is tighter. Values above 0.2 are reduced to it with a
-warning, a step that has lost a fifth of its energy having moved far enough
-that the cross sections it began with belong to a different particle.
-
-  *Default*: 0.05. It rarely binds, the angular ceiling of
-  :ref:`electron_max_step_deflection` almost always coming first.
-
 .. _electron_transport:
 
 --------------------------------
@@ -308,7 +300,7 @@ interaction is simulated as a discrete event: elastic scattering from
 partial-wave cross sections, electroionization, atomic excitation,
 bremsstrahlung, and for positrons Bhabha scattering and in-flight
 annihilation. Interactions too small to be worth following one at a time are
-grouped into a condensed-history step, which :ref:`electron_max_step_deflection` controls and
+grouped into a condensed-history step, which the ``step_deflection`` cutoff controls and
 can switch off.
 
 This requires photon transport, which is enabled automatically with a warning

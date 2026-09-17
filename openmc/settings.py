@@ -88,6 +88,21 @@ class Settings:
         'survival_normalization' is a bool indicating whether or not the weight
         cutoff parameters will be applied relative to the particle's starting
         weight or to its current weight.
+
+        Two further keys, 'step_deflection' and 'step_energy_loss', bound one
+        condensed-history step of a charged particle. They carry no particle
+        name because nothing about them is particular to the electron: any
+        charged particle the transport learns to follow is bounded the same
+        way. 'step_deflection' is the largest deflection the collisions grouped
+        into a step may accumulate, measured as :math:`\\langle 1-\\mu
+        \\rangle`. It decides where each interaction channel is cut into a
+        grouped part and a part transported one collision at a time, and it
+        bounds how far a step may run; setting it to zero groups nothing, which
+        is single-event transport. 'step_energy_loss' is the largest fraction
+        of its kinetic energy a particle may give those collisions over one
+        step. They default to 0.005 and 0.05 and are capped at 0.2, where
+        PENELOPE caps its :math:`C_1` and :math:`C_2`. Only meaningful with
+        :attr:`electron_transport`.
     delayed_photon_scaling : bool
         Indicate whether to scale the fission photon yield by (EGP + EGD)/EGP
         where EGP is the energy release of prompt photons and EGD is the energy
@@ -102,42 +117,28 @@ class Settings:
         and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
-    electron_max_step_deflection : float
-        Largest deflection the grouped collisions of one condensed-history step
-        may accumulate, measured as :math:`\\langle 1-\\mu \\rangle`: zero for
-        a step that does not turn the particle at all, one for a step that
-        leaves it with no memory of the direction it came from. This is
-        PENELOPE's :math:`C_1`.
-
-        It does two things. It decides where each interaction channel is cut
-        into a soft part the step groups and a hard part transported one
-        collision at a time, and it bounds how far a step may run. Setting it
-        to zero groups nothing, which is single-event transport.
-
-        The default of 0.005 is the largest value that does not move the
-        answer: on a 1 MeV depth dose in carbon it agrees with single-event
-        transport to 2.1 standard errors in every resolved bin, where 0.01
-        differs by 4.9. Larger values are faster and coarser, up to a limit of
-        0.2 -- a step turning the particle through 37 degrees and standing all
-        of it on one deflection at one point is no longer describing a path.
-        PENELOPE caps its :math:`C_1` at the same place. Only meaningful with
-        :attr:`electron_transport`.
+    electron_transport : bool
+        Whether to transport electrons and positrons as individual particles,
+        simulating every interaction as a discrete event rather than depositing
+        their energy locally or spreading it with the thick-target
+        approximation. Requires photon transport and an electron data library,
+        and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
-    electron_max_step_energy_loss : float
-        Largest fraction of its kinetic energy a charged particle may give to
-        the grouped collisions of one condensed-history step, which keeps the
-        restricted stopping power evaluated near the energy it belongs to. This
-        is PENELOPE's :math:`C_2`, and EGSnrc's ESTEPE.
+    electron_transport : bool
+        Whether to transport electrons and positrons as individual particles,
+        simulating every interaction as a discrete event rather than depositing
+        their energy locally or spreading it with the thick-target
+        approximation. Requires photon transport and an electron data library,
+        and makes :attr:`electron_treatment` inapplicable.
 
-        A step is never allowed to carry a particle below its own transport
-        cutoff either, nor to let one grouped collision carry more than a tenth
-        of this, whichever bound is the tighter. Defaults to 0.05, which rarely
-        binds: the angular ceiling of :attr:`electron_max_step_deflection`
-        almost always comes first. Capped at 0.2, past which a step has moved
-        far enough that the cross sections it began with belong to a different
-        particle. Only meaningful with :attr:`electron_transport` and a
-        positive :attr:`electron_max_step_deflection`.
+        .. versionadded:: 0.17.0
+    electron_transport : bool
+        Whether to transport electrons and positrons as individual particles,
+        simulating every interaction as a discrete event rather than depositing
+        their energy locally or spreading it with the thick-target
+        approximation. Requires photon transport and an electron data library,
+        and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
@@ -478,8 +479,6 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
-        self._electron_max_step_deflection = None
-        self._electron_max_step_energy_loss = None
         self._electron_transport = None
         self._photon_transport = None
         self._atomic_relaxation = None
@@ -744,34 +743,6 @@ class Settings:
     def electron_transport(self, electron_transport: bool):
         cv.check_type('electron transport', electron_transport, bool)
         self._electron_transport = electron_transport
-
-    @property
-    def electron_max_step_deflection(self) -> float:
-        return self._electron_max_step_deflection
-
-    @electron_max_step_deflection.setter
-    def electron_max_step_deflection(self, electron_max_step_deflection: float):
-        cv.check_type('electron max step deflection',
-                      electron_max_step_deflection, Real)
-        cv.check_greater_than('electron max step deflection',
-                              electron_max_step_deflection, 0.0, equality=True)
-        cv.check_less_than('electron max step deflection',
-                           electron_max_step_deflection, 0.2, equality=True)
-        self._electron_max_step_deflection = electron_max_step_deflection
-
-    @property
-    def electron_max_step_energy_loss(self) -> float:
-        return self._electron_max_step_energy_loss
-
-    @electron_max_step_energy_loss.setter
-    def electron_max_step_energy_loss(self, electron_max_step_energy_loss: float):
-        cv.check_type('electron max step energy loss',
-                      electron_max_step_energy_loss, Real)
-        cv.check_greater_than('electron max step energy loss',
-                              electron_max_step_energy_loss, 0.0)
-        cv.check_less_than('electron max step energy loss',
-                           electron_max_step_energy_loss, 0.2, equality=True)
-        self._electron_max_step_energy_loss = electron_max_step_energy_loss
 
     @property
     def electron_treatment(self) -> str:
@@ -1257,6 +1228,18 @@ class Settings:
                          'energy_positron']:
                 cv.check_type('energy cutoff', cutoff[key], Real)
                 cv.check_greater_than('energy cutoff', cutoff[key], 0.0)
+            elif key == 'step_deflection':
+                cv.check_type('step deflection cutoff', cutoff[key], Real)
+                cv.check_greater_than('step deflection cutoff', cutoff[key],
+                                      0.0, equality=True)
+                cv.check_less_than('step deflection cutoff', cutoff[key], 0.2,
+                                   equality=True)
+            elif key == 'step_energy_loss':
+                cv.check_type('step energy loss cutoff', cutoff[key], Real)
+                cv.check_greater_than('step energy loss cutoff', cutoff[key],
+                                      0.0)
+                cv.check_less_than('step energy loss cutoff', cutoff[key], 0.2,
+                                   equality=True)
             else:
                 msg = f'Unable to set cutoff to "{key}" which is unsupported ' \
                     'by OpenMC'
@@ -1799,16 +1782,6 @@ class Settings:
             element = ET.SubElement(root, "electron_transport")
             element.text = str(self._electron_transport).lower()
 
-    def _create_electron_max_step_deflection_subelement(self, root):
-        if self._electron_max_step_deflection is not None:
-            element = ET.SubElement(root, "electron_max_step_deflection")
-            element.text = str(self._electron_max_step_deflection)
-
-    def _create_electron_max_step_energy_loss_subelement(self, root):
-        if self._electron_max_step_energy_loss is not None:
-            element = ET.SubElement(root, "electron_max_step_energy_loss")
-            element.text = str(self._electron_max_step_energy_loss)
-
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2336,16 +2309,6 @@ class Settings:
         if text is not None:
             self.confidence_intervals = text in ('true', '1')
 
-    def _electron_max_step_deflection_from_xml_element(self, root):
-        text = get_text(root, 'electron_max_step_deflection')
-        if text is not None:
-            self.electron_max_step_deflection = float(text)
-
-    def _electron_max_step_energy_loss_from_xml_element(self, root):
-        text = get_text(root, 'electron_max_step_energy_loss')
-        if text is not None:
-            self.electron_max_step_energy_loss = float(text)
-
     def _electron_treatment_from_xml_element(self, root):
         text = get_text(root, 'electron_treatment')
         if text is not None:
@@ -2423,6 +2386,7 @@ class Settings:
             for key in ('energy_neutron', 'energy_photon', 'energy_electron',
                         'energy_positron', 'weight', 'weight_avg', 'time_neutron',
                         'time_photon', 'time_electron', 'time_positron',
+                        'step_deflection', 'step_energy_loss',
                         'survival_normalization'):
                 value = get_text(elem, key)
                 if value is not None:
@@ -2731,8 +2695,6 @@ class Settings:
         self._create_collision_track_subelement(element)
         self._create_confidence_intervals(element)
         self._create_electron_treatment_subelement(element)
-        self._create_electron_max_step_deflection_subelement(element)
-        self._create_electron_max_step_energy_loss_subelement(element)
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
@@ -2853,8 +2815,6 @@ class Settings:
         settings._collision_track_from_xml_element(elem)
         settings._confidence_intervals_from_xml_element(elem)
         settings._electron_treatment_from_xml_element(elem)
-        settings._electron_max_step_deflection_from_xml_element(elem)
-        settings._electron_max_step_energy_loss_from_xml_element(elem)
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)

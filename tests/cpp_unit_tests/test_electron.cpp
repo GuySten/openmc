@@ -350,8 +350,8 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   int electron = openmc::ParticleType::electron().transport_index();
   int positron = openmc::ParticleType::positron().transport_index();
   auto saved = openmc::settings::energy_cutoff;
-  double saved_loss = openmc::settings::electron_max_step_energy_loss;
-  openmc::settings::electron_max_step_energy_loss = 0.05;
+  double saved_loss = openmc::settings::step_energy_loss;
+  openmc::settings::step_energy_loss = 0.05;
   double E = 2.2e7;
 
   // Three things bound what a collision may transfer and still be grouped,
@@ -403,5 +403,5 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
   CHECK(openmc::soft_radiative_cutoff(0, E) == 1000.0);
 
   openmc::settings::energy_cutoff = saved;
-  openmc::settings::electron_max_step_energy_loss = saved_loss;
+  openmc::settings::step_energy_loss = saved_loss;
 }

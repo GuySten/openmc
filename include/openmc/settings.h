@@ -125,15 +125,13 @@ extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
-  electron_treatment; //!< how to treat secondary electrons
-extern double
-  electron_max_step_deflection; //!< most the grouped collisions may deflect a
+  electron_treatment;           //!< how to treat secondary electrons
+extern double step_deflection;  //!< most the grouped collisions may deflect a
                                 //!< charged particle over one condensed-history
                                 //!< step; zero transports every collision
-extern double
-  electron_max_step_energy_loss; //!< largest fraction of its energy a charged
-                                 //!< particle may give the grouped collisions
-                                 //!< in one condensed-history step
+extern double step_energy_loss; //!< largest fraction of its energy a charged
+                                //!< particle may give the grouped collisions
+                                //!< in one condensed-history step
 extern array<double, 4>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
 extern array<double, 4>

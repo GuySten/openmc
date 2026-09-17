@@ -1082,7 +1082,7 @@ downstream, which optically thin media with scattering ratios near one can
 amplify.
 
 When the source gradient limiter is enabled, each group's gradient is
-rescaled so that the modeled source stays non-negative over the region's
+limited so that the modeled source stays non-negative over the region's
 axis-aligned bounding box. The box is accumulated from the endpoints of
 every ray segment that has crossed the region past the ray's inactive
 length. These lie on the region's boundary except where a ray starts or
@@ -1098,24 +1098,58 @@ reaches
 
 where :math:`x^{\min}_{i}` and :math:`x^{\max}_{i}` are the box bounds,
 :math:`\mathbf{r}_{\mathrm{c},i}` is the centroid, and :math:`d` indexes
-their components. Whenever the flat source :math:`Q_{i,g}` plus this
-minimum is negative, the gradient is scaled by the ratio of the flat source
-to the magnitude of the minimum, so that the modeled source reaches zero at
-that corner. Because the linear term integrates to zero over the region,
-the rescaling preserves the region's mean emission, and gradients that pass
-the test are left untouched. A group whose flat source is not positive has
-its gradient zeroed. Once the region's extreme points along each axis have
-been sampled, the box contains the region and the modeled source is
-non-negative throughout it. The bound is exact for axis-aligned box regions
+their components. Each axis contributes a non-negative depth
+:math:`\delta_{i,g,d}`, the magnitude of its term above, and the corner
+minimum is :math:`-\sum_d \delta_{i,g,d}`. Whenever the flat source
+:math:`Q_{i,g}` plus that minimum is negative, the depths are clipped to a
+common budget :math:`t`,
+
+.. math::
+    :label: gradient-limiter-budget
+
+    \left(\boldsymbol{\vec{Q}}_{i,g}\right)_d \; \longleftarrow \;
+    \left(\boldsymbol{\vec{Q}}_{i,g}\right)_d \, \min\!\left(1,
+    \frac{t}{\delta_{i,g,d}}\right), \qquad \sum_{d} \min\!\left(
+    \delta_{i,g,d}, t\right) = Q_{i,g},
+
+so that the modeled source reaches zero at the corner. Because the linear
+term integrates to zero over the region and each component is clipped
+independently, the limiting preserves the region's mean emission, and
+gradients that pass the test are left untouched. A group whose flat source
+is not positive has its gradient zeroed. Once the region's extreme points
+along each axis have been sampled, the box contains the region and the
+modeled source is non-negative throughout it.
+
+Clipping the depths to a common budget is a directional limiter in the
+sense of `Berger, Aftosmis and Murman <Berger-2005_>`_. Scaling the
+gradient as a whole is the scalar alternative: every axis takes the same
+factor :math:`Q_{i,g} / \sum_d \delta_{i,g,d}`, so a runaway depth on one
+axis takes a share of the flat source approaching all of it and drives the
+other two components toward zero, however well the region resolves them.
+They show the multidimensional limiting problem is a linear program whose
+solution is the feasible gradient closest to the unlimited one, and that
+the scalar form, free to vary only along the gradient's length, is
+monotone but excessively dissipative. Equation :eq:`gradient-limiter-budget`
+is the min-max-reduction point of that program for the single corner
+constraint here: no axis gives up more depth than it must, and an axis
+deeper than :math:`t` is clipped to :math:`t` without spending the other
+axes' share.
+
+The trade is that a directional limiter is not rotationally invariant. It
+changes the gradient's direction, where the scalar form preserves it, and
+the fitted gradient here is statistically noisy rather than an accurate
+gradient under a monotonicity constraint, so the extra dissipation of the
+scalar form is not purely a cost. The bound is exact for axis-aligned box regions
 and conservative for others: a sphere is limited by up to a factor of
 :math:`\sqrt{3}` more than necessary, and a thin region lying diagonally to
 the axes by much more, as its bounding box is far larger than the region.
 
-This is the treatment `MPACT <Choi-2024_>`_ applies in its limited linear
-source approximation, with the same mean-preserving factor. MPACT finds
-the minimum source exactly, over the entrance and exit points of every
-segment crossing the region, which requires the fixed set of tracks that
-deterministic MOC lays down once. Random ray samples new rays every batch,
+This follows the treatment `MPACT <Choi-2024_>`_ applies in its limited
+linear source approximation, which is mean-preserving in the same way but
+scales the gradient as a whole. MPACT finds the minimum source exactly,
+over the entrance and exit points of every segment crossing the region,
+which requires the fixed set of tracks that deterministic MOC lays down
+once. Random ray samples new rays every batch,
 so no such segment set exists when the source is built, and the sampled
 bounding box takes its place.
 
@@ -1438,6 +1472,7 @@ in random ray particle transport are:
 .. _Choi-2024: https://doi.org/10.1080/00295639.2023.2224234
 .. _Gunow-2018: https://dspace.mit.edu/handle/1721.1/119030
 .. _Balzer-2009: https://doi.org/10.1109/ISVD.2009.28
+.. _Berger-2005: https://doi.org/10.2514/6.2005-490
 
 .. only:: html
 

@@ -1,6 +1,7 @@
 #include "openmc/random_ray/linear_source_domain.h"
 
 #include <algorithm>
+#include <utility>
 
 #include "openmc/cell.h"
 #include "openmc/geometry.h"
@@ -21,6 +22,42 @@ namespace openmc {
 //==============================================================================
 // LinearSourceDomain implementation
 //==============================================================================
+
+namespace {
+
+// Largest per-axis depth t for which the three axis depths, each clipped to
+// t, still sum to no more than the cap. Whichever of the three bracketings
+// holds gives t in closed form: the axes already at or below t keep their
+// depth and the remainder share what the cap leaves. Only called when the
+// depths exceed the cap, so at least the deepest axis is clipped and the
+// clipped depths sum to exactly the cap.
+double common_depth_budget(const double d[3], double cap)
+{
+  double e0 = d[0];
+  double e1 = d[1];
+  double e2 = d[2];
+  if (e0 > e1)
+    std::swap(e0, e1);
+  if (e1 > e2)
+    std::swap(e1, e2);
+  if (e0 > e1)
+    std::swap(e0, e1);
+
+  // Deepest axis alone clipped.
+  double t = cap - e0 - e1;
+  if (t >= e1)
+    return t;
+
+  // Two deepest axes clipped.
+  t = 0.5 * (cap - e0);
+  if (t >= e0)
+    return t;
+
+  // All three clipped.
+  return cap / 3.0;
+}
+
+} // namespace
 
 void LinearSourceDomain::batch_reset()
 {
@@ -143,28 +180,55 @@ void LinearSourceDomain::update_single_neutron_source(SourceRegionHandle& srh)
   // gradient component times the offset from the centroid to that face.
   // Once the region's extreme points along each axis have been sampled the
   // box contains the region, and the modeled source is non-negative
-  // throughout it whenever the flat source covers the dip. When it does not,
-  // the gradient is scaled by their ratio, which preserves the region's mean
-  // emission, since the linear term integrates to zero over the region;
-  // gradients that pass are left untouched. A non-positive flat source
-  // leaves no shape to keep, so its cap is zero and its gradient is scaled
-  // away. A region with no sampled box yet carries no gradient to limit.
+  // throughout it whenever the flat source covers the sum of those three
+  // depths. Gradients that pass are left untouched. A non-positive flat
+  // source leaves no shape to keep, so its cap is zero and its gradient is
+  // limited away. A region with no sampled box yet carries no gradient to
+  // limit.
+  //
+  // When the cap is exceeded, the three axes are clipped to a common depth
+  // budget rather than the gradient being scaled as a whole. Both restore
+  // the bound, but scaling the gradient lets one axis spend the whole cap:
+  // an axis whose depth runs away takes a share of the cap approaching all
+  // of it and drives the other two toward zero. That matters because the
+  // axis most likely to run away is the one whose gradient is least
+  // determined. The gradients come from inverting the region's spatial
+  // moment matrix, which is ill conditioned along a direction the region
+  // barely spans or that its segments have barely sampled, so the fitted
+  // gradient along that direction is the noisiest of the three and its
+  // depth is what varies between otherwise equivalent runs. Under a common
+  // budget an axis deeper than the budget is clipped to it and contributes
+  // its own magnitude to nothing else, so the other axes keep the shape
+  // they fitted and stay independent of that noise. Clipping is per
+  // component, so, as with scaling, the region's mean emission is
+  // unchanged: the linear term still integrates to zero over the region.
   if (source_gradient_limiter_ && material != MATERIAL_VOID &&
       srh.extent().min.x <= srh.extent().max.x) {
     // Offsets from the centroid to the box faces. The centroid is the
     // length-weighted mean of segment midpoints, all of which lie in the
-    // box, so lo <= 0 <= hi and the dip below is non-negative.
+    // box, so lo <= 0 <= hi and the depths below are non-negative.
     const BoundingBox& extent = srh.extent();
     Position lo = extent.min - srh.centroid();
     Position hi = extent.max - srh.centroid();
     for (int g = 0; g < negroups_; g++) {
       MomentArray& gradient = srh.source_gradients(g);
       double cap = std::max<double>(srh.source(g), 0.0);
-      double dip = std::max(-gradient.x * lo.x, -gradient.x * hi.x) +
-                   std::max(-gradient.y * lo.y, -gradient.y * hi.y) +
-                   std::max(-gradient.z * lo.z, -gradient.z * hi.z);
+
+      // Depth of the linear term at the face each component points away
+      // from, per axis.
+      double depth[3];
+      for (int a = 0; a < 3; a++) {
+        depth[a] = std::max(-gradient[a] * lo[a], -gradient[a] * hi[a]);
+      }
+      double dip = depth[0] + depth[1] + depth[2];
+
       if (dip > cap) {
-        gradient *= cap / dip;
+        double budget = common_depth_budget(depth, cap);
+        for (int a = 0; a < 3; a++) {
+          if (depth[a] > budget) {
+            gradient[a] *= budget / depth[a];
+          }
+        }
       }
     }
   }

@@ -641,8 +641,8 @@ found in the :ref:`random ray user guide <random_ray>`.
     *Default*: flat
 
   :source_gradient_limiter:
-    Specifies whether to rescale linear source gradients as needed so that
-    the source shape modeled within each source region remains non-negative
+    Specifies whether to clip linear source gradients as needed so that the
+    source shape modeled within each source region remains non-negative
     over the region's bounding box, as sampled by the rays that have crossed
     it (bool). Only used when the source shape is "linear" or "linear_xy".
 

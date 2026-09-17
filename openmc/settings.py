@@ -211,7 +211,7 @@ class Settings:
             Assumed shape of the source distribution within each source region.
             Options are 'flat' (default), 'linear', or 'linear_xy'.
         :source_gradient_limiter:
-            Whether to rescale linear source gradients as needed so that the
+            Whether to clip linear source gradients as needed so that the
             source shape modeled within each source region remains
             non-negative over the region's bounding box, as sampled by the
             rays that have crossed it (bool). The default is 'False'. Only

@@ -93,8 +93,11 @@ class Settings:
         condensed-history step of a charged particle. They carry no particle
         name: they say how finely a step is integrated rather than which
         particles matter, so one value serves every charged particle the
-        transport follows. 'deflection' is the largest deflection the
-        collisions grouped into a step may accumulate, measured as
+        transport follows, and the bare name is defined as that shared value
+        rather than as the only form it may take, so a future species can be
+        given its own without changing what these mean. 'deflection' is the
+        largest deflection the collisions grouped into a step may accumulate,
+        measured as
         :math:`\\langle 1-\\mu \\rangle`. It cuts elastic scattering into a
         grouped part and a part transported one collision at a time, and it
         bounds how far one step may run; setting it to zero groups nothing,

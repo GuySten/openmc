@@ -13,6 +13,7 @@
 
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
 #include "openmc/distribution.h"
@@ -112,6 +113,15 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
+// The fastest condensed history that does not move the answer. Measured on a
+// 1 MeV depth dose in carbon, the hardest case of the benchmarks this was
+// written for -- the lightest target, at the energy where the grouped
+// collisions deflect the most and elastic scattering is the smallest share of
+// them. Against single-event transport it agrees everywhere to 2.1 standard
+// errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
+// once the angular ceiling is applied and is left as a guard.
+double deflection_cutoff {0.005};
+double energy_loss_cutoff {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -618,7 +628,9 @@ void read_settings_xml(pugi::xml_node root)
   }
 
   // Check for electron treatment
+  bool electron_treatment_set = false;
   if (check_for_node(root, "electron_treatment")) {
+    electron_treatment_set = true;
     auto temp_str = get_node_value(root, "electron_treatment", true, true);
     if (temp_str == "led") {
       electron_treatment = ElectronTreatment::LED;
@@ -658,7 +670,11 @@ void read_settings_xml(pugi::xml_node root)
       // The thick-target approximation stands in for electrons that are not
       // transported, and sample_electron_reaction() ignores it when they are.
       // Turning it off here keeps its tables from being built at all.
-      if (electron_treatment == ElectronTreatment::TTB) {
+      // Only worth saying to someone who asked for it. It is the default, so
+      // warning whenever it is merely still set tells every user of electron
+      // transport about a setting they never touched.
+      if (electron_treatment_set &&
+          electron_treatment == ElectronTreatment::TTB) {
         warning("Electron treatment 'ttb' is ignored when electron transport "
                 "is enabled; bremsstrahlung is sampled per event instead.");
       }
@@ -794,7 +810,46 @@ void read_settings_xml(pugi::xml_node root)
     }
     if (check_for_node(node_cutoff, "energy_electron")) {
       energy_cutoff[2] =
-        std::stof(get_node_value(node_cutoff, "energy_electron"));
+        std::stod(get_node_value(node_cutoff, "energy_electron"));
+    }
+    // How far a condensed-history step may run before it has to stop and
+    // look again. These sit here because everything they are measured
+    // against is here: the step may not carry a charged particle below the
+    // energy cutoff of its own kind, and what a grouped collision may emit is
+    // bounded by the electron and photon cutoffs above. They carry no
+    // particle name because they say how finely a step is integrated rather
+    // than which particles matter, so one value serves every charged particle
+    // the transport follows.
+    if (check_for_node(node_cutoff, "deflection")) {
+      deflection_cutoff = std::stod(get_node_value(node_cutoff, "deflection"));
+      if (deflection_cutoff < 0.0) {
+        fatal_error("Deflection cutoff cannot be negative.");
+      }
+      // Clamped rather than refused: a coarser step than this is still a
+      // request for the coarsest step there is, and stopping a run over a
+      // quality knob helps nobody. The Python interface refuses it at the
+      // point of assignment, where saying so is more use.
+      if (deflection_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Deflection cutoff of {} is past the {} a "
+                            "condensed-history step is meaningful up to, and "
+                            "has been reduced to it.",
+          deflection_cutoff, MAX_STEP_COARSENESS));
+        deflection_cutoff = MAX_STEP_COARSENESS;
+      }
+    }
+    if (check_for_node(node_cutoff, "energy_loss")) {
+      energy_loss_cutoff =
+        std::stod(get_node_value(node_cutoff, "energy_loss"));
+      if (energy_loss_cutoff <= 0.0) {
+        fatal_error("Energy loss cutoff must be greater than zero.");
+      }
+      if (energy_loss_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Energy loss cutoff of {} is past the {} a "
+                            "condensed-history step is meaningful up to, and "
+                            "has been reduced to it.",
+          energy_loss_cutoff, MAX_STEP_COARSENESS));
+        energy_loss_cutoff = MAX_STEP_COARSENESS;
+      }
     }
     if (check_for_node(node_cutoff, "energy_positron")) {
       energy_cutoff[3] =

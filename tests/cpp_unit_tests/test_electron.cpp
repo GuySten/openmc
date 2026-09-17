@@ -2,9 +2,15 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <cmath>
+#include <vector>
 
 #include "openmc/bremsstrahlung.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
+#include "openmc/distribution_angle.h"
+#include "openmc/particle_data.h"
+#include "openmc/photon.h"
+#include "openmc/settings.h"
 
 using Catch::Matchers::WithinAbs;
 using Catch::Matchers::WithinRel;
@@ -150,4 +156,263 @@ TEST_CASE("the Salvat positron bremsstrahlung factor is a ratio below one")
     // The fit approaches one from below, more slowly for heavy elements
     CHECK(openmc::salvat_factor(z_sq, 1.0e9) > 0.99);
   }
+}
+
+// The transport moments an eventual condensed-history step length is built
+// from. They are integrals of the tabulated angular distribution, so what
+// matters is that the quadrature is exact for the interpolation law -- these
+// distributions are forward-peaked enough that a trapezoidal error in
+// <1-mu> would show up directly in the step size.
+TEST_CASE("elastic transport moments are exact for a linear density")
+{
+  // p(mu) = (1 + mu)/2 on [-1, 1], normalised, with
+  //   <1 - mu>          = 1 - 1/3 = 2/3
+  //   <(3/2)(1 - mu^2)> = (3/2)(1 - 1/3) = 1
+  // Both are polynomial in mu, so an exact per-segment integration returns
+  // them for ANY partition of the interval; a trapezoidal one does not.
+  for (int n : {3, 5, 17}) {
+    std::vector<double> x(n), p(n);
+    for (int i = 0; i < n; ++i) {
+      x[i] = -1.0 + 2.0 * i / (n - 1);
+      p[i] = 0.5 * (1.0 + x[i]);
+    }
+
+    double mu1, mu2;
+    openmc::angular_moments(x, p, false, mu1, mu2);
+    CHECK_THAT(mu1, WithinRel(2.0 / 3.0, 1.0e-12));
+    CHECK_THAT(mu2, WithinRel(1.0, 1.0e-12));
+  }
+}
+
+TEST_CASE("an isotropic distribution has the moments of isotropy")
+{
+  // p(mu) = 1/2 gives <1-mu> = 1 and <(3/2)(1-mu^2)> = 1. A scheme that
+  // grouped soft collisions would relax to isotropy over one transport mean
+  // free path, so these are the values the step length is measured against.
+  int n = 9;
+  std::vector<double> x(n), p(n, 0.5);
+  for (int i = 0; i < n; ++i)
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+
+  double mu1, mu2;
+  openmc::angular_moments(x, p, true, mu1, mu2);
+  CHECK_THAT(mu1, WithinRel(1.0, 1.0e-12));
+  CHECK_THAT(mu2, WithinRel(1.0, 1.0e-12));
+}
+
+// The soft/hard split a mixed condensed-history step is built on. The cutoff
+// is defined implicitly, by C1 = sigma_1_soft / sigma_hard, so what has to be
+// checked is that the solver lands on the cosine that equation names.
+TEST_CASE("the soft/hard split solves for the cutoff C1 asks for")
+{
+  // p(mu) = (1 + mu)/2 again. Putting the cutoff at mu = 0 leaves
+  //   P_hard   = (1 + mu_c)^2/4                 = 1/4
+  //   <1-mu>_s = (1/2)(2/3 - mu_c + mu_c^3/3)   = 1/3
+  //   <(3/2)(1-mu^2)>_s                         = 11/16
+  // so C1 = (1/3)/(1/4) = 4/3 must put it exactly there. n = 6 is included
+  // because it has no node at mu = 0: the root then falls strictly inside a
+  // segment and the bisection, not the partition, has to find it.
+  for (int n : {3, 5, 6, 17}) {
+    std::vector<double> x(n), p(n);
+    for (int i = 0; i < n; ++i) {
+      x[i] = -1.0 + 2.0 * i / (n - 1);
+      p[i] = 0.5 * (1.0 + x[i]);
+    }
+
+    double mu_cut, p_hard, mu1_soft, mu2_soft;
+    openmc::restricted_angular_moments(
+      x, p, false, 4.0 / 3.0, mu_cut, p_hard, mu1_soft, mu2_soft);
+    CHECK_THAT(mu_cut, WithinAbs(0.0, 1.0e-12));
+    CHECK_THAT(p_hard, WithinRel(0.25, 1.0e-12));
+    CHECK_THAT(mu1_soft, WithinRel(1.0 / 3.0, 1.0e-12));
+    CHECK_THAT(mu2_soft, WithinRel(11.0 / 16.0, 1.0e-12));
+  }
+
+  // The same for a histogram density: p = 1/2 cut at mu = 0 leaves P_hard =
+  // 1/2 and <1-mu>_soft = 1/4, so C1 = 1/2 names that cutoff.
+  int n = 9;
+  std::vector<double> x(n), p(n, 0.5);
+  for (int i = 0; i < n; ++i)
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+
+  double mu_cut, p_hard, mu1_soft, mu2_soft;
+  openmc::restricted_angular_moments(
+    x, p, true, 0.5, mu_cut, p_hard, mu1_soft, mu2_soft);
+  CHECK_THAT(mu_cut, WithinAbs(0.0, 1.0e-12));
+  CHECK_THAT(p_hard, WithinRel(0.5, 1.0e-12));
+  CHECK_THAT(mu1_soft, WithinRel(0.25, 1.0e-12));
+  CHECK_THAT(mu2_soft, WithinRel(0.5, 1.0e-12));
+}
+
+TEST_CASE("C1 = 0 is exactly single-event transport")
+{
+  // Nothing may be grouped: the cutoff sits at the top of the range, the whole
+  // cross section is hard and both soft moments vanish. A mixed scheme that
+  // did not reduce to this could not be checked against the transport it
+  // replaces.
+  int n = 11;
+  std::vector<double> x(n), p(n);
+  for (int i = 0; i < n; ++i) {
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+    p[i] = 0.5 * (1.0 + x[i]);
+  }
+
+  double mu_cut, p_hard, mu1_soft, mu2_soft;
+  openmc::restricted_angular_moments(
+    x, p, false, 0.0, mu_cut, p_hard, mu1_soft, mu2_soft);
+  CHECK(mu_cut == 1.0);
+  CHECK(p_hard == 1.0);
+  CHECK(mu1_soft == 0.0);
+  CHECK(mu2_soft == 0.0);
+}
+
+TEST_CASE("the split moves monotonically with C1 and conserves the total")
+{
+  // A forward-peaked density, closer to what the elastic data look like than
+  // anything polynomial: p(mu) ~ 1/(1 + a - mu)^2 with a small, the Wentzel
+  // form. Raising C1 must move the cutoff away from forward, take cross
+  // section out of the hard part and put first moment into the soft one --
+  // and the soft moment can never exceed the total.
+  int n = 4001;
+  double a = 1.0e-3;
+  std::vector<double> x(n), p(n);
+  for (int i = 0; i < n; ++i) {
+    x[i] = -1.0 + 2.0 * i / (n - 1);
+    p[i] = 1.0 / ((1.0 + a - x[i]) * (1.0 + a - x[i]));
+  }
+
+  double mu1_total, mu2_total;
+  openmc::angular_moments(x, p, false, mu1_total, mu2_total);
+
+  double last_cut = 1.0, last_hard = 1.0, last_m1 = 0.0;
+  for (double c1 : {0.01, 0.02, 0.05, 0.1, 0.2}) {
+    double mu_cut, p_hard, mu1_soft, mu2_soft;
+    openmc::restricted_angular_moments(
+      x, p, false, c1, mu_cut, p_hard, mu1_soft, mu2_soft);
+
+    // The defining equation, which is the whole point of the solver
+    CHECK_THAT(mu1_soft, WithinRel(c1 * p_hard, 1.0e-10));
+
+    CHECK(mu_cut < last_cut);
+    CHECK(p_hard < last_hard);
+    CHECK(mu1_soft > last_m1);
+    CHECK(mu1_soft < mu1_total);
+    CHECK(mu2_soft < mu2_total);
+    CHECK(p_hard > 0.0);
+    last_cut = mu_cut;
+    last_hard = p_hard;
+    last_m1 = mu1_soft;
+  }
+}
+
+// The free Bhabha moments, which carry a positron's transfers above the Moller
+// limit into the stopping power and the straggling. The shape itself is
+// PENELOPE's and is not restated here; what is checked are the properties any
+// correct set of moments has, which a wrong power or a dropped term breaks.
+TEST_CASE("the Bhabha moments are additive and bracket their own range")
+{
+  double E = 1.0e7;
+  for (double W_lo : {6.0e6, 8.0e6}) {
+    double W_mid = 0.5 * (W_lo + E);
+    for (int order : {0, 1, 2}) {
+      double whole = openmc::detail::bhabha_moment(E, W_lo, E, order);
+      double lower = openmc::detail::bhabha_moment(E, W_lo, W_mid, order);
+      double upper = openmc::detail::bhabha_moment(E, W_mid, E, order);
+      CHECK_THAT(lower + upper, WithinRel(whole, 1.0e-12));
+      CHECK(whole > 0.0);
+    }
+
+    // Each moment is the cross section times a mean of W^order over the
+    // range, so it lies between the endpoints raised to that power
+    double m0 = openmc::detail::bhabha_moment(E, W_lo, E, 0);
+    double m1 = openmc::detail::bhabha_moment(E, W_lo, E, 1);
+    double m2 = openmc::detail::bhabha_moment(E, W_lo, E, 2);
+    CHECK(m1 > W_lo * m0);
+    CHECK(m1 < E * m0);
+    CHECK(m2 > W_lo * W_lo * m0);
+    CHECK(m2 < E * E * m0);
+
+    // Cauchy-Schwarz on the same measure
+    CHECK(m1 * m1 <= m0 * m2);
+
+    // An empty range carries nothing
+    CHECK(openmc::detail::bhabha_moment(E, E, E, 1) == 0.0);
+    CHECK(openmc::detail::bhabha_moment(E, E, W_lo, 1) == 0.0);
+  }
+}
+
+// Where the soft/hard split of the inelastic channels falls is not a free
+// parameter: it follows from the cutoffs. A collision may be grouped when
+// nothing it emits would have been transported AND the projectile survives it,
+// and those two conditions bring in all three cutoffs.
+TEST_CASE("the inelastic thresholds follow the transport cutoffs")
+{
+  int photon = openmc::ParticleType::photon().transport_index();
+  int electron = openmc::ParticleType::electron().transport_index();
+  int positron = openmc::ParticleType::positron().transport_index();
+  auto saved = openmc::settings::energy_cutoff;
+  double saved_loss = openmc::settings::energy_loss_cutoff;
+  openmc::settings::energy_loss_cutoff = 0.05;
+  double E = 2.2e7;
+
+  // Three things bound what a collision may transfer and still be grouped,
+  // and each is checked where it is the one that binds.
+
+  // The step's own energy budget, which is what binds in a photoneutron run:
+  // the step may lose 0.05 of 22 MeV and one collision may carry a tenth of
+  // that. Left out, the 8 MeV cutoffs below would let a single grouped
+  // collision carry seven times the energy the step was allowed to lose.
+  openmc::settings::energy_cutoff[photon] = 8.0e6;
+  openmc::settings::energy_cutoff[electron] = 8.0e6;
+  openmc::settings::energy_cutoff[positron] = 7.24e6;
+  CHECK_THAT(openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E),
+    WithinRel(0.1 * 0.05 * E, 1.0e-12));
+  CHECK_THAT(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E),
+    WithinRel(0.1 * 0.05 * E, 1.0e-12));
+
+  // What the collision emits, which binds once the cutoffs are low. An
+  // ionization collision emits a knock-on and, through the vacancy it leaves,
+  // fluorescence and Auger products, every one below the transfer itself, so
+  // the lower of the electron and photon cutoffs bounds it. Bremsstrahlung
+  // emits only a photon, so the electron cutoff does not bound it and the two
+  // thresholds part company.
+  openmc::settings::energy_cutoff[photon] = 1.0e5;
+  openmc::settings::energy_cutoff[electron] = 1.0e4;
+  CHECK(openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E) ==
+        1.0e4);
+  CHECK(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E) ==
+        1.0e5);
+
+  // The projectile itself, which binds at the cutoff. There the two charges
+  // part company: a positron may still be grouped a little where an electron
+  // may not, because its own cutoff is the lower one -- that being the whole
+  // reason a photoneutron run sets it lower.
+  openmc::settings::energy_cutoff[photon] = 8.0e6;
+  openmc::settings::energy_cutoff[electron] = 8.0e6;
+  CHECK(openmc::soft_projectile_headroom(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
+  CHECK(openmc::soft_projectile_headroom(
+          openmc::ParticleType::positron(), 8.0e6) == 8.0e6 - 7.24e6);
+  CHECK(openmc::soft_collision_cutoff(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
+  CHECK(openmc::soft_collision_cutoff(openmc::ParticleType::positron(), 8.0e6) >
+        0.0);
+  CHECK(openmc::soft_radiative_cutoff(
+          openmc::ParticleType::electron(), 8.0e6) == 0.0);
+
+  // OpenMC's default transports every electron to rest, so every knock-on is
+  // followed and no collision may be grouped. Radiative losses under the
+  // photon cutoff still may, up to the step's share of them.
+  openmc::settings::energy_cutoff[photon] = 1000.0;
+  openmc::settings::energy_cutoff[electron] = 0.0;
+  openmc::settings::energy_cutoff[positron] = 0.0;
+  CHECK(
+    openmc::soft_projectile_headroom(openmc::ParticleType::electron(), E) == E);
+  CHECK(
+    openmc::soft_collision_cutoff(openmc::ParticleType::electron(), E) == 0.0);
+  CHECK(openmc::soft_radiative_cutoff(openmc::ParticleType::electron(), E) ==
+        1000.0);
+
+  openmc::settings::energy_cutoff = saved;
+  openmc::settings::energy_loss_cutoff = saved_loss;
 }

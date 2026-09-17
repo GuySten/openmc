@@ -1,5 +1,6 @@
 set(TEST_NAMES
   test_atomic_mass
+  test_condensed_history
   test_distribution
   test_electron
   test_file_utils

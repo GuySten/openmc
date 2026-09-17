@@ -157,7 +157,7 @@ fission.
 ``<cutoff>`` Element
 --------------------
 
-The ``<cutoff>`` element indicates three kinds of cutoffs. The first is the
+The ``<cutoff>`` element indicates four kinds of cutoffs. The first is the
 weight cutoff used below which particles undergo Russian roulette. Surviving
 particles are assigned a user-determined weight. Note that weight cutoffs and
 Russian rouletting are not turned on by default. The second is the energy cutoff
@@ -165,7 +165,14 @@ which is used to kill particles under certain energy. The energy cutoff should
 not be used unless you know particles under the energy are of no importance to
 results you care. The third is the time cutoff used to kill particles whose time
 exceeds a specific cutoff. Particles will be killed exactly at the specified
-time.
+time. The fourth bounds how far one condensed-history step of a charged
+particle may run, in deflection and in energy loss. Those two carry no particle
+name: they say how finely a step is integrated rather than which particles
+matter, so one value serves every charged particle the transport follows. The
+bare name is defined as that shared value rather than as the only form it may
+take, so should some future species need its own, it can be given one the way
+``energy_photon`` sits beside ``energy_neutron``, and inputs written today go
+on meaning what they mean now.
 
   :weight:
     The weight below which particles undergo Russian roulette.
@@ -225,6 +232,48 @@ time.
 
     *Default*: Infinity
 
+  :deflection:
+    Largest deflection the collisions grouped into one step may accumulate,
+    measured as :math:`\langle 1-\mu \rangle`: zero for a step that does not
+    turn the particle at all, one for a step that leaves it with no memory of
+    the direction it came from. It cuts elastic scattering into a grouped part
+    and a part transported one collision at a time, and it bounds how far one
+    step may run. Setting it to zero groups nothing, which is single-event
+    transport. The inelastic channels are cut by the energy cutoffs above
+    rather than by anything set here, since a collision may be grouped only
+    when nothing it produces would have been transported anyway -- so raising
+    those cutoffs makes the method faster on its own.
+
+    *Default*: 0.005, the largest value that does not move the answer, measured
+    on electrons: a 1 MeV depth dose in carbon agrees with single-event
+    transport to about two standard errors in every resolved bin, where 0.01
+    differs by five. A heavier charged particle deflects far less per unit
+    path, so this bound would simply stop binding for one and the energy bound
+    would decide every step; that is the pair working, not failing, but the
+    number itself is an electron's. Values above 0.2 are reduced to it with a
+    warning, past which a step is no longer describing a path; PENELOPE caps
+    its :math:`C_1` at the same place.
+
+  :energy_loss:
+    Largest fraction of its kinetic energy a particle may give the grouped
+    collisions of one step, which keeps the restricted stopping power evaluated
+    near the energy it belongs to. A step is never allowed to carry a particle
+    below the energy cutoff of its own kind either, nor to let one grouped
+    collision carry more than a tenth of this.
+
+    *Default*: 0.05. For an electron it rarely binds, the deflection limit
+    almost always coming first. Capped at 0.2 the same way, where PENELOPE caps
+    its :math:`C_2`.
+
+Two limitations follow from how a step deposits what it loses. The grouped loss
+is deposited at the end of each leg of the step rather than spread along it, so
+a ``heating`` tally on a mesh finer than the step length reports it in the
+wrong bin; step lengths are tens of microns in a dense high-Z target and much
+longer in a light one. And the collision and analog estimators score no flux
+for a charged particle, so a flux tally over electrons or positrons needs
+``estimator="tracklength"`` and silently reads zero otherwise -- which is true
+of OpenMC's charged particles generally, not only of condensed history.
+
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------
@@ -260,7 +309,9 @@ deposited locally or spread by the thick-target approximation. Every
 interaction is simulated as a discrete event: elastic scattering from
 partial-wave cross sections, electroionization, atomic excitation,
 bremsstrahlung, and for positrons Bhabha scattering and in-flight
-annihilation. There is no condensed history.
+annihilation. Interactions too small to be worth following one at a time are
+grouped into a condensed-history step, which the ``deflection`` cutoff controls and
+can switch off.
 
 This requires photon transport, which is enabled automatically with a warning
 if it was not requested, and it requires an electron data library in the cross

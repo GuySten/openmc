@@ -83,7 +83,67 @@ def _log_interp(x, xp, fp):
 
 
 class IncidentElectron:
-    """Continuous-energy incident electron interaction data parsed from ACE."""
+    r"""Electron and positron interaction data.
+
+    This class stores the elastic, atomic excitation, electroionization and
+    bremsstrahlung data needed to transport electrons and positrons as
+    individual particles. It is assembled from three sources: the excitation
+    and electroionization data come from the eprdata ACE tables of the EPICS
+    evaluated libraries, the elastic differential cross sections from a Dirac
+    partial-wave calculation distributed with OpenMC, and the bremsstrahlung
+    photon spectra from the scaled cross sections already carried by the photon
+    library. To create an instance, use the factory method
+    :meth:`IncidentElectron.from_ace`, which reads the first and adds the other
+    two itself.
+
+    .. versionadded:: 0.17.0
+
+    Parameters
+    ----------
+    atomic_number : int
+        Number of protons in the target nucleus
+
+    Attributes
+    ----------
+    atomic_number : int
+        Number of protons in the target nucleus
+    bremsstrahlung_photon_cutoff : float
+        Lowest emitted photon energy the bremsstrahlung cross section is
+        integrated down to, in [eV]. The cross section diverges as the photon
+        energy goes to zero, so it is only finite with respect to a cutoff.
+    bremsstrahlung_xs : numpy.ndarray
+        Bremsstrahlung cross section in [b] on :attr:`energy_grid`, integrated
+        above :attr:`bremsstrahlung_photon_cutoff`
+    elastic_dist : dict
+        Elastic angular distributions keyed by ``'electron'`` and
+        ``'positron'``, each a differential cross section tabulated on a shared
+        grid of scattering cosines for every energy in :attr:`energy_grid`
+    elastic_xs : dict
+        Integrated elastic cross sections in [b] keyed by ``'electron'`` and
+        ``'positron'``. The two agree to under a per cent, which is the Born
+        limit and is symmetric in the charge; their first moments do not, a
+        positron being repelled by the nucleus and so kept out of the
+        small-impact-parameter region that produces the large deflections.
+    energy_grid : numpy.ndarray
+        Incident kinetic energies in [eV] that every cross section here is
+        tabulated on
+    excitation_energy_loss : numpy.ndarray
+        Average energy lost to an atomic excitation in [eV], on
+        :attr:`energy_grid`. The evaluation tabulates only this average, not a
+        spectrum.
+    excitation_xs : numpy.ndarray
+        Atomic excitation cross section in [b] on :attr:`energy_grid`
+    ionization_dist : dict
+        Knock-on energy distributions keyed by subshell index
+    ionization_xs : dict
+        Electroionization cross sections in [b] keyed by subshell index, each
+        on :attr:`energy_grid`
+    name : str
+        Atomic symbol of the element, e.g. 'Fe'
+    shells : list of int
+        Subshell designators, in the order the ionization data is keyed by
+
+    """
 
     def __init__(self, atomic_number):
         self.atomic_number = atomic_number
@@ -374,9 +434,8 @@ class IncidentElectron:
 
         References
         ----------
-        The data are computed with ELSEPA. If you use them in your research, please
-        cite Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
-        (2005) 157-190.
+        Computed with ELSEPA, the Dirac partial-wave code of Salvat, Jablonski
+        and Powell, *Computer Physics Communications* **165** (2005) 157-190.
 
         Notes
         -----

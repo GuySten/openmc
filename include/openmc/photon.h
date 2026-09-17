@@ -147,7 +147,31 @@ public:
   void inelastic_soft(int q_index, double E, double& s, double& w2) const;
 
   //! First transport cross section of the grouped inelastic collisions, in [b]
-  double inelastic_soft_transport_xs(int q_index, double E) const;
+  //!
+  //! Grouping a collision takes its deflection away with its energy loss, and
+  //! that deflection is not small: in carbon it is a quarter of what elastic
+  //! scattering contributes, against a per cent or two in tungsten, where
+  //! \f$Z^2\f$ puts nuclear elastic scattering far ahead.
+  //!
+  //! The angle comes from the recoil the collision leaves, and the model that
+  //! decides how much recoil that is cuts between close and distant collisions
+  //! at an oscillator energy belonging to the material rather than to the
+  //! atom. So this is tabulated per material, which is why the oscillator
+  //! energies and the density-effect correction are passed in.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] w_r Oscillator energy of each electroionization subshell in
+  //!   this material, in [eV]
+  //! \param[in] delta Density-effect correction on the electron energy grid
+  //! \param[out] xs1 First transport cross section in [b], on that grid
+  void compute_inelastic_transport(int q_index, const vector<double>& w_r,
+    const vector<double>& delta, tensor::Tensor<double>& xs1) const;
+
+  //! Electron energy grid this element's cross sections are tabulated on
+  const tensor::Tensor<double>& electron_energy() const
+  {
+    return electron_energy_;
+  }
 
   //! Fraction of a channel that stays a discrete collision
   //!
@@ -331,11 +355,6 @@ public:
   //! with the positron's radiative yield factor already applied.
   array<tensor::Tensor<double>, 2> inelastic_soft_s_;
   array<tensor::Tensor<double>, 2> inelastic_soft_w2_;
-  //! First transport cross section of the grouped inelastic collisions, in
-  //! [b]. Grouping them takes their deflection away with their energy loss,
-  //! and in a light element that deflection is a quarter of what elastic
-  //! scattering contributes -- not something a step may drop.
-  array<tensor::Tensor<double>, 2> inelastic_soft_xs1_;
   //! Fraction of each inelastic channel that stays a discrete collision, on
   //! the electron energy grid and indexed by projectile charge, since the two
   //! projectiles have different cutoffs and so different thresholds. The

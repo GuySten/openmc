@@ -231,4 +231,65 @@ void ElectroionizationSpectrum::restricted_moments(double E, double e_cut,
   }
 }
 
+double ElectroionizationSpectrum::restricted_integral(
+  double E, double e_cut, const std::function<double(double, double)>& f) const
+{
+  if (distribution_.empty() || e_cut <= 0.0)
+    return 0.0;
+
+  // Locate the cutoff in quantile space exactly as restricted_moments() does
+  double xi_cut;
+  if (this->at_quantile(E, 1.0) <= e_cut) {
+    xi_cut = 1.0;
+  } else if (this->at_quantile(E, 0.0) >= e_cut) {
+    return 0.0;
+  } else {
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int it = 0; it < 60; ++it) {
+      double mid = 0.5 * (lo + hi);
+      if (this->at_quantile(E, mid) <= e_cut) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    xi_cut = 0.5 * (lo + hi);
+  }
+
+  vector<double> nodes;
+  nodes.push_back(0.0);
+  int n_energy = energy_.size();
+  int i = 0;
+  if (n_energy > 1) {
+    double r;
+    get_energy_index(energy_, E, i, r);
+  }
+  for (int l = i; l <= std::min(i + 1, n_energy - 1); ++l) {
+    for (int k = 0; k < distribution_[l].c.size(); ++k) {
+      double c = distribution_[l].c[k];
+      if (c > 0.0 && c < xi_cut)
+        nodes.push_back(c);
+    }
+  }
+  nodes.push_back(xi_cut);
+  std::sort(nodes.begin(), nodes.end());
+  nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+
+  double total = 0.0;
+  for (int k = 0; k + 1 < nodes.size(); ++k) {
+    double a = nodes[k];
+    double b = nodes[k + 1];
+    double half = 0.5 * (b - a);
+    double mid = 0.5 * (a + b);
+    for (int g = 0; g < 5; ++g) {
+      double xi = mid + half * GL_X[g];
+      double density;
+      double x = this->at_quantile(E, xi, &density);
+      total += half * GL_W[g] * f(x, density);
+    }
+  }
+  return total;
+}
+
 } // namespace openmc

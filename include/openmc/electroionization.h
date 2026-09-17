@@ -90,6 +90,23 @@ public:
     const std::function<double(double)>* weight, double& xi_cut, double& m0,
     double& m1, double& m2) const;
 
+  //! Integrate a function of the knock-on energy over the soft part
+  //!
+  //! Same quadrature as restricted_moments(), over an arbitrary integrand
+  //! rather than the powers of the knock-on energy. What needs it is the
+  //! deflection a grouped collision makes, which depends on the density as
+  //! well as the energy: the recoil model decides between a close and a
+  //! distant collision by comparing the evaluated cross section at that
+  //! transfer with the free one.
+  //!
+  //! \param[in] E Incident electron kinetic energy in [eV]
+  //! \param[in] e_cut Largest knock-on energy counted as soft, in [eV]
+  //! \param[in] f Integrand, taking the knock-on energy and the density there
+  //! \return \f$\int_0^{\xi_{cut}} f \, d\xi\f$, a mean per collision
+  //!   times the fraction of collisions that are soft
+  double restricted_integral(double E, double e_cut,
+    const std::function<double(double, double)>& f) const;
+
 private:
   //! Outgoing spectrum tabulated for one incident energy
   struct Table {

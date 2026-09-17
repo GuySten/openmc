@@ -408,6 +408,7 @@ void Material::finalize()
     // Build the oscillator model used by the inelastic angular partition
     if (settings::electron_transport) {
       this->init_electron_oscillators();
+      this->init_inelastic_transport();
     }
 
     // Assign thermal scattering tables
@@ -1068,6 +1069,60 @@ void Material::calculate_photon_xs(Particle& p) const
   }
 }
 
+void Material::init_inelastic_transport()
+{
+  if (settings::electron_c1 <= 0.0)
+    return;
+
+  int n_block = oscillator_offset_.size() - 1;
+  for (int q = 0; q < 2; ++q) {
+    inelastic_xs1_[q].assign(std::max(0, n_block), tensor::Tensor<double> {});
+  }
+
+  for (int b = 0; b < n_block; ++b) {
+    int i_element = oscillator_element_[b];
+    const auto& element {*data::elements[i_element]};
+    vector<double> w_r(oscillator_energy_.begin() + oscillator_offset_[b],
+      oscillator_energy_.begin() + oscillator_offset_[b + 1]);
+
+    // The density-effect correction on this element's own energy grid, which
+    // is not the one it is tabulated on
+    const auto& grid = element.electron_energy();
+    vector<double> delta(grid.size());
+    for (int j = 0; j < grid.size(); ++j) {
+      delta[j] = this->density_effect_correction(grid(j));
+    }
+
+    for (int q = 0; q < 2; ++q) {
+      element.compute_inelastic_transport(q, w_r, delta, inelastic_xs1_[q][b]);
+    }
+  }
+}
+
+double Material::inelastic_transport_xs(
+  int i_element, int q_index, double E) const
+{
+  // Empty whenever the run did not ask for condensed history, while the
+  // oscillator blocks it is indexed by are not
+  if (q_index < 0 || q_index > 1 || inelastic_xs1_[q_index].empty())
+    return 0.0;
+  auto it = oscillator_block_.find(i_element);
+  if (it == oscillator_block_.end() ||
+      it->second >= inelastic_xs1_[q_index].size())
+    return 0.0;
+  const auto& v = inelastic_xs1_[q_index][it->second];
+  const auto& grid = data::elements[i_element]->electron_energy();
+  int n = grid.size();
+  if (v.size() != n || n < 2)
+    return 0.0;
+
+  int i = upper_bound_index(grid.cbegin(), grid.cend(), E);
+  i = std::max(0, std::min(i, n - 2));
+  double f = (E - grid(i)) / (grid(i + 1) - grid(i));
+  f = std::max(0.0, std::min(1.0, f));
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
 void Material::calculate_electron_xs(Particle& p) const
 {
   // Add contribution from each nuclide in material
@@ -1097,8 +1152,14 @@ void Material::calculate_electron_xs(Particle& p) const
     p.macro_xs().electron_soft_rate += atom_density * micro.soft_rate;
     p.macro_xs().electron_stopping += atom_density * micro.soft_stopping;
     p.macro_xs().electron_straggling += atom_density * micro.soft_straggling;
-    p.macro_xs().electron_xs1_soft += atom_density * micro.soft_xs1;
-    p.macro_xs().electron_xs2_soft += atom_density * micro.soft_xs2;
+    // The elastic part comes from the element; the inelastic part is this
+    // material's, the recoil model having been solved with its oscillators.
+    // 1 - P_2(mu) is 3(1 - mu) for deflections as small as these.
+    double xs1_inelastic = this->inelastic_transport_xs(i_element, q, p.E());
+    p.macro_xs().electron_xs1_soft +=
+      atom_density * (micro.soft_xs1 + xs1_inelastic);
+    p.macro_xs().electron_xs2_soft +=
+      atom_density * (micro.soft_xs2 + 3.0 * xs1_inelastic);
   }
 }
 

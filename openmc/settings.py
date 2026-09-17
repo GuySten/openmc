@@ -112,6 +112,16 @@ class Settings:
         Only meaningful with :attr:`electron_transport`.
 
         .. versionadded:: 0.17.0
+    electron_c2 : float
+        Largest fraction of its kinetic energy a charged particle may give to
+        the grouped collisions in one condensed-history step. This is
+        PENELOPE's :math:`C_2`. It bounds the step alongside
+        :attr:`electron_c1`, and is what keeps the restricted stopping power
+        evaluated near the energy it belongs to. Defaults to 0.05. Only
+        meaningful with :attr:`electron_transport` and a positive
+        :attr:`electron_c1`.
+
+        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -451,6 +461,7 @@ class Settings:
         self._confidence_intervals = None
         self._electron_treatment = None
         self._electron_c1 = None
+        self._electron_c2 = None
         self._electron_transport = None
         self._photon_transport = None
         self._atomic_relaxation = None
@@ -726,6 +737,17 @@ class Settings:
         cv.check_greater_than('electron C1', electron_c1, 0.0, equality=True)
         cv.check_less_than('electron C1', electron_c1, 1.0, equality=True)
         self._electron_c1 = electron_c1
+
+    @property
+    def electron_c2(self) -> float:
+        return self._electron_c2
+
+    @electron_c2.setter
+    def electron_c2(self, electron_c2: float):
+        cv.check_type('electron C2', electron_c2, Real)
+        cv.check_greater_than('electron C2', electron_c2, 0.0)
+        cv.check_less_than('electron C2', electron_c2, 1.0, equality=True)
+        self._electron_c2 = electron_c2
 
     @property
     def electron_treatment(self) -> str:
@@ -1758,6 +1780,11 @@ class Settings:
             element = ET.SubElement(root, "electron_c1")
             element.text = str(self._electron_c1)
 
+    def _create_electron_c2_subelement(self, root):
+        if self._electron_c2 is not None:
+            element = ET.SubElement(root, "electron_c2")
+            element.text = str(self._electron_c2)
+
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2290,6 +2317,11 @@ class Settings:
         if text is not None:
             self.electron_c1 = float(text)
 
+    def _electron_c2_from_xml_element(self, root):
+        text = get_text(root, 'electron_c2')
+        if text is not None:
+            self.electron_c2 = float(text)
+
     def _electron_treatment_from_xml_element(self, root):
         text = get_text(root, 'electron_treatment')
         if text is not None:
@@ -2676,6 +2708,7 @@ class Settings:
         self._create_confidence_intervals(element)
         self._create_electron_treatment_subelement(element)
         self._create_electron_c1_subelement(element)
+        self._create_electron_c2_subelement(element)
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
@@ -2797,6 +2830,7 @@ class Settings:
         settings._confidence_intervals_from_xml_element(elem)
         settings._electron_treatment_from_xml_element(elem)
         settings._electron_c1_from_xml_element(elem)
+        settings._electron_c2_from_xml_element(elem)
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)

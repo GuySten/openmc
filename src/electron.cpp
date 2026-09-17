@@ -502,7 +502,6 @@ void Element::compute_soft_inelastic()
   for (int q = 0; q < 2; ++q) {
     inelastic_soft_s_[q] = tensor::zeros<double>(shape_1d);
     inelastic_soft_w2_[q] = tensor::zeros<double>(shape_1d);
-    inelastic_soft_xs1_[q] = tensor::zeros<double>(shape_1d);
     excitation_p_hard_[q] = tensor::zeros<double>(shape_1d);
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
     ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
@@ -553,10 +552,6 @@ void Element::compute_soft_inelastic()
       double headroom = soft_projectile_headroom(q, E);
       double s = 0.0;
       double w2 = 0.0;
-      // The part of the loss that goes to collisions rather than to radiation.
-      // Only it deflects the projectile: a bremsstrahlung photon takes its
-      // momentum very nearly straight ahead.
-      double s_collision = 0.0;
 
       // Atomic excitation, which emits nothing at all -- OpenMC deposits the
       // de-excitation energy where the collision happened -- so the only bound
@@ -567,7 +562,10 @@ void Element::compute_soft_inelastic()
       if (loss > 0.0 && loss < headroom) {
         s += excitation_(j) * loss;
         w2 += excitation_(j) * loss * loss;
-        s_collision += excitation_(j) * loss;
+        // Note an excitation collision changes the projectile's energy and
+        // not its direction, so however much of the stopping power it carries
+        // it contributes nothing to the transport cross section computed in
+        // compute_inelastic_transport().
       } else {
         excitation_p_hard_[q](j) = 1.0;
       }
@@ -596,7 +594,6 @@ void Element::compute_soft_inelastic()
             E, e_cut, q == 0 ? nullptr : &weight, xi_cut, m0, m1, m2);
           s += sigma * (m1 + B * m0);
           w2 += sigma * (m2 + 2.0 * B * m1 + B * B * m0);
-          s_collision += sigma * (m1 + B * m0);
         }
         ionization_p_hard_[q](i, j) = 1.0 - xi_cut;
 
@@ -612,7 +609,6 @@ void Element::compute_soft_inelastic()
           if (W_soft > W_lo) {
             s += K * bhabha_moment(c, E, W_lo, W_soft, 1);
             w2 += K * bhabha_moment(c, E, W_lo, W_soft, 2);
-            s_collision += K * bhabha_moment(c, E, W_lo, W_soft, 1);
           }
           double total = bhabha_moment(c, E, W_lo, E, 0);
           double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
@@ -644,18 +640,6 @@ void Element::compute_soft_inelastic()
 
       inelastic_soft_s_[q](j) = s;
       inelastic_soft_w2_[q](j) = w2;
-
-      // A collision transferring W turns the projectile through
-      //   1 - cos(theta) = m W / (E (E + 2m))
-      // to first order in W, which is the binary-encounter relation between
-      // the scattering angle and the energy loss. Every grouped collision is
-      // soft by construction, so first order is the right order, and the
-      // channel's first transport cross section is that factor times the
-      // energy it takes. A distant collision leaves less momentum behind than
-      // a free one does, so this is the larger of the two and the deflection
-      // it gives is an upper bound.
-      inelastic_soft_xs1_[q](j) =
-        MASS_ELECTRON_EV * s_collision / (E * (E + 2.0 * MASS_ELECTRON_EV));
     }
   }
 }
@@ -806,16 +790,11 @@ void Element::calculate_electron_xs(Particle& p) const
     auto split = this->elastic_split(q, E);
     xs.hard_elastic = split.xs_hard;
 
-    // The grouped deflections are not the elastic ones alone. Grouping an
-    // inelastic collision takes its deflection away along with its energy, and
-    // in carbon that is a quarter of what elastic scattering contributes --
-    // enough, left out, to run the tracks visibly too straight. Only in a
-    // heavy element, where Z^2 puts nuclear elastic scattering far ahead, is
-    // it the per cent it is usually assumed to be.
-    double xs1_inelastic = this->inelastic_soft_transport_xs(q, E);
-    xs.soft_xs1 = split.xs1_soft + xs1_inelastic;
-    // 1 - P_2(mu) is 3(1 - mu) for the small deflections these are
-    xs.soft_xs2 = split.xs2_soft + 3.0 * xs1_inelastic;
+    // Elastic only. The grouped inelastic collisions deflect as well, and by
+    // no small amount, but what they deflect by depends on the material -- see
+    // compute_inelastic_transport() -- so Material adds that part.
+    xs.soft_xs1 = split.xs1_soft;
+    xs.soft_xs2 = split.xs2_soft;
 
     xs.hard_excitation = xs.excitation * this->excitation_hard_fraction(q, E);
 
@@ -982,15 +961,118 @@ void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
   w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
 }
 
-double Element::inelastic_soft_transport_xs(int q_index, double E) const
+void Element::compute_inelastic_transport(int q_index,
+  const vector<double>& w_r, const vector<double>& delta,
+  tensor::Tensor<double>& xs1) const
 {
-  int n = electron_energy_.size();
-  if (n < 2 || inelastic_soft_xs1_[q_index].size() != n)
-    return 0.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = inelastic_soft_xs1_[q_index];
-  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+  int n_energy = electron_energy_.size();
+  int n_shell = electroionization_.shape(0);
+  xs1 =
+    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
+  if (settings::electron_c1 <= 0.0 || w_r.size() != n_shell)
+    return;
+
+  for (int j = 0; j < n_energy; ++j) {
+    double E = electron_energy_(j);
+    double w_cc = soft_collision_cutoff(q_index, E);
+    if (!(w_cc > 0.0) || E <= 0.0)
+      continue;
+
+    double pc = std::sqrt(E * (E + two_m));
+    double gamma = 1.0 + E / MASS_ELECTRON_EV;
+    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+    FreeCollision c {E};
+
+    // Transverse strength of a distant collision, which is the one the
+    // density effect acts on. It hands over no momentum at all, so every
+    // collision that goes this way is deflected through exactly nothing.
+    double c_tra =
+      -std::log1p(-beta_sq) - beta_sq - (j < delta.size() ? delta[j] : 0.0);
+
+    double total = 0.0;
+    for (int i = 0; i < n_shell; ++i) {
+      const auto& shell {shells_[electron_shell_map_[i]]};
+      double B = shell.binding_energy;
+      double sigma = electroionization_(i, j);
+      double e_cut = w_cc - B;
+      if (sigma <= 0.0 || e_cut <= 0.0 || w_r[i] <= 0.0)
+        continue;
+      double n_e = shell.num_electrons;
+
+      // The deflection one collision makes, averaged over the recoil the
+      // model would have sampled for it. Written from the same branches
+      // sample_recoil() takes, so that what is removed from the discrete
+      // channel is exactly what is added to the grouped one.
+      auto deflection = [&](double e_out, double density) {
+        double W = e_out + B;
+        if (!(W > 0.0) || W >= E)
+          return 0.0;
+        double pc_out = std::sqrt((E - W) * (E - W + two_m));
+        double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
+        double cq_min_sq = cq_min * cq_min;
+        double q_min =
+          cq_min_sq /
+          (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
+            MASS_ELECTRON_EV);
+        double denom = 2.0 * pc * pc_out;
+        if (!(denom > 0.0))
+          return 0.0;
+
+        // A close collision leaves the whole transfer as recoil
+        double mu_close = std::max(0.0, (W * (W + two_m) - cq_min_sq) / denom);
+        if (q_min >= w_r[i])
+          return mu_close;
+
+        // Share of the collisions that struck a single electron, which is
+        // what the free cross section can account for
+        double p_close = 1.0;
+        if (density > 0.0) {
+          double sigma_free =
+            n_e * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
+          p_close = std::min(1.0, sigma_free / (sigma * density));
+        } else if (W > w_r[i]) {
+          return mu_close;
+        }
+
+        // Distant. The longitudinal recoil runs over [q_min, w_r] as
+        // 1/(Q(Q+2m)), so its mean deflection is elementary; the transverse
+        // part contributes nothing.
+        double c_lon =
+          std::log(w_r[i] * (q_min + two_m) / (q_min * (w_r[i] + two_m)));
+        if (!(c_lon > 0.0))
+          return p_close * mu_close;
+        double mu_lon =
+          std::max(0.0, (two_m * (w_r[i] - q_min) / c_lon - cq_min_sq) / denom);
+        double f_lon = (c_tra > 0.0) ? c_lon / (c_tra + c_lon) : 1.0;
+        return p_close * mu_close + (1.0 - p_close) * f_lon * mu_lon;
+      };
+
+      total +=
+        sigma * ionization_dist_[i]->restricted_integral(E, e_cut, deflection);
+    }
+
+    // Transfers above the Moller limit, which only a positron makes and which
+    // are free collisions by construction
+    if (q_index == 1) {
+      for (int i = 0; i < n_shell; ++i) {
+        const auto& shell {shells_[electron_shell_map_[i]]};
+        double B = shell.binding_energy;
+        double n_e = shell.num_electrons;
+        double W_lo = 0.5 * (E + B);
+        double W_soft = std::min(w_cc, E);
+        if (n_e <= 0.0 || E <= B || W_soft <= W_lo)
+          continue;
+        // First order in W is enough here: these transfers are soft only for
+        // a projectile barely above its cutoff, where the channel is small
+        double K = n_e * COLLISION_CONST / beta_sq;
+        total += K * bhabha_moment(c, E, W_lo, W_soft, 1) * MASS_ELECTRON_EV /
+                 (E * (E + two_m));
+      }
+    }
+
+    xs1(j) = std::max(0.0, total);
+  }
 }
 
 double Element::excitation_hard_fraction(int q_index, double E) const

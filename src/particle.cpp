@@ -291,10 +291,29 @@ bool Particle::apply_condensed_hinge()
     return true;
   }
 
-  // The end of a step that no hard interaction waits at
-  if (ch_in_step() && !ch_hard_at_end()) {
-    this->ch_reset();
-    return true;
+  if (ch_in_step()) {
+    // The cross sections in hand belong to the energy this leg started from,
+    // and the grouped collisions have taken energy since. Re-evaluate before
+    // asking anything of them: both the test below and the reaction that
+    // follows it belong to the energy the projectile has now.
+    if (material() != MATERIAL_VOID) {
+      model::materials[material()]->calculate_xs(*this);
+    }
+
+    bool real = ch_hard_at_end();
+    if (real && ch_majorant() > 0.0) {
+      // A delta interaction: the flight was drawn from a bound on the hard
+      // cross section, and this is where the excess is given back. Nothing
+      // happens, and the next step starts from here.
+      double ratio = macro_xs().electron_hard / ch_majorant();
+      if (prn(current_seed()) >= ratio)
+        real = false;
+    }
+
+    if (!real) {
+      this->ch_reset();
+      return true;
+    }
   }
   return false;
 }
@@ -321,7 +340,14 @@ double Particle::sample_condensed_step()
   double max_loss = std::min(settings::electron_max_step_energy_loss * E(),
     soft_projectile_headroom(q, E()));
 
-  auto step = sample_mixed_step(xs.electron_hard, xs.electron_soft_rate,
+  // The flight is drawn from a bound on the hard cross section rather than
+  // from its value here, because the projectile slows down along the step and
+  // the value here belongs to the energy it started with. What the bound
+  // overcounts is taken back at the end of the step, by declining that
+  // fraction of the interactions.
+  ch_majorant() = xs.electron_hard_majorant;
+
+  auto step = sample_mixed_step(ch_majorant(), xs.electron_soft_rate,
     xs.electron_xs1_soft, xs.electron_stopping, max_loss,
     settings::electron_max_step_deflection, boundary().distance(),
     current_seed());

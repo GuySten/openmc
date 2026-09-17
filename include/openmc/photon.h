@@ -372,6 +372,15 @@ public:
   //! does not depend on the particle.
   array<tensor::Tensor<double>, 2> ionization_hard_xs_;
   tensor::Tensor<double> bhabha_hard_xs_;
+  //! Hard cross section in [b], and an upper bound on it over the energies one
+  //! step can cover. The flight to the next hard interaction is drawn from the
+  //! bound, which does not change along the step, and the excess is taken back
+  //! by declining that fraction of the interactions -- a delta interaction, in
+  //! PENELOPE's terms. Sampling from the cross section at the energy the step
+  //! began with would be drawing a flight from the wrong distribution, the
+  //! projectile having slowed down in the meantime.
+  array<tensor::Tensor<double>, 2> hard_total_;
+  array<tensor::Tensor<double>, 2> hard_majorant_;
   //! Range the partial-wave data actually covers. Outside it the elastic cross
   //! sections are clamped to the endpoints, which is tolerable for the total --
   //! nearly flat at high energy -- but not for the first transport cross

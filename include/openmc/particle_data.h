@@ -234,6 +234,7 @@ struct ElectroAtomicMicroXS {
   double hard_bhabha;
   double hard_bremsstrahlung;
   double hard_total;      //!< includes annihilation, which is never grouped
+  double hard_majorant;   //!< upper bound on hard_total over one step
   double soft_rate;       //!< collisions being grouped, per unit path
   double soft_stopping;   //!< restricted stopping power in [b eV]
   double soft_straggling; //!< second moment of that loss in [b eV^2]
@@ -251,6 +252,7 @@ struct MacroXS {
   //! Macroscopic form of the soft/hard split, in [1/cm], [eV/cm] and
   //! [eV^2/cm]. Only meaningful while a charged particle is being tracked.
   double electron_hard;
+  double electron_hard_majorant;
   double electron_soft_rate;
   double electron_stopping;
   double electron_straggling;
@@ -574,6 +576,7 @@ private:
   double ch_length_ {0.0};      //!< path left to run after the hinge, in [cm]
   double ch_s_lambda1_ {0.0};   //!< first transport optical depth of the step
   double ch_s_lambda2_ {0.0};   //!< second
+  double ch_majorant_ {0.0};    //!< bound the step's flight was drawn from
   bool ch_at_hinge_ {false};    //!< the next collision event is the hinge
   bool ch_in_step_ {false};     //!< a grouped step is under way
   bool ch_hard_at_end_ {false}; //!< a hard interaction ends the step
@@ -711,6 +714,7 @@ public:
   double& ch_length() { return ch_length_; }
   double& ch_s_lambda1() { return ch_s_lambda1_; }
   double& ch_s_lambda2() { return ch_s_lambda2_; }
+  double& ch_majorant() { return ch_majorant_; }
   bool& ch_at_hinge() { return ch_at_hinge_; }
   bool& ch_in_step() { return ch_in_step_; }
   bool& ch_hard_at_end() { return ch_hard_at_end_; }

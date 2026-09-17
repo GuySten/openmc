@@ -530,6 +530,8 @@ void Element::compute_soft_inelastic()
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
     ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
     ionization_hard_xs_[q] = tensor::zeros<double>(shape_1d);
+    hard_total_[q] = tensor::zeros<double>(shape_1d);
+    hard_majorant_[q] = tensor::zeros<double>(shape_1d);
   }
   bhabha_p_hard_ = tensor::zeros<double>(shape_2d);
   bhabha_hard_xs_ = tensor::zeros<double>(shape_1d);
@@ -668,6 +670,38 @@ void Element::compute_soft_inelastic()
 
       inelastic_soft_s_[q](j) = s;
       inelastic_soft_w2_[q](j) = w2;
+
+      // The hard cross section at this energy, assembled from the fractions
+      // just tabulated. It depends on nothing but the energy and the charge,
+      // which is what lets the flight be drawn from a bound on it.
+      double ion_hard = ionization_hard_xs_[q](j);
+      double brems_hard = electron_bremsstrahlung_(j) * brems_p_hard_[q](j);
+      if (q == 1) {
+        ion_hard *= moller_majorant_(j);
+        brems_hard *= salvat_factor(Z_ * Z_, E);
+      }
+      hard_total_[q](j) = elastic_[q](j) * elastic_p_hard_[q](j) +
+                          excitation_(j) * excitation_p_hard_[q](j) + ion_hard +
+                          (q == 1 ? bhabha_hard_xs_(j) : 0.0) +
+                          (q == 1 ? this->annihilation_xs(E) : 0.0) +
+                          brems_hard;
+    }
+  }
+
+  // An upper bound on the hard cross section over the energies one step can
+  // reach, which is what the flight is actually drawn from. The bound only has
+  // to hold; a shade of slack costs a few declined interactions and a shade of
+  // shortfall would bias the flight, so the same small margin the Moller
+  // majorant uses is paid here.
+  for (int q = 0; q < 2; ++q) {
+    for (int j = 0; j < n_energy; ++j) {
+      double E = electron_energy_(j);
+      double lowest = E - soft_loss_budget(q, E);
+      double peak = hard_total_[q](j);
+      for (int k = j; k >= 0 && electron_energy_(k) >= lowest; --k) {
+        peak = std::max(peak, hard_total_[q](k));
+      }
+      hard_majorant_[q](j) = 1.001 * peak;
     }
   }
 }
@@ -856,6 +890,7 @@ void Element::calculate_electron_xs(Particle& p) const
     // annihilation would be an annihilation that did not happen.
     xs.hard_total = xs.hard_elastic + xs.hard_excitation + xs.hard_ionization +
                     xs.hard_bhabha + xs.annihilation + xs.hard_bremsstrahlung;
+    xs.hard_majorant = std::max(xs.hard_total, on_grid(hard_majorant_[q]));
     xs.soft_rate = std::max(0.0, xs.total - xs.hard_total);
     xs.soft_stopping = on_grid(inelastic_soft_s_[q]);
     xs.soft_straggling = on_grid(inelastic_soft_w2_[q]);
@@ -866,6 +901,7 @@ void Element::calculate_electron_xs(Particle& p) const
     xs.hard_bhabha = xs.bhabha;
     xs.hard_bremsstrahlung = xs.bremsstrahlung;
     xs.hard_total = xs.total;
+    xs.hard_majorant = xs.total;
     xs.soft_rate = 0.0;
     xs.soft_stopping = 0.0;
     xs.soft_straggling = 0.0;

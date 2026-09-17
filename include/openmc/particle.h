@@ -70,6 +70,46 @@ public:
 
   // Coarse-grained particle events
   void event_calculate_xs();
+  //! Sample the distance to the next event for a charged particle under
+  //! condensed history
+  //!
+  //! Returns the distance to the hinge of a new grouped step, to the end of
+  //! one already begun, or -- when the step would group too little to be
+  //! worth it -- to an ordinary single-event collision.
+  double sample_condensed_step();
+
+  //! Handle a condensed-history event that is not an interaction
+  //!
+  //! Returns true when this event was the hinge of a step, or the end of one
+  //! that no hard interaction waits at, in which case nothing may be scored
+  //! for it.
+  bool apply_condensed_hinge();
+
+  //! Take the grouped energy loss over a distance travelled
+  void apply_soft_energy_loss(double distance);
+
+  //! Stop a charged particle a grouped step carried under its own cutoff
+  //!
+  //! Below its transport cutoff the particle would have been killed where it
+  //! was, and what it still carries belongs to the cell it is in. Only
+  //! collision() tests for that, and a step leg reaches a collision only
+  //! sometimes: a boundary, the energy ceiling or the angular ceiling ends the
+  //! rest of them. Without this a particle can be carried under its cutoff and
+  //! keep going -- on cross sections clamped to the ends of their tables, and,
+  //! for a positron, past the energy at which it should have annihilated at
+  //! rest into two 511 keV photons rather than in flight into one of up to
+  //! T + 1.5 m_e c^2.
+  //!
+  //! \return Whether the particle was stopped
+  bool stop_below_cutoff();
+
+  //! Score the energy a step gave up before a surface cut it short
+  //!
+  //! The deposition reaches a tally only through the collision energy balance,
+  //! and a surface crossing scores none, so it would otherwise be lost. See
+  //! the implementation for what makes the event it claims to be harmless.
+  void score_truncated_step();
+
   void event_advance();
   void event_cross_surface();
   void event_collide();

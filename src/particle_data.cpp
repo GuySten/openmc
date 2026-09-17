@@ -110,7 +110,14 @@ ParticleData::ParticleData()
   neutron_xs_.resize(data::nuclides.size());
   photon_xs_.resize(data::elements.size());
   photonuclear_xs_.resize(data::photonuclears.size());
-  electron_xs_.resize(data::elements.size());
+  // Three times the size of the photon cache, and untouched unless charged
+  // particles are being transported. In event-based mode there is one of these
+  // per particle in flight, a hundred thousand by default, so a photon run
+  // with ten elements would carry well over a hundred megabytes of it for
+  // nothing.
+  if (settings::electron_transport) {
+    electron_xs_.resize(data::elements.size());
+  }
 
   // Creates the pulse-height storage for the particle
   if (!model::pulse_height_cells.empty()) {

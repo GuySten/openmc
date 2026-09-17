@@ -264,11 +264,8 @@ of the EPICS evaluated libraries, the same files the photon data comes from.
 
 The elastic differential cross sections are a Dirac partial-wave calculation
 distributed with OpenMC as ``openmc/data/elastic_dpwa.h5``, generated with
-ELSEPA_ on PENELOPE's 96-point energy grid for electrons and positrons alike. If you use this data in your
-research, please cite
-
-  Salvat, Jablonski and Powell, *Computer Physics Communications* **165**
-  (2005) 157-190.
+ELSEPA_, the Dirac partial-wave code of Salvat, Jablonski and Powell, on
+PENELOPE's 96-point energy grid for electrons and positrons alike.
 
 The bremsstrahlung photon spectra are the scaled cross sections of `Seltzer and
 Berger`_ already distributed with OpenMC for the thick-target approximation,

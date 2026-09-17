@@ -166,6 +166,18 @@ Element::Element(hid_t group)
     }
     if (attribute_exists(tgroup, "num_electrons")) {
       read_attribute(tgroup, "num_electrons", shell.num_electrons);
+    } else if (settings::electron_transport) {
+      // Without it the subshell reads as having no electrons in it, which is
+      // not a small error in a silent direction: the occupancies weight every
+      // inelastic channel, and the one that only a positron has -- Bhabha
+      // scattering above the Moller limit -- is switched off entirely by a
+      // zero. A library that cannot say how many electrons a shell holds
+      // cannot be used to transport particles that scatter off them.
+      fatal_error(fmt::format("Photon library for {} has no subshell "
+                              "occupancies, which electron transport needs. "
+                              "Rebuild it from a library with atomic "
+                              "relaxation data.",
+        name_));
     }
 
     // Read subshell cross section

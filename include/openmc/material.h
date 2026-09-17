@@ -243,6 +243,23 @@ public:
   //! Start of each block in oscillator_energy_, with a trailing end marker
   vector<int> oscillator_offset_;
 
+  //! First transport cross section of the grouped inelastic collisions, in
+  //! [b], one table per block of oscillator_energy_ and per projectile charge,
+  //! on that element's electron energy grid. It lives here rather than in
+  //! Element because the recoil model that sets the deflection cuts between
+  //! close and distant collisions at an oscillator energy of the material's,
+  //! and because the density effect enters the same cut. Empty unless a run
+  //! asked for condensed history.
+  array<vector<tensor::Tensor<double>>, 2> inelastic_xs1_;
+
+  //! First transport cross section of the grouped inelastic collisions of one
+  //! element of this material, in [b]
+  //!
+  //! \param[in] i_element Global element index
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  double inelastic_transport_xs(int i_element, int q_index, double E) const;
+
 private:
   //----------------------------------------------------------------------------
   // Private methods
@@ -269,6 +286,9 @@ private:
   //! Tabulate the density-effect correction and build an oscillator for each
   //! electroionization subshell
   void init_electron_oscillators();
+
+  //! Tabulate the transport cross section of the grouped inelastic collisions
+  void init_inelastic_transport();
 
   //! Initialize bremsstrahlung data
   void init_bremsstrahlung();

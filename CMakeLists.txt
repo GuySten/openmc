@@ -318,6 +318,7 @@ list(APPEND libopenmc_SOURCES
   src/chain.cpp
   src/cmfd_solver.cpp
   src/collision_track.cpp
+  src/condensed_history.cpp
   src/cross_sections.cpp
   src/dagmc.cpp
   src/distribution.cpp

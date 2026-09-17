@@ -88,6 +88,21 @@ public:
   //! Take the grouped energy loss over a distance travelled
   void apply_soft_energy_loss(double distance);
 
+  //! Stop a charged particle a grouped step carried under its own cutoff
+  //!
+  //! Below its transport cutoff the particle would have been killed where it
+  //! was, and what it still carries belongs to the cell it is in. Only
+  //! collision() tests for that, and a step leg reaches a collision only
+  //! sometimes: a boundary, the energy ceiling or the angular ceiling ends the
+  //! rest of them. Without this a particle can be carried under its cutoff and
+  //! keep going -- on cross sections clamped to the ends of their tables, and,
+  //! for a positron, past the energy at which it should have annihilated at
+  //! rest into two 511 keV photons rather than in flight into one of up to
+  //! T + 1.5 m_e c^2.
+  //!
+  //! \return Whether the particle was stopped
+  bool stop_below_cutoff();
+
   void event_advance();
   void event_cross_surface();
   void event_collide();

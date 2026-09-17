@@ -1283,9 +1283,14 @@ void Material::set_densities(
     this->init_bremsstrahlung();
   }
 
-  // Build the oscillator model used by the inelastic angular partition
+  // Build the oscillator model used by the inelastic angular partition, and
+  // the transport cross sections derived from it. The oscillator energies are
+  // built from the electron density and the plasma energy, so new densities
+  // move them -- and anything tabulated from them has to move with them, or it
+  // describes the material this one used to be.
   if (settings::electron_transport) {
     this->init_electron_oscillators();
+    this->init_inelastic_transport();
   }
 
   // Assign S(a,b) tables

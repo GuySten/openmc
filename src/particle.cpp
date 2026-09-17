@@ -13,6 +13,7 @@
 #include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/dagmc.h"
+#include "openmc/distribution_multi.h"
 #include "openmc/error.h"
 #include "openmc/geometry.h"
 #include "openmc/hdf5_interface.h"
@@ -441,6 +442,49 @@ void Particle::apply_soft_energy_loss(double distance)
   E() -= loss;
 }
 
+bool Particle::stop_below_cutoff()
+{
+  int index = type().transport_index();
+  if (index == C_NONE || E() >= settings::energy_cutoff[index])
+    return false;
+  if (!settings::electron_transport || wgt() == 0.0)
+    return false;
+  if (!type().is_electron() && !type().is_positron())
+    return false;
+
+  if (type().is_positron()) {
+    // The annihilation happens whatever the transport cutoff says: the pair's
+    // rest mass is not the transport's to discard. get_reaction_q_value()
+    // credits 2 m_e c^2 against exactly this event_mt, and the balance
+    // subtracts the two photons again, leaving the kinetic energy deposited.
+    Direction u = isotropic_direction(current_seed());
+    create_secondary(wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+    create_secondary(wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+    event_mt() = POSITRON_ANNIHILATION;
+  } else {
+    event_mt() = ELECTRON_ELASTIC;
+  }
+
+  // Zeroing the energy is what deposits the residual, the heating score being
+  // the collision energy balance E_last + Q - E - (banked secondaries)
+  E() = 0.0;
+  event() = TallyEvent::ABSORB;
+
+  // and nothing downstream scores a balance for a particle that dies in the
+  // middle of an advance, so it is scored here, as the truncated step in
+  // event_cross_surface() scores its own
+  if (settings::run_CE) {
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty())
+      score_analog_tally_ce(*this);
+  }
+
+  wgt() = 0.0;
+  this->ch_reset();
+  return true;
+}
+
 void Particle::event_advance()
 {
   // Find the distance to the nearest boundary
@@ -504,6 +548,10 @@ void Particle::event_advance()
   // deflection at the hinge may do at any time.
   if (ch_in_step()) {
     this->apply_soft_energy_loss(distance);
+    // The grouped loss is the only thing that lowers the energy outside a
+    // collision, so it is the only thing that can carry the particle under its
+    // own cutoff without collision() ever seeing it
+    this->stop_below_cutoff();
   }
 
   // Set particle weight to zero if it hit the time boundary

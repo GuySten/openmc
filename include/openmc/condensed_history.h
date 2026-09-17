@@ -7,6 +7,7 @@
 #include <cstdint>
 
 #include "openmc/particle_data.h"
+#include "openmc/vector.h"
 
 namespace openmc {
 
@@ -134,6 +135,37 @@ constexpr double MIN_GROUPED_COLLISIONS = 30.0;
 //! reason to allow what neither of them does.
 constexpr double MAX_STEP_COARSENESS = 0.2;
 
+//! Largest share of a step's energy budget one grouped collision may carry
+//!
+//! The step describes that energy by two moments, and the transfers are
+//! distributed as 1/W^2, so the variance sits in the few largest of them. A
+//! tenth leaves about ten of them to share it, which is the fewest that makes
+//! a mean and a variance mean anything.
+//!
+//! It also bounds how far the sampled loss can overshoot its mean, which is
+//! what MAX_SOFT_LOSS_OVERSHOOT below is derived from: the two move together
+//! and neither can be changed alone.
+constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
+
+//! How far past its budget the energy a step actually loses may reach
+//!
+//! The step's length is chosen so the grouped loss averages no more than the
+//! budget, but the sampled loss fluctuates above that mean and the bound on
+//! the hard cross section has to cover where it lands, not where it is aimed.
+//! The overshoot is bounded because the variance is: over a step of length s
+//! the loss has mean sS and variance s(Omega) for the restricted stopping
+//! power S and straggling Omega, and
+//!
+//! \f[ \frac{\Omega}{S} = \frac{\int W^2 d\sigma}{\int W d\sigma}
+//!     \le W_{cc}, \f]
+//!
+//! since every transfer in those integrals is under the soft cutoff. That
+//! cutoff is in turn held under MAX_SOFT_LOSS_SHARE of the budget, so the
+//! variance is under a tenth of the mean squared, which puts the two branches
+//! of sample_soft_energy_loss() at 1.55 and 1.65 budgets respectively. Two
+//! covers both, and the only cost of the margin is a slightly looser bound.
+constexpr double MAX_SOFT_LOSS_OVERSHOOT = 2.0;
+
 //! Sample the next step
 //!
 //! \param[in] xs_hard Macroscopic hard cross section in [1/cm]
@@ -165,6 +197,30 @@ constexpr double MAX_STEP_COARSENESS = 0.2;
 MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
   double stopping_power, double max_loss, double max_deflection,
   double max_distance, uint64_t* seed);
+
+//! Bound a tabulated hard cross section over the energies one step can reach
+//!
+//! The flight to the next hard interaction is drawn from this bound rather
+//! than from the cross section at the energy the step starts with, because the
+//! projectile slows down as it goes. The bound has only to hold: slack costs a
+//! few declined interactions, while a shortfall cannot be declined at all and
+//! silently undercounts hard interactions, so the two sides of being wrong are
+//! not comparable and the scan errs high.
+//!
+//! Pulled out of the element that owns the table so that it can be tested on
+//! one, this being the kind of loop whose off-by-one is invisible in the
+//! answer: a bound that is too low by one grid interval still looks like a
+//! bound, and only shows up as a slow leak of hard collisions.
+//!
+//! \param[in] energy Ascending energy grid
+//! \param[in] hard_xs Hard cross section tabulated on that grid
+//! \param[in] lowest Lowest energy a step beginning at each grid point can
+//!   reach, which the caller derives from what the step may lose
+//! \param[in] margin Factor the bound is raised by once found
+//! \return The bound, one value per grid point
+vector<double> step_majorant(const vector<double>& energy,
+  const vector<double>& hard_xs, const vector<double>& lowest,
+  double margin = 1.001);
 
 //==============================================================================
 // What may be grouped

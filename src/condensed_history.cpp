@@ -146,6 +146,29 @@ MixedStep sample_mixed_step(double xs_hard, double xs_soft, double xs1_soft,
   return step;
 }
 
+vector<double> step_majorant(const vector<double>& energy,
+  const vector<double>& hard_xs, const vector<double>& lowest, double margin)
+{
+  int n = energy.size();
+  vector<double> majorant(n, 0.0);
+  for (int j = 0; j < n; ++j) {
+    double peak = hard_xs[j];
+    // The scan runs one point past `lowest` rather than stopping at it. What
+    // the transport reads between two tabulated points is an interpolation of
+    // them, so the value at `lowest` is bounded by the points on either side
+    // of it and not by the one above it alone. Stopping at the first point
+    // that is still above `lowest` would take the maximum over the wrong end
+    // of the interval the answer lies in.
+    for (int k = j; k >= 0; --k) {
+      peak = std::max(peak, hard_xs[k]);
+      if (energy[k] <= lowest[j])
+        break;
+    }
+    majorant[j] = margin * peak;
+  }
+  return majorant;
+}
+
 namespace {
 
 //! Transport cutoff of the projectile itself, whatever it is
@@ -161,18 +184,6 @@ double soft_projectile_headroom(ParticleType type, double E)
 {
   return std::max(0.0, E - own_cutoff(type));
 }
-
-namespace {
-
-//! Largest share of a step's energy budget one grouped collision may carry
-//!
-//! The step describes that energy by two moments, and the transfers are
-//! distributed as 1/W^2, so the variance sits in the few largest of them. A
-//! tenth leaves about ten of them to share it, which is the fewest that makes
-//! a mean and a variance mean anything.
-constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
-
-} // namespace
 
 double soft_loss_budget(ParticleType type, double E)
 {

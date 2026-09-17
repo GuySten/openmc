@@ -1,6 +1,7 @@
 #include "openmc/particle.h"
 
 #include <algorithm> // copy, min
+#include <atomic>    // atomic
 #include <cmath>     // log, abs
 
 #include <fmt/core.h>
@@ -281,6 +282,30 @@ void Particle::event_calculate_xs()
   }
 }
 
+namespace {
+
+//! Report a hard cross section that ran over the bound the flight was drawn
+//! from, once per run
+//!
+//! Not a fatal error: the run is still a run, and stopping it would be worse
+//! than the bias, which is small where it is real at all. But it is a defect
+//! in the tables rather than bad luck in a history, so it must not pass
+//! unremarked.
+void warn_majorant_violated(double ratio)
+{
+  static std::atomic<bool> reported {false};
+  if (reported.exchange(true))
+    return;
+  warning(fmt::format(
+    "The hard electron cross section reached {:.3f} times the bound the "
+    "condensed-history step was drawn from. Hard interactions are being "
+    "undercounted by up to that factor over the steps where it happens. "
+    "Reduce the energy_loss cutoff, or report this.",
+    ratio));
+}
+
+} // namespace
+
 bool Particle::apply_condensed_hinge()
 {
   // Only a charged particle ever has a step to be in the middle of. The check
@@ -318,6 +343,16 @@ bool Particle::apply_condensed_hinge()
       // cross section, and this is where the excess is given back. Nothing
       // happens, and the next step starts from here.
       double ratio = macro_xs().electron_hard / ch_majorant();
+
+      // The whole scheme rests on that bound holding, and a bound that does
+      // not hold fails silently: the rejection below simply never fires, the
+      // flight keeps the majorant's rate instead of the real one, and hard
+      // interactions are undercounted with nothing to show for it. So say so.
+      // Once is enough -- it is a property of the tables, not of this step,
+      // and a run that trips it once will trip it a great many times.
+      if (ratio > 1.0) {
+        warn_majorant_violated(ratio);
+      }
       if (prn(current_seed()) >= ratio)
         real = false;
     }

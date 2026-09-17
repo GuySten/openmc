@@ -345,3 +345,88 @@ TEST_CASE("the step bounds have a coarsest setting")
   CHECK(d.a >= 0.0);
   CHECK(d.a <= 1.0);
 }
+
+TEST_CASE("Step majorant bounds the cross section it is drawn from")
+{
+  // The property the whole delta-interaction scheme rests on: over every
+  // energy a step beginning at a grid point can reach, the bound is not below
+  // what the transport would read there. Reading is an interpolation between
+  // tabulated points, so the check is against the interpolated value and not
+  // only against the points -- which is exactly the distinction a scan that
+  // stops at the first point above `lowest` gets wrong.
+  //
+  // A hard cross section rises as the energy falls: the lower the energy, the
+  // less of the collision spectrum is soft enough to group. That is the shape
+  // the table is given here, since it is the shape that makes an off-by-one
+  // bite, and a scan that stopped one point short would return a bound below
+  // the interpolated value over the last interval every time.
+  int n = 40;
+  openmc::vector<double> energy(n), hard(n), lowest(n);
+  for (int j = 0; j < n; ++j) {
+    energy[j] = 1.0e4 * std::pow(10.0, 3.0 * j / (n - 1.0)); // 10 keV .. 10 MeV
+    hard[j] = 1.0e6 / energy[j];
+    lowest[j] = energy[j] * 0.8; // a step may lose a fifth of the energy
+  }
+
+  auto majorant = openmc::step_majorant(energy, hard, lowest, 1.0);
+
+  auto interpolate = [&](double E) {
+    if (E <= energy[0])
+      return hard[0];
+    int k = 0;
+    while (k + 1 < n && energy[k + 1] < E)
+      ++k;
+    double f = (E - energy[k]) / (energy[k + 1] - energy[k]);
+    return hard[k] + f * (hard[k + 1] - hard[k]);
+  };
+
+  for (int j = 0; j < n; ++j) {
+    // Walk the reachable range finely rather than checking the grid points,
+    // since the grid points are what a too-short scan already agrees with
+    for (int i = 0; i <= 50; ++i) {
+      double E = lowest[j] + (energy[j] - lowest[j]) * i / 50.0;
+      CHECK(majorant[j] >= interpolate(E));
+    }
+  }
+
+  // and it is a bound, not just any large number. The scan deliberately runs
+  // one grid point past `lowest`, since that is the point the interpolation
+  // over the last interval needs, so the tightest it can be is the cross
+  // section there -- and it should be exactly that, never more.
+  for (int j = 1; j < n; ++j) {
+    int k = j;
+    while (k > 0 && energy[k] > lowest[j])
+      --k;
+    CHECK(majorant[j] == hard[k]);
+  }
+}
+
+TEST_CASE("Step majorant covers a step that overshoots its energy budget")
+{
+  // The step is aimed at losing no more than its budget on average, but the
+  // sampled loss overshoots the mean, so the scan has to reach past the budget
+  // by MAX_SOFT_LOSS_OVERSHOOT. The two branches of sample_soft_energy_loss
+  // are what that number is derived from, so check the derivation still holds
+  // at the variance the soft cutoff allows: var <= MAX_SOFT_LOSS_SHARE mean^2.
+  double mean = 1.0;
+  double variance = openmc::MAX_SOFT_LOSS_SHARE * mean * mean;
+
+  // Uniform branch, whose largest loss is mean + sqrt(3 var)
+  REQUIRE(3.0 * variance <= mean * mean);
+  double widest = mean + std::sqrt(3.0 * variance);
+  CHECK(widest <= openmc::MAX_SOFT_LOSS_OVERSHOOT * mean);
+
+  // The other branch takes over past that, and reaches further
+  double var_atom = mean * mean / 2.0;
+  REQUIRE(3.0 * var_atom > mean * mean);
+  double w = 1.5 * (mean * mean + var_atom) / mean;
+  CHECK(w > widest);
+
+  // The sampler never returns more than the branch it is in allows
+  uint64_t seed = 7;
+  for (int i = 0; i < 20000; ++i) {
+    double loss = openmc::sample_soft_energy_loss(mean, variance, &seed);
+    CHECK(loss >= 0.0);
+    CHECK(loss <= openmc::MAX_SOFT_LOSS_OVERSHOOT * mean);
+  }
+}

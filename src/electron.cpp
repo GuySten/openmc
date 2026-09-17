@@ -640,17 +640,38 @@ void Element::compute_soft_inelastic()
   // to hold; a shade of slack costs a few declined interactions and a shade of
   // shortfall would bias the flight, so the same small margin the Moller
   // majorant uses is paid here.
+  //
+  // How far down to look is set by how much energy a step can actually take,
+  // which is more than the budget it is allowed to take on average. The
+  // sampled loss overshoots its mean, by sqrt(3 var) where the distribution is
+  // uniform and by more where it is not, so a scan to E - budget would stop
+  // above the energies the step reaches and bound nothing there. The overshoot
+  // is bounded, though. Over a step the loss has mean s*S and variance s*Omega
+  // for the restricted stopping power S and straggling Omega, so
+  //
+  //   var/mean = Omega/S = \int W^2 dsigma / \int W dsigma <= w_cc,
+  //
+  // every transfer in those integrals being under the soft cutoff; and w_cc is
+  // itself held under MAX_SOFT_LOSS_SHARE of the budget. Feeding var <= 0.1
+  // mean^2 into the two branches of sample_soft_energy_loss() gives 1.55 and
+  // 1.65 times the budget respectively, so twice the budget covers both with
+  // room to spare, and the scan costs one more grid point either way.
+  vector<double> energy(n_energy);
+  for (int j = 0; j < n_energy; ++j) {
+    energy[j] = electron_energy_(j);
+  }
   for (int q = 0; q < 2; ++q) {
+    ParticleType projectile =
+      (q == 0) ? ParticleType::electron() : ParticleType::positron();
+    vector<double> hard(n_energy), lowest(n_energy);
     for (int j = 0; j < n_energy; ++j) {
-      double E = electron_energy_(j);
-      ParticleType projectile =
-        (q == 0) ? ParticleType::electron() : ParticleType::positron();
-      double lowest = E - soft_loss_budget(projectile, E);
-      double peak = hard_total_[q](j);
-      for (int k = j; k >= 0 && electron_energy_(k) >= lowest; --k) {
-        peak = std::max(peak, hard_total_[q](k));
-      }
-      hard_majorant_[q](j) = 1.001 * peak;
+      hard[j] = hard_total_[q](j);
+      lowest[j] = energy[j] - MAX_SOFT_LOSS_OVERSHOOT *
+                                soft_loss_budget(projectile, energy[j]);
+    }
+    vector<double> majorant = step_majorant(energy, hard, lowest);
+    for (int j = 0; j < n_energy; ++j) {
+      hard_majorant_[q](j) = majorant[j];
     }
   }
 }

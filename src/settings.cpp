@@ -122,6 +122,7 @@ ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 // them. Against single-event transport it agrees everywhere to 2.1 standard
 // errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
 // once the angular ceiling is applied and is left as a guard.
+int bremsstrahlung_split {1};
 double deflection_cutoff {0.005};
 double energy_loss_cutoff {0.05};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
@@ -702,6 +703,20 @@ void read_settings_xml(pugi::xml_node root)
     if (photoneutron_biasing && !photonuclear_physics) {
       fatal_error("Photonuclear physics must be enabled when photoneutron "
                   "biasing is enabled");
+    }
+  }
+
+  // Bremsstrahlung splitting: a variance reduction for problems driven by the
+  // photons electrons make, where the answer lives in a thin high-energy tail
+  // that analog emission samples too rarely.
+  if (check_for_node(root, "bremsstrahlung_split")) {
+    bremsstrahlung_split =
+      std::stoi(get_node_value(root, "bremsstrahlung_split"));
+    if (bremsstrahlung_split < 1) {
+      fatal_error("Bremsstrahlung splitting must emit at least one photon.");
+    }
+    if (bremsstrahlung_split > 1 && !electron_transport) {
+      fatal_error("Bremsstrahlung splitting requires electron transport.");
     }
   }
 

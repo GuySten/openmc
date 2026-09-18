@@ -1612,14 +1612,64 @@ void Element::annihilation(Particle& p) const
 
 void Element::bremsstrahlung(Particle& p, double k_min) const
 {
-  double E_photon =
-    this->sample_bremsstrahlung_energy(p.E(), p.current_seed(), k_min);
-  if (E_photon <= 0.0)
+  int n_split = settings::bremsstrahlung_split;
+
+  // Unsplit, and the common case: one emission, the electron loses it.
+  if (n_split == 1) {
+    double E_photon =
+      this->sample_bremsstrahlung_energy(p.E(), p.current_seed(), k_min);
+    if (E_photon <= 0.0)
+      return;
+    double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
+    Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+    p.E() -= E_photon;
+    p.create_secondary(p.wgt(), u, E_photon, ParticleType::photon());
     return;
-  double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
-  Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
-  p.E() -= E_photon;
-  p.create_secondary(p.wgt(), u, E_photon, ParticleType::photon());
+  }
+
+  // Split. The emissions are drawn independently rather than copied, because
+  // what makes a photon worth having here is its energy: copying one photon
+  // n times gives n tries at the same energy, while drawing n times gives n
+  // tries at reaching the thin high-energy end of the spectrum, which is the
+  // part a photonuclear or pair-production answer is starved of.
+  //
+  // The electron cannot lose all of them -- it emitted one photon, not n. It
+  // loses the first draw, which is an unbiased sample of what one emission
+  // takes, so the electron's history stays a fair one and the photon field is
+  // right in expectation. Energy is conserved in the mean rather than event by
+  // event, which is what splitting costs and why this is off by default.
+  double w = p.wgt() / n_split;
+  double E_first = -1.0;
+  double banked = 0.0;
+  for (int i = 0; i < n_split; ++i) {
+    // Every draw is made at the energy the electron came in with, so the loop
+    // must not touch p.E() until it is done
+    double E_photon =
+      this->sample_bremsstrahlung_energy(p.E(), p.current_seed(), k_min);
+    if (E_photon <= 0.0)
+      continue;
+    if (E_first < 0.0)
+      E_first = E_photon;
+
+    // Below the transport cutoff the photon is discarded by create_secondary
+    // anyway, so there is nothing to split and the angle is not worth drawing
+    int i_photon = ParticleType::photon().transport_index();
+    if (E_photon < settings::energy_cutoff[i_photon])
+      continue;
+
+    double mu = bremsstrahlung_cos_theta(Z_, p.E(), E_photon, p.current_seed());
+    Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+    if (p.create_secondary(w, u, E_photon, ParticleType::photon()))
+      banked += E_photon;
+  }
+  if (E_first < 0.0)
+    return;
+
+  p.E() -= E_first;
+
+  // create_secondary() banked each photon's whole energy, but each carries
+  // only 1/n of the weight. Correct the balance the heating score is built on.
+  p.bank_second_E() += (1.0 / n_split - 1.0) * banked;
 }
 
 } // namespace openmc

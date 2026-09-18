@@ -241,8 +241,16 @@ on meaning what they mean now.
     step may run. Setting it to zero groups nothing, which is single-event
     transport. The inelastic channels are cut by the energy cutoffs above
     rather than by anything set here, since a collision may be grouped only
-    when nothing it produces would have been transported anyway -- so raising
-    those cutoffs makes the method faster on its own.
+    when nothing it produces would have been transported anyway.
+
+    Raising those cutoffs therefore lets more be grouped, but only up to a
+    point: a grouped event may not carry more than a tenth of what the step
+    itself may lose, since the step describes its energy by a mean and a
+    variance and one transfer of that size would leave both in the hands of a
+    single event. That ceiling is a fraction of the kinetic energy, not of the
+    cutoff, so past roughly ``energy_loss/10`` of the projectile's energy a
+    higher cutoff stops buying more grouping. It still saves the transport of
+    whatever it kills.
 
     *Default*: 0.005, the largest value that does not move the answer, measured
     on electrons: a 1 MeV depth dose in carbon agrees with single-event
@@ -273,6 +281,29 @@ longer in a light one. And the collision and analog estimators score no flux
 for a charged particle, so a flux tally over electrons or positrons needs
 ``estimator="tracklength"`` and silently reads zero otherwise -- which is true
 of OpenMC's charged particles generally, not only of condensed history.
+
+----------------------------------
+``<bremsstrahlung_split>`` Element
+----------------------------------
+
+The ``<bremsstrahlung_split>`` element gives the number of photons emitted per
+radiative event, each carrying the emitting particle's weight divided by that
+number. It is a variance reduction for problems whose answer is driven by the
+photons electrons make and lives in a thin high-energy tail that analog
+emission reaches too rarely -- photonuclear yields from an electron beam being
+the case it was written for.
+
+The emissions are drawn independently rather than copied, so splitting buys
+tries at reaching that tail rather than copies of one photon, and draws that
+fall below the photon transport cutoff are discarded without being followed up.
+The emitting particle loses the first draw, which is one unbiased sample of
+what a single emission takes, so its own history stays fair while the photon
+field is right in expectation. Energy is then conserved in the mean rather than
+event by event.
+
+Requires the ``<electron_transport>`` element to be true.
+
+  *Default*: 1, which is no splitting and is bit-for-bit the unsplit transport
 
 ----------------------------
 ``<delayed_photon_scaling>``

@@ -65,12 +65,12 @@ extern bool event_based; //!< use event-based mode (instead of history-based)
 extern bool ifp_delayed_group_on; //!< Store delayed group IFP data?
 extern bool ifp_lifetime_on;      //!< Store lifetime IFP data?
 extern bool legendre_to_tabular; //!< convert Legendre distributions to tabular?
-extern bool material_cell_offsets;   //!< create material cells offsets?
-extern bool output_summary;          //!< write summary.h5?
-extern bool output_tallies;          //!< write tallies.out?
-extern bool particle_restart_run;    //!< particle restart run?
-extern bool photon_transport;        //!< photon transport turned on?
-extern bool photonuclear_physics;    //!< photonuclear physics turned on?
+extern bool material_cell_offsets; //!< create material cells offsets?
+extern bool output_summary;        //!< write summary.h5?
+extern bool output_tallies;        //!< write tallies.out?
+extern bool particle_restart_run;  //!< particle restart run?
+extern bool photon_transport;      //!< photon transport turned on?
+extern bool photonuclear_physics;  //!< photonuclear physics turned on?
 extern bool
   photoneutron_biasing; //!< bias photoneutron production (expected value)?
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?
@@ -128,7 +128,9 @@ extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
-  electron_treatment; //!< how to treat secondary electrons
+  electron_treatment;            //!< how to treat secondary electrons
+extern int bremsstrahlung_split; //!< photons emitted per radiative event,
+                                 //!< each carrying 1/n of the weight
 extern double
   deflection_cutoff; //!< most the grouped collisions may deflect a
                      //!< charged particle over one condensed-history

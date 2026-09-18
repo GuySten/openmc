@@ -70,6 +70,7 @@ def test_export_to_xml(run_in_tmpdir):
     s.log_grid_bins = 2000
     s.photon_transport = False
     s.electron_transport = False
+    s.bremsstrahlung_split = 8
     s.electron_treatment = 'led'
     s.atomic_relaxation = False
     s.write_initial_source = True
@@ -164,6 +165,7 @@ def test_export_to_xml(run_in_tmpdir):
     assert s.log_grid_bins == 2000
     assert not s.photon_transport
     assert not s.electron_transport
+    assert s.bremsstrahlung_split == 8
     assert s.electron_treatment == 'led'
     assert not s.atomic_relaxation
     assert s.write_initial_source

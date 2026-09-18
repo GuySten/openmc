@@ -125,7 +125,9 @@ extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
-  electron_treatment; //!< how to treat secondary electrons
+  electron_treatment;            //!< how to treat secondary electrons
+extern int bremsstrahlung_split; //!< photons emitted per radiative event,
+                                 //!< each carrying 1/n of the weight
 extern double
   deflection_cutoff; //!< most the grouped collisions may deflect a
                      //!< charged particle over one condensed-history

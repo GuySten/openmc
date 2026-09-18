@@ -120,6 +120,17 @@ class Settings:
         and makes :attr:`electron_treatment` inapplicable.
 
         .. versionadded:: 0.17.0
+    bremsstrahlung_split : int
+        Number of photons emitted per radiative event, each carrying 1/n of the
+        weight. A variance reduction for problems driven by the photons that
+        electrons make, where the answer depends on a thin high-energy tail
+        that analog emission samples too rarely. The draws are independent, so
+        splitting buys tries at reaching that tail rather than copies of one
+        photon. Energy is then conserved in the mean rather than event by
+        event, which adds noise to :attr:`heating` tallies, so it defaults to
+        1 (no splitting) and requires :attr:`electron_transport`.
+
+        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -460,6 +471,7 @@ class Settings:
         self._electron_treatment = None
         self._electron_transport = None
         self._photon_transport = None
+        self._bremsstrahlung_split = None
         self._atomic_relaxation = None
         self._plot_seed = None
         self._ptables = None
@@ -722,6 +734,16 @@ class Settings:
     def electron_transport(self, electron_transport: bool):
         cv.check_type('electron transport', electron_transport, bool)
         self._electron_transport = electron_transport
+
+    @property
+    def bremsstrahlung_split(self) -> int:
+        return self._bremsstrahlung_split
+
+    @bremsstrahlung_split.setter
+    def bremsstrahlung_split(self, n: int):
+        cv.check_type('bremsstrahlung split', n, Integral)
+        cv.check_greater_than('bremsstrahlung split', n, 0)
+        self._bremsstrahlung_split = n
 
     @property
     def electron_treatment(self) -> str:
@@ -1761,6 +1783,11 @@ class Settings:
             element = ET.SubElement(root, "electron_transport")
             element.text = str(self._electron_transport).lower()
 
+    def _create_bremsstrahlung_split_subelement(self, root):
+        if self._bremsstrahlung_split is not None:
+            element = ET.SubElement(root, "bremsstrahlung_split")
+            element.text = str(self._bremsstrahlung_split)
+
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2313,6 +2340,11 @@ class Settings:
         if text is not None:
             self.electron_transport = text in ('true', '1')
 
+    def _bremsstrahlung_split_from_xml_element(self, root):
+        text = get_text(root, 'bremsstrahlung_split')
+        if text is not None:
+            self.bremsstrahlung_split = int(text)
+
     def _photon_transport_from_xml_element(self, root):
         text = get_text(root, 'photon_transport')
         if text is not None:
@@ -2678,6 +2710,7 @@ class Settings:
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
         self._create_electron_transport_subelement(element)
+        self._create_bremsstrahlung_split_subelement(element)
         self._create_photon_transport_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
@@ -2798,6 +2831,7 @@ class Settings:
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
         settings._electron_transport_from_xml_element(elem)
+        settings._bremsstrahlung_split_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)

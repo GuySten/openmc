@@ -86,6 +86,7 @@ int openmc_finalize()
   settings::confidence_intervals = false;
   settings::create_fission_neutrons = true;
   settings::create_delayed_neutrons = true;
+  settings::bremsstrahlung_split = 1;
   settings::deflection_cutoff = 0.005;
   settings::electron_transport = false;
   settings::electron_treatment = ElectronTreatment::LED;

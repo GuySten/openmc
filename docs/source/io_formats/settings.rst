@@ -225,6 +225,27 @@ time.
 
     *Default*: Infinity
 
+----------------------------------
+``<bremsstrahlung_split>`` Element
+----------------------------------
+
+The ``<bremsstrahlung_split>`` element gives the number of thick-target
+bremsstrahlung emissions sampled per slowing-down particle, each carrying that
+particle's weight divided by the number. It is a variance reduction for
+problems whose answer depends on a thin high-energy part of the bremsstrahlung
+spectrum that analog emission reaches too rarely.
+
+What is repeated is the whole emission -- how many photons the particle
+radiates, which tabulated distribution they are drawn from, and their energies
+-- so the samples are independent rather than copies of one photon, and each
+carries its own radiated-energy budget. Splitting therefore buys tries at
+reaching the hard end of the spectrum rather than copies of whatever was drawn
+once.
+
+Only meaningful with ``<electron_treatment>`` set to ``ttb``.
+
+  *Default*: 1, which is no splitting and is bit-for-bit the unsplit transport
+
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------

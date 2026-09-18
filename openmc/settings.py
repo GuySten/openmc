@@ -94,6 +94,16 @@ class Settings:
         release of delayed photons.
 
         .. versionadded:: 0.12
+    bremsstrahlung_split : int
+        Number of thick-target bremsstrahlung emissions sampled per slowing-down
+        particle, each carrying 1/n of the weight. A variance reduction for
+        problems whose answer depends on a thin high-energy part of the
+        bremsstrahlung spectrum that analog emission reaches too rarely. The
+        emissions are sampled independently rather than copied, so splitting
+        buys tries at reaching that part of the spectrum. Requires
+        :attr:`electron_treatment` to be 'ttb'.
+
+        .. versionadded:: 0.16.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -431,6 +441,7 @@ class Settings:
         self._source_rejection_fraction = None
 
         self._confidence_intervals = None
+        self._bremsstrahlung_split = None
         self._electron_treatment = None
         self._photon_transport = None
         self._atomic_relaxation = None
@@ -686,6 +697,16 @@ class Settings:
     def confidence_intervals(self, confidence_intervals: bool):
         cv.check_type('confidence interval', confidence_intervals, bool)
         self._confidence_intervals = confidence_intervals
+
+    @property
+    def bremsstrahlung_split(self) -> int:
+        return self._bremsstrahlung_split
+
+    @bremsstrahlung_split.setter
+    def bremsstrahlung_split(self, n: int):
+        cv.check_type('bremsstrahlung split', n, Integral)
+        cv.check_greater_than('bremsstrahlung split', n, 0)
+        self._bremsstrahlung_split = n
 
     @property
     def electron_treatment(self) -> str:
@@ -1708,6 +1729,11 @@ class Settings:
             element = ET.SubElement(root, "confidence_intervals")
             element.text = str(self._confidence_intervals).lower()
 
+    def _create_bremsstrahlung_split_subelement(self, root):
+        if self._bremsstrahlung_split is not None:
+            element = ET.SubElement(root, "bremsstrahlung_split")
+            element.text = str(self._bremsstrahlung_split)
+
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
             element = ET.SubElement(root, "electron_treatment")
@@ -2235,6 +2261,11 @@ class Settings:
         if text is not None:
             self.confidence_intervals = text in ('true', '1')
 
+    def _bremsstrahlung_split_from_xml_element(self, root):
+        text = get_text(root, 'bremsstrahlung_split')
+        if text is not None:
+            self.bremsstrahlung_split = int(text)
+
     def _electron_treatment_from_xml_element(self, root):
         text = get_text(root, 'electron_treatment')
         if text is not None:
@@ -2614,6 +2645,7 @@ class Settings:
         self._create_surf_source_write_subelement(element)
         self._create_collision_track_subelement(element)
         self._create_confidence_intervals(element)
+        self._create_bremsstrahlung_split_subelement(element)
         self._create_electron_treatment_subelement(element)
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
@@ -2733,6 +2765,7 @@ class Settings:
         settings._surf_source_write_from_xml_element(elem)
         settings._collision_track_from_xml_element(elem)
         settings._confidence_intervals_from_xml_element(elem)
+        settings._bremsstrahlung_split_from_xml_element(elem)
         settings._electron_treatment_from_xml_element(elem)
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)

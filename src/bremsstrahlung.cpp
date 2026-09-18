@@ -73,63 +73,87 @@ void thick_target_bremsstrahlung(
   // interpolation on a log-log scale
   double y = std::exp(y_l + (y_r - y_l) * f);
 
-  // Sample number of secondary bremsstrahlung photons
-  int n = y + prn(p.current_seed());
+  // Bremsstrahlung splitting. What follows -- how many photons this particle
+  // radiates, which tabulated distribution they come from, and their energies
+  // -- is one realization of the whole slowing-down history, so it is that
+  // realization which is repeated, each at 1/n_split of the weight and with
+  // its own radiated-energy budget. Repeating it rather than copying its
+  // photons is the point: copies give many tries at one energy, while repeats
+  // give many tries at reaching the thin high-energy end of the spectrum,
+  // which is what an answer driven by hard photons is short of.
+  const int n_split = settings::bremsstrahlung_split;
+  const double wgt = p.wgt() / n_split;
+  double banked = 0.0;
 
-  if (n == 0)
-    return;
+  for (int i_split = 0; i_split < n_split; ++i_split) {
 
-  double E_radiated = 0.0;
+    // Sample number of secondary bremsstrahlung photons
+    int n = y + prn(p.current_seed());
 
-  // Sample index of the tabulated PDF in the energy grid, j or j+1
-  double c_max;
-  int i_e;
-  if (prn(p.current_seed()) <= f || j == 0) {
-    i_e = j + 1;
+    if (n == 0)
+      continue;
 
-    // Interpolate the maximum value of the CDF at the incoming particle
-    // energy on a log-log scale
-    double p_l = mat->pdf(i_e, i_e - 1);
-    double p_r = mat->pdf(i_e, i_e);
-    double c_l = mat->cdf(i_e, i_e - 1);
-    double a = std::log(p_r / p_l) / (e_r - e_l) + 1.0;
-    c_max = c_l + std::exp(e_l) * p_l / a * (std::exp(a * (e - e_l)) - 1.0);
-  } else {
-    i_e = j;
+    double E_radiated = 0.0;
 
-    // Maximum value of the CDF
-    c_max = mat->cdf(i_e, i_e);
-  }
+    // Sample index of the tabulated PDF in the energy grid, j or j+1
+    double c_max;
+    int i_e;
+    if (prn(p.current_seed()) <= f || j == 0) {
+      i_e = j + 1;
 
-  // Sample the energies of the emitted photons
-  for (int i = 0; i < n; ++i) {
-    // Generate a random number r and determine the index i for which
-    // cdf(i) <= r*cdf,max <= cdf(i+1)
-    double c = prn(p.current_seed()) * c_max;
-    int i_w = lower_bound_index(&mat->cdf(i_e, 0), &mat->cdf(i_e, 0) + i_e, c);
+      // Interpolate the maximum value of the CDF at the incoming particle
+      // energy on a log-log scale
+      double p_l = mat->pdf(i_e, i_e - 1);
+      double p_r = mat->pdf(i_e, i_e);
+      double c_l = mat->cdf(i_e, i_e - 1);
+      double a = std::log(p_r / p_l) / (e_r - e_l) + 1.0;
+      c_max = c_l + std::exp(e_l) * p_l / a * (std::exp(a * (e - e_l)) - 1.0);
+    } else {
+      i_e = j;
 
-    // Sample the photon energy
-    double w_l = data::ttb_e_grid(i_w);
-    double w_r = data::ttb_e_grid(i_w + 1);
-    double p_l = mat->pdf(i_e, i_w);
-    double p_r = mat->pdf(i_e, i_w + 1);
-    double c_l = mat->cdf(i_e, i_w);
-    double a = std::log(p_r / p_l) / (w_r - w_l) + 1.0;
-    double w = std::exp(w_l) *
-               std::pow(a * (c - c_l) / (std::exp(w_l) * p_l) + 1.0, 1.0 / a);
-
-    if (w > settings::energy_cutoff[photon]) {
-      // If the energy of the secondary photon is larger than the remaining
-      // energy of the primary particle, adjust it to the remaining energy
-      if (E_radiated + w > E) {
-        w = E - E_radiated;
-      }
-
-      // Create secondary photon
-      p.create_secondary(p.wgt(), u, w, ParticleType::photon());
-      E_radiated += w;
+      // Maximum value of the CDF
+      c_max = mat->cdf(i_e, i_e);
     }
-  }
+
+    // Sample the energies of the emitted photons
+    for (int i = 0; i < n; ++i) {
+      // Generate a random number r and determine the index i for which
+      // cdf(i) <= r*cdf,max <= cdf(i+1)
+      double c = prn(p.current_seed()) * c_max;
+      int i_w =
+        lower_bound_index(&mat->cdf(i_e, 0), &mat->cdf(i_e, 0) + i_e, c);
+
+      // Sample the photon energy
+      double w_l = data::ttb_e_grid(i_w);
+      double w_r = data::ttb_e_grid(i_w + 1);
+      double p_l = mat->pdf(i_e, i_w);
+      double p_r = mat->pdf(i_e, i_w + 1);
+      double c_l = mat->cdf(i_e, i_w);
+      double a = std::log(p_r / p_l) / (w_r - w_l) + 1.0;
+      double w = std::exp(w_l) *
+                 std::pow(a * (c - c_l) / (std::exp(w_l) * p_l) + 1.0, 1.0 / a);
+
+      if (w > settings::energy_cutoff[photon]) {
+        // If the energy of the secondary photon is larger than the remaining
+        // energy of the primary particle, adjust it to the remaining energy
+        if (E_radiated + w > E) {
+          w = E - E_radiated;
+        }
+
+        // Create secondary photon
+        if (p.create_secondary(wgt, u, w, ParticleType::photon()))
+          banked += w;
+        E_radiated += w;
+      }
+    }
+
+  } // i_split
+
+  // create_secondary() banked each photon's whole energy, but each carries
+  // only 1/n_split of the weight. Correct the balance the heating score is
+  // built on, which is otherwise short by the difference.
+  if (n_split > 1)
+    p.bank_second_E() += (1.0 / n_split - 1.0) * banked;
 }
 
 } // namespace openmc

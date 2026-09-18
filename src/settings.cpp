@@ -111,6 +111,7 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
+int bremsstrahlung_split {1};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
@@ -625,6 +626,22 @@ void read_settings_xml(pugi::xml_node root)
       electron_treatment = ElectronTreatment::TTB;
     } else {
       fatal_error("Unrecognized electron treatment: " + temp_str + ".");
+    }
+  }
+
+  // Bremsstrahlung splitting: a variance reduction for problems whose answer
+  // depends on a thin high-energy part of the bremsstrahlung spectrum that
+  // analog emission reaches too rarely.
+  if (check_for_node(root, "bremsstrahlung_split")) {
+    bremsstrahlung_split =
+      std::stoi(get_node_value(root, "bremsstrahlung_split"));
+    if (bremsstrahlung_split < 1) {
+      fatal_error("Bremsstrahlung splitting must emit at least one photon.");
+    }
+    if (bremsstrahlung_split > 1 &&
+        electron_treatment != ElectronTreatment::TTB) {
+      fatal_error("Bremsstrahlung splitting requires the thick-target "
+                  "bremsstrahlung electron treatment.");
     }
   }
 

@@ -103,7 +103,7 @@ class Settings:
         bounds how far one step may run; setting it to zero groups nothing,
         which is single-event transport. 'energy_loss' is the largest fraction
         of its kinetic energy a particle may give those collisions over one
-        step. They default to 0.005 and 0.05 and are capped at 0.2, where
+        step. Both default to 0.01 and are capped at 0.2, where
         PENELOPE caps its :math:`C_1` and :math:`C_2`. Only meaningful with
         :attr:`electron_transport`.
     delayed_photon_scaling : bool

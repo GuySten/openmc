@@ -187,7 +187,20 @@ public:
   //! Electroionization: Moller scattering for an electron, Bhabha for a
   //! positron. Returns false when a positron's sampled transfer is rejected,
   //! which leaves the particle untouched -- see compute_moller_majorant().
-  bool ionization(Particle& p, int i_shell, double xi_min = 0.0) const;
+  bool ionization(Particle& p, int i_shell, bool hard = false) const;
+
+  //! Sample an energy transfer from the free binary cross section
+  //!
+  //! Moller's for an electron and Bhabha's for a positron, over a window the
+  //! caller has already checked the hard channel was built from. The 1/W^2
+  //! the shape is built around is inverted exactly and the rest is carried by
+  //! rejection.
+  //!
+  //! \param[inout] p Projectile, whose energy sets the shape
+  //! \param[in] W_lo Lower limit on the transfer in [eV]
+  //! \param[in] W_hi Upper limit in [eV], below the projectile's energy
+  //! \return Energy transfer in [eV], zero if the window is empty
+  double sample_free_transfer(Particle& p, double W_lo, double W_hi) const;
 
   //! \param[in] hard Restrict the choice to the hard part of each subshell's
   //!   cross section, for a collision that ends a condensed-history step
@@ -361,6 +374,11 @@ public:
   //! exists only for a positron, so it takes no charge index.
   array<tensor::Tensor<double>, 2> excitation_p_hard_;
   array<tensor::Tensor<double>, 2> ionization_p_hard_;
+  //! Free binary cross section of each subshell above max(W_cc, B), in [b] on
+  //! the electron energy grid, which is what a hard electroionization
+  //! collision is drawn from. See compute_soft_inelastic() for why it is not
+  //! the evaluated spectrum's tail.
+  array<tensor::Tensor<double>, 2> ionization_hard_free_;
   array<tensor::Tensor<double>, 2> brems_p_hard_;
   tensor::Tensor<double> bhabha_p_hard_;
   //! The same two summed over subshells, in [b], which is all a cross section

@@ -639,9 +639,7 @@ void sample_electron_reaction(Particle& p)
     int i_shell = element.sample_ionization_shell(p, hard);
 
     // Generate secondary knock-on electron and adjust primary energy
-    double xi_min =
-      hard ? 1.0 - element.ionization_hard_fraction(0, i_shell, p.E()) : 0.0;
-    if (!element.ionization(p, i_shell, xi_min))
+    if (!element.ionization(p, i_shell, hard))
       // The density effect screened this collision away, so nothing changed.
       // Leaving event() as KILL is correct here: the heating balance then
       // evaluates to zero, which is right for a collision that did not happen.
@@ -740,9 +738,7 @@ void sample_positron_reaction(Particle& p)
   prob += hard ? micro.hard_ionization : micro.ionization;
   if (prob > cutoff) {
     int i_shell = element.sample_ionization_shell(p, hard);
-    double xi_min =
-      hard ? 1.0 - element.ionization_hard_fraction(1, i_shell, p.E()) : 0.0;
-    if (!element.ionization(p, i_shell, xi_min))
+    if (!element.ionization(p, i_shell, hard))
       // The reweighting declined this collision, so nothing changed. Leaving
       // event() as KILL is correct here: the heating balance then evaluates to
       // zero, which is right for a collision that did not happen.

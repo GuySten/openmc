@@ -103,12 +103,17 @@ public:
   //! \return Whether the particle was stopped
   bool stop_below_cutoff();
 
-  //! Score the energy a step gave up before a surface cut it short
+  //! Score the energy the grouped collisions took along a segment
   //!
   //! The deposition reaches a tally only through the collision energy balance,
-  //! and a surface crossing scores none, so it would otherwise be lost. See
-  //! the implementation for what makes the event it claims to be harmless.
-  void score_truncated_step();
+  //! which the next event scores wherever the particle has got to by then: at
+  //! a surface crossing, nowhere at all, and at a collision, a third of a step
+  //! further on than the energy went. So it is scored here instead, at a point
+  //! drawn uniformly inside the segment. See the implementation for what makes
+  //! the event it claims to be harmless.
+  //!
+  //! \param[in] distance Length of the segment just travelled, in [cm]
+  void score_soft_deposition(double distance);
 
   void event_advance();
   void event_cross_surface();

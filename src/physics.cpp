@@ -641,7 +641,11 @@ void sample_electron_reaction(Particle& p)
     // Generate secondary knock-on electron and adjust primary energy
     double xi_min =
       hard ? 1.0 - element.ionization_hard_fraction(0, i_shell, p.E()) : 0.0;
-    element.ionization(p, i_shell, xi_min);
+    if (!element.ionization(p, i_shell, xi_min))
+      // The density effect screened this collision away, so nothing changed.
+      // Leaving event() as KILL is correct here: the heating balance then
+      // evaluates to zero, which is right for a collision that did not happen.
+      return;
     p.event() = TallyEvent::SCATTER;
     // There is no ENDF MT for total electroionization; 534 upwards name the
     // individual subshells, which is what the data resolves anyway

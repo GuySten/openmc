@@ -187,6 +187,23 @@ public:
   //! Zero unless init_electron_oscillators() has run.
   double density_effect_correction(double E) const;
 
+  //! Collision stopping power this material must reproduce, per electron
+  //!
+  //! The ICRU 37 (Berger-Seltzer) value, built from the mean excitation energy
+  //! the oscillator model was solved against and the density-effect correction
+  //! tabulated beside it. The evaluated electroionization spectra do not
+  //! integrate to it -- in copper at 16 MeV they fall 8.8 per cent short of
+  //! the free atom, which the Sternheimer screening then more than accounts
+  //! for -- so the grouped channel is held to this instead. It is the same
+  //! quantity EGSnrc restricts and ESTAR tabulates, which is what makes the
+  //! three comparable at all.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return Stopping power in [b eV], to be multiplied by the material's
+  //!   electron density in [1/(b cm)]
+  double collision_stopping_power(int q_index, double E) const;
+
   //! Resonance energy in [eV] of the Sternheimer-Liljequist oscillator
   //! standing for electroionization subshell \p i_shell of the element with
   //! global index \p i_element. Returns zero when this material carries no
@@ -230,6 +247,10 @@ public:
 
   //! Density-effect correction tabulated on data::ttb_e_grid
   tensor::Tensor<double> density_effect_;
+  //! Berger-Seltzer collision stopping power of this material per electron,
+  //! in [b eV], on data::brems_e_grid, one table per projectile charge. See
+  //! collision_stopping_power().
+  array<tensor::Tensor<double>, 2> collision_stopping_;
 
   //! Oscillator resonance energies in [eV], one per electroionization subshell,
   //! concatenated over the distinct elements of this material
@@ -255,6 +276,15 @@ public:
   //! and because the density effect enters the same cut. Empty unless a run
   //! asked for condensed history.
   array<vector<tensor::Tensor<double>>, 2> inelastic_xs1_;
+  //! Stopping power and straggling the density effect screens out of the
+  //! grouped inelastic channel, per oscillator block and projectile charge.
+  //! Tabulated per material because the screening is, the Sternheimer
+  //! correction belonging to the medium and not to the atom.
+  array<vector<tensor::Tensor<double>>, 2> inelastic_soft_screened_s_;
+  array<vector<tensor::Tensor<double>>, 2> inelastic_soft_screened_w2_;
+  //! Collision stopping power the evaluated data delivers after screening,
+  //! per oscillator block and charge, in [b eV] on the element's grid
+  array<vector<tensor::Tensor<double>>, 2> inelastic_total_s_;
 
   //! First transport cross section of the grouped inelastic collisions of one
   //! element of this material, in [b]
@@ -273,6 +303,24 @@ public:
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] i_grid Index on the element's electron energy grid
   //! \param[in] f Interpolation factor on that interval
+  //! Grouped stopping power and straggling the density effect screens away
+  //!
+  //! Both are per atom of the nuclide, as the element's own restricted moments
+  //! are, so the caller weights them by the same atom density.
+  //!
+  //! \param[in] i_nuclide Index into this material's nuclide list
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] i_grid Index on the element's electron energy grid
+  //! \param[in] f Interpolation factor on that grid
+  //! \param[out] s Screened stopping power in [b eV]
+  //! \param[out] w2 Screened second moment in [b eV^2]
+  void inelastic_soft_screened(int i_nuclide, int q_index, int i_grid, double f,
+    double& s, double& w2) const;
+
+  //! Collision stopping power the evaluated data delivers, per atom, in [b eV]
+  double inelastic_total_s(
+    int i_nuclide, int q_index, int i_grid, double f) const;
+
   double inelastic_transport_xs(
     int i_nuclide, int q_index, int i_grid, double f) const;
 

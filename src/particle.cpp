@@ -548,6 +548,7 @@ void Particle::event_advance()
   // deflection at the hinge may do at any time.
   if (ch_in_step()) {
     this->apply_soft_energy_loss(distance);
+    this->score_soft_deposition(distance);
     // The grouped loss is the only thing that lowers the energy outside a
     // collision, so it is the only thing that can carry the particle under its
     // own cutoff without collision() ever seeing it
@@ -564,17 +565,35 @@ void Particle::event_advance()
     surface() = SURFACE_NONE;
 }
 
-void Particle::score_truncated_step()
+void Particle::score_soft_deposition(double distance)
 {
-  // A step cut short by a surface still gave energy to its grouped collisions
-  // along the way, and that energy was deposited in the cell just left. It
-  // reaches a tally only through the collision energy balance E_last - E, and
-  // a surface crossing scores no balance, so without this the deposition is
-  // simply lost. It is lost often: the hinge turns the particle, which moves
-  // the surface it was heading for, so a step is cut by geometry whenever one
-  // is nearby. In a homogeneous slab cut into fifty cells by surfaces that are
-  // not there physically, this was 1.1 per cent of the beam energy going
-  // missing, against nothing at all in single-event transport.
+  // The grouped collisions happen all along the segment, so the energy they
+  // take is given up all along it too. It reaches a tally only through the
+  // collision energy balance E_last - E, which is scored wherever the particle
+  // happens to be when the next event comes, and that is the wrong place twice
+  // over.
+  //
+  // It is the wrong place when the segment ends at a surface, because a
+  // surface crossing scores no balance at all and the deposition is simply
+  // lost. In a homogeneous slab cut into fifty cells by surfaces that are not
+  // there physically, this was 1.1 per cent of the beam energy going missing,
+  // against nothing at all in single-event transport.
+  //
+  // And it is the wrong place when the segment ends in a collision, because
+  // the end of a segment is not where its energy went. A step is two segments
+  // and a hinge drawn uniformly along it, so scoring each segment's loss where
+  // that segment ends puts the step's energy at five sixths of its length
+  // rather than at the half it belongs to -- a third of a step too deep, every
+  // step. That is a rigid downstream shift of everything the step deposits,
+  // and it grows with the step, which is what stops the deflection cutoff from
+  // being opened up: at <1-mu> = 0.05 it moves eight per cent of the dose out
+  // of the entrance bin of a 1 MeV depth dose in carbon.
+  //
+  // So the loss is scored at a point drawn uniformly inside the segment, which
+  // is what PENELOPE's main programs do and what makes the deposition profile
+  // that of a constant rate along the path. Only the position moves: the
+  // coordinate levels are left alone, so a cell filter still sees the cell the
+  // segment ran through, and only a mesh finer than a step can tell.
   //
   // What is scored is not a collision, and the event it claims to be -- an
   // elastic scatter -- is a fiction the scoring routines need in order to
@@ -585,23 +604,36 @@ void Particle::score_truncated_step()
   //     particle a flux of zero, so no flux is invented here;
   //   - nothing has been banked at this point, so a production filter is not
   //     told of secondaries that do not exist;
-  //   - the coordinate levels still hold the cell just left, which is the cell
-  //     the energy belongs to, so a cell filter attributes it correctly.
+  //   - the coordinate levels still hold the cell the segment ran through,
+  //     which is the cell the energy belongs to, so a cell filter attributes
+  //     it correctly.
   if (!ch_in_step() || E() == E_last() || !settings::run_CE || !alive())
     return;
 
-  event() = TallyEvent::SCATTER;
-  event_mt() = ELECTRON_ELASTIC;
-  if (!model::active_collision_tallies.empty())
-    score_collision_tally(*this);
-  if (!model::active_analog_tallies.empty())
-    score_analog_tally_ce(*this);
+  // Drawn whether or not anything is scored, so that a run's random sequence
+  // does not depend on which tallies it happens to carry
+  double back = distance * prn(current_seed());
+
+  if (!model::active_collision_tallies.empty() ||
+      !model::active_analog_tallies.empty()) {
+    this->move_distance(-back);
+    event() = TallyEvent::SCATTER;
+    event_mt() = ELECTRON_ELASTIC;
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty())
+      score_analog_tally_ce(*this);
+    this->move_distance(back);
+  }
+
+  // This loss has now been accounted for, so whatever event comes next must
+  // not score it a second time. PENELOPE zeroes the hinge's deposited energy
+  // for the same reason once its main program takes the loss over.
+  E_last() = E();
 }
 
 void Particle::event_cross_surface()
 {
-  this->score_truncated_step();
-
   // A condensed-history step is built from the material it started in, so it
   // does not survive the crossing
   this->ch_reset();

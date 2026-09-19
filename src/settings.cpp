@@ -121,9 +121,9 @@ ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 // errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
 // once the angular ceiling is applied and is left as a guard.
 int bremsstrahlung_split {1};
-double deflection_cutoff {0.005};
-double energy_loss_cutoff {0.05};
-array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
+double deflection_cutoff {0.01};
+double energy_loss_cutoff {0.01};
+array<double, 4> energy_cutoff {0.0, 1000.0, 1000.0, 1000.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
 int legendre_to_tabular_points {C_NONE};

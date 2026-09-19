@@ -87,12 +87,12 @@ int openmc_finalize()
   settings::create_fission_neutrons = true;
   settings::create_delayed_neutrons = true;
   settings::bremsstrahlung_split = 1;
-  settings::deflection_cutoff = 0.005;
+  settings::deflection_cutoff = 0.01;
   settings::electron_transport = false;
   settings::electron_treatment = ElectronTreatment::LED;
   settings::delayed_photon_scaling = true;
-  settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0};
-  settings::energy_loss_cutoff = 0.05;
+  settings::energy_cutoff = {0.0, 1000.0, 1000.0, 1000.0};
+  settings::energy_loss_cutoff = 0.01;
   settings::time_cutoff = {INFTY, INFTY, INFTY, INFTY};
   settings::entropy_on = false;
   settings::event_based = false;

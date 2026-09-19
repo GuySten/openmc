@@ -205,12 +205,18 @@ on meaning what they mean now.
   :energy_electron:
     The energy under which electrons will be killed.
 
-    *Default*: 0.0
+    *Default*: 1000.0, the same as photons. A 1 keV electron travels some tens
+    of nanometres, so nothing is displaced by stopping it there, and following
+    one to the bottom of the data is both slow and beyond where the physics is
+    meant to be used. The value also decides how much a condensed-history step
+    may group, since a collision may be grouped only when nothing it produces
+    would have been transported: at zero, nothing inelastic is ever grouped.
 
   :energy_positron:
     The energy under which positrons will be killed.
 
-    *Default*: 0.0
+    *Default*: 1000.0. A positron reaching it annihilates at rest rather than
+    being discarded, so its two 511 keV photons are still produced.
 
   :time_neutron
     The time above which neutrons will be killed.
@@ -252,15 +258,22 @@ on meaning what they mean now.
     higher cutoff stops buying more grouping. It still saves the transport of
     whatever it kills.
 
-    *Default*: 0.005, the largest value that does not move the answer, measured
-    on electrons: a 1 MeV depth dose in carbon agrees with single-event
-    transport to about two standard errors in every resolved bin, where 0.01
-    differs by five. A heavier charged particle deflects far less per unit
-    path, so this bound would simply stop binding for one and the energy bound
-    would decide every step; that is the pair working, not failing, but the
-    number itself is an electron's. Values above 0.2 are reduced to it with a
-    warning, past which a step is no longer describing a path; PENELOPE caps
-    its :math:`C_1` at the same place.
+    *Default*: 0.01, chosen so that a run nobody has checked for convergence is
+    right rather than fast. Measured against single-event transport on a depth
+    dose in carbon over twenty bins, it leaves no systematic anywhere: at 1 MeV
+    the worst bin is 2.3 standard errors and at 100 keV every step declines to
+    group at all, so the two runs agree exactly. The cost is speed -- at 1 MeV
+    the same problem runs 3.4 times faster than single event where 0.05 would
+    run 8.3 times faster and still show nothing at that energy. Raise it if
+    your own convergence test says you may; PENELOPE's own advice, for the same
+    parameter, is to test before raising it.
+
+    A heavier charged particle deflects far less per unit path, so this bound
+    would simply stop binding for one and the energy bound would decide every
+    step; that is the pair working, not failing, but the number itself is an
+    electron's. Values above 0.2 are reduced to it with a warning, past which a
+    step is no longer describing a path; PENELOPE caps its :math:`C_1` at the
+    same place.
 
   :energy_loss:
     Largest fraction of its kinetic energy a particle may give the grouped
@@ -269,18 +282,23 @@ on meaning what they mean now.
     below the energy cutoff of its own kind either, nor to let one grouped
     collision carry more than a tenth of this.
 
-    *Default*: 0.05. For an electron it rarely binds, the deflection limit
-    almost always coming first. Capped at 0.2 the same way, where PENELOPE caps
-    its :math:`C_2`.
+    *Default*: 0.01, the same as ``deflection`` and for the same reason. It
+    binds twice: on how far a step may run, and, through the tenth of it that
+    caps a single grouped transfer, on how much of each channel may be grouped
+    at all. Loosening it therefore buys more speed than the step length alone
+    suggests, and costs more accuracy. Capped at 0.2, where PENELOPE caps its
+    :math:`C_2`.
 
-Two limitations follow from how a step deposits what it loses. The grouped loss
-is deposited at the end of each leg of the step rather than spread along it, so
-a ``heating`` tally on a mesh finer than the step length reports it in the
-wrong bin; step lengths are tens of microns in a dense high-Z target and much
-longer in a light one. And the collision and analog estimators score no flux
-for a charged particle, so a flux tally over electrons or positrons needs
-``estimator="tracklength"`` and silently reads zero otherwise -- which is true
-of OpenMC's charged particles generally, not only of condensed history.
+One limitation follows from how a step deposits what it loses. The grouped loss
+of each leg is deposited at a point drawn uniformly inside that leg, which
+gives the profile of a constant deposition rate along the path but not its
+shape, so a ``heating`` tally on a mesh much finer than the step length sees a
+deposition that is spread correctly on average and not within one step; step
+lengths are tens of microns in a dense high-Z target and much longer in a light
+one. Separately, and true of OpenMC's charged particles generally rather than
+of condensed history, the collision and analog estimators score no flux for a
+charged particle, so a flux tally over electrons or positrons needs
+``estimator="tracklength"`` and silently reads zero otherwise.
 
 ----------------------------------
 ``<bremsstrahlung_split>`` Element

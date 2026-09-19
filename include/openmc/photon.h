@@ -148,8 +148,16 @@ public:
   //!   this material, in [eV]
   //! \param[in] delta Density-effect correction on the electron energy grid
   //! \param[out] xs1 First transport cross section in [b], on that grid
+  //! \param[out] s_screened Stopping power the density effect screens out of
+  //!   the grouped channel, in [b eV] on that grid, to be subtracted from the
+  //!   element's own restricted stopping power
+  //! \param[out] w2_screened The same for the second moment, in [b eV^2]
+  //! \param[out] s_total Collision stopping power the evaluated data delivers
+  //!   after that screening, over the whole spectrum, in [b eV] on that grid
   void compute_inelastic_transport(int q_index, const vector<double>& w_r,
-    const vector<double>& delta, tensor::Tensor<double>& xs1) const;
+    const vector<double>& delta, tensor::Tensor<double>& xs1,
+    tensor::Tensor<double>& s_screened, tensor::Tensor<double>& w2_screened,
+    tensor::Tensor<double>& s_total) const;
 
   //! Electron energy grid this element's cross sections are tabulated on
   const tensor::Tensor<double>& electron_energy() const
@@ -224,8 +232,14 @@ public:
   //! ratio is the probability the collision was close. \p density is the
   //! evaluated spectrum's density at W, without which the decision falls back
   //! to comparing W with the resonance energy.
+  //!
+  //! \param[out] declined Whether the density effect screened this collision
+  //!   away. A distant transverse collision an isolated atom would have made
+  //!   is suppressed in a medium, and what is suppressed does not happen: this
+  //!   is how the Sternheimer correction reaches the stopping power rather
+  //!   than merely the recoil.
   double sample_recoil(
-    Particle& p, int i_shell, double W, double density) const;
+    Particle& p, int i_shell, double W, double density, bool& declined) const;
 
   //! Two-photon annihilation of a positron in flight
   //

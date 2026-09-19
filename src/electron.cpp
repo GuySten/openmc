@@ -1003,13 +1003,17 @@ void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
 
 void Element::compute_inelastic_transport(int q_index,
   const vector<double>& w_r, const vector<double>& delta,
-  tensor::Tensor<double>& xs1) const
+  tensor::Tensor<double>& xs1, tensor::Tensor<double>& s_screened,
+  tensor::Tensor<double>& w2_screened, tensor::Tensor<double>& s_total) const
 {
   constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
   int n_energy = electron_energy_.size();
   int n_shell = electroionization_.shape(0);
-  xs1 =
-    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
+  std::vector<size_t> shape_1d {static_cast<size_t>(n_energy)};
+  xs1 = tensor::zeros<double>(shape_1d);
+  s_screened = tensor::zeros<double>(shape_1d);
+  w2_screened = tensor::zeros<double>(shape_1d);
+  s_total = tensor::zeros<double>(shape_1d);
   if (settings::deflection_cutoff <= 0.0 || w_r.size() != n_shell)
     return;
 
@@ -1029,10 +1033,52 @@ void Element::compute_inelastic_transport(int q_index,
     // Transverse strength of a distant collision, which is the one the
     // density effect acts on. It hands over no momentum at all, so every
     // collision that goes this way is deflected through exactly nothing.
+    double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
     double c_tra =
-      -std::log1p(-beta_sq) - beta_sq - (j < delta.size() ? delta[j] : 0.0);
+      std::max(0.0, c_tra_free - (j < delta.size() ? delta[j] : 0.0));
 
     double total = 0.0;
+    double s_scr = 0.0;
+    double w2_scr = 0.0;
+
+    // Share of the collisions at this transfer the density effect screens
+    // away, by the same branches sample_recoil() takes: a distant collision is
+    // drawn against the unscreened transverse strength, and the slice between
+    // the screened and the unscreened one does not happen. Removing what it
+    // would have carried is what puts the Sternheimer correction into the
+    // grouped channel, so that a step agrees with the single-event transport
+    // it is built to reproduce.
+    auto screened_share = [&](int i, double B, double n_e, double sigma,
+                            double e_out, double density, double c_tra_free,
+                            double c_tra) {
+      double W = e_out + B;
+      if (!(W > 0.0) || W >= E || w_r[i] <= 0.0)
+        return 0.0;
+      double pc_out = std::sqrt((E - W) * (E - W + two_m));
+      double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
+      double cq_min_sq = cq_min * cq_min;
+      double q_min =
+        cq_min_sq /
+        (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
+          MASS_ELECTRON_EV);
+      if (q_min >= w_r[i])
+        return 0.0;
+
+      double p_close = 1.0;
+      if (density > 0.0) {
+        double sigma_free =
+          n_e * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
+        p_close = std::min(1.0, sigma_free / (sigma * density));
+      } else if (W > w_r[i]) {
+        return 0.0;
+      }
+
+      double c_lon =
+        std::log(w_r[i] * (q_min + two_m) / (q_min * (w_r[i] + two_m)));
+      if (!(c_lon > 0.0))
+        return 0.0;
+      return (1.0 - p_close) * (c_tra_free - c_tra) / (c_tra_free + c_lon);
+    };
     for (int i = 0; i < n_shell; ++i) {
       const auto& shell {shells_[electron_shell_map_[i]]};
       double B = shell.binding_energy;
@@ -1090,8 +1136,22 @@ void Element::compute_inelastic_transport(int q_index,
         return p_close * mu_close + (1.0 - p_close) * f_lon * mu_lon;
       };
 
+      auto screened = [&](double e_out, double density) {
+        return screened_share(
+          i, B, n_e, sigma, e_out, density, c_tra_free, c_tra);
+      };
+
       total +=
         sigma * ionization_dist_[i]->restricted_integral(E, e_cut, deflection);
+      s_scr += sigma * ionization_dist_[i]->restricted_integral(
+                         E, e_cut, [&](double e_out, double density) {
+                           return screened(e_out, density) * (e_out + B);
+                         });
+      w2_scr += sigma * ionization_dist_[i]->restricted_integral(
+                          E, e_cut, [&](double e_out, double density) {
+                            double W = e_out + B;
+                            return screened(e_out, density) * W * W;
+                          });
     }
 
     // Transfers above the Moller limit, which only a positron makes and which
@@ -1113,7 +1173,51 @@ void Element::compute_inelastic_transport(int q_index,
       }
     }
 
+    // What the evaluated data actually delivers as collision stopping power
+    // once the screening has taken its share -- over the whole spectrum, hard
+    // transfers included, and over every subshell rather than only those with
+    // room below the soft cutoff. The caller compares it with the stopping
+    // power the material must reproduce and holds the grouped channel to the
+    // difference.
+    double s_tot = 0.0;
+    double loss_ex = std::max(0.0, E - this->excitation(E));
+    if (loss_ex > 0.0 && loss_ex < E)
+      s_tot += excitation_(j) * loss_ex;
+    for (int i = 0; i < n_shell; ++i) {
+      const auto& shell {shells_[electron_shell_map_[i]]};
+      double B = shell.binding_energy;
+      double sigma = electroionization_(i, j);
+      double n_e = shell.num_electrons;
+      if (sigma <= 0.0 || E <= B)
+        continue;
+
+      // A positron's spectrum is the tabulated one reweighted by the free
+      // Bhabha-to-Moller ratio, the same weighting the collision applies by
+      // rejection, so it goes inside the integral here too.
+      s_tot += sigma * ionization_dist_[i]->restricted_integral(
+                         E, E, [&](double e_out, double density) {
+                           double W = e_out + B;
+                           if (!(W > 0.0) || W >= E)
+                             return 0.0;
+                           double weight =
+                             (q_index == 0) ? 1.0 : c.ratio((e_out + B) / E);
+                           return weight * W *
+                                  (1.0 - screened_share(i, B, n_e, sigma, e_out,
+                                           density, c_tra_free, c_tra));
+                         });
+
+      // Transfers above the Moller limit, which only a positron makes
+      double W_lo = 0.5 * (E + B);
+      if (q_index == 1 && n_e > 0.0 && W_lo < E) {
+        s_tot +=
+          n_e * COLLISION_CONST / beta_sq * bhabha_moment(c, E, W_lo, E, 1);
+      }
+    }
+
     xs1(j) = std::max(0.0, total);
+    s_screened(j) = std::max(0.0, s_scr);
+    w2_screened(j) = std::max(0.0, w2_scr);
+    s_total(j) = std::max(0.0, s_tot);
   }
 }
 
@@ -1217,7 +1321,17 @@ bool Element::ionization(Particle& p, int i_shell, double xi_min) const
     E_knock = std::max(0.0, std::nextafter(w_max, 0.0));
 
   double W = E_knock + e_b;
-  this->emit_knock_on(p, W, e_b, this->sample_recoil(p, i_shell, W, density));
+
+  // The recoil model is what identifies a distant transverse collision, and
+  // the density effect screens a share of those away. Declining here is a real
+  // outcome, as it is for the positron reweighting above: the medium simply
+  // does not make this collision, and the projectile carries on unchanged.
+  bool declined = false;
+  double Q = this->sample_recoil(p, i_shell, W, density, declined);
+  if (declined)
+    return false;
+
+  this->emit_knock_on(p, W, e_b, Q);
   return true;
 }
 
@@ -1265,10 +1379,11 @@ void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
 }
 
 double Element::sample_recoil(
-  Particle& p, int i_shell, double W, double density) const
+  Particle& p, int i_shell, double W, double density, bool& declined) const
 {
   constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
   double E = p.E();
+  declined = false;
 
   // Resonance energy of the oscillator standing for this subshell. It is a
   // property of the material, not of the atom alone, because the outer shells
@@ -1330,15 +1445,30 @@ double Element::sample_recoil(
     return W;
   }
 
-  // Distant interaction. The transverse part is the one the density effect
-  // acts on, and it hands over no momentum; the longitudinal part is
-  // distributed as 1/(Q(Q + 2mc^2)) between the two bounds. The two are
-  // weighted by their cross sections, whose common factor f_i / W_i cancels.
+  // Distant interaction. The transverse part hands over no momentum; the
+  // longitudinal part is distributed as 1/(Q(Q + 2mc^2)) between the two
+  // bounds. The two are weighted by their cross sections, whose common factor
+  // f_i / W_i cancels.
   double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
-  double c_tra =
-    -std::log1p(-beta_sq) - beta_sq - mat.density_effect_correction(E);
-  if (c_tra > 0.0 && prn(p.current_seed()) * (c_tra + c_lon) < c_tra)
+
+  // The density effect is a screening of the transverse strength, and what it
+  // screens away does not happen at all: an isolated atom would have made this
+  // collision and the medium does not. So the choice below is drawn against
+  // the UNSCREENED distant strength L + c_lon and has three outcomes, the
+  // third being the screened slice -- which is what carries the density effect
+  // into the energy loss. Weighting only the two that remain, as the split
+  // alone would, would redistribute the recoil and leave the stopping power at
+  // its free-atom value, too high by 2 pi r_e^2 m c^2 n_e delta / beta^2 --
+  // 0.23 MeV cm^2/g for copper at 16 MeV, a sixth of the whole.
+  double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
+  double c_tra = std::max(0.0, c_tra_free - mat.density_effect_correction(E));
+  double u = prn(p.current_seed()) * (c_tra_free + c_lon);
+  if (u < c_tra)
     return q_min;
+  if (u >= c_tra + c_lon) {
+    declined = true;
+    return 0.0;
+  }
 
   // Invert the longitudinal distribution
   double a = std::exp(prn(p.current_seed()) * c_lon);

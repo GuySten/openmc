@@ -231,34 +231,41 @@ void ElectroionizationSpectrum::restricted_moments(double E, double e_cut,
   }
 }
 
-double ElectroionizationSpectrum::restricted_integral(
-  double E, double e_cut, const std::function<double(double, double)>& f) const
+double ElectroionizationSpectrum::soft_quantile(double E, double e_cut) const
 {
   if (distribution_.empty() || e_cut <= 0.0)
     return 0.0;
-
-  // Locate the cutoff in quantile space exactly as restricted_moments() does
-  double xi_cut;
-  if (this->at_quantile(E, 1.0) <= e_cut) {
-    xi_cut = 1.0;
-  } else if (this->at_quantile(E, 0.0) >= e_cut) {
+  if (this->at_quantile(E, 1.0) <= e_cut)
+    return 1.0;
+  if (this->at_quantile(E, 0.0) >= e_cut)
     return 0.0;
-  } else {
-    double lo = 0.0;
-    double hi = 1.0;
-    for (int it = 0; it < 60; ++it) {
-      double mid = 0.5 * (lo + hi);
-      if (this->at_quantile(E, mid) <= e_cut) {
-        lo = mid;
-      } else {
-        hi = mid;
-      }
-    }
-    xi_cut = 0.5 * (lo + hi);
-  }
 
+  // The map from quantile to knock-on energy rises monotonically, being a
+  // positive power blend of two monotone inversions, so the cutoff has a
+  // single quantile behind it and bisection cannot land on the wrong root.
+  double lo = 0.0;
+  double hi = 1.0;
+  for (int it = 0; it < 60; ++it) {
+    double mid = 0.5 * (lo + hi);
+    if (this->at_quantile(E, mid) <= e_cut) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+  }
+  return 0.5 * (lo + hi);
+}
+
+double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
+  double xi_hi, const std::function<double(double, double)>& f) const
+{
+  if (distribution_.empty() || !(xi_hi > xi_lo))
+    return 0.0;
+
+  // Break the range at the cumulative nodes of both tables the blend uses,
+  // since the map is smooth only between them
   vector<double> nodes;
-  nodes.push_back(0.0);
+  nodes.push_back(xi_lo);
   int n_energy = energy_.size();
   int i = 0;
   if (n_energy > 1) {
@@ -268,11 +275,11 @@ double ElectroionizationSpectrum::restricted_integral(
   for (int l = i; l <= std::min(i + 1, n_energy - 1); ++l) {
     for (int k = 0; k < distribution_[l].c.size(); ++k) {
       double c = distribution_[l].c[k];
-      if (c > 0.0 && c < xi_cut)
+      if (c > xi_lo && c < xi_hi)
         nodes.push_back(c);
     }
   }
-  nodes.push_back(xi_cut);
+  nodes.push_back(xi_hi);
   std::sort(nodes.begin(), nodes.end());
   nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
 
@@ -290,6 +297,12 @@ double ElectroionizationSpectrum::restricted_integral(
     }
   }
   return total;
+}
+
+double ElectroionizationSpectrum::restricted_integral(
+  double E, double e_cut, const std::function<double(double, double)>& f) const
+{
+  return this->integrate_quantile(E, 0.0, this->soft_quantile(E, e_cut), f);
 }
 
 } // namespace openmc

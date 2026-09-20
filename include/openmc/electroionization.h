@@ -107,6 +107,32 @@ public:
   double restricted_integral(double E, double e_cut,
     const std::function<double(double, double)>& f) const;
 
+  //! Quantile a knock-on energy cutoff sits at
+  //!
+  //! The bisection behind restricted_moments() and restricted_integral(),
+  //! exposed so a caller with several integrands over the same cutoff pays for
+  //! it once instead of once per integrand. Setup does exactly that.
+  //!
+  //! \param[in] E Incident electron kinetic energy in [eV]
+  //! \param[in] e_cut Knock-on energy to locate, in [eV]
+  //! \return Quantile in [0, 1]; 1 when the whole spectrum lies below the cut
+  double soft_quantile(double E, double e_cut) const;
+
+  //! Integrate over an arbitrary quantile range
+  //!
+  //! Same quadrature restricted_integral() uses, over [xi_lo, xi_hi] rather
+  //! than over the soft part alone. What needs the upper range is the hard
+  //! channel, whose cross section and moments are integrals of the evaluated
+  //! spectrum above the cutoff.
+  //!
+  //! \param[in] E Incident electron kinetic energy in [eV]
+  //! \param[in] xi_lo Lower quantile
+  //! \param[in] xi_hi Upper quantile
+  //! \param[in] f Integrand, taking the knock-on energy and the density there
+  //! \return \f$\int_{\xi_{lo}}^{\xi_{hi}} f \, d\xi\f$
+  double integrate_quantile(double E, double xi_lo, double xi_hi,
+    const std::function<double(double, double)>& f) const;
+
 private:
   //! Outgoing spectrum tabulated for one incident energy
   struct Table {

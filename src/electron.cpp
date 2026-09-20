@@ -545,7 +545,11 @@ void Element::compute_soft_inelastic()
     excitation_p_hard_[q] = tensor::zeros<double>(shape_1d);
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
     ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
-    ionization_hard_free_[q] = tensor::zeros<double>(shape_2d);
+    ionization_hard_eval_[q] = tensor::zeros<double>(shape_2d);
+    ionization_deficit_xs_[q] = tensor::zeros<double>(shape_2d);
+    ionization_deficit_bound_[q] = tensor::zeros<double>(shape_2d);
+    ionization_deficit_xi_[q] = tensor::zeros<double>(shape_2d);
+    inelastic_hard_s_[q] = tensor::zeros<double>(shape_1d);
     ionization_hard_xs_[q] = tensor::zeros<double>(shape_1d);
     hard_total_[q] = tensor::zeros<double>(shape_1d);
     hard_majorant_[q] = tensor::zeros<double>(shape_1d);
@@ -663,32 +667,127 @@ void Element::compute_soft_inelastic()
           double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
           bhabha_p_hard_(i, j) = (total > 0.0) ? hard / total : 0.0;
           bhabha_hard_xs_(j) += bhabha_(i, j) * bhabha_p_hard_(i, j);
+          inelastic_hard_s_[q](j) +=
+            K * bhabha_moment(c, E, std::max(W_lo, W_soft), E, 1);
         }
 
-        // The hard channel itself is the free binary cross section, not the
-        // evaluated spectrum's tail. Above W_cc -- keV and up, and above every
-        // binding energy that carries an appreciable share of the electrons --
-        // the struck electron is free and Moller's cross section is what the
-        // collision is, while the evaluated spectra are not: in copper at
-        // 16 MeV they run 10 to 17 per cent over it between 50 and 500 keV and
-        // 10 to 27 per cent under it above 2 MeV. That is the wrong shape in
-        // exactly the way that matters, the rare large transfers being what
-        // separates the most probable loss from the mean, so a spectrum short
-        // in the tail and long in the middle reports a Landau peak too far out
-        // and with no edge on it.
+        // The hard channel carries max(evaluated, free) as its differential
+        // cross section, written as
         //
-        // What is left below W_cc stays the evaluated spectrum's, where the
-        // binding it accounts for is the whole point, and the total is held to
-        // ICRU 37 by the material either way.
+        //     max(a, b) = a + max(0, b - a)
+        //
+        // so it is two channels: the evaluated spectrum's own tail, and the
+        // amount by which the free binary cross section exceeds it.
+        //
+        // Both halves are needed, for opposite reasons. The free cross section
+        // is a lower bound on the truth -- it is the close collision alone,
+        // and the distant one adds to it -- so wherever the evaluated spectrum
+        // falls below it the data is short and the free value is the better
+        // description: in copper at 16 MeV the evaluated tail runs 10 to 27
+        // per cent under Moller above 2 MeV, and those rare large transfers
+        // are what separate the most probable loss from the mean. But the
+        // converse does not hold. Where the evaluated spectrum lies ABOVE the
+        // free one, the excess is the distant collision, and for an inner
+        // shell it is most of the cross section: taking the free value there
+        // would throw away three quarters of the K- and L-shell ionization in
+        // copper and five sixths of it in lead, and with it the vacancies that
+        // make the characteristic x rays.
+        //
+        // Neither piece needs the material -- only the element's spectra, the
+        // soft cutoff and an analytic cross section -- so both are built here,
+        // once per element, rather than in the per-material pass.
         double W_split = std::max(w_cc, B);
         double W_top = (q == 0) ? 0.5 * E : 0.5 * (E + B);
-        if (n_e > 0.0 && W_top > W_split) {
-          double K = n_e * COLLISION_CONST / beta_sq;
-          double free_hard = (q == 0)
-                               ? K * moller_moment(c, E, W_split, W_top, 0)
-                               : K * bhabha_moment(c, E, W_split, W_top, 0);
-          ionization_hard_free_[q](i, j) = std::max(0.0, free_hard);
-          ionization_hard_xs_[q](j) += std::max(0.0, free_hard);
+        double K = n_e * COLLISION_CONST / beta_sq;
+        auto free_dcs = [&](double W) {
+          if (!(W > W_split) || W >= W_top)
+            return 0.0;
+          double x = W / E;
+          return K * ((q == 0) ? c.moller(x) : c.bhabha(x)) / (E * E);
+        };
+
+        // The evaluated tail, which is what the hard channel was before the
+        // soft cutoff was ever introduced
+        // A positron's evaluated tail is sampled by reweighting rejection, so
+        // its cross section has to be the majorant of the true one; the
+        // deficit channel is drawn from Bhabha itself and needs no such
+        // margin.
+        double eval_hard = sigma * (1.0 - xi_cut);
+        if (q == 1)
+          eval_hard *= moller_majorant_(j);
+        ionization_hard_eval_[q](i, j) = eval_hard;
+        ionization_hard_xs_[q](j) += eval_hard;
+
+        if (n_e > 0.0 && W_top > W_split && sigma > 0.0 && xi_cut < 1.0) {
+          // In quantile space the evaluated density is sigma per unit xi and
+          // the free one is f_free/p, so the deficit is their difference where
+          // it is positive. Integrating over xi rather than over W keeps the
+          // evaluated spectrum in the variable it is tabulated and sampled in,
+          // and needs no inversion of its cumulative.
+          auto deficit = [&](double e_out, double density) {
+            double W = e_out + B;
+            if (!(density > 0.0))
+              return 0.0;
+            return std::max(0.0, free_dcs(W) / density - sigma);
+          };
+          double def =
+            ionization_dist_[i]->integrate_quantile(E, xi_cut, 1.0, deficit);
+
+          // Bound for the rejection the collision samples it with. Scanned on
+          // the same nodes the integral uses, with the margin the Moller
+          // majorant already pays for its own scan.
+          // The deficit is zero over most of the range -- the evaluated
+          // spectrum exceeds the free one until well up the tail -- so the
+          // rejection is confined to the part where it is not, which is what
+          // keeps its acceptance usable.
+          double bound = 0.0;
+          double xi_def = 1.0;
+          constexpr int N_SCAN = 64;
+          for (int k = 0; k <= N_SCAN; ++k) {
+            double xi = xi_cut + (1.0 - xi_cut) * k / N_SCAN;
+            double density;
+            double e_out = ionization_dist_[i]->at_quantile(E, xi, &density);
+            double d = deficit(e_out, density);
+            if (d > 0.0) {
+              bound = std::max(bound, d);
+              // Back off one scan step: the scan can straddle the crossing
+              xi_def = std::min(
+                xi_def, std::max(xi_cut, xi - (1.0 - xi_cut) / N_SCAN));
+            }
+          }
+          if (def > 0.0 && bound > 0.0) {
+            // The rate carried into the cross section is the MAJORANT the
+            // collision rejects against, not the accepted rate: the rejection
+            // in ionization() brings it back down to `def`. Carrying `def`
+            // itself would let the rejection cut the channel a second time and
+            // the transport would remove less energy than the pinning below
+            // has already given away to the grouped channel.
+            bound *= 1.001;
+            ionization_deficit_bound_[q](i, j) = bound;
+            ionization_deficit_xi_[q](i, j) = xi_def;
+            ionization_deficit_xs_[q](i, j) = bound * (1.0 - xi_def);
+            ionization_hard_xs_[q](j) += bound * (1.0 - xi_def);
+            inelastic_hard_s_[q](j) += ionization_dist_[i]->integrate_quantile(
+              E, xi_cut, 1.0, [&](double e_out, double density) {
+                return deficit(e_out, density) * (e_out + B);
+              });
+          }
+        }
+
+        // The stopping power the hard channel carries, which the material's
+        // pinning needs in order to leave the grouped channel the remainder.
+        // It is an element quantity like the cross sections beside it, so it
+        // is tabulated here rather than recomputed for every material.
+        if (sigma > 0.0 && xi_cut < 1.0) {
+          std::function<double(double)> ratio = [&c, B, E](double e_out) {
+            return c.ratio((e_out + B) / E);
+          };
+          inelastic_hard_s_[q](j) +=
+            sigma * ionization_dist_[i]->integrate_quantile(
+                      E, xi_cut, 1.0, [&](double e_out, double) {
+                        double w = (q == 0) ? 1.0 : ratio(e_out);
+                        return w * (e_out + B);
+                      });
         }
       }
 
@@ -1068,6 +1167,18 @@ void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
   w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
 }
 
+double Element::inelastic_hard_stopping(int q_index, double E) const
+{
+  int n = electron_energy_.size();
+  if (q_index < 0 || q_index > 1 || n < 2 ||
+      inelastic_hard_s_[q_index].size() != n)
+    return 0.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  const auto& v = inelastic_hard_s_[q_index];
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
 void Element::compute_inelastic_transport(int q_index,
   const vector<double>& w_r, const vector<double>& delta,
   tensor::Tensor<double>& xs1, tensor::Tensor<double>& s_screened,
@@ -1278,23 +1389,12 @@ void Element::compute_inelastic_transport(int q_index,
                                       density, c_tra_free, c_tra));
                     });
       }
-
-      // Above it the transport draws from the free binary cross section, so
-      // that is what it removes there -- not the evaluated tail
-      double K = n_e * COLLISION_CONST / beta_sq;
-      double W_split = std::max(w_cc, B);
-      double W_top = (q_index == 0) ? 0.5 * E : 0.5 * (E + B);
-      if (n_e > 0.0 && W_top > W_split) {
-        s_tot += K * ((q_index == 0) ? moller_moment(c, E, W_split, W_top, 1)
-                                     : bhabha_moment(c, E, W_split, W_top, 1));
-      }
-
-      // Transfers above the Moller limit, which only a positron makes
-      double W_lo = 0.5 * (E + B);
-      if (q_index == 1 && n_e > 0.0 && W_lo < E) {
-        s_tot += K * bhabha_moment(c, E, W_lo, E, 1);
-      }
     }
+
+    // What the hard channel removes is tabulated with the channel itself:
+    // both halves of max(evaluated, free) and, for a positron, the
+    // transfers above the Moller limit as well.
+    s_tot += this->inelastic_hard_stopping(q_index, E);
 
     xs1(j) = std::max(0.0, total);
     s_screened(j) = std::max(0.0, s_scr);
@@ -1402,26 +1502,78 @@ bool Element::ionization(Particle& p, int i_shell, bool hard) const
   // indexed out of bounds here.
   double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
 
-  // A hard collision is one above W_cc, which is keV and up. There the struck
-  // electron is free and the transfer is drawn from the free binary cross
-  // section the hard channel was built from, not from the evaluated spectrum:
-  // see compute_soft_inelastic(). Being a close collision by construction it
-  // leaves the whole transfer as recoil, so no recoil model is consulted and
-  // nothing screens it -- the density effect acts on distant collisions, and
-  // this is the opposite of one.
+  // A hard collision is one above W_cc. Its differential cross section is
+  // max(evaluated, free binary), assembled as two channels in
+  // compute_soft_inelastic(), and which one this collision belongs to is
+  // decided by their cross sections.
+  //
+  // The deficit channel is where the free cross section exceeds the evaluated
+  // one, so a collision from it is a close collision by construction: it
+  // leaves the whole transfer as recoil, and nothing screens it, the density
+  // effect acting on distant collisions and this being the opposite of one.
+  // The evaluated channel keeps the recoil model and the screening, as every
+  // evaluated collision always has.
+  double xi_min = 0.0;
+  bool deficit = false;
   if (hard) {
-    double E = p.E();
-    double W_lo = std::max(soft_collision_cutoff(p.type(), E), e_b);
-    double W_hi = p.type().is_positron() ? 0.5 * (E + e_b) : 0.5 * E;
-    double W = this->sample_free_transfer(p, W_lo, W_hi);
-    if (!(W > e_b) || W >= E)
+    const auto& xs {p.electron_xs(index_)};
+    int q = p.type().is_positron() ? 1 : 0;
+    int i_grid = xs.index_grid;
+    double f = xs.interp_factor;
+    auto at = [&](const tensor::Tensor<double>& v) {
+      return v(i_shell, i_grid) +
+             f * (v(i_shell, i_grid + 1) - v(i_shell, i_grid));
+    };
+    double eval_hard = at(ionization_hard_eval_[q]);
+    double def_xs = at(ionization_deficit_xs_[q]);
+    double total = eval_hard + def_xs;
+    if (!(total > 0.0))
       return false;
-    this->emit_knock_on(p, W, e_b, W);
-    return true;
+    deficit = prn(p.current_seed()) * total >= eval_hard;
+
+    // Both channels live above the soft cutoff, which is a quantile of the
+    // evaluated spectrum
+    xi_min = 1.0 - this->ionization_hard_fraction(q, i_shell, p.E());
+
+    if (deficit) {
+      double bound = at(ionization_deficit_bound_[q]);
+      if (!(bound > 0.0))
+        return false;
+      double E = p.E();
+      double n_e = shells_[electron_shell_map_[i_shell]].num_electrons;
+      double gamma = 1.0 + E / MASS_ELECTRON_EV;
+      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+      double sigma = at(electroionization_);
+      FreeCollision c {E};
+      double w_cc = soft_collision_cutoff(p.type(), E);
+      double W_split = std::max(w_cc, e_b);
+      double W_top = p.type().is_positron() ? 0.5 * (E + e_b) : 0.5 * E;
+      double K = n_e * COLLISION_CONST / beta_sq;
+
+      // One draw, rejected against the bound tabulated beside the channel's
+      // cross section. A rejection is a declined collision, not a retry: the
+      // cross section above is the majorant, and retrying until something is
+      // accepted would restore exactly the rate the majorant overstates.
+      double xi_lo = at(ionization_deficit_xi_[q]);
+      double xi = xi_lo + (1.0 - xi_lo) * prn(p.current_seed());
+      double dens;
+      double e_out = ionization_dist_[i_shell]->at_quantile(E, xi, &dens);
+      double W = e_out + e_b;
+      if (!(dens > 0.0) || !(W > W_split) || W >= W_top || W >= E)
+        return false;
+      double x = W / E;
+      double free_dcs =
+        K * (p.type().is_positron() ? c.bhabha(x) : c.moller(x)) / (E * E);
+      double d = std::max(0.0, free_dcs / dens - sigma);
+      if (prn(p.current_seed()) * bound > d)
+        return false;
+      this->emit_knock_on(p, W, e_b, W);
+      return true;
+    }
   }
 
   double density;
-  double xi = prn(p.current_seed());
+  double xi = xi_min + (1.0 - xi_min) * prn(p.current_seed());
   double E_knock = ionization_dist_[i_shell]->at_quantile(p.E(), xi, &density);
 
   // The tabulated spectra describe a Moller collision. For a positron the
@@ -1622,8 +1774,11 @@ int Element::sample_ionization_shell(Particle& p, bool hard) const
   // sits at W_cc - B, so a deeply bound shell keeps more of its spectrum.
   auto weight = [&](int i) {
     if (hard) {
-      const auto& v = ionization_hard_free_[q];
-      return v(i, i_grid) + f * (v(i, i_grid + 1) - v(i, i_grid));
+      const auto& ev = ionization_hard_eval_[q];
+      const auto& df = ionization_deficit_xs_[q];
+      double a = ev(i, i_grid) + f * (ev(i, i_grid + 1) - ev(i, i_grid));
+      double b = df(i, i_grid) + f * (df(i, i_grid + 1) - df(i, i_grid));
+      return a + b;
     }
     return electroionization_(i, i_grid) +
            f * (electroionization_(i, i_grid + 1) -

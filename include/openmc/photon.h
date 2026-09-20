@@ -130,6 +130,13 @@ public:
   //! \param[out] w2 Second moment of the restricted loss in [b eV^2]
   void inelastic_soft(int q_index, double E, double& s, double& w2) const;
 
+  //! Collision stopping power the hard inelastic channel carries, per atom
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return Stopping power in [b eV]
+  double inelastic_hard_stopping(int q_index, double E) const;
+
   //! First transport cross section of the grouped inelastic collisions, in [b]
   //!
   //! Grouping a collision takes its deflection away with its energy loss, and
@@ -374,11 +381,21 @@ public:
   //! exists only for a positron, so it takes no charge index.
   array<tensor::Tensor<double>, 2> excitation_p_hard_;
   array<tensor::Tensor<double>, 2> ionization_p_hard_;
-  //! Free binary cross section of each subshell above max(W_cc, B), in [b] on
-  //! the electron energy grid, which is what a hard electroionization
-  //! collision is drawn from. See compute_soft_inelastic() for why it is not
-  //! the evaluated spectrum's tail.
-  array<tensor::Tensor<double>, 2> ionization_hard_free_;
+  //! The two halves of the hard electroionization channel, whose differential
+  //! cross section is max(evaluated, free binary). The first is the evaluated
+  //! spectrum's own tail above the soft cutoff (carrying the positron's
+  //! majorant factor, since that half is sampled by reweighting rejection);
+  //! the second is the amount by which the free cross section exceeds it,
+  //! with the bound its rejection is drawn against. All in [b] on the electron
+  //! energy grid. See compute_soft_inelastic().
+  array<tensor::Tensor<double>, 2> ionization_hard_eval_;
+  array<tensor::Tensor<double>, 2> ionization_deficit_xs_;
+  array<tensor::Tensor<double>, 2> ionization_deficit_bound_;
+  array<tensor::Tensor<double>, 2> ionization_deficit_xi_;
+  //! Collision stopping power the hard inelastic channel carries, in [b eV] on
+  //! the electron energy grid. An element quantity, so the material's pinning
+  //! reads it rather than rebuilding it per material.
+  array<tensor::Tensor<double>, 2> inelastic_hard_s_;
   array<tensor::Tensor<double>, 2> brems_p_hard_;
   tensor::Tensor<double> bhabha_p_hard_;
   //! The same two summed over subshells, in [b], which is all a cross section

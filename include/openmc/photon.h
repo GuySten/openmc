@@ -137,6 +137,13 @@ public:
   //! \return Stopping power in [b eV]
   double inelastic_hard_stopping(int q_index, double E) const;
 
+  //! Collision stopping power of the evaluated data, unscreened, per atom
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return Stopping power in [b eV]
+  double inelastic_unscreened_stopping(int q_index, double E) const;
+
   //! First transport cross section of the grouped inelastic collisions, in [b]
   //!
   //! Grouping a collision takes its deflection away with its energy loss, and
@@ -396,6 +403,9 @@ public:
   //! the electron energy grid. An element quantity, so the material's pinning
   //! reads it rather than rebuilding it per material.
   array<tensor::Tensor<double>, 2> inelastic_hard_s_;
+  //! Collision stopping power the evaluated data delivers unscreened and
+  //! unrestricted, in [b eV]. The medium's screening is measured against it.
+  array<tensor::Tensor<double>, 2> inelastic_unscreened_s_;
   array<tensor::Tensor<double>, 2> brems_p_hard_;
   tensor::Tensor<double> bhabha_p_hard_;
   //! The same two summed over subshells, in [b], which is all a cross section
@@ -469,6 +479,10 @@ private:
   //! creation is one that nothing is lost by grouping. See
   //! soft_collision_cutoff() and soft_radiative_cutoff().
   void compute_soft_inelastic();
+
+  //! Tabulate the collision stopping power the evaluated spectra deliver,
+  //! unscreened and unrestricted. Built for every run, not only a grouped one.
+  void compute_unscreened_stopping();
 
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)

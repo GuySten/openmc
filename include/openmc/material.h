@@ -204,6 +204,18 @@ public:
   //!   electron density in [1/(b cm)]
   double collision_stopping_power(int q_index, double E) const;
 
+  //! Density-effect correction actually applied to collisions, per charge
+  //!
+  //! The Sternheimer correction less the amount by which the evaluated
+  //! spectra already fall short of the free atom's stopping power, floored at
+  //! zero. Taking the whole correction off data that never reached the free
+  //! atom's value removes the same strength twice. See init_inelastic_transport
+  //! for what this buys and what it assumes.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  double screening_correction(int q_index, double E) const;
+
   //! Resonance energy in [eV] of the Sternheimer-Liljequist oscillator
   //! standing for electroionization subshell \p i_shell of the element with
   //! global index \p i_element. Returns zero when this material carries no
@@ -251,6 +263,9 @@ public:
   //! in [b eV], on data::brems_e_grid, one table per projectile charge. See
   //! collision_stopping_power().
   array<tensor::Tensor<double>, 2> collision_stopping_;
+  //! The share of the density effect the evaluated data can absorb, per
+  //! projectile charge, on data::brems_e_grid. See screening_correction().
+  array<tensor::Tensor<double>, 2> screening_;
 
   //! Oscillator resonance energies in [eV], one per electroionization subshell,
   //! concatenated over the distinct elements of this material

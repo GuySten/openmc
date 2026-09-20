@@ -231,6 +231,11 @@ void Element::read_electron_data(hid_t group)
   this->compute_bhabha_xs();
   this->compute_inelastic_sums();
 
+  // What the evaluated spectra deliver as collision stopping power, against
+  // which the medium's screening is measured. Both transport modes need it,
+  // so unlike the soft/hard split below it is not conditional.
+  this->compute_unscreened_stopping();
+
   // The soft/hard split of the inelastic channels, which needs every one of
   // them loaded and so comes last. Skipped unless a run asks for condensed
   // history, since it is the only thing that reads it.
@@ -1056,7 +1061,16 @@ void Element::calculate_electron_xs(Particle& p) const
     // annihilation would be an annihilation that did not happen.
     xs.hard_total = xs.hard_elastic + xs.hard_excitation + xs.hard_ionization +
                     xs.hard_bhabha + xs.annihilation + xs.hard_bremsstrahlung;
-    xs.hard_majorant = std::max(xs.hard_total, on_grid(hard_majorant_[q]));
+    // The larger of the two bracketing bounds, not the interpolation between
+    // them. hard_majorant_ bounds the hard cross section over the energies a
+    // step can reach FROM each grid point, and a linear blend of two such
+    // bounds can dip below the true maximum wherever the cross section is
+    // concave across the interval -- which would bias the flight silently,
+    // the violation warning firing once and never again. Taking the larger is
+    // rigorous and is one comparison cheaper than the blend.
+    const auto& hm = hard_majorant_[q];
+    xs.hard_majorant = std::max(
+      xs.hard_total, std::max(hm(xs.index_grid), hm(xs.index_grid + 1)));
     xs.soft_rate = std::max(0.0, xs.total - xs.hard_total);
     xs.soft_stopping = on_grid(inelastic_soft_s_[q]);
     xs.soft_straggling = on_grid(inelastic_soft_w2_[q]);
@@ -1165,6 +1179,71 @@ void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
   const auto& wv = inelastic_soft_w2_[q_index];
   s = std::max(0.0, sv(i) + f * (sv(i + 1) - sv(i)));
   w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
+}
+
+void Element::compute_unscreened_stopping()
+{
+  int n_energy = electron_energy_.size();
+  int n_shell = electroionization_.shape(0);
+  std::vector<size_t> shape_1d {static_cast<size_t>(n_energy)};
+  for (int q = 0; q < 2; ++q) {
+    inelastic_unscreened_s_[q] = tensor::zeros<double>(shape_1d);
+  }
+  if (ionization_dist_.size() != n_shell)
+    return;
+
+  for (int j = 0; j < n_energy; ++j) {
+    double E = electron_energy_(j);
+    if (!(E > 0.0))
+      continue;
+    double gamma = 1.0 + E / MASS_ELECTRON_EV;
+    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+    FreeCollision c {E};
+    double loss_ex = std::max(0.0, E - this->excitation(E));
+
+    for (int q = 0; q < 2; ++q) {
+      double s = 0.0;
+      if (loss_ex > 0.0 && loss_ex < E)
+        s += excitation_(j) * loss_ex;
+
+      for (int i = 0; i < n_shell; ++i) {
+        const auto& shell {shells_[electron_shell_map_[i]]};
+        double B = shell.binding_energy;
+        double sigma = electroionization_(i, j);
+        if (sigma <= 0.0 || E <= B)
+          continue;
+        s += sigma * ionization_dist_[i]->integrate_quantile(
+                       E, 0.0, 1.0, [&](double e_out, double) {
+                         double W = e_out + B;
+                         if (!(W > 0.0) || W >= E)
+                           return 0.0;
+                         double w = (q == 0) ? 1.0 : c.ratio((e_out + B) / E);
+                         return w * W;
+                       });
+
+        // Transfers above the Moller limit, which only a positron makes
+        double n_e = shell.num_electrons;
+        double W_lo = 0.5 * (E + B);
+        if (q == 1 && n_e > 0.0 && W_lo < E) {
+          s +=
+            n_e * COLLISION_CONST / beta_sq * bhabha_moment(c, E, W_lo, E, 1);
+        }
+      }
+      inelastic_unscreened_s_[q](j) = std::max(0.0, s);
+    }
+  }
+}
+
+double Element::inelastic_unscreened_stopping(int q_index, double E) const
+{
+  int n = electron_energy_.size();
+  if (q_index < 0 || q_index > 1 || n < 2 ||
+      inelastic_unscreened_s_[q_index].size() != n)
+    return 0.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  const auto& v = inelastic_unscreened_s_[q_index];
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
 }
 
 double Element::inelastic_hard_stopping(int q_index, double E) const
@@ -1310,7 +1389,14 @@ void Element::compute_inelastic_transport(int q_index,
           return p_close * mu_close;
         double mu_lon =
           std::max(0.0, (two_m * (w_r[i] - q_min) / c_lon - cq_min_sq) / denom);
-        double f_lon = (c_tra > 0.0) ? c_lon / (c_tra + c_lon) : 1.0;
+        // Weighted against the UNSCREENED distant strength, as sample_recoil()
+        // draws: the slice the density effect screens away is a third outcome
+        // that makes no collision and so deflects through nothing. Dividing by
+        // c_tra + c_lon instead would hand its share to the longitudinal
+        // branch and overstate the grouped deflection by about a fifth in
+        // copper at 16 MeV.
+        double f_lon =
+          (c_tra_free + c_lon > 0.0) ? c_lon / (c_tra_free + c_lon) : 1.0;
         return p_close * mu_close + (1.0 - p_close) * f_lon * mu_lon;
       };
 
@@ -1747,7 +1833,8 @@ double Element::sample_recoil(
   // its free-atom value, too high by 2 pi r_e^2 m c^2 n_e delta / beta^2 --
   // 0.23 MeV cm^2/g for copper at 16 MeV, a sixth of the whole.
   double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
-  double c_tra = std::max(0.0, c_tra_free - mat.density_effect_correction(E));
+  double c_tra = std::max(0.0,
+    c_tra_free - mat.screening_correction(p.type().is_positron() ? 1 : 0, E));
   double u = prn(p.current_seed()) * (c_tra_free + c_lon);
   if (u < c_tra)
     return q_min;

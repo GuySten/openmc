@@ -787,6 +787,25 @@ void Material::init_electron_oscillators()
   }
 }
 
+double Material::screening_correction(int q_index, double E) const
+{
+  if (q_index < 0 || q_index > 1)
+    return 0.0;
+  const auto& v = screening_[q_index];
+  auto n = v.size();
+  if (n == 0)
+    return this->density_effect_correction(E);
+
+  const auto& grid = data::brems_e_grid;
+  if (E <= grid(0))
+    return v(0);
+  if (E >= grid(n - 1))
+    return v(n - 1);
+  int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
+  double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
+  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
 double Material::collision_stopping_power(int q_index, double E) const
 {
   if (q_index < 0 || q_index > 1)
@@ -1151,6 +1170,63 @@ void Material::calculate_photon_xs(Particle& p) const
 
 void Material::init_inelastic_transport()
 {
+  // How much of the density effect the evaluated data can absorb.
+  //
+  // The correction is defined against the free atom, and the evaluated spectra
+  // do not reach the free atom's collision stopping power: in copper at 16 MeV
+  // they deliver 1.61 MeV cm^2/g where Bethe gives 1.72, and the shortfall
+  // grows with energy. Taking the whole correction off a spectrum that is
+  // already short of it removes the same strength twice -- which sent the
+  // single-event stopping power from 8 per cent above ICRU 37 to 7 per cent
+  // below it. So the screening applied is the correction less the shortfall,
+  // floored at zero.
+  //
+  // This is a calibration and not a derivation: it assumes the evaluated
+  // shortfall lies in the distant channel the screening acts on, which is
+  // where the relativistic rise lives but is not established term by term.
+  // What it buys is that both transport modes land on the same measured
+  // stopping power -- the grouped one by the pinning in calculate_electron_xs,
+  // the single-event one by this -- rather than disagreeing by 15 per cent,
+  // and that a run does not change stopping power from region to region as
+  // steps decline to group.
+  auto n_grid = data::brems_e_grid.size();
+  constexpr double bohr_radius_cm =
+    PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+  constexpr double r_e = bohr_radius_cm / (FINE_STRUCTURE * FINE_STRUCTURE);
+  constexpr double collision_const =
+    2.0 * PI * 1.0e24 * r_e * r_e * MASS_ELECTRON_EV;
+  double n_electron = 0.0;
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    n_electron += this->atom_density(i, 1.0) * data::elements[element_[i]]->Z_;
+  }
+  for (int q = 0; q < 2; ++q) {
+    screening_[q] = tensor::Tensor<double>({n_grid});
+    for (int i = 0; i < n_grid; ++i) {
+      double E = data::brems_e_grid(i);
+      double gamma = 1.0 + E / MASS_ELECTRON_EV;
+      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+      double prefactor =
+        (beta_sq > 0.0) ? collision_const / beta_sq * n_electron : 0.0;
+      double unscreened = 0.0;
+      for (int k = 0; k < nuclide_.size(); ++k) {
+        unscreened +=
+          this->atom_density(k, 1.0) *
+          data::elements[element_[k]]->inelastic_unscreened_stopping(q, E);
+      }
+      // collision_stopping_ already carries the correction, so adding it back
+      // gives the free atom's value on the same footing
+      double free_atom = collision_stopping_[q].size() == n_grid
+                           ? collision_stopping_[q](i) * n_electron +
+                               prefactor * density_effect_(i)
+                           : 0.0;
+      double shortfall =
+        (prefactor > 0.0 && unscreened > 0.0 && free_atom > unscreened)
+          ? (free_atom - unscreened) / prefactor
+          : 0.0;
+      screening_[q](i) = std::max(0.0, density_effect_(i) - shortfall);
+    }
+  }
+
   if (settings::deflection_cutoff <= 0.0)
     return;
 
@@ -1185,7 +1261,7 @@ void Material::init_inelastic_transport()
     const auto& grid = element.electron_energy();
     vector<double> delta(grid.size());
     for (int j = 0; j < grid.size(); ++j) {
-      delta[j] = this->density_effect_correction(grid(j));
+      delta[j] = this->screening_correction(0, grid(j));
     }
 
     for (int q = 0; q < 2; ++q) {

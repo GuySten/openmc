@@ -374,7 +374,11 @@ surroundings a pure measure of the transport algorithm -- of the path-length
 correction, the boundary crossing and the grouped step -- with no experimental
 data needed. The theorem holds only while the mass stopping power is
 independent of density, and the density effect is exactly the term that breaks
-it, so the test requires this element to be false.
+it, so the test requires this element to be false. Setting it false removes
+the plasma term from the oscillator resonance energies as well as the
+correction itself: both are the medium's response to its own density, and
+leaving either in place keeps the mass stopping power density dependent and
+the theorem's premise unmet.
 
   *Default*: true
 

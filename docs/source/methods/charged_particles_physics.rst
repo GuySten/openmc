@@ -433,9 +433,9 @@ over the whole angular range on 375 angles at each of 96 incident energies from
 50 eV to 100 MeV. ELSEPA writes 606 angles; the wide-angle end of its grid,
 where the steps are a uniform half a degree, is thinned to one point in four
 before the data is shipped, which changes the integrated, first and second
-transport cross sections by at most 5 parts in 10\ :sup:`4`. Nothing is split out of it: the cross section that sets the
-distance to the next elastic collision is the integral of the same table the
-deflection is sampled from,
+transport cross sections by at most 5 parts in 10\ :sup:`4`. Nothing is split
+out of it: the cross section that sets the distance to the next elastic
+collision is the integral of the same table the deflection is sampled from,
 
 .. math::
     :label: elastic-integral
@@ -535,16 +535,25 @@ Inelastic Collisions
 
 Excitation and ionization are one channel, not two. Both are the projectile
 losing energy to the atom's electrons, and both are described by the same
-generalized oscillator strength (GOS); which one a collision was is a matter
-of whether the transfer exceeded a binding energy. OpenMC uses the
+generalized oscillator strength (GOS); what separates them is only which
+shell absorbed the energy and how tightly it was held. OpenMC uses the
 Sternheimer-Liljequist model of that GOS, following PENELOPE_.
 
 The Oscillator Model
 ~~~~~~~~~~~~~~~~~~~~
 
 Every electron of the medium is assigned to an oscillator, one per
-electroionization subshell of each element, holding :math:`f_i` electrons
-bound at :math:`U_i` and resonating at
+electroionization subshell of each element. Oscillator :math:`i` stands for a
+shell of :math:`n_i` electrons bound at :math:`U_i`, holds the fraction
+
+.. math::
+    :label: oscillator-strength
+
+    f_i = \frac{n_i \, N_i}{n_{\text{e}}}
+
+of the medium's electrons, where :math:`N_i` is the atom density of the
+element the shell belongs to and :math:`n_{\text{e}}` its electron density,
+and resonates at
 
 .. math::
     :label: oscillator-resonance
@@ -557,15 +566,20 @@ where :math:`\Omega_{\text{p}}` is the plasma energy of the medium and
 .. math::
     :label: sum-rules
 
-    \sum_i f_i = Z, \qquad \sum_i f_i \ln W_i = \ln I .
+    \sum_i f_i = 1, \qquad \sum_i f_i \ln W_i = \ln I .
 
-The second of these is the Bethe sum rule, and it is what makes the model
-quantitative: with it satisfied, the stopping power the model integrates to
-*is* the Bethe stopping power, with the mean excitation energy :math:`I` of
-the medium and no free parameters left. The first fixes the total number of
-electrons. Both are properties of the medium rather than of any atom in it,
-which is why the inelastic channel belongs to the material: the same carbon
-atom has different oscillators in graphite and in methane.
+Everything below is therefore per electron of the medium, and the transport
+multiplies it by :math:`n_{\text{e}}` to get a macroscopic rate. (PENELOPE
+writes the same model per atom, with :math:`\sum_i f_i = Z`; only the
+normalization differs.)
+
+The second sum rule is Bethe's, and it is what makes the model quantitative:
+with it satisfied, the stopping power the model integrates to *is* the Bethe
+stopping power, with the mean excitation energy :math:`I` of the medium and no
+free parameters left. The first fixes the count of electrons. Both are
+properties of the medium rather than of any atom in it, which is why the
+inelastic channel belongs to the material: the same carbon atom has different
+oscillators in graphite and in methane.
 
 The only experimental input is :math:`I`, taken from the same ESTAR/ICRU 37
 table the stopping powers are compared against. The binding energies come
@@ -578,29 +592,48 @@ Distant and Close Collisions
 
 Each oscillator contributes three channels, which are PENELOPE's.
 
-A *distant longitudinal* collision excites the oscillator at exactly
-:math:`W = W_i` and hands over a recoil :math:`Q` distributed as
-:math:`1/[Q(Q+2m_ec^2)]` between the minimum momentum transfer :math:`Q_-`
-and :math:`W_i`. A *distant transverse* collision also costs :math:`W_i` but
-carries no momentum at all, :math:`Q = Q_-`; this is the channel the density
-effect acts on. Their cross sections are
+A *distant longitudinal* collision excites the oscillator and hands over a
+recoil :math:`Q` distributed as :math:`1/[Q(Q+2m_ec^2)]` between the minimum
+momentum transfer :math:`Q_-` and a cutoff recoil, which for a bound shell is
+its binding energy :math:`U_i`. A *distant transverse* collision costs the
+same energy but carries no momentum at all, :math:`Q = Q_-`, so it deflects
+nothing; this is the channel the density effect acts on. Their cross sections
+are
 
 .. math::
     :label: distant-xs
 
     \sigma_{\text{lon}} = \frac{2\pi r_e^2 m_ec^2}{\beta^2}\,
-      \frac{f_i}{W_i} \ln\!\left[\frac{W_i(Q_-+2m_ec^2)}
-      {Q_-(W_i+2m_ec^2)}\right],
+      \frac{f_i}{W_i} \ln\!\left[\frac{U_i(Q_-+2m_ec^2)}
+      {Q_-(U_i+2m_ec^2)}\right],
     \qquad
     \sigma_{\text{tra}} = \frac{2\pi r_e^2 m_ec^2}{\beta^2}\,
       \frac{f_i}{W_i}
-      \left[\ln\frac{1}{1-\beta^2} - \beta^2 - \delta\right],
+      \max\left(0,\; \ln\frac{1}{1-\beta^2} - \beta^2 - \delta\right),
 
 with :math:`\delta` the density-effect correction of Sternheimer_, computed
-from the same oscillator table. A *close* collision is the free binary one:
-Moller scattering for an electron, Bhabha for a positron, with the whole
-transfer left as recoil, :math:`Q = W`, and the transfer running from
-:math:`W_i` to the kinematic limit.
+from the same oscillator table. The floor on the transverse term is where the
+density effect has screened that channel away entirely; it cannot go
+negative.
+
+How much energy a distant collision costs depends on the shell. For an
+unbound oscillator it is the resonance :math:`W_i` exactly, a delta. For a
+bound one — which in OpenMC is every oscillator, since each stands on a real
+photoatomic subshell and the smallest binding energy in the library is a few
+eV — the strength is instead spread over a triangle falling linearly from
+:math:`U_i` to :math:`W_{\max} = 3W_i - 2U_i`, truncated at the kinematic
+limit. A delta at :math:`W_i` would put all of an inner shell's distant
+strength at one energy, which its x-ray yield and its stopping power do not
+support; the triangle carries the same first moment while spanning the range
+the shell actually absorbs over.
+
+A *close* collision is the free binary one: Moller scattering for an
+electron, Bhabha for a positron, with the whole transfer left as recoil,
+:math:`Q = W`. It runs from :math:`U_i` — a bound electron has to be paid for
+before it can be ejected — up to the kinematic limit, which is :math:`T` for
+the distinguishable positron and :math:`(T + U_i)/2` for the electron, whose
+Moller cross section is written for a projectile of energy :math:`T + U_i`
+and cannot give away more than half of it.
 
 The three sum to the oscillator's total cross section, and their first
 moments sum to its stopping power. Summed over oscillators and with the sum
@@ -629,10 +662,14 @@ cross sections scaled to the evaluated subshell ionization cross sections,
     :label: inner-renorm
 
     c_i(T) = \frac{\sigma_i^{\text{eval}}(T)}
-                  {f_i\,\sigma_i^{\text{model}}(T)},
+                  {n_i\,\sigma_i^{\text{model}}(T)},
 
 every moment of the oscillator being scaled by the same factor so the channel
-stays one cross section.
+stays one cross section. The occupancy :math:`n_i` is what puts the two on
+the same footing: the model above is written per electron and the evaluated
+cross section is per atom. The model value in the denominator is the
+unscreened one, :math:`\delta = 0`, so that the density effect then applies
+on top of the ratio rather than being divided out of it.
 
 That scaling moves the total off the Bethe value, and the second half of
 PENELOPE's scheme puts it back: the remaining oscillators are scaled by a
@@ -685,12 +722,18 @@ pair is still not exactly momentum-conserving, since the knock-on leaves with
 the momentum of :math:`W - U_i` rather than of :math:`W`; no free-electron
 model of a bound target can conserve both.
 
-A collision ionizes the atom when the transfer exceeds the binding energy of
-the subshell its oscillator stands for, and the vacancy is then passed to the
-atomic relaxation model, which follows the full cascade. Otherwise the atom
-was excited as a whole and the energy is deposited locally. Because the
-oscillator is a real subshell, which shell the vacancy is in follows from the
-same draw that chose the oscillator rather than from a separate model.
+Every collision leaves a vacancy, and it is passed to the atomic relaxation
+model, which follows the full cascade. No channel of the model can transfer
+less than :math:`U_i` — the close one starts there and the distant triangle
+starts there — so a collision with a bound oscillator always clears the
+binding energy of the shell it stands for. Because that oscillator is a real
+subshell, which shell the vacancy is in follows from the same draw that chose
+the oscillator, rather than from a separate model bolted on beside it.
+
+This is why excitation is not a channel of its own. What the evaluation calls
+an excitation is here a distant collision with an outer oscillator, whose
+:math:`U_i` is a few eV: it leaves a vacancy that the relaxation model
+disposes of locally, and the energy is deposited on the spot either way.
 
 The Positron
 ~~~~~~~~~~~~
@@ -698,8 +741,11 @@ The Positron
 The distant channels are identical for the two projectiles -- the atom cannot
 tell what excited it -- and the close channel is Bhabha's rather than
 Moller's, which differs both in shape and in running to :math:`T` instead of
-:math:`(T-U_i)/2`. Everything above is therefore tabulated and sampled
-separately per projectile charge, with no reweighting and no rejection.
+:math:`(T+U_i)/2`. The positron and the electron it ejects are
+distinguishable, so there is no need to call the faster one the primary and
+no factor of two in the limit. Everything above is therefore tabulated and
+sampled separately per projectile charge, with no reweighting and no
+rejection.
 Against the ICRU 37 collision stopping power the ratio of positron to
 electron comes out at 0.981 for carbon at 1.26 MeV and 0.989 for lead at
 1 MeV, against reference values of 0.977 and 0.972.
@@ -818,13 +864,15 @@ sampled flight, which runs past a mean free path as often as not and is cut
 short by the energy ceiling and by the geometry besides, so the bound is
 imposed on the length directly.
 
-The inelastic channels are cut by energy, and not by a parameter of their own.
-A collision may be grouped only when nothing it would have produced would have
-been transported anyway, so the soft cutoff :math:`W_{cc}` of each channel is
-the transport cutoff of the secondary it makes: the electron cutoff for a
-knock-on, the photon cutoff for a bremsstrahlung photon. Raising those cutoffs
-therefore groups more. A second bound limits how much: no single grouped
-collision may carry more than
+The energy-losing channels are cut by energy, and not by a parameter of their
+own. A collision may be grouped only when nothing it would have produced
+would have been transported anyway, so each cutoff is the transport cutoff of
+what that channel emits. For bremsstrahlung that is the photon cutoff. For an
+inelastic collision it is the *smaller* of the electron and photon cutoffs:
+the collision ejects a knock-on, and the vacancy it leaves can fluoresce, so
+both have to be below their own cutoffs before the collision can be folded
+into a step. Raising those cutoffs therefore groups more. A second bound
+limits how much: no single grouped collision may carry more than
 :math:`\texttt{MAX\_SOFT\_LOSS\_SHARE} = 1/10` of the step's own energy
 budget, since a step describing its loss by a mean and a variance cannot have
 either resting on one event.
@@ -894,8 +942,10 @@ The Grouped Energy Loss
 
 Over the same path the grouped collisions take a mean :math:`sS` and a
 variance :math:`s\Omega`, where :math:`S` is the restricted stopping power and
-:math:`\Omega` the restricted straggling parameter, both integrals of the soft
-part of the inelastic cross sections:
+:math:`\Omega` the restricted straggling parameter. Both are integrals over
+everything the step groups -- the inelastic collisions below :math:`W_{cc}`,
+from the oscillator model, and the bremsstrahlung photons below the radiative
+cutoff:
 
 .. math::
     :label: ch-restricted-moments
@@ -945,11 +995,16 @@ and on arrival the interaction is accepted with probability
 :math:`\Sigma_{\text{hard}}(E)/\Sigma_{\max}`. A rejected draw is a *delta
 interaction*: the particle is left untouched and the next distance is sampled
 from the same majorant. This is Woodcock tracking in energy rather than in
-space, and it is exact for any valid majorant. The majorant is tabulated per
-material over the energy grid and taken as the larger of the bounds at the two
-grid points bracketing the step's window, so that it bounds the cross section
-between them as well as at them. A runtime warning is issued if it is ever
-found not to bound.
+space, and it is exact for any valid majorant.
+
+The majorant is tabulated where each channel lives: per element for the
+atom's own channels and per material for the inelastic one, the two summed by
+atom density and by electron density respectively, exactly as the cross
+sections they bound are. At each lookup the larger of the bounds at the two
+grid points bracketing the energy is taken rather than the interpolation
+between them -- a blend of two bounds is not a bound wherever the rate is
+concave across the interval. A runtime warning is issued if the majorant is
+ever found not to bound.
 
 The Collision Stopping Power
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -259,7 +259,11 @@ public:
   //!
   //! \param[inout] p Particle undergoing the collision
   //! \return Whether anything was sampled
-  bool sample_inelastic(Particle& p) const;
+  //! \param[in] hard Restrict the draw to the collisions above the soft
+  //!   cutoff, for one ending a grouped step. False takes the whole cross
+  //!   section, which is what a single-event flight and a step that declined
+  //!   to group are both transported on.
+  bool sample_inelastic(Particle& p, bool hard) const;
 
   //----------------------------------------------------------------------------
   // Data
@@ -359,6 +363,16 @@ public:
     tensor::Tensor<double> cumulative;
   };
   array<GosTables, 2> gos_;
+  //! The same rates with nothing grouped, per projectile charge: the full
+  //! inelastic cross section and its cumulative.
+  //!
+  //! A condensed-history run needs both. A step that declines to group is
+  //! flown single-event on macro_xs().total, and if that total carried only
+  //! the discrete rate the transfers under the cutoff would be missing from
+  //! it with no grouped channel to supply them. Only `hard` -- which is the
+  //! whole rate here -- and `cumulative` are filled; the soft moments are
+  //! empty by construction, there being no soft channel at zero cutoff.
+  array<GosTables, 2> gos_full_;
   //! Global element index of each block of oscillator_, and the reverse
   //! lookup: which block an element's oscillators start in
   vector<int> oscillator_element_;

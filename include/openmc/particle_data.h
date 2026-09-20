@@ -280,6 +280,11 @@ struct StepXS {
   //! It is the discrete rate: what a grouped step leaves behind, or the whole
   //! of it when nothing is grouped.
   double inelastic {0.0};
+  //! The same rate with nothing grouped, in [1/cm]. A flight that declines to
+  //! group is transported on the full cross section, so the share of
+  //! macro_xs().total that belongs to the inelastic channel is this rather
+  //! than the discrete rate above. Equal to it when nothing is grouped.
+  double inelastic_full {0.0};
 };
 
 struct MacroXS {

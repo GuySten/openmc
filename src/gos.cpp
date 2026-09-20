@@ -144,17 +144,32 @@ GosMoments gos_oscillator(
       s_lon = std::log(q_kp * (q_min + two_m) / (q_min * (q_kp + two_m)));
       s_tra = std::max(0.0, std::log(gamma_sq) - beta_sq - delta);
 
-      // Angular moments of the grouped distant collisions
+      // Angular moments of the grouped distant collisions.
+      //
+      // The recoil is written in x = (1 - mu)/2, in which the momentum
+      // transfer is (cq)^2 = b + a x and the distribution is dx/(x + b/a).
+      // The integrals T_n = \int x^n dx/(x + b/a) are elementary, and x_max
+      // is where the cutoff recoil puts it.
+      //
+      // The step wants the transport cross sections, which are moments of
+      // 1 - mu and (3/2)(1 - mu^2) rather than of x. Since 1 - mu = 2x and
+      // 1 - mu^2 = 4x(1 - x),
+      //
+      //     sigma_1 = 2 T_1,      sigma_2 = 6 (T_1 - T_2),
+      //
+      // and those are what is stored. PENELOPE applies the same two factors
+      // in the routine that calls this one; leaving them out halves the
+      // inelastic share of sigma_1 and empties sigma_2 altogether, against an
+      // elastic contribution that is already in the transport convention.
       if (w_cc > w_thr && a > 0.0) {
         double ba = b / a;
-        double mu1 = (q_kp * (q_kp + two_m) - b) / a;
-        m.xs0_soft = std::log((mu1 + ba) / ba);
-        m.xs1_soft = mu1 - ba * m.xs0_soft;
-        m.xs2_soft = ba * ba * m.xs0_soft + 0.5 * mu1 * (mu1 - 2.0 * ba);
-        m.xs0_soft /= w_kp;
-        m.xs1_soft /= w_kp;
-        m.xs2_soft /= w_kp;
-        m.xs0_soft += s_tra / w_kp;
+        double x_max = (q_kp * (q_kp + two_m) - b) / a;
+        double t0 = std::log((x_max + ba) / ba);
+        double t1 = x_max - ba * t0;
+        double t2 = ba * ba * t0 + 0.5 * x_max * (x_max - 2.0 * ba);
+        m.xs0_soft = (t0 + s_tra) / w_kp;
+        m.xs1_soft = 2.0 * t1 / w_kp;
+        m.xs2_soft = 6.0 * (t1 - t2) / w_kp;
       }
     }
   }

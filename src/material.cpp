@@ -12,6 +12,7 @@
 #include "openmc/tensor.h"
 
 #include "openmc/capi.h"
+#include "openmc/condensed_history.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
 #include "openmc/error.h"
@@ -692,6 +693,7 @@ void Material::init_electron_oscillators()
   constexpr double r_e = bohr_radius_cm / (FINE_STRUCTURE * FINE_STRUCTURE);
   constexpr double collision_const =
     2.0 * PI * 1.0e24 * r_e * r_e * MASS_ELECTRON_EV;
+  log_I_ = osc.log_I;
   double log_I_over_mc2 = osc.log_I - std::log(MASS_ELECTRON_EV);
   for (int q = 0; q < 2; ++q) {
     collision_stopping_[q] = tensor::Tensor<double>({n_e});
@@ -704,24 +706,10 @@ void Material::init_electron_oscillators()
         collision_stopping_[q](i) = 0.0;
         continue;
       }
-
-      // The spin term, which is the only place the two charges differ: an
-      // electron is indistinguishable from the electron it strikes and a
-      // positron is not, so one is Moller's and the other Bhabha's.
-      double f;
-      if (q == 0) {
-        f = 1.0 - beta_sq +
-            (tau * tau / 8.0 - (2.0 * tau + 1.0) * std::log(2.0)) /
-              ((tau + 1.0) * (tau + 1.0));
-      } else {
-        double t2 = tau + 2.0;
-        f = 2.0 * std::log(2.0) -
-            beta_sq / 12.0 *
-              (23.0 + 14.0 / t2 + 10.0 / (t2 * t2) + 4.0 / (t2 * t2 * t2));
-      }
-
+      double d_max = (q == 0) ? 0.5 * tau : tau;
       double bracket = std::log(tau * tau * (tau + 2.0) / 2.0) -
-                       2.0 * log_I_over_mc2 + f - density_effect_(i);
+                       2.0 * log_I_over_mc2 - density_effect_(i) +
+                       berger_seltzer_spin_term(tau, d_max, q == 1);
       // Per electron: the material's electron density belongs to the
       // transport, which already assembles it from the atom densities the
       // particle sees, density multiplier and all.
@@ -823,6 +811,69 @@ double Material::screening_correction(int q_index, double E) const
   int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
   double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
   return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
+Material::CollisionMoments Material::collision_moments(
+  int q_index, double E, double w_cc) const
+{
+  CollisionMoments m;
+  if (q_index < 0 || q_index > 1 || !(E > 0.0))
+    return m;
+
+  constexpr double bohr_radius_cm =
+    PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
+  constexpr double r_e = bohr_radius_cm / (FINE_STRUCTURE * FINE_STRUCTURE);
+  constexpr double collision_const =
+    2.0 * PI * 1.0e24 * r_e * r_e * MASS_ELECTRON_EV;
+
+  bool positron = q_index == 1;
+  double tau = E / MASS_ELECTRON_EV;
+  double gamma = tau + 1.0;
+  double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+  if (!(beta_sq > 0.0))
+    return m;
+  double k = collision_const / beta_sq;
+
+  double d_max = positron ? tau : 0.5 * tau;
+  double w_max = d_max * MASS_ELECTRON_EV;
+  double cut = std::max(0.0, std::min(w_cc, w_max));
+
+  // Soft: Berger-Seltzer restricted to transfers under the cutoff. The
+  // leading logarithm, the mean excitation energy and the density effect are
+  // the same whatever the cutoff, so only the spin term moves.
+  double leading = std::log(tau * tau * (tau + 2.0) / 2.0) -
+                   2.0 * (log_I_ - std::log(MASS_ELECTRON_EV)) -
+                   this->density_effect_correction(E);
+  if (cut > 0.0) {
+    m.s_soft =
+      std::max(0.0, k * (leading + berger_seltzer_spin_term(
+                                     tau, cut / MASS_ELECTRON_EV, positron)));
+  }
+
+  // Hard: the free binary cross section over what is left. Its stopping power
+  // is what the restricted form above leaves out, identically, which is the
+  // whole point of splitting it this way.
+  if (w_max > cut) {
+    double lo = std::max(cut, 1.0e-9 * w_max);
+    m.xs_hard = k * (positron ? detail::bhabha_moment(E, lo, w_max, 0)
+                              : detail::moller_moment(E, lo, w_max, 0));
+    m.s_hard = k * (positron ? detail::bhabha_moment(E, lo, w_max, 1)
+                             : detail::moller_moment(E, lo, w_max, 1));
+  }
+
+  // Second moment of the soft loss. Berger and Seltzer give the first moment
+  // and not this one, so it comes from the free cross section, which is the
+  // right shape where the second moment lives: W^2 dsigma/dW tends to a
+  // constant as W falls, so the moment is carried by the top of the soft
+  // range rather than by the bound transfers at the bottom of it. The
+  // integral from zero converges and is started just above it, the moment
+  // functions dividing by their lower limit.
+  if (cut > 0.0) {
+    double lo = 1.0e-9 * cut;
+    m.w2_soft = k * (positron ? detail::bhabha_moment(E, lo, cut, 2)
+                              : detail::moller_moment(E, lo, cut, 2));
+  }
+  return m;
 }
 
 double Material::collision_stopping_power(int q_index, double E) const
@@ -1317,6 +1368,48 @@ void Material::check_electron_tables() const
   };
 
   require(density_effect_.size() == n_grid, "density-effect table");
+
+  // The grouped and discrete halves of the collision loss have to add up to
+  // the stopping power the material has. They do so identically rather than
+  // approximately -- the transfers the restricted Berger-Seltzer form leaves
+  // out are exactly the ones the free binary cross section describes -- so
+  // this is not a tolerance to be tuned but a statement that the two halves
+  // are still the two halves of one thing. It is checked here, once per
+  // material, because if it ever stops holding the transport quietly runs on
+  // a stopping power that is neither.
+  //
+  // Only where there is a soft channel at all. The free binary cross section
+  // has no lower limit of its own -- its stopping integral runs away
+  // logarithmically as the transfer goes to zero -- so it can only ever
+  // describe the part of the loss above a cutoff. What makes the total finite
+  // is the binding, which enters through the mean excitation energy in the
+  // Berger-Seltzer form and nowhere else. A vanishing cutoff therefore does
+  // not mean "sample everything discretely"; it means this pair of
+  // descriptions has nothing to say, which is why EGSnrc's own threshold is
+  // never zero.
+  for (int q = 0; q < 2; ++q) {
+    ParticleType projectile =
+      (q == 0) ? ParticleType::electron() : ParticleType::positron();
+    for (int i = 0; i < n_grid; ++i) {
+      double E = data::brems_e_grid(i);
+      double total = collision_stopping_[q](i);
+      double w_cc = soft_collision_cutoff(projectile, E);
+      if (!(total > 0.0) || !(w_cc > 0.0))
+        continue;
+      auto m = this->collision_moments(q, E, w_cc);
+      double sum = m.s_soft + m.s_hard;
+      if (std::abs(sum - total) > 1.0e-9 * total) {
+        fatal_error(fmt::format(
+          "The collision loss of material {} does not add up at {:.4g} eV: "
+          "{:.8g} soft plus {:.8g} hard against a total of {:.8g} b eV per "
+          "electron. The two are meant to be complementary parts of one "
+          "stopping power, so transporting on them would be wrong in a way "
+          "nothing downstream could notice.",
+          id_, E, m.s_soft, m.s_hard, total));
+      }
+    }
+  }
+
   for (int q = 0; q < 2; ++q) {
     require(
       collision_stopping_[q].size() == n_grid, "collision stopping power");

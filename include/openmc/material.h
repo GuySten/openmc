@@ -204,6 +204,34 @@ public:
   //!   electron density in [1/(b cm)]
   double collision_stopping_power(int q_index, double E) const;
 
+  //! What a collision costs, split at the soft cutoff, per electron
+  //!
+  //! The two halves are not independent. Below the cutoff the loss is the
+  //! Berger-Seltzer stopping power restricted to those transfers; above it,
+  //! it is the free binary cross section over the rest of the range; and the
+  //! transfers the first leaves out are exactly the ones the second
+  //! describes, so they sum to the unrestricted ICRU 37 total at every energy
+  //! and every cutoff. That is what lets a mixed scheme group the first and
+  //! sample the second without the total drifting away from the stopping
+  //! power the material has. EGSnrc is built the same way, and PENELOPE
+  //! reaches the same place from a single oscillator model.
+  //!
+  //! Everything here is evaluated rather than interpolated, apart from the
+  //! density effect, which needs a Newton solve and is tabulated. Two
+  //! interpolations of the two halves on different grids would leave the sum
+  //! right only where the grids fall.
+  struct CollisionMoments {
+    double s_soft {0.0};  //!< restricted stopping power in [b eV]
+    double w2_soft {0.0}; //!< second moment of the restricted loss in [b eV^2]
+    double xs_hard {0.0}; //!< hard binary cross section in [b]
+    double s_hard {0.0};  //!< stopping power the hard channel carries [b eV]
+  };
+
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[in] w_cc Soft cutoff in [eV]; zero groups nothing
+  CollisionMoments collision_moments(int q_index, double E, double w_cc) const;
+
   //! Density-effect correction actually applied to collisions, per charge
   //!
   //! The Sternheimer correction less the amount by which the evaluated
@@ -263,6 +291,9 @@ public:
   //! in [b eV], on data::brems_e_grid, one table per projectile charge. See
   //! collision_stopping_power().
   array<tensor::Tensor<double>, 2> collision_stopping_;
+  //! Natural log of the mean excitation energy in [eV], from the oscillator
+  //! table. collision_moments() needs it at every cross section lookup.
+  double log_I_ {0.0};
   //! The share of the density effect the evaluated data can absorb, per
   //! projectile charge, on data::brems_e_grid. See screening_correction().
   array<tensor::Tensor<double>, 2> screening_;

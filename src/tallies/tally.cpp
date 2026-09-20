@@ -1211,6 +1211,19 @@ void setup_active_tallies()
         break;
 
       case TallyType::PULSE_HEIGHT:
+        // Pulse-height scoring follows photons only: a collision credits the
+        // whole energy to the cell it happened in and the secondaries carry
+        // their share back out again. A transported electron is not accounted
+        // for either way -- it is credited where the photon interacted and
+        // never debited when it leaves, and the bremsstrahlung it makes is
+        // debited in whatever cell the photon was born in rather than where
+        // the electron that made it was. That is right for a detector of one
+        // cell and wrong for any other, silently, so say so.
+        if (settings::electron_transport) {
+          warning("Pulse-height tallies do not account for transported "
+                  "electrons leaving the scoring cell. The result is correct "
+                  "only if the cell is large enough that they do not.");
+        }
         model::active_pulse_height_tallies.push_back(i);
         break;
       }

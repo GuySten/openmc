@@ -28,6 +28,14 @@
 
 namespace openmc {
 
+//! Most tries a rejection loop takes before giving up
+//!
+//! Every rejection here is drawn against a bound that holds, so the loops end
+//! long before this. It exists so that a bound that does not hold -- an
+//! evaluation nobody has checked, a table edited by hand -- costs a slightly
+//! wrong sample rather than a run that never returns.
+constexpr int MAX_REJECTION {1000};
+
 //==============================================================================
 // Global variables
 //==============================================================================
@@ -919,9 +927,12 @@ void Element::bhabha(Particle& p, int i_shell, double w_min) const
 
   // Sample the transfer from 1/W^2 over [W_lo, T] and take the rest of the
   // Bhabha shape by rejection; it is at most 1 on this interval
+  // The shape factor is at most 1 on this interval, checked numerically from
+  // 1 keV to 100 MeV, so the loop terminates; it is bounded anyway rather than
+  // left able to hang a run on a table nobody has checked.
   FreeCollision c {E};
-  double W;
-  while (true) {
+  double W = W_lo;
+  for (int it = 0; it < MAX_REJECTION; ++it) {
     double xi = prn(p.current_seed());
     W = W_lo * E / (E - xi * (E - W_lo));
     if (prn(p.current_seed()) < c.bhabha(W / E) * (W * W) / (E * E))
@@ -957,7 +968,7 @@ void Element::calculate_electron_xs(Particle& p) const
   // the factor is unbounded, and extrapolating linearly sends the partials
   // negative: below the first grid point the elastic cross section then
   // exceeds the total and the sampler is pinned on the elastic branch for
-  // ever. That is reachable, because the default electron cutoff is zero.
+  // ever. That is reachable whenever the cutoff is left at zero.
   double f = (E - electron_energy_(i_grid)) /
              (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
   f = std::max(0.0, std::min(1.0, f));
@@ -1024,7 +1035,7 @@ void Element::calculate_electron_xs(Particle& p) const
       inelastic_soft_s_[q].size() == n_grid) {
     // Every one of these is a straight interpolation on the index already in
     // hand. They were accessor calls, each searching the energy grid again --
-    // elastic_split() and inelastic_soft() among them, so the lookup searched
+    // inelastic_soft() among them, so the lookup searched
     // a grid of several hundred points a dozen times over for one energy.
     auto on_grid = [i_grid, f](const tensor::Tensor<double>& v) {
       return v(i_grid) + f * (v(i_grid + 1) - v(i_grid));
@@ -1127,42 +1138,6 @@ double Element::elastic_scatter_hard(int q_index, double E, double xs_elastic,
                     ? std::min(1.0, std::max(0.0, xs_hard) / xs_elastic)
                     : 1.0;
   return elastic_angle_[q_index].sample_restricted(E, p_hard, seed);
-}
-
-ElasticSplit Element::elastic_split(int q_index, double E) const
-{
-  ElasticSplit split;
-  int n = electron_energy_.size();
-  if (n < 2 || elastic_[q_index].size() != n)
-    return split;
-
-  // Same clamped lookup the cross sections use
-  int i =
-    upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
-  i = std::max(0, std::min(i, n - 2));
-  double f =
-    (E - electron_energy_(i)) / (electron_energy_(i + 1) - electron_energy_(i));
-  f = std::max(0.0, std::min(1.0, f));
-
-  auto interp = [i, f](const tensor::Tensor<double>& v) {
-    return v(i) + f * (v(i + 1) - v(i));
-  };
-
-  double xs = std::max(0.0, interp(elastic_[q_index]));
-
-  // Single-event transport, which is what C1 = 0 asks for and what a library
-  // without the split tabulated gets: the cutoff sits at mu = 1, every
-  // collision is hard and nothing is grouped.
-  if (elastic_p_hard_[q_index].size() != n) {
-    split.xs_hard = xs;
-    return split;
-  }
-
-  split.mu_cut = 1.0 - std::max(0.0, interp(elastic_dcut_[q_index]));
-  split.xs_hard = std::max(0.0, xs * interp(elastic_p_hard_[q_index]));
-  split.xs1_soft = std::max(0.0, xs * interp(elastic_mu1_soft_[q_index]));
-  split.xs2_soft = std::max(0.0, xs * interp(elastic_mu2_soft_[q_index]));
-  return split;
 }
 
 void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
@@ -1489,17 +1464,6 @@ void Element::compute_inelastic_transport(int q_index,
   }
 }
 
-double Element::excitation_hard_fraction(int q_index, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 || excitation_p_hard_[q_index].size() != n)
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = excitation_p_hard_[q_index];
-  return std::max(0.0, std::min(1.0, v(i) + f * (v(i + 1) - v(i))));
-}
-
 double Element::ionization_hard_fraction(
   int q_index, int i_shell, double E) const
 {
@@ -1524,17 +1488,6 @@ double Element::bhabha_hard_fraction(int i_shell, double E) const
   const auto& v = bhabha_p_hard_;
   return std::max(0.0,
     std::min(1.0, v(i_shell, i) + f * (v(i_shell, i + 1) - v(i_shell, i))));
-}
-
-double Element::bremsstrahlung_hard_fraction(int q_index, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 || brems_p_hard_[q_index].size() != n)
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = brems_p_hard_[q_index];
-  return std::max(0.0, std::min(1.0, v(i) + f * (v(i + 1) - v(i))));
 }
 
 double Element::excitation(double E) const
@@ -2030,7 +1983,7 @@ double Element::sample_bremsstrahlung_energy(
     return 0.0;
 
   double ratio = E / k_min;
-  while (true) {
+  for (int it = 0; it < MAX_REJECTION; ++it) {
     double k = k_min * std::pow(ratio, prn(seed));
     double x = k / E;
     int j = lower_bound_index(kappa.cbegin(), kappa.cend(), x);
@@ -2042,6 +1995,11 @@ double Element::sample_bremsstrahlung_energy(
     if (prn(seed) * chi_max < chi)
       return k;
   }
+
+  // Unreachable while chi_max bounds the table it was built from. Falling back
+  // to the softest photon the channel can emit keeps the emission rate right
+  // and costs the spectrum nothing measurable if it ever is reached.
+  return k_min;
 }
 
 double Element::annihilation_xs(double E) const
@@ -2084,8 +2042,8 @@ void Element::annihilation(Particle& p) const
   // normalised to its own maximum, as in EGSnrc.
   double ep0 = 1.0 / (a + pc);
   double span = std::log((1.0 - ep0) / ep0);
-  double ep;
-  while (true) {
+  double ep = ep0;
+  for (int it = 0; it < MAX_REJECTION; ++it) {
     ep = ep0 * std::exp(span * prn(p.current_seed()));
     double arg = ep * a - 1.0;
     double rejection = 1.0 - arg * arg / (ep * (a * a - 2.0));

@@ -55,14 +55,6 @@ public:
 //! first transport cross section of the soft part sets the size of that
 //! deflection, the second its shape.
 //==============================================================================
-
-struct ElasticSplit {
-  double mu_cut {1.0};   //!< cosine below which a deflection is hard
-  double xs_hard {0.0};  //!< hard elastic cross section in [b]
-  double xs1_soft {0.0}; //!< first transport cross section of the soft part
-  double xs2_soft {0.0}; //!< second transport cross section of the soft part
-};
-
 class Element {
 public:
   // Constructors/destructor
@@ -106,17 +98,6 @@ public:
 
   //! Elastic cross section in [b] at one energy
   double elastic_xs(int q_index, double E) const;
-
-  //! Soft/hard split of elastic scattering at one energy
-  //!
-  //! All three cross sections are per atom and in the same units as the
-  //! elastic cross section itself. The split is tabulated at load time from
-  //! settings::deflection_cutoff, so this is a grid lookup.
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \return The cutoff and the cross sections it implies
-  ElasticSplit elastic_split(int q_index, double E) const;
 
   //! Soft inelastic energy loss, per atom and per unit path
   //!
@@ -179,22 +160,8 @@ public:
     return electron_energy_;
   }
 
-  //! Fraction of a channel that stays a discrete collision
-  //!
-  //! Multiply the channel's cross section by this to get the rate of hard
-  //! collisions. For electroionization the fraction is a quantile of the
-  //! knock-on spectrum, which is what lets a positron's collisions keep using
-  //! rejection: rejecting within the hard part leaves that part's quantile
-  //! range alone. The two projectiles still differ, because their thresholds
-  //! do. Bhabha scattering exists only for a positron and takes no charge.
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \param[in] i_shell Index into the electroionization subshell list
-  double excitation_hard_fraction(int q_index, double E) const;
   double ionization_hard_fraction(int q_index, int i_shell, double E) const;
   double bhabha_hard_fraction(int i_shell, double E) const;
-  double bremsstrahlung_hard_fraction(int q_index, double E) const;
 
   double excitation(double E) const;
 

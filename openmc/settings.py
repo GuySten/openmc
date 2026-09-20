@@ -118,7 +118,11 @@ class Settings:
         screening is real, and switching it off overstates the collision
         stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It exists for
         Fano cavity tests, whose theorem requires the mass stopping power to be
-        independent of density -- which is the very term this correction adds.
+        independent of density. Setting it to False removes every density
+        dependence the collision model has: the Sternheimer correction itself,
+        and the plasma term in the oscillator resonance energies, which would
+        otherwise leave the same element with two different loss spectra at
+        two different densities.
 
         .. versionadded:: 0.17.0
     electron_transport : bool

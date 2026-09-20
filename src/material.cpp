@@ -583,6 +583,27 @@ Material::OscillatorTable Material::oscillator_table() const
     PLANCK_C * PLANCK_C * PLANCK_C * N_AVOGADRO * electron_density * density /
     (2.0 * PI * PI * FINE_STRUCTURE * MASS_ELECTRON_EV * mass_density);
 
+  // The plasma energy is the medium's response to its own density, and it
+  // enters this model twice: once through the Sternheimer correction, and
+  // again through the resonance energies themselves,
+  //
+  //     W_i^2 = rho^2 U_i^2 + (2/3) f_i Omega_p^2.
+  //
+  // settings::density_effect exists to put the code in the regime where
+  // Fano's theorem is exact, which needs the mass stopping power to depend on
+  // nothing but the composition. Zeroing the correction alone does not reach
+  // that regime: the resonances would still move with the density, so the
+  // same element at two densities would keep two different loss spectra and a
+  // cavity test would measure that difference rather than the transport.
+  //
+  // So the whole term goes. What is left is the low-density limit of the same
+  // model, W_i = rho U_i, with the Sternheimer factor still solved against
+  // sum_i f_i ln W_i = ln I -- which is then closed form, rho = I / exp(sum_i
+  // f_i ln U_i) -- so the sum rules and the ICRU 37 total are untouched and
+  // every oscillator stays where the mean excitation energy puts it.
+  if (!settings::density_effect)
+    e_p_sq = 0.0;
+
   OscillatorTable osc;
   osc.f = std::move(f);
   osc.e_b_sq = std::move(e_b_sq);

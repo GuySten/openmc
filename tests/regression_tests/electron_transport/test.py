@@ -137,3 +137,194 @@ def test_event_based_mode_agrees(tmp_path):
         _model(0.005, event_based=True), tmp_path, 'event')
 
     assert event == pytest.approx(history, rel=1e-10)
+
+
+# The Landau most probable loss, and what a thin foil is for
+# ---------------------------------------------------------
+# Landau's formula gives the most probable COLLISION loss of a fast charged
+# particle in a foil thin enough that its energy hardly changes:
+#
+#   Dp = xi [ ln(2 m c^2 beta^2 gamma^2 / I) + ln(xi / I) + j - beta^2 - delta ]
+#
+# with xi = (K/2)(Z/A) x / beta^2. It is a property of the medium and of the
+# thickness alone, so it tests the transport against something outside the
+# code -- and it tests the SHAPE of the energy-loss distribution rather than
+# its mean, which is what a mean stopping power cannot check. A hard transfer
+# spectrum short in its tail pays for it in the middle, keeps the mean, and
+# reports the peak too far out: that is exactly the failure this catches.
+CU_RHO = 8.92
+CU_X = 1.372                          # g/cm2, ~12 grouped steps at 16 MeV
+CU_E0 = 16.1e6
+CU_STERNHEIMER = (-0.0254, 3.2792, -4.4190, 0.14339, 2.9044)
+
+
+def _landau_mode(Z, A, x, I, sternheimer, E0):
+    """Most probable collision loss in [eV], Landau's formula"""
+    mc2 = 0.51099895e6
+    gamma = E0 / mc2 + 1.0
+    beta_sq = 1.0 - 1.0 / gamma**2
+    xi = 0.1535 * (Z / A) * x / beta_sq * 1e6
+    X0, X1, C, a, m = sternheimer
+    X = np.log10(np.sqrt(gamma * gamma - 1.0))
+    delta = 4.6052 * X + C + (a * (X1 - X) ** m if X < X1 else 0.0)
+    return xi * (np.log(2 * mc2 * beta_sq * gamma**2 / I) + np.log(xi / I)
+                 + 0.200 - beta_sq - delta)
+
+
+def _foil_model(deflection, energy_loss, particles=30000, seed=11):
+    """Copper foil thin enough to stay in the Landau regime"""
+    openmc.reset_auto_ids()
+    cu = openmc.Material()
+    cu.add_element('Cu', 1.0)
+    cu.set_density('g/cm3', CU_RHO)
+    thickness = CU_X / CU_RHO
+    box = openmc.model.RectangularParallelepiped(
+        -2.0, 2.0, -2.0, 2.0, 0.0, thickness, boundary_type='vacuum')
+    cell = openmc.Cell(fill=cu, region=-box)
+
+    settings = openmc.Settings()
+    settings.run_mode = 'fixed source'
+    settings.batches = 10
+    settings.particles = particles // 10
+    settings.seed = seed
+    settings.photon_transport = True
+    settings.electron_transport = True
+    settings.cutoff = {'energy_photon': 1.0e3, 'energy_electron': 1.0e3,
+                       'energy_positron': 1.0e3, 'deflection': deflection,
+                       'energy_loss': energy_loss}
+    settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point((0.0, 0.0, 1.0e-6)),
+        angle=openmc.stats.Monodirectional((0.0, 0.0, 1.0)),
+        energy=openmc.stats.delta_function(CU_E0), particle='electron')
+
+    edges = np.linspace(0.85 * CU_E0, CU_E0, 121)
+    spectrum = openmc.Tally(name='spectrum')
+    spectrum.filters = [openmc.ParticleFilter(['electron']),
+                        openmc.SurfaceFilter([box.zmax]),
+                        openmc.EnergyFilter(edges)]
+    spectrum.scores = ['current']
+    return openmc.Model(openmc.Geometry([cell]), openmc.Materials([cu]),
+                        settings, openmc.Tallies([spectrum])), edges
+
+
+def _most_probable_loss(deflection, energy_loss, tmp_path, name):
+    """Peak of the energy-loss distribution in [eV], by parabola"""
+    model, edges = _foil_model(deflection, energy_loss)
+    with model.run(cwd=tmp_path / name, output=False) as path:
+        with openmc.StatePoint(path) as sp:
+            counts = sp.get_tally(name='spectrum').mean.ravel()
+
+    loss = CU_E0 - 0.5 * (edges[:-1] + edges[1:])
+    peak = int(np.argmax(counts))
+    if 0 < peak < len(counts) - 1:
+        c2, c1, _ = np.polyfit(loss[peak - 1:peak + 2],
+                               counts[peak - 1:peak + 2], 2)
+        if c2 < 0.0:
+            return -c1 / (2.0 * c2)
+    return loss[peak]
+
+
+def test_landau_most_probable_loss(tmp_path):
+    """The peak of the energy-loss distribution sits where Landau says
+
+    Not an equality. Landau's is the collision loss alone, and a real foil
+    also radiates, which can only move the peak up; the foil is thick enough
+    that beta changes a little across it, which the formula assumes it does
+    not. Measured, those are worth five per cent here and seven per cent for
+    1 MeV electrons in aluminium, so the band is generous on the high side and
+    tight on the low, where nothing physical can take the peak.
+
+    What it catches is the peak in the wrong place by more than that, which is
+    what a transfer spectrum with too few large transfers reports: before the
+    hard channel carried max(evaluated, free), this came out at 1.16 times the
+    Landau value.
+    """
+    theory = _landau_mode(29, 63.546, CU_X, 322.0, CU_STERNHEIMER, CU_E0)
+    measured = _most_probable_loss(0.01, 0.01, tmp_path, 'landau')
+
+    ratio = measured / theory
+    assert ratio > 0.98, (
+        f'peak at {ratio:.3f} of the Landau loss; nothing physical puts it '
+        'below, so the collision spectrum is too soft')
+    assert ratio < 1.12, (
+        f'peak at {ratio:.3f} of the Landau loss; too far out for '
+        'bremsstrahlung to explain, so the transfer spectrum is short in its '
+        'tail')
+
+
+def test_most_probable_loss_survives_the_step(tmp_path):
+    """The peak does not move when the step bounds are opened up
+
+    Sharper than the comparison with Landau, and free of its assumptions: the
+    grouped step is an approximation with a knob, and the distribution it
+    produces must not depend on where the knob is set. A step that swallows
+    too much of the spectrum shows up here first.
+    """
+    fine = _most_probable_loss(0.01, 0.01, tmp_path, 'fine')
+    coarse = _most_probable_loss(0.05, 0.05, tmp_path, 'coarse')
+
+    assert coarse == pytest.approx(fine, rel=0.04), (
+        f'peak moved from {fine:.4g} to {coarse:.4g} eV when the step bounds '
+        'were opened up five-fold')
+
+
+def _k_xray_yield(deflection, tmp_path, name, particles=30000):
+    """Cu K x-rays leaving a thin foil, per incident electron"""
+    openmc.reset_auto_ids()
+    cu = openmc.Material()
+    cu.add_element('Cu', 1.0)
+    cu.set_density('g/cm3', CU_RHO)
+    box = openmc.model.RectangularParallelepiped(
+        -1.0, 1.0, -1.0, 1.0, 0.0, 0.002, boundary_type='vacuum')
+    cell = openmc.Cell(fill=cu, region=-box)
+
+    settings = openmc.Settings()
+    settings.run_mode = 'fixed source'
+    settings.batches = 10
+    settings.particles = particles // 10
+    settings.seed = 5
+    settings.photon_transport = True
+    settings.electron_transport = True
+    settings.cutoff = {'energy_photon': 1.0e3, 'energy_electron': 1.0e3,
+                       'energy_positron': 1.0e3, 'deflection': deflection,
+                       'energy_loss': 0.01}
+    settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point((0.0, 0.0, 1.0e-4)),
+        angle=openmc.stats.Monodirectional((0.0, 0.0, 1.0)),
+        energy=openmc.stats.delta_function(1.0e6), particle='electron')
+
+    # Cu K-alpha is 8.05 keV and K-beta 8.90 keV; nothing else lands here
+    lines = openmc.Tally(name='k')
+    lines.filters = [openmc.ParticleFilter(['photon']),
+                     openmc.SurfaceFilter([box.zmax]),
+                     openmc.EnergyFilter([7.5e3, 9.5e3])]
+    lines.scores = ['current']
+    model = openmc.Model(openmc.Geometry([cell]), openmc.Materials([cu]),
+                         settings, openmc.Tallies([lines]))
+    with model.run(cwd=tmp_path / name, output=False) as path:
+        with openmc.StatePoint(path) as sp:
+            tally = sp.get_tally(name='k')
+            return tally.mean.ravel()[0], tally.std_dev.ravel()[0]
+
+
+def test_inner_shell_vacancies_survive_grouping(tmp_path):
+    """Grouping does not cost the K vacancies that make the x-rays
+
+    The K-shell ionization cross section is mostly distant: the free binary
+    cross section accounts for under a third of it in copper, and under a
+    fifth in lead. A hard channel built from the free cross section alone
+    therefore keeps the energy -- the stopping power is held to ICRU 37 either
+    way -- while quietly losing three quarters of the vacancies, and with them
+    the characteristic x rays. Single-event transport never uses that channel,
+    so it is the control.
+
+    The tally is the two Cu K lines, which nothing else in the problem makes.
+    """
+    grouped, grouped_err = _k_xray_yield(0.01, tmp_path, 'k_grouped')
+    single, single_err = _k_xray_yield(0.0, tmp_path, 'k_single')
+
+    assert grouped > 0.0, 'no K x-rays at all under condensed history'
+    spread = np.hypot(grouped_err, single_err)
+    assert abs(grouped - single) < 3.0 * spread, (
+        f'K x-ray yield {grouped:.4e} grouped against {single:.4e} '
+        'single-event: grouping is losing inner-shell vacancies')

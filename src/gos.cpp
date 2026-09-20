@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "openmc/constants.h"
+#include "openmc/random_lcg.h"
 
 namespace openmc {
 
@@ -236,6 +237,172 @@ GosMoments gos_oscillator(
   m.xs1_soft *= k;
   m.xs2_soft *= k;
   return m;
+}
+
+GosCollision sample_gos_collision(double E, double u_b, double w_r,
+  double delta, double w_cc, bool positron, uint64_t* seed)
+{
+  GosCollision c;
+  c.w = 0.0;
+  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
+
+  bool bound = u_b > 1.0e-3;
+  double w_thr = std::max(w_cc, bound ? u_b : w_r);
+  if (E < w_thr + 1.0e-6)
+    return c;
+
+  // The same threshold trick the moments were integrated under, so that what
+  // is sampled here is the distribution they counted
+  bool distant = true;
+  double w_m, w_kp, q_kp, ee, w_cmax, w_dmax;
+  if (bound) {
+    w_m = 3.0 * w_r - 2.0 * u_b;
+    if (E > w_m) {
+      w_kp = w_r;
+      q_kp = u_b;
+    } else {
+      w_kp = (E + 2.0 * u_b) / 3.0;
+      q_kp = u_b * (E / w_m);
+      w_m = E;
+    }
+    if (w_cc > w_m)
+      distant = false;
+    ee = positron ? E : E + u_b;
+    w_cmax = positron ? E : 0.5 * ee;
+    w_dmax = std::min(w_m, positron ? E : 0.5 * (E + u_b));
+    if (w_thr > w_dmax)
+      distant = false;
+  } else {
+    if (w_cc > w_r)
+      distant = false;
+    w_kp = w_r;
+    q_kp = w_r;
+    w_m = E;
+    ee = E;
+    w_cmax = positron ? E : 0.5 * E;
+    w_dmax = w_kp + 1.0;
+  }
+
+  double rb = E + two_m;
+  double gamma = 1.0 + E / MASS_ELECTRON_EV;
+  double gamma_sq = gamma * gamma;
+  double beta_sq = (gamma_sq - 1.0) / gamma_sq;
+  double amol = std::pow((gamma - 1.0) / gamma, 2);
+  double cps = E * rb;
+  double cp = std::sqrt(cps);
+
+  // Partial cross sections of this oscillator, in the same units as each
+  // other; only their ratios are used
+  double x_lon = 0.0;
+  double x_tra = 0.0;
+  double cpp = 0.0;
+  double cpps = 0.0;
+  double q_min = 0.0;
+  if (distant) {
+    cpps = (E - w_kp) * (E - w_kp + two_m);
+    cpp = std::sqrt(cpps);
+    if (w_kp > 1.0e-6 * E) {
+      q_min = std::sqrt(
+                (cp - cpp) * (cp - cpp) + MASS_ELECTRON_EV * MASS_ELECTRON_EV) -
+              MASS_ELECTRON_EV;
+    } else {
+      q_min = w_kp * w_kp / (beta_sq * two_m);
+      q_min = q_min * (1.0 - q_min / two_m);
+    }
+    if (q_min < q_kp) {
+      x_lon =
+        std::log(q_kp * (q_min + two_m) / (q_min * (q_kp + two_m))) / w_kp;
+      x_tra = std::max(0.0, std::log(gamma_sq) - beta_sq - delta) / w_kp;
+      if (bound) {
+        double f0 = (w_dmax - w_thr) * (w_m + w_m - w_dmax - w_thr) /
+                    ((w_m - u_b) * (w_m - u_b));
+        x_lon *= f0;
+        x_tra *= f0;
+      }
+    }
+  }
+
+  // Close collisions, from the same antiderivative the moments used
+  double x_close = 0.0;
+  if (w_cmax > w_thr) {
+    double m0 = 0.0, m1 = 0.0, m2 = 0.0;
+    if (positron) {
+      close_moments_positron(E, amol, w_thr, w_cmax, m0, m1, m2);
+    } else {
+      close_moments(ee, amol, w_thr, w_cmax, m0, m1, m2);
+    }
+    x_close = std::max(0.0, m0);
+  }
+
+  double total = x_close + x_lon + x_tra;
+  if (total < 1.0e-35)
+    return c;
+
+  double xi = prn(seed) * total;
+
+  // ==========================================================================
+  // Close collision: the transfer comes from the binary shape by rejection
+  // against its 1/W^2 envelope, which is what the shape is built around
+  if (xi < x_close) {
+    // Sample the 1/W^2 the shape is built around, which inverts exactly, and
+    // carry the rest by rejection. Times x^2 the shape is 1 at x = 0 and
+    // monotone from there, so the bound is the end point.
+    FreeCollision fc {E};
+    double w = w_thr;
+    double inv_lo = 1.0 / w_thr;
+    double inv_hi = 1.0 / w_cmax;
+    double x_hi = w_cmax / ee;
+    double u_hi = 1.0 - x_hi;
+    double bound_shape =
+      positron ? 1.0 + fc.b1 * x_hi + fc.b2 * x_hi * x_hi +
+                   fc.b3 * x_hi * x_hi * x_hi + fc.b4 * std::pow(x_hi, 4)
+               : 1.0 + x_hi * x_hi / (u_hi * u_hi) + fc.amol * x_hi * x_hi;
+    for (int it = 0; it < MAX_REJECTION; ++it) {
+      w = 1.0 / (inv_lo - prn(seed) * (inv_lo - inv_hi));
+      double x = w / ee;
+      double shape = positron ? fc.bhabha(x) : fc.moller(x);
+      if (prn(seed) * bound_shape <= shape * x * x)
+        break;
+    }
+    c.w = w;
+    c.mu = std::sqrt((E - w) * rb / (E * (rb - w)));
+    c.e_knock = bound ? w - u_b : w;
+    c.mu_knock = std::sqrt(w * rb / (E * (w + two_m)));
+    c.ionised = bound;
+    return c;
+  }
+
+  // ==========================================================================
+  // Distant interaction. The loss is the resonance for an outer shell and is
+  // drawn from the triangle for an inner one.
+  double w = w_kp;
+  if (bound) {
+    w = w_m -
+        std::sqrt((w_m - w_thr) * (w_m - w_thr) -
+                  prn(seed) * (w_dmax - w_thr) * (w_m + w_m - w_dmax - w_thr));
+  }
+  c.w = w;
+  c.e_knock = bound ? w - u_b : w;
+  c.ionised = bound;
+
+  if (xi < x_close + x_lon) {
+    // Longitudinal: the recoil is distributed as 1/(Q(Q+2mc^2)) between its
+    // kinematic minimum and the resonance, which inverts in closed form
+    double qs = q_min / (1.0 + q_min / two_m);
+    double q = qs / (std::pow((qs / q_kp) * (1.0 + q_kp / two_m), prn(seed)) -
+                      qs / two_m);
+    double q_tot = q * (q + two_m);
+    c.mu = std::min(1.0, (cpps + cps - q_tot) / (2.0 * cp * cpp));
+    c.mu_knock = std::min(
+      1.0, 0.5 * (w_kp * (E + rb - w_kp) + q_tot) / std::sqrt(cps * q_tot));
+    return c;
+  }
+
+  // Transverse: no momentum handed over, so nothing is deflected. This is the
+  // branch the density effect screens away.
+  c.mu = 1.0;
+  c.mu_knock = 1.0;
+  return c;
 }
 
 } // namespace openmc

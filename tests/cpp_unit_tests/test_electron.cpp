@@ -562,3 +562,61 @@ TEST_CASE("the oscillator split conserves its moments")
     }
   }
 }
+
+// What is sampled must be what was counted
+// ----------------------------------------
+// The cross sections a step is flown with come from gos_oscillator() and the
+// collisions that end it come from sample_gos_collision(). If the two ever
+// describe different distributions the transport removes energy at one rate
+// and deposits it at another, and nothing downstream can tell. So the mean
+// loss over many draws is compared against the ratio of the analytic moments,
+// which is the same number by construction and by nothing else.
+TEST_CASE("the sampled hard collision matches the moments it was counted with")
+{
+  uint64_t seed = 20260920;
+  constexpr int N = 200000;
+
+  for (bool positron : {false, true}) {
+    for (double u_b : {0.0, 60.0, 1096.0}) {
+      double w_r = (u_b > 0.0) ? 1.25 * u_b + 30.0 : 85.0;
+      for (double E : {1.0e5, 1.0e6, 1.0e7}) {
+        for (double w_cc : {0.0, 1.0e3}) {
+          auto g = openmc::gos_oscillator(E, u_b, w_r, 0.4, w_cc, positron);
+          if (!(g.xs_hard > 0.0) || !(g.s_hard > 0.0))
+            continue;
+          double expected = g.s_hard / g.xs_hard;
+
+          double sum = 0.0;
+          int n = 0;
+          for (int i = 0; i < N; ++i) {
+            auto c = openmc::sample_gos_collision(
+              E, u_b, w_r, 0.4, w_cc, positron, &seed);
+            if (c.w > 0.0) {
+              sum += c.w;
+              ++n;
+            }
+          }
+          REQUIRE(n > N / 2);
+          double mean = sum / n;
+
+          // How close the sample mean can be expected to come is set by the
+          // spread of the distribution, and that is the second moment, which
+          // is also analytic here. It matters: the close collisions go as
+          // 1/W^2, so the variance is carried by the largest transfers and
+          // the mean converges far slower than 1/sqrt(N) would suggest -- at
+          // 10 MeV the standard error is some five per cent of the mean even
+          // after two hundred thousand draws. Using the model's own second
+          // moment to say so turns this into a check on both moments rather
+          // than a looser check on the first.
+          double second = g.w2_hard / g.xs_hard;
+          double variance = std::max(0.0, second - expected * expected);
+          double sigma = std::sqrt(variance / n);
+          INFO("positron=" << positron << " u_b=" << u_b << " w_r=" << w_r
+                           << " E=" << E << " w_cc=" << w_cc);
+          CHECK_THAT(
+            mean, WithinAbs(expected, 5.0 * sigma + 1.0e-9 * expected));
+        }
+      }
+    }
+  }
+}

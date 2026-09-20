@@ -5,6 +5,7 @@
 #include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
+#include "openmc/gos.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/material.h"
 #include "openmc/math_functions.h"
@@ -27,14 +28,6 @@
 #include <tuple> // for tie
 
 namespace openmc {
-
-//! Most tries a rejection loop takes before giving up
-//!
-//! Every rejection here is drawn against a bound that holds, so the loops end
-//! long before this. It exists so that a bound that does not hold -- an
-//! evaluation nobody has checked, a table edited by hand -- costs a slightly
-//! wrong sample rather than a run that never returns.
-constexpr int MAX_REJECTION {1000};
 
 //==============================================================================
 // Global variables
@@ -253,47 +246,6 @@ void Element::read_electron_data(hid_t group)
 }
 
 namespace {
-
-//! The free Moller and Bhabha differential cross sections, as functions of the
-//! fraction eps = W/T of its kinetic energy the projectile transfers
-//
-//! Both carry the same leading constant, so only their shapes are written here
-//! and the constant cancels wherever the two are divided. The coefficients are
-//! PENELOPE's.
-struct FreeCollision {
-  double b1, b2, b3, b4; //!< Bhabha
-  double amol, moller_c; //!< Moller
-
-  explicit FreeCollision(double E)
-  {
-    double gamma = 1.0 + E / MASS_ELECTRON_EV;
-    // ((gamma-1)/gamma)^2, the constant term of the Moller shape and the
-    // common factor of every Bhabha coefficient
-    amol = std::pow((gamma - 1.0) / gamma, 2);
-    double g12 = (gamma + 1.0) * (gamma + 1.0);
-    b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
-    b2 = amol * (3.0 + 1.0 / g12);
-    b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
-    b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
-    moller_c = (2.0 * gamma - 1.0) / (gamma * gamma);
-  }
-
-  double bhabha(double x) const
-  {
-    return (1.0 + x * (-b1 + x * (b2 + x * (-b3 + x * b4)))) / (x * x);
-  }
-
-  double moller(double x) const
-  {
-    double u = 1.0 - x;
-    return 1.0 / (x * x) + 1.0 / (u * u) + amol - moller_c / (x * u);
-  }
-
-  //! Ratio of the two. It tends to 1 as x tends to 0, where both become
-  //! Rutherford's 1/x^2, so it leaves the soft collisions -- which are almost
-  //! all of them -- alone. Relativistically it is 1 - 2x to good accuracy.
-  double ratio(double x) const { return this->bhabha(x) / this->moller(x); }
-};
 
 //! Integral of W^order times the Bhabha cross section shape over W, with the
 //! leading constant dropped. Every term is elementary.

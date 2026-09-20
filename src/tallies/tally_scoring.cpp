@@ -333,8 +333,20 @@ double get_reaction_q_value(const Particle& p)
   if (p.type().is_photon() && p.event_mt() == PAIR_PROD) {
     // pair production
     return -2 * MASS_ELECTRON_EV;
-  } else if (p.type() == ParticleType::positron()) {
-    // positron annihilation
+  } else if (p.type() == ParticleType::positron() &&
+             (p.event_mt() == POSITRON_ANNIHILATION ||
+               !settings::electron_transport)) {
+    // Positron annihilation, which releases the pair's rest mass into two
+    // banked photons. The energy balance below subtracts those again, so the
+    // net local deposit is the positron's kinetic energy, which is what this
+    // Q is for.
+    //
+    // Only at the annihilation. Without electron transport a positron has
+    // exactly one collision and that collision IS the annihilation, so the
+    // particle type alone was enough to identify it. A transported positron
+    // collides many times first, and crediting 2 m_e c^2 at every one of them
+    // invents 1.022 MeV of heating per collision: a 20 MeV electron on lead
+    // came out depositing 1851 times the energy it was given.
     return 2 * MASS_ELECTRON_EV;
   } else {
     return 0.0;
@@ -2312,9 +2324,15 @@ void score_general_mg(Particle& p, int i_tally, int start_index,
 
 void score_analog_tally_ce(Particle& p)
 {
-  // Since electrons/positrons are not transported, we assign a flux of zero.
-  // Note that the heating score does NOT use the flux and will be non-zero for
-  // electrons/positrons.
+  // A charged particle is given a flux of zero, whether or not it is being
+  // transported. The analog estimator counts collisions, and most of what a
+  // charged particle loses it loses between them -- continuously in the
+  // single-event scheme, and into the grouped channel of a condensed-history
+  // step -- so its collision count is not a measure of its path length. A
+  // tally that asks for a flux-weighted score over charged particles alone is
+  // refused at setup rather than answered with these zeros; see
+  // check_charged_flux_estimator() in tally.cpp. The heating score does not
+  // use the flux and is non-zero for them.
   double flux = (p.type().is_neutron() || p.type().is_photon()) ? 1.0 : 0.0;
 
   for (auto i_tally : model::active_analog_tallies) {
@@ -2536,7 +2554,13 @@ void score_tracklength_tally(Particle& p, double distance)
 
 void score_collision_tally(Particle& p)
 {
-  // Determine the collision estimate of the flux
+  // Determine the collision estimate of the flux. A charged particle gets
+  // zero: 1/Sigma_total is an estimate of its path length only if every
+  // interaction it has is one of the collisions counted, which is not true of
+  // a particle that loses energy continuously between them, and is less true
+  // still when a condensed-history step has grouped a deliberate subset of
+  // them away. A tally that asks for a flux-weighted score over charged
+  // particles alone is refused at setup; see check_charged_flux_estimator().
   double flux = 0.0;
   if (p.type().is_neutron() || p.type().is_photon()) {
     flux = p.wgt_last() / p.macro_xs().total;

@@ -214,6 +214,36 @@ void finalize_cell_densities()
       c->density_mult_ = {1.0};
     }
   }
+
+  // Everything the charged-particle transport derives from a material's
+  // density is derived once, at the material's own density: the Sternheimer
+  // oscillator energies and the density-effect correction, the screening the
+  // correction is applied through, and the collision stopping power the
+  // grouped channel is held to. A cell that scales the density scales the
+  // atom densities and so the rate of every interaction, but not those, so
+  // its electrons see the correction of the unscaled material. The error is
+  // in the correction alone -- a few per cent of the collision stopping power
+  // at a few MeV, more at higher energy and less below about 100 keV -- and
+  // it is in the direction of the material's own density.
+  //
+  // Warn rather than rebuild: every table above would have to be duplicated
+  // per distinct multiplier, which is the most expensive part of the setup.
+  if (settings::electron_transport) {
+    for (const auto& c : model::cells) {
+      bool scaled = false;
+      for (double m : c->density_mult_)
+        scaled = scaled || (m != 1.0);
+      if (scaled) {
+        warning(fmt::format(
+          "Cell {} overrides its material's density. The density-effect "
+          "correction and the collision stopping power of charged particles "
+          "there are those of the material's own density, not of the "
+          "override.",
+          c->id_));
+        break;
+      }
+    }
+  }
 }
 
 //==============================================================================

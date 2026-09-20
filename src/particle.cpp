@@ -1,6 +1,7 @@
 #include "openmc/particle.h"
 
 #include <algorithm> // copy, min
+#include <atomic>    // atomic
 #include <cmath>     // log, abs
 
 #include <fmt/core.h>
@@ -9,13 +10,16 @@
 #include "openmc/capi.h"
 #include "openmc/cell.h"
 #include "openmc/collision_track.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/dagmc.h"
+#include "openmc/distribution_multi.h"
 #include "openmc/error.h"
 #include "openmc/geometry.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/lattice.h"
 #include "openmc/material.h"
+#include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
@@ -156,6 +160,11 @@ void Particle::from_source(const SourceSite* src)
   surface() = SURFACE_NONE;
   cell_born() = C_NONE;
   material() = C_NONE;
+  // Whatever held this slot before may have died inside a condensed-history
+  // step -- killed by a time cutoff, by the event limit, or lost -- and none
+  // of that unwinds the step on the way out. This is the one place every
+  // particle passes through, source and secondary alike.
+  ch_reset();
   n_collision() = src->n_collision;
   fission() = false;
   zero_flux_derivs();
@@ -274,15 +283,258 @@ void Particle::event_calculate_xs()
   }
 }
 
+namespace {
+
+//! Report a hard cross section that ran over the bound the flight was drawn
+//! from, once per run
+//!
+//! Not a fatal error: the run is still a run, and stopping it would be worse
+//! than the bias, which is small where it is real at all. But it is a defect
+//! in the tables rather than bad luck in a history, so it must not pass
+//! unremarked.
+void warn_majorant_violated(double ratio)
+{
+  static std::atomic<bool> reported {false};
+  if (reported.exchange(true))
+    return;
+  warning(fmt::format(
+    "The hard electron cross section reached {:.3f} times the bound the "
+    "condensed-history step was drawn from. Hard interactions are being "
+    "undercounted by up to that factor over the steps where it happens. "
+    "Reduce the energy_loss cutoff, or report this.",
+    ratio));
+}
+
+} // namespace
+
+bool Particle::apply_condensed_hinge()
+{
+  // Only a charged particle ever has a step to be in the middle of. The check
+  // is cheap, and without it a photon inheriting a stale flag would have its
+  // reaction replaced by a deflection -- silently, and for the rest of its
+  // life, since nothing but a surface crossing would clear it.
+  if (!type().is_electron() && !type().is_positron())
+    return false;
+
+  if (ch_at_hinge()) {
+    // The grouped deflections of the whole step, applied at one point in it
+    double mu =
+      sample_soft_deflection(ch_s_lambda1(), ch_s_lambda2(), current_seed());
+    this->mu() = mu;
+    u() = rotate_angle(u(), mu, nullptr, current_seed());
+
+    // The direction has changed, so the distance to the boundary has too
+    material_last() = C_NONE;
+    surface() = SURFACE_NONE;
+    return true;
+  }
+
+  if (ch_in_step()) {
+    // The cross sections in hand belong to the energy this leg started from,
+    // and the grouped collisions have taken energy since. Re-evaluate before
+    // asking anything of them: both the test below and the reaction that
+    // follows it belong to the energy the projectile has now.
+    if (material() != MATERIAL_VOID) {
+      model::materials[material()]->calculate_xs(*this);
+    }
+
+    bool real = ch_hard_at_end();
+    if (real && ch_majorant() > 0.0) {
+      // A delta interaction: the flight was drawn from a bound on the hard
+      // cross section, and this is where the excess is given back. Nothing
+      // happens, and the next step starts from here.
+      double ratio = macro_xs().step.hard / ch_majorant();
+
+      // The whole scheme rests on that bound holding, and a bound that does
+      // not hold fails silently: the rejection below simply never fires, the
+      // flight keeps the majorant's rate instead of the real one, and hard
+      // interactions are undercounted with nothing to show for it. So say so.
+      // Once is enough -- it is a property of the tables, not of this step,
+      // and a run that trips it once will trip it a great many times.
+      if (ratio > 1.0) {
+        warn_majorant_violated(ratio);
+      }
+      if (prn(current_seed()) >= ratio)
+        real = false;
+    }
+
+    if (!real) {
+      this->ch_reset();
+      return true;
+    }
+  }
+  return false;
+}
+
+double Particle::sample_condensed_step()
+{
+  // A grouped step is capped at the distance to the boundary, so a step the
+  // geometry cut short ends ON that boundary -- and the hinge splits it, so
+  // the leg beyond the hinge is the step's length less the hinge, which
+  // differs from the boundary distance recomputed at the hinge only by
+  // rounding. The transport loop crosses a surface only when the collision
+  // distance is strictly greater than the distance to it, so that leg is
+  // taken as a collision and the particle is left a few ULP INSIDE the
+  // surface, with the advance having cleared the token that says which
+  // surface it is on.
+  //
+  // From there the geometry cannot help it. A surface closer than TINY_BIT
+  // with no token to vouch for it is treated as one already crossed and
+  // skipped, so distance_to_boundary reports the far side of the model: the
+  // particle flies out through the boundary without ever crossing it, and
+  // goes on depositing energy and spawning secondaries in the void outside,
+  // where nothing can find a cell and the run dies of lost particles. In a
+  // slab thinner than a step it took a tenth of all histories.
+  //
+  // Single-event transport never meets this. Its flight is an exponential
+  // draw that has no reason to land near the boundary; a grouped step is put
+  // there by construction.
+  //
+  // So a step that ends within the geometry's own tolerance of the boundary
+  // is handed back as ending just beyond it, which picks the crossing. The
+  // particle still stops exactly on the surface -- event_advance takes the
+  // smaller of the two distances -- and what it loses is at most a hinge it
+  // would have taken a hair before leaving the cell anyway.
+  auto ends_at_boundary = [&](double d) {
+    double b = boundary().distance();
+    return (b - d < TINY_BIT) ? std::nextafter(b, INFTY) : d;
+  };
+
+  // A step already under way: this advance is the part of it beyond the hinge
+  if (ch_at_hinge()) {
+    ch_at_hinge() = false;
+    return ends_at_boundary(ch_length());
+  }
+
+  const auto& xs {macro_xs()};
+  if (xs.step.hard <= 0.0 && xs.step.soft_rate <= 0.0) {
+    this->ch_reset();
+    return (xs.total > 0.0) ? -std::log(prn(current_seed())) / xs.total
+                            : INFINITY;
+  }
+
+  // The step may take a fraction of the energy, and it may not take the
+  // projectile below its own transport cutoff: past that it should have
+  // stopped where it was, and a positron should have annihilated there.
+  double max_loss = std::min(
+    settings::energy_loss_cutoff * E(), soft_projectile_headroom(type(), E()));
+
+  // The flight is drawn from a bound on the hard cross section rather than
+  // from its value here, because the projectile slows down along the step and
+  // the value here belongs to the energy it started with. What the bound
+  // overcounts is taken back at the end of the step, by declining that
+  // fraction of the interactions.
+  ch_majorant() = xs.step.hard_majorant;
+
+  auto step = sample_mixed_step(ch_majorant(), xs.step.soft_rate,
+    xs.step.xs1_soft, xs.step.stopping, max_loss, settings::deflection_cutoff,
+    boundary().distance(), current_seed());
+
+  // Not worth grouping over this step, so it is transported one collision at
+  // a time from the full cross section -- the single-event scheme the mixed
+  // one is built to agree with
+  if (!step.grouped) {
+    this->ch_reset();
+    return (xs.total > 0.0) ? -std::log(prn(current_seed())) / xs.total
+                            : INFINITY;
+  }
+
+  // Optical depths the grouped deflections accumulate over the whole step.
+  // They are held rather than the length so that the hinge needs nothing but
+  // the particle, the cross sections having possibly moved on by then.
+  ch_s_lambda1() = step.length * xs.step.xs1_soft;
+  ch_s_lambda2() = step.length * xs.step.xs2_soft;
+  ch_length() = step.length - step.hinge;
+  ch_at_hinge() = true;
+  ch_in_step() = true;
+  ch_hard_at_end() = step.ends_in_collision;
+  return ends_at_boundary(step.hinge);
+}
+
+void Particle::apply_soft_energy_loss(double distance)
+{
+  const auto& xs {macro_xs()};
+  if (distance <= 0.0 || xs.step.stopping <= 0.0)
+    return;
+
+  double loss = sample_soft_energy_loss(
+    distance * xs.step.stopping, distance * xs.step.straggling, current_seed());
+
+  // The cross sections were evaluated at the energy the step started from and
+  // are now stale, and nothing else in the loop knows the energy moved
+  material_last() = C_NONE;
+
+  // The step may not take more than the particle has. Reaching that is the
+  // energy ceiling failing to do its job, so it is worth noticing rather than
+  // silently clamping. The step is left in place rather than reset here: the
+  // clamped loss is still the grouped loss of this segment and belongs at a
+  // point drawn inside it, and resetting would send score_soft_deposition
+  // home and leave the whole of it to be deposited at the segment's end by
+  // stop_below_cutoff(). The particle is about to stop either way, so there
+  // is no later step for the state to confuse.
+  if (loss >= E())
+    loss = E();
+  E() -= loss;
+}
+
+bool Particle::stop_below_cutoff()
+{
+  int index = type().transport_index();
+  if (index == C_NONE || E() >= settings::energy_cutoff[index])
+    return false;
+  if (!settings::electron_transport || wgt() == 0.0)
+    return false;
+  if (!type().is_electron() && !type().is_positron())
+    return false;
+
+  if (type().is_positron()) {
+    // The annihilation happens whatever the transport cutoff says: the pair's
+    // rest mass is not the transport's to discard. get_reaction_q_value()
+    // credits 2 m_e c^2 against exactly this event_mt, and the balance
+    // subtracts the two photons again, leaving the kinetic energy deposited.
+    Direction u = isotropic_direction(current_seed());
+    create_secondary(wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+    create_secondary(wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+    event_mt() = POSITRON_ANNIHILATION;
+  } else {
+    event_mt() = ELECTRON_ELASTIC;
+  }
+
+  // Zeroing the energy is what deposits the residual, the heating score being
+  // the collision energy balance E_last + Q - E - (banked secondaries)
+  E() = 0.0;
+  event() = TallyEvent::ABSORB;
+
+  // and nothing downstream scores a balance for a particle that dies in the
+  // middle of an advance, so it is scored here, as the truncated step in
+  // event_cross_surface() scores its own
+  if (settings::run_CE) {
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty())
+      score_analog_tally_ce(*this);
+  }
+
+  wgt() = 0.0;
+  this->ch_reset();
+  return true;
+}
+
 void Particle::event_advance()
 {
   // Find the distance to the nearest boundary
   boundary() = distance_to_boundary(*this);
 
-  // Sample a distance to collision
-  if (type() == ParticleType::electron() ||
-      type() == ParticleType::positron()) {
+  // Sample a distance to collision. Without electron transport, charged
+  // particles are slowed down in place at their point of birth, so the
+  // collision distance is zero whenever they are in a material.
+  bool charged =
+    type() == ParticleType::electron() || type() == ParticleType::positron();
+  if (!settings::electron_transport && charged) {
     collision_distance() = material() == MATERIAL_VOID ? INFINITY : 0.0;
+  } else if (charged && settings::deflection_cutoff > 0.0 &&
+             material() != MATERIAL_VOID) {
+    collision_distance() = this->sample_condensed_step();
   } else if (macro_xs().total == 0.0) {
     collision_distance() = INFINITY;
   } else {
@@ -324,6 +576,20 @@ void Particle::event_advance()
     score_track_derivative(*this, distance);
   }
 
+  // Hand the grouped collisions the path they were sampled over. The loss is
+  // applied here, over the distance actually travelled, rather than at the
+  // hinge over the distance the step planned: energy losses add along a path,
+  // so this stays exact however the step is cut short, which a boundary or a
+  // deflection at the hinge may do at any time.
+  if (ch_in_step()) {
+    this->apply_soft_energy_loss(distance);
+    this->score_soft_deposition(distance);
+    // The grouped loss is the only thing that lowers the energy outside a
+    // collision, so it is the only thing that can carry the particle under its
+    // own cutoff without collision() ever seeing it
+    this->stop_below_cutoff();
+  }
+
   // Set particle weight to zero if it hit the time boundary
   if (distance == distance_cutoff) {
     wgt() = 0.0;
@@ -334,8 +600,79 @@ void Particle::event_advance()
     surface() = SURFACE_NONE;
 }
 
+void Particle::score_soft_deposition(double distance)
+{
+  // The grouped collisions happen all along the segment, so the energy they
+  // take is given up all along it too. It reaches a tally only through the
+  // collision energy balance E_last - E, which is scored wherever the particle
+  // happens to be when the next event comes, and that is the wrong place twice
+  // over.
+  //
+  // It is the wrong place when the segment ends at a surface, because a
+  // surface crossing scores no balance at all and the deposition is simply
+  // lost. In a homogeneous slab cut into fifty cells by surfaces that are not
+  // there physically, this was 1.1 per cent of the beam energy going missing,
+  // against nothing at all in single-event transport.
+  //
+  // And it is the wrong place when the segment ends in a collision, because
+  // the end of a segment is not where its energy went. A step is two segments
+  // and a hinge drawn uniformly along it, so scoring each segment's loss where
+  // that segment ends puts the step's energy at five sixths of its length
+  // rather than at the half it belongs to -- a third of a step too deep, every
+  // step. That is a rigid downstream shift of everything the step deposits,
+  // and it grows with the step, which is what stops the deflection cutoff from
+  // being opened up: at <1-mu> = 0.05 it moves eight per cent of the dose out
+  // of the entrance bin of a 1 MeV depth dose in carbon.
+  //
+  // So the loss is scored at a point drawn uniformly inside the segment, which
+  // is what PENELOPE's main programs do and what makes the deposition profile
+  // that of a constant rate along the path. Only the position moves: the
+  // coordinate levels are left alone, so a cell filter still sees the cell the
+  // segment ran through, and only a mesh finer than a step can tell.
+  //
+  // What is scored is not a collision, and the event it claims to be -- an
+  // elastic scatter -- is a fiction the scoring routines need in order to
+  // reach the balance. That is only harmless because of three things, and it
+  // stops being harmless if any of them changes:
+  //
+  //   - score_collision_tally and score_analog_tally_ce both give a charged
+  //     particle a flux of zero, so no flux is invented here;
+  //   - nothing has been banked at this point, so a production filter is not
+  //     told of secondaries that do not exist;
+  //   - the coordinate levels still hold the cell the segment ran through,
+  //     which is the cell the energy belongs to, so a cell filter attributes
+  //     it correctly.
+  if (!ch_in_step() || E() == E_last() || !settings::run_CE || !alive())
+    return;
+
+  // Drawn whether or not anything is scored, so that a run's random sequence
+  // does not depend on which tallies it happens to carry
+  double back = distance * prn(current_seed());
+
+  if (!model::active_collision_tallies.empty() ||
+      !model::active_analog_tallies.empty()) {
+    this->move_distance(-back);
+    event() = TallyEvent::SCATTER;
+    event_mt() = ELECTRON_ELASTIC;
+    if (!model::active_collision_tallies.empty())
+      score_collision_tally(*this);
+    if (!model::active_analog_tallies.empty())
+      score_analog_tally_ce(*this);
+    this->move_distance(back);
+  }
+
+  // This loss has now been accounted for, so whatever event comes next must
+  // not score it a second time. PENELOPE zeroes the hinge's deposited energy
+  // for the same reason once its main program takes the loss over.
+  E_last() = E();
+}
+
 void Particle::event_cross_surface()
 {
+  // A condensed-history step is built from the material it started in, so it
+  // does not survive the crossing
+  this->ch_reset();
+
   // Saving previous cell data
   for (int j = 0; j < n_coord(); ++j) {
     cell_last(j) = coord(j).cell();

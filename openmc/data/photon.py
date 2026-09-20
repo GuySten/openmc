@@ -829,66 +829,81 @@ class IncidentPhoton(EqualityMixin):
         """Add the data used in the thick-target bremsstrahlung approximation
 
         """
-        # Load bremsstrahlung data if it has not yet been loaded
-        if not _BREMSSTRAHLUNG:
-            # Add data used for density effect correction
-            filename = os.path.join(os.path.dirname(__file__), 'density_effect.h5')
-            with h5py.File(filename, 'r') as f:
-                for i in range(1, 101):
-                    group = f[f'{i:03}']
-                    _BREMSSTRAHLUNG[i] = {
-                        'I': group.attrs['I'],
-                        'num_electrons': group['num_electrons'][()],
-                        'ionization_energy': group['ionization_energy'][()]
-                    }
-
-            filename = os.path.join(os.path.dirname(__file__), 'BREMX.DAT')
-            with open(filename, 'r') as fh:
-                brem = fh.read().split()
-
-            # Incident electron kinetic energy grid in eV
-            _BREMSSTRAHLUNG['electron_energy'] = np.logspace(3, 9, 200)
-            log_energy = np.log(_BREMSSTRAHLUNG['electron_energy'])
-
-            # Get number of tabulated electron and photon energy values
-            n = int(brem[37])
-            k = int(brem[38])
-
-            # Index in data
-            p = 39
-
-            # Get log of incident electron kinetic energy values, used for
-            # cubic spline interpolation in log energy. Units are in MeV, so
-            # convert to eV.
-            logx = np.log(np.fromiter(brem[p:p+n], float, n)*EV_PER_MEV)
-            p += n
-
-            # Get reduced photon energy values
-            _BREMSSTRAHLUNG['photon_energy'] = np.fromiter(brem[p:p+k], float, k)
-            p += k
-
-            for i in range(1, 101):
-                dcs = np.empty([len(log_energy), k])
-
-                # Get the scaled cross section values for each electron energy
-                # and reduced photon energy for this Z. Units are in mb, so
-                # convert to b.
-                y = np.reshape(np.fromiter(brem[p:p+n*k], float, n*k), (n, k))*1.0e-3
-                p += k*n
-
-                for j in range(k):
-                    # Cubic spline interpolation in log energy and linear DCS
-                    cs = CubicSpline(logx, y[:, j])
-
-                    # Get scaled DCS values (barns) on new energy grid
-                    dcs[:, j] = cs(log_energy)
-
-                _BREMSSTRAHLUNG[i]['dcs'] = dcs
+        _load_bremsstrahlung()
 
         # Add bremsstrahlung DCS data
         self.bremsstrahlung['electron_energy'] = _BREMSSTRAHLUNG['electron_energy']
         self.bremsstrahlung['photon_energy'] = _BREMSSTRAHLUNG['photon_energy']
         self.bremsstrahlung.update(_BREMSSTRAHLUNG[self.atomic_number])
+
+
+def _load_bremsstrahlung():
+    """Read the Seltzer-Berger scaled bremsstrahlung cross sections.
+
+    Fills the module-level ``_BREMSSTRAHLUNG`` cache, which holds the incident
+    electron energy grid under 'electron_energy', the reduced photon energies
+    kappa = k/T under 'photon_energy', and per-element 'dcs', 'I',
+    'num_electrons' and 'ionization_energy'. The scaled cross section is
+    chi(Z, T, kappa) = (beta^2 / Z^2) * k * dsigma/dk in barns. Both the
+    thick-target approximation and, when electron transport is enabled, the
+    bremsstrahlung cross section of the electron library are integrals of this
+    one table.
+
+    """
+    if not _BREMSSTRAHLUNG:
+        # Add data used for density effect correction
+        filename = os.path.join(os.path.dirname(__file__), 'density_effect.h5')
+        with h5py.File(filename, 'r') as f:
+            for i in range(1, 101):
+                group = f[f'{i:03}']
+                _BREMSSTRAHLUNG[i] = {
+                    'I': group.attrs['I'],
+                    'num_electrons': group['num_electrons'][()],
+                    'ionization_energy': group['ionization_energy'][()]
+                }
+
+        filename = os.path.join(os.path.dirname(__file__), 'BREMX.DAT')
+        with open(filename, 'r') as fh:
+            brem = fh.read().split()
+
+        # Incident electron kinetic energy grid in eV
+        _BREMSSTRAHLUNG['electron_energy'] = np.logspace(3, 9, 200)
+        log_energy = np.log(_BREMSSTRAHLUNG['electron_energy'])
+
+        # Get number of tabulated electron and photon energy values
+        n = int(brem[37])
+        k = int(brem[38])
+
+        # Index in data
+        p = 39
+
+        # Get log of incident electron kinetic energy values, used for
+        # cubic spline interpolation in log energy. Units are in MeV, so
+        # convert to eV.
+        logx = np.log(np.fromiter(brem[p:p+n], float, n)*EV_PER_MEV)
+        p += n
+
+        # Get reduced photon energy values
+        _BREMSSTRAHLUNG['photon_energy'] = np.fromiter(brem[p:p+k], float, k)
+        p += k
+
+        for i in range(1, 101):
+            dcs = np.empty([len(log_energy), k])
+
+            # Get the scaled cross section values for each electron energy
+            # and reduced photon energy for this Z. Units are in mb, so
+            # convert to b.
+            y = np.reshape(np.fromiter(brem[p:p+n*k], float, n*k), (n, k))*1.0e-3
+            p += k*n
+
+            for j in range(k):
+                # Cubic spline interpolation in log energy and linear DCS
+                cs = CubicSpline(logx, y[:, j])
+
+                # Get scaled DCS values (barns) on new energy grid
+                dcs[:, j] = cs(log_energy)
+
+            _BREMSSTRAHLUNG[i]['dcs'] = dcs
 
 
 class PhotonReaction(EqualityMixin):

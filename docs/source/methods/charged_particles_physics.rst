@@ -4,12 +4,35 @@
 Charged Particle Physics
 ========================
 
-OpenMC neglects the spatial transport of charged particles (electrons and
-positrons), assuming they deposit all their energy locally and produce
-bremsstrahlung photons at their birth location. This approximation, called
-thick-target bremsstrahlung (TTB) approximation is justified by the fact that
-charged particles have much shorter stopping ranges compared to neutrons and
-photons, especially in high-density materials.
+Charged particles (electrons and positrons) can be treated in two ways. By
+default OpenMC neglects their spatial transport, assuming they deposit all
+their energy locally and produce bremsstrahlung photons at their birth
+location. This approximation, called the thick-target bremsstrahlung (TTB)
+approximation, is justified by the fact that charged particles have much
+shorter stopping ranges compared to neutrons and photons, especially in
+high-density materials.
+
+When electron transport is enabled, electrons and positrons are instead
+transported explicitly, as described in :ref:`electron_transport` below. The
+interaction physics is the same either way; what differs is how much of it is
+simulated one collision at a time.
+
+In the analog single-event scheme, every elastic, excitation,
+electroionization and bremsstrahlung interaction is sampled individually.
+Nothing is condensed and no multiple-scattering theory is used, so no
+assumption is made about the step length and the scheme remains valid where
+condensed-history schemes break down, which is generally below about 1 keV.
+It is also expensive: a 1 MeV electron undergoes on the order of
+:math:`10^5` interactions before it ranges out.
+
+The default is a mixed, or class II, condensed-history scheme built on top of
+that same physics, described in `Condensed History`_. The interactions too
+weak to be worth following individually are grouped into a step and replaced
+by their first two moments; everything else is still sampled one collision at
+a time, exactly as the single-event scheme would. How much is grouped is set
+by the ``deflection`` and ``energy_loss`` cutoffs of the ``<cutoff>`` element,
+and setting ``deflection`` to zero groups nothing and recovers single-event
+transport exactly.
 
 -----------------------------
 Charged Particle Interactions
@@ -332,8 +355,9 @@ photons are produced in the same location that the charged particle was
 created. The direction of the photons is assumed to be the same as the
 direction of the incident charged particle, which is a reasonable approximation
 at higher energies when the bremsstrahlung radiation is emitted at small
-angles.
-
+angles. This is an approximation of the TTB model specifically; when electrons
+are transported, the emission angle is sampled from the distribution given in
+:ref:`bremsstrahlung_angle`.
 
 Electron-Positron Annihilation
 ------------------------------
@@ -355,7 +379,692 @@ electron rest mass energy :math:`m_e c^2 = 0.511` MeV are emitted isotropically
 in opposite directions.
 
 
+
+.. _electron_transport:
+
+------------------
+Electron Transport
+------------------
+
+The three interaction channels below are what the transport is built from,
+under either scheme. In the analog single-event scheme the distance to the
+next interaction is sampled from the total electroatomic cross section, one of
+the three channels is selected in proportion to its cross section, and that
+interaction is sampled in full; nothing is condensed into a step. Under the
+default mixed scheme the same channels are split into a grouped part and a
+part still sampled this way, as `Condensed History`_ describes; the sections
+below describe the physics of each channel, and the splitting is described
+there.
+
+Elastic scattering and bremsstrahlung are properties of the atom and are
+looked up per element. Inelastic collisions are not: the oscillators they are
+sampled from are shares of all the medium's electrons and their resonance
+energies are fixed by its mean excitation energy, so that channel is the
+material's and is chosen before any element is.
+
+The electroionization cross sections of the EPICS evaluated libraries, in
+particular the Evaluated Electron Data Library (EEDL) read from the eprdata
+ACE format, are what the inner-shell oscillators are renormalized to. They
+set the rate at which the deeply bound shells are ionized and so the
+characteristic x-ray yields; the shape of the energy loss does not come from
+them.
+
+Elastic scattering and bremsstrahlung are taken from calculated datasets
+instead, described in their sections below. The evaluated cross sections for
+both are sound, but the distributions that go with them are tabulated on far
+too few incident energies to interpolate -- the elastic angular distributions
+on 14 to 16 energies per element spanning ten decades, the bremsstrahlung
+spectra on nine, with nothing at all between 12.25 MeV and 100 GeV.
+
+Every cross section is the integral of the distribution that is sampled from
+it. Rate and shape come from one table in each channel, so an electron collides
+at the rate implied by the deflections and energy losses it then gets.
+
+Elastic Scattering
+------------------
+
+Elastic scattering changes the direction of the electron without transferring
+energy to the atom. It is by a wide margin the most frequent interaction, and
+the accumulation of many small deflections is what limits how deeply electrons
+penetrate.
+
+The differential cross section is a Dirac partial-wave calculation, tabulated
+over the whole angular range on 375 angles at each of 96 incident energies from
+50 eV to 100 MeV. ELSEPA writes 606 angles; the wide-angle end of its grid,
+where the steps are a uniform half a degree, is thinned to one point in four
+before the data is shipped, which changes the integrated, first and second
+transport cross sections by at most 5 parts in 10\ :sup:`4`. Nothing is split
+out of it: the cross section that sets the distance to the next elastic
+collision is the integral of the same table the deflection is sampled from,
+
+.. math::
+    :label: elastic-integral
+
+    \sigma_{\text{el}}(T) = 2\pi \int_0^2
+    \frac{d\sigma}{d\Omega}\, d(1 - \cos\theta).
+
+There is no forward-peak cutoff, no analytic screened-Rutherford tail beyond
+it, and no transport cross section used to rescale the sampled deflection. The
+distribution is tabulated as a density rather than differentiated from a
+cumulative, which is where histogram binning of an evaluated table loses one to
+two per cent of its first moment.
+
+The tables are interpolated logarithmically in energy: both bracketing
+distributions are sampled at the same cumulative probability and the two
+deflections are combined geometrically,
+
+.. math::
+    :label: elastic-interp
+
+    1 - \mu = (1 - \mu_i)^{1-f}\,(1 - \mu_{i+1})^{f}, \quad
+    f = \frac{\ln(T/T_i)}{\ln(T_{i+1}/T_i)}.
+
+A linear blend of two distributions a decade apart would put essentially all of
+its weight on the lower, wider-angle one.
+
+Above 100 MeV the cross section is clamped to its value there.
+
+Partial-Wave Elastic Data
+-------------------------
+
+The differential cross sections above are computed with ELSEPA_, the Dirac
+partial-wave code of Salvat, Jablonski and Powell, and are distributed with
+OpenMC for :math:`Z = 1` to 99 on PENELOPE's 96-point energy grid.
+
+The projectile moves in a central field built from four terms,
+
+.. math::
+    :label: elsepa-potential
+
+    V(r) = V_{\text{nuc}}(r) + V_{\text{st}}(r) + V_{\text{ex}}(r) +
+    V_{\text{cp}}(r),
+
+the electrostatic potential of a Fermi nuclear charge distribution, that of the
+Dirac-Fock electron density of the free neutral atom, the Furness-McCarthy
+local approximation to electron exchange, and a correlation-polarization
+potential in the local density approximation. There is no imaginary absorptive
+term: the inelastic channels are transported explicitly rather than removed
+from the elastic flux.
+
+The radial Dirac equation is solved in that field for each partial wave,
+giving the phase shifts :math:`\delta_l^{+}` and :math:`\delta_l^{-}` for the
+two spin-orbit couplings :math:`j = l \pm 1/2`. These fix the direct and
+spin-flip scattering amplitudes,
+
+.. math::
+    :label: elsepa-amplitudes
+
+    \begin{aligned}
+    f(\theta) &= \frac{1}{2ik} \sum_{l=0}^{\infty} \left\{
+    (l + 1)\left[e^{2i\delta_l^{+}} - 1\right] +
+    l\left[e^{2i\delta_l^{-}} - 1\right] \right\} P_l(\cos\theta), \\
+    g(\theta) &= \frac{1}{2ik} \sum_{l=1}^{\infty} \left[
+    e^{2i\delta_l^{-}} - e^{2i\delta_l^{+}} \right] P_l^1(\cos\theta),
+    \end{aligned}
+
+where :math:`k` is the relativistic wave number, and the differential cross
+section follows as
+
+.. math::
+    :label: elsepa-dcs
+
+    \frac{d\sigma}{d\Omega} = |f(\theta)|^2 + |g(\theta)|^2.
+
+This is the table that :eq:`elastic-integral` integrates and that the transport
+samples. At high energies the series converges too slowly to sum directly, and
+the amplitude is factorized using its Born approximation instead.
+
+Only the sign of the projectile's charge distinguishes a positron, but the two
+sets of phase shifts are not interchangeable. Their integrated cross sections
+agree to better than a per cent, which is the Born limit and is symmetric in
+the charge, so a check on the collision rate alone would not notice the
+difference. Their first moments do not agree at all: a positron is repelled by
+the nucleus and stays out of the small-impact-parameter region that produces
+the large deflections, so its transport cross section is 0.80 of the
+electron's for lead at 21 MeV, 0.65 at 1 MeV, and 0.35 at 1 keV. For carbon the
+same ratios are 0.98, 0.97 and 0.67. Both tables are therefore carried, and the
+transport selects on the sign of the charge.
+
+These are the settings under which PENELOPE's own database is built; for carbon
+the two agree to four decimal places in the integrated and in both transport
+cross sections from 100 keV to 100 MeV. The file is regenerated by the
+``make_elastic_dpwa.py`` script, which records the settings it used.
+
+Inelastic Collisions
+--------------------
+
+Excitation and ionization are one channel, not two. Both are the projectile
+losing energy to the atom's electrons, and both are described by the same
+generalized oscillator strength (GOS); what separates them is only which
+shell absorbed the energy and how tightly it was held. OpenMC uses the
+Sternheimer-Liljequist model of that GOS, following PENELOPE_.
+
+The Oscillator Model
+~~~~~~~~~~~~~~~~~~~~
+
+Every electron of the medium is assigned to an oscillator, one per
+electroionization subshell of each element. Oscillator :math:`i` stands for a
+shell of :math:`n_i` electrons bound at :math:`U_i`, holds the fraction
+
+.. math::
+    :label: oscillator-strength
+
+    f_i = \frac{n_i \, N_i}{n_{\text{e}}}
+
+of the medium's electrons, where :math:`N_i` is the atom density of the
+element the shell belongs to and :math:`n_{\text{e}}` its electron density,
+and resonates at
+
+.. math::
+    :label: oscillator-resonance
+
+    W_i^2 = \rho^2 U_i^2 + \tfrac{2}{3} f_i \Omega_{\text{p}}^2,
+
+where :math:`\Omega_{\text{p}}` is the plasma energy of the medium and
+:math:`\rho` is the Sternheimer adjustment, solved so that
+
+.. math::
+    :label: sum-rules
+
+    \sum_i f_i = 1, \qquad \sum_i f_i \ln W_i = \ln I .
+
+Everything below is therefore per electron of the medium, and the transport
+multiplies it by :math:`n_{\text{e}}` to get a macroscopic rate. (PENELOPE
+writes the same model per atom, with :math:`\sum_i f_i = Z`; only the
+normalization differs.)
+
+The second sum rule is Bethe's, and it is what makes the model quantitative:
+with it satisfied, the stopping power the model integrates to *is* the Bethe
+stopping power, with the mean excitation energy :math:`I` of the medium and no
+free parameters left. The first fixes the count of electrons. Both are
+properties of the medium rather than of any atom in it, which is why the
+inelastic channel belongs to the material: the same carbon atom has different
+oscillators in graphite and in methane.
+
+The only experimental input is :math:`I`, taken from the same ESTAR/ICRU 37
+table the stopping powers are compared against. The binding energies come
+from the photon library. Nothing else is needed, and in particular no
+tabulated inelastic differential cross section: the evaluated knock-on
+spectra are not used for the shape of the loss.
+
+Distant and Close Collisions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each oscillator contributes three channels, which are PENELOPE's.
+
+A *distant longitudinal* collision excites the oscillator and hands over a
+recoil :math:`Q` distributed as :math:`1/[Q(Q+2m_ec^2)]` between the minimum
+momentum transfer :math:`Q_-` and a cutoff recoil, which for a bound shell is
+its binding energy :math:`U_i`. A *distant transverse* collision costs the
+same energy but carries no momentum at all, :math:`Q = Q_-`, so it deflects
+nothing; this is the channel the density effect acts on. Their cross sections
+are
+
+.. math::
+    :label: distant-xs
+
+    \sigma_{\text{lon}} = \frac{2\pi r_e^2 m_ec^2}{\beta^2}\,
+      \frac{f_i}{W_i} \ln\!\left[\frac{U_i(Q_-+2m_ec^2)}
+      {Q_-(U_i+2m_ec^2)}\right],
+    \qquad
+    \sigma_{\text{tra}} = \frac{2\pi r_e^2 m_ec^2}{\beta^2}\,
+      \frac{f_i}{W_i}
+      \max\left(0,\; \ln\frac{1}{1-\beta^2} - \beta^2 - \delta\right),
+
+with :math:`\delta` the density-effect correction of Sternheimer_, computed
+from the same oscillator table. The floor on the transverse term is where the
+density effect has screened that channel away entirely; it cannot go
+negative.
+
+How much energy a distant collision costs depends on the shell. For an
+unbound oscillator it is the resonance :math:`W_i` exactly, a delta. For a
+bound one — which in OpenMC is every oscillator, since each stands on a real
+photoatomic subshell and the smallest binding energy in the library is a few
+eV — the strength is instead spread over a triangle falling linearly from
+:math:`U_i` to :math:`W_{\max} = 3W_i - 2U_i`, truncated at the kinematic
+limit. A delta at :math:`W_i` would put all of an inner shell's distant
+strength at one energy, which its x-ray yield and its stopping power do not
+support; the triangle carries the same first moment while spanning the range
+the shell actually absorbs over.
+
+A *close* collision is the free binary one: Moller scattering for an
+electron, Bhabha for a positron, with the whole transfer left as recoil,
+:math:`Q = W`. It runs from :math:`U_i` — a bound electron has to be paid for
+before it can be ejected — up to the kinematic limit, which is :math:`T` for
+the distinguishable positron and :math:`(T + U_i)/2` for the electron, whose
+Moller cross section is written for a projectile of energy :math:`T + U_i`
+and cannot give away more than half of it.
+
+The three sum to the oscillator's total cross section, and their first
+moments sum to its stopping power. Summed over oscillators and with the sum
+rules of :eq:`sum-rules` in force, the result reproduces the Bethe stopping
+power analytically -- this is the point of the construction, not a fitted
+outcome, and OpenMC checks it at startup against an independent evaluation of
+the ICRU 37 formula and refuses to run if the two disagree by more than one
+part in a million.
+
+Very close to threshold the distant channel would exceed what the kinematics
+allow. PENELOPE's remedy is adopted unchanged: below :math:`3W_i - 2U_i` the
+resonance used for the distant channels is lowered to :math:`(T+2U_i)/3` and
+the recoil ceiling with it, which keeps the cross section positive and the
+first moment right.
+
+Renormalization
+~~~~~~~~~~~~~~~
+
+A delta oscillator is a poor description of an inner shell. Characteristic
+x-ray yields rest directly on the rate at which those shells are ionized, and
+that rate is evaluated data OpenMC already carries. So, as PENELOPE does, the
+oscillators standing for shells bound above the transport cutoffs have their
+cross sections scaled to the evaluated subshell ionization cross sections,
+
+.. math::
+    :label: inner-renorm
+
+    c_i(T) = \frac{\sigma_i^{\text{eval}}(T)}
+                  {n_i\,\sigma_i^{\text{model}}(T)},
+
+every moment of the oscillator being scaled by the same factor so the channel
+stays one cross section. The occupancy :math:`n_i` is what puts the two on
+the same footing: the model above is written per electron and the evaluated
+cross section is per atom. The model value in the denominator is the
+unscreened one, :math:`\delta = 0`, so that the density effect then applies
+on top of the ratio rather than being divided out of it.
+
+That scaling moves the total off the Bethe value, and the second half of
+PENELOPE's scheme puts it back: the remaining oscillators are scaled by a
+single factor, chosen so the total collision stopping power is the ICRU 37
+value exactly. The compensation is small -- in the range 0.97 to 1.11 for the
+elements tested, the inner shells carrying 8 to 20 per cent of the stopping
+power -- and it is what lets the model have both the right x-ray yields and
+the right stopping power. Both halves are needed; renormalizing every
+subshell without the compensation shifts the stopping power by +82 per cent
+in carbon and -24 per cent in lead.
+
+Sampling a Collision
+~~~~~~~~~~~~~~~~~~~~
+
+Which oscillator a collision was with is drawn from the tabulated cumulative
+of the discrete rates, then one of the three channels from their cross
+sections, then :math:`W` and :math:`Q` from that channel. Both polar
+deflections follow from :math:`Q` alone: writing :math:`p` and :math:`p'` for
+the momenta of the projectile before and after and :math:`(cq)^2 =
+Q(Q+2m_ec^2)` for the momentum transfer,
+
+.. math::
+    :label: ionization-angles
+
+    1 - \mu = \frac{(cq)^2 - (cq_-)^2}{2\,pc\,p'c},
+    \qquad
+    1 - \mu_{\text{k}} = \frac{(cq - cq_-)(pc + p'c - cq)}{2\,pc\,cq},
+
+where :math:`cq_- = pc - p'c` is the smallest momentum the collision can hand
+over, reached when the projectile is not deflected at all. The projectile is
+deflected through the momentum transfer and the knock-on leaves along it; the
+two are emitted coplanar, with azimuthal angles differing by :math:`\pi`.
+Setting :math:`Q = W` recovers the free binary collision, in which these
+reduce to the familiar Moller pair
+
+.. math::
+    :label: ionization-angles-free
+
+    \mu = \left[\frac{T'(T + 2m_ec^2)}{T(T' + 2m_ec^2)}\right]^{1/2},
+    \quad
+    \mu_{\text{k}} = \left[\frac{W(T + 2m_ec^2)}
+    {T(W + 2m_ec^2)}\right]^{1/2}.
+
+Both are set by the energy the projectile transferred, :math:`W`, and not by
+the kinetic energy the knock-on is left with: the atom absorbs the binding
+energy :math:`U_i` but carries away negligible momentum. Deflecting the
+knock-on by :math:`W - U_i` instead would eject it too far sideways, by 22 per
+cent of the incident momentum for a tantalum K shell ionised at 100 keV. The
+pair is still not exactly momentum-conserving, since the knock-on leaves with
+the momentum of :math:`W - U_i` rather than of :math:`W`; no free-electron
+model of a bound target can conserve both.
+
+Every collision leaves a vacancy, and it is passed to the atomic relaxation
+model, which follows the full cascade. No channel of the model can transfer
+less than :math:`U_i` — the close one starts there and the distant triangle
+starts there — so a collision with a bound oscillator always clears the
+binding energy of the shell it stands for. Because that oscillator is a real
+subshell, which shell the vacancy is in follows from the same draw that chose
+the oscillator, rather than from a separate model bolted on beside it.
+
+This is why excitation is not a channel of its own. What the evaluation calls
+an excitation is here a distant collision with an outer oscillator, whose
+:math:`U_i` is a few eV: it leaves a vacancy that the relaxation model
+disposes of locally, and the energy is deposited on the spot either way.
+
+The Positron
+~~~~~~~~~~~~
+
+The distant channels are identical for the two projectiles -- the atom cannot
+tell what excited it -- and the close channel is Bhabha's rather than
+Moller's, which differs both in shape and in running to :math:`T` instead of
+:math:`(T+U_i)/2`. The positron and the electron it ejects are
+distinguishable, so there is no need to call the faster one the primary and
+no factor of two in the limit. Everything above is therefore tabulated and
+sampled separately per projectile charge, with no reweighting and no
+rejection.
+Against the ICRU 37 collision stopping power the ratio of positron to
+electron comes out at 0.981 for carbon at 1.26 MeV and 0.989 for lead at
+1 MeV, against reference values of 0.977 and 0.972.
+
+.. _bremsstrahlung_angle:
+
+Bremsstrahlung Emission
+-----------------------
+
+The photon energy is sampled from the Seltzer-Berger scaled cross sections
+:math:`\chi(Z, T, \kappa) = (\beta^2/Z^2)\, k\, d\sigma/dk`, tabulated in
+barns against the reduced photon energy :math:`\kappa = k/T`. This is the same
+table the thick-target approximation uses, carried in the photon library, and
+it is given on 57 incident energies against the evaluation's nine.
+
+Since :math:`\chi` is finite at :math:`\kappa = 0`, the whole of the
+:math:`1/k` divergence of :math:`d\sigma/dk = (Z^2/\beta^2)\chi(\kappa)/k`
+is explicit. The photon energy is therefore sampled by drawing :math:`k` from
+:math:`1/k` over :math:`[k_{\text{cut}}, T]` and accepting it with probability
+:math:`\chi(\kappa)/\chi_{\text{max}}`, with :math:`\chi` linear in
+:math:`\kappa` between tabulated points and between the two bracketing
+incident energies.
+
+Bremsstrahlung has no threshold-free cross section -- the number of photons
+emitted diverges logarithmically as :math:`k \to 0` -- so one has to be
+chosen. The cross section stored in the electron library is the integral of the
+same density above the same :math:`k_{\text{cut}}`,
+
+.. math::
+    :label: brems-integral
+
+    \sigma_{\text{br}}(T) = \frac{Z^2}{\beta^2}
+    \int_{\kappa_{\text{cut}}}^{1} \frac{\chi(\kappa)}{\kappa}\,
+    d\kappa,
+
+evaluated in closed form on each interval of the tabulated :math:`\kappa`
+grid, and the threshold it used is stored beside it so that the transport
+samples above the same one. The product of the two is the radiative stopping
+power, which reproduces the ESTAR tabulation to better than one per cent for
+carbon and for lead from 0.1 to 100 MeV.
+
+A positron radiates less than an electron of the same energy, being repelled by
+the nucleus rather than attracted to it, and its cross section is
+:eq:`brems-integral` scaled by Salvat's factor :math:`F_{\text{p}}(Z,T)` of
+:eq:`positron-factor` -- the same one the thick-target approximation applies.
+The factor does not depend on :math:`\kappa`, so it scales the rate and leaves
+the spectrum sampled above untouched. It is not a small correction at high
+:math:`Z`: for lead it is 0.49 at 1 MeV and 0.84 at 21 MeV, against 0.96 and
+1.00 for carbon.
+
+The evaluation carries no angular information for this channel at all, so the
+emission angle must come from a model. OpenMC samples it from formula 2BS of
+Koch_ and Motz, the screened Schiff form of the Bethe-Heitler cross section,
+using rejection in the reduced angle :math:`y = \gamma\theta` where
+:math:`\gamma` is the Lorentz factor of the incident electron. The screening
+enters through
+
+.. math::
+    :label: brems-screening
+
+    Z_{\text{s}} = \left(\frac{Z_{\text{eff}}}{111}\right)^2, \quad
+    Z_{\text{eff}}^2 = Z(Z+1),
+
+in which the factor :math:`(Z+1)` accounts for electron-electron
+bremsstrahlung. The emission is confined to a cone of order :math:`1/\gamma`
+at relativistic energies and becomes broad as the electron energy falls.
+
+The emitting electron is left undeflected. Its direction is governed by elastic
+scattering, beside which the recoil from radiative emission is negligible; the
+same choice is made in PENELOPE, EGSnrc and MCNP.
+
+Energy Cutoff
+-------------
+
+Transport stops when the kinetic energy falls below the electron or positron
+cutoff. The residual kinetic energy is deposited at that point rather than
+discarded, so that energy is conserved exactly regardless of where the cutoff
+is placed. A positron reaching the cutoff annihilates first, emitting two
+photons of :math:`m_ec^2` isotropically in opposite directions, as described in
+`Electron-Positron Annihilation`_.
+
+A practical caution applies at the very bottom of the range. Elastic scattering
+transfers no energy, electroionization stops once the incident energy falls
+below the binding energy of the least-bound shell, and excitation can also
+vanish at some energy above 10 eV depending on the element. Between those
+thresholds an electron can take a very large number of elastic steps without
+losing energy. Setting the cutoff no lower than about 12 eV avoids this.
+
+Condensed History
+-----------------
+
+Following every interaction of an electron is exact and slow. Most of those
+interactions barely change the particle: an elastic collision that turns it
+through a fraction of a degree, an ionization that costs it a few tens of eV.
+The mixed, or class II, scheme of Berger separates the interactions by how
+much they matter rather than by kind. Those above a cutoff -- the *hard*
+interactions -- are sampled individually, exactly as the single-event scheme
+samples them. Those below it -- the *soft* interactions -- are grouped into a
+step and replaced by the first two moments of what they would have done.
+
+The step runs from one hard interaction to the next. Over it the grouped
+collisions contribute one deflection and one energy loss, sampled from the
+artificial distributions below, and each channel's cutoff is what decides how
+much of it is grouped.
+
+Where the Cutoffs Come From
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Elastic scattering is cut by angle. The ``deflection`` cutoff, PENELOPE's
+:math:`C_1`, is the largest mean deflection :math:`\langle 1 - \mu \rangle`
+the grouped collisions of one step may accumulate. It is applied to the step
+rather than obtained from it: in PENELOPE the step is one hard mean free path
+by construction, so the soft deflection over it is
+:math:`\sigma_{1,\text{soft}}/\sigma_{\text{hard}}`; here the step is a
+sampled flight, which runs past a mean free path as often as not and is cut
+short by the energy ceiling and by the geometry besides, so the bound is
+imposed on the length directly.
+
+The energy-losing channels are cut by energy, and not by a parameter of their
+own. A collision may be grouped only when nothing it would have produced
+would have been transported anyway, so each cutoff is the transport cutoff of
+what that channel emits. For bremsstrahlung that is the photon cutoff. For an
+inelastic collision it is the *smaller* of the electron and photon cutoffs:
+the collision ejects a knock-on, and the vacancy it leaves can fluoresce, so
+both have to be below their own cutoffs before the collision can be folded
+into a step. Raising those cutoffs therefore groups more. A second bound
+limits how much: no single grouped collision may carry more than
+:math:`\texttt{MAX\_SOFT\_LOSS\_SHARE} = 1/10` of the step's own energy
+budget, since a step describing its loss by a mean and a variance cannot have
+either resting on one event.
+
+The step is bounded in length by both cutoffs, by the ``energy_loss``
+fraction of the kinetic energy (PENELOPE's :math:`C_2`), by the distance to
+the nearest boundary, and by the energy left above the particle's own
+transport cutoff. Both fractions are capped at
+:math:`\texttt{MAX\_STEP\_COARSENESS} = 0.2`, where PENELOPE caps them: past
+that a step turning the particle through some 37 degrees at one point is no
+longer describing a path, and a step taking a fifth of the kinetic energy has
+moved far enough that the cross sections it began with belong to a different
+particle.
+
+A step is taken only if it would group at least
+:math:`\texttt{MIN\_GROUPED\_COLLISIONS} = 30` collisions; otherwise the
+transport falls back to sampling them individually for that step. Two moments
+describe a sum of :math:`N` collisions to about :math:`1/\sqrt{N}` and no
+better, and a step that removes ten collisions was not going to be much faster
+than simulating them. This is what decides, with no input from the user, where
+a run stops being condensed history: wherever the geometry cuts the step
+short, and at low energy, where collisions are violent enough that few of them
+fit under the angular ceiling. A 10 keV electron in carbon fits four and is
+transported one collision at a time; a 1 MeV one fits 150.
+
+It is a floor on how much a step must be worth, not a ceiling on how much it
+may cover, and the difference matters near an interface. The threshold turns
+grouping off only in a region thinner than about thirty soft mean free paths;
+above that the step is capped by the distance to the boundary and by nothing
+else, so a region a few hundred mean free paths across is crossed in one or
+two steps. PENELOPE bounds that case separately, asking for of order ten
+artificial events per body traversal and offering a per-body maximum step
+length to enforce it. OpenMC has no such control: the only knobs are
+``deflection`` and ``energy_loss``, whose step limits scale with the mean free
+path and so cannot be tightened in a low-density region without paying the
+same factor everywhere else. A cavity test at the default cutoffs is
+therefore run with very few hinges across the cavity, which is a real
+difference from PENELOPE rather than a tuning choice.
+
+The Grouped Deflection
+~~~~~~~~~~~~~~~~~~~~~~
+
+Over a path :math:`s` the Legendre moments of the accumulated soft deflection
+decay as
+
+.. math::
+    :label: ch-moment-decay
+
+    \langle \mu \rangle = e^{-s/\lambda_1}, \qquad
+    \langle P_2(\mu) \rangle = e^{-s/\lambda_2},
+
+with :math:`1/\lambda_\ell = n\sigma_\ell`, where :math:`\sigma_\ell` is the
+:math:`\ell`-th transport cross section of everything a step groups. Elastic
+scattering supplies most of it, from the soft part of its own distribution,
+but not all: the grouped inelastic collisions deflect too, through the recoil
+they hand the atom, and in carbon that is a quarter of what elastic
+scattering contributes -- against a per cent or two in tungsten, where
+:math:`Z^2` puts nuclear elastic scattering far ahead.
+
+What a class II scheme needs from the grouped collisions is those two moments,
+so the distribution used to carry them is the simplest one that carries both
+exactly: two uniform pieces meeting at :math:`\mu_0`, the lower one carrying
+probability :math:`a`, with
+
+.. math::
+    :label: ch-artificial-angular
+
+    \mu_0 = \frac{3\langle\mu^2\rangle - 1}{2\langle\mu\rangle}, \qquad
+    a = \frac{1 + \mu_0 - 2\langle\mu\rangle}{2}.
+
+Its shape means nothing; anything more elaborate would assert detail the
+moments do not contain. Both moments come back exactly over the range in which
+:math:`a` stays a probability, which is every pair a real angular distribution
+can produce. Outside it the first moment is still exact and the second is as
+close as the form allows, which is the right way round: the first is what sets
+the transport mean free path. This is PENELOPE's choice.
+
+The Grouped Energy Loss
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Over the same path the grouped collisions take a mean :math:`sS` and a
+variance :math:`s\Omega`, where :math:`S` is the restricted stopping power and
+:math:`\Omega` the restricted straggling parameter. Both are integrals over
+everything the step groups -- the inelastic collisions below :math:`W_{cc}`,
+from the oscillator model, and the bremsstrahlung photons below the radiative
+cutoff:
+
+.. math::
+    :label: ch-restricted-moments
+
+    S = n \int_0^{W_{cc}} W \frac{d\sigma}{dW}\, dW, \qquad
+    \Omega = n \int_0^{W_{cc}} W^2 \frac{d\sigma}{dW}\, dW.
+
+Matching that mean and variance is the whole content of a restricted stopping
+power with straggling, so again the simplest distribution carrying both is
+used. Which one that is depends on how wide the loss is relative to its mean:
+a uniform distribution can reach a variance of
+:math:`\langle\omega\rangle^2/3` before it would have to go negative, and past
+that the distribution becomes a uniform piece with an atom at zero -- the step
+either loses nothing or loses a good deal, which is what a broad straggling
+distribution physically is.
+
+Because every transfer in those integrals is under the soft cutoff,
+:math:`\Omega/S \le W_{cc}`, and the cutoff is in turn held under a tenth of
+the step's budget, so the sampled loss cannot overshoot its mean by more than
+a factor :math:`\texttt{MAX\_SOFT\_LOSS\_OVERSHOOT} = 2`. That bound is what
+the hard cross section is bounded over.
+
+The Random Hinge
+~~~~~~~~~~~~~~~~
+
+The grouped deflection and the grouped energy loss are applied at a single
+point drawn uniformly along the step. Putting the whole deflection at the end
+would leave the particle travelling in a straight line for the length of the
+step and lose the lateral spread; putting it at the start would overstate it.
+Drawing the point uniformly reproduces the correct mean lateral displacement
+to first order. This is PENELOPE's random hinge.
+
+The grouped energy loss is deposited at a point drawn uniformly inside each
+leg of the step, which reproduces the profile of a constant deposition rate
+along the path but not its shape within one step. A ``heating`` tally on a
+mesh much finer than the step length therefore sees a deposition spread
+correctly on average and not within a step.
+
+The Hard Cross Section and the Delta Interaction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The hard cross section changes along the step as the particle loses energy, so
+the distance to the next hard interaction cannot be sampled from its value at
+the start. Instead a majorant :math:`\Sigma_{\max}` bounding it over the whole
+energy window the step may reach is used, the distance is sampled from that,
+and on arrival the interaction is accepted with probability
+:math:`\Sigma_{\text{hard}}(E)/\Sigma_{\max}`. A rejected draw is a *delta
+interaction*: the particle is left untouched and the next distance is sampled
+from the same majorant. This is Woodcock tracking in energy rather than in
+space, and it is exact for any valid majorant.
+
+The majorant is tabulated where each channel lives: per element for the
+atom's own channels and per material for the inelastic one, the two summed by
+atom density and by electron density respectively, exactly as the cross
+sections they bound are. At each lookup the larger of the bounds at the two
+grid points bracketing the energy is taken rather than the interpolation
+between them -- a blend of two bounds is not a bound wherever the rate is
+concave across the interval. A runtime warning is issued if the majorant is
+ever found not to bound.
+
+The Collision Stopping Power
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The soft and hard inelastic channels are two halves of one cross section, cut
+at :math:`W_{cc}`: each oscillator's moments are integrated below the cutoff
+for the grouped channel and above it for the discrete one, from the model of
+`Inelastic Collisions`_. Nothing is pinned or rescaled at the seam, because
+there is nothing to pin -- the two halves come from the same differential
+cross section, so their first moments sum to the unrestricted total whatever
+the cutoff is, and that total is the ICRU 37 collision stopping power by
+construction.
+
+This is checked rather than assumed. At startup the sum of the two halves is
+compared, at every point of the energy grid and for both projectile charges,
+against an independent evaluation of the ICRU 37 formula and against the
+restricted Berger-Seltzer stopping power paired with the analytic Moller or
+Bhabha tail. A disagreement beyond one part in a million aborts the run: the
+same zero a missing table would give is what a wrong stopping power would
+look like downstream, and nothing there could tell them apart.
+
+The straggling is the second moment of the same restricted cross section, so
+it too needs no separate model.
+
+Known Differences From Single-Event Transport
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The two schemes are built to agree, and ``deflection = 0`` reproduces the
+single-event one exactly, but they are not identical where grouping is active.
+
+* A grouped step deposits its loss at a point drawn uniformly along each leg,
+  not continuously.
+
+* The grouped loss is sampled from a two-moment artificial distribution
+  matching the mean and variance the restricted cross section gives, not from
+  the cross section itself. Only its first two moments are right.
+
+* Tallies that count interactions rather than score energy see the grouped
+  collisions as one event rather than as the many they stand for.
+
+.. _ELSEPA: https://www.sciencedirect.com/science/article/pii/S0010465504004795
+
+.. _Koch: https://doi.org/10.1103/RevModPhys.31.920
+
 .. _Kaltiaisenaho: https://aaltodoc.aalto.fi/bitstream/handle/123456789/21004/master_Kaltiaisenaho_Toni_2016.pdf
+
+.. _PENELOPE: https://doi.org/10.1787/32da5043-en
 
 .. _Salvat: https://doi.org/10.1787/32da5043-en
 

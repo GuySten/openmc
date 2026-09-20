@@ -162,9 +162,16 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   double r;
   get_energy_index(energy_, E, i, r);
 
+  // A single tabulated incident energy leaves no bin to interpolate across,
+  // and the bracketing table accessed below would be out of bounds
+  if (energy_.size() < 2) {
+    i = 0;
+    r = 0.0;
+  }
+
   // Sample between the ith and [i+1]th bin
   int l;
-  if (histogram_interp) {
+  if (histogram_interp || energy_.size() < 2) {
     l = i;
   } else {
     l = r > prn(seed) ? i + 1 : i;
@@ -241,7 +248,7 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
     }
 
     // Now interpolate between incident energy bins i and i + 1
-    if (!histogram_interp && n_energy_out > 1) {
+    if (!histogram_interp && n_energy_out > 1 && energy_.size() >= 2) {
       // Interpolation for energy E1 and EK
       n_energy_out = distribution_[i].e_out.size();
       n_discrete = distribution_[i].n_discrete;

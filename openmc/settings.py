@@ -88,12 +88,65 @@ class Settings:
         'survival_normalization' is a bool indicating whether or not the weight
         cutoff parameters will be applied relative to the particle's starting
         weight or to its current weight.
+
+        Two further keys, 'deflection' and 'energy_loss', bound one
+        condensed-history step of a charged particle. They carry no particle
+        name: they say how finely a step is integrated rather than which
+        particles matter, so one value serves every charged particle the
+        transport follows, and the bare name is defined as that shared value
+        rather than as the only form it may take, so a future species can be
+        given its own without changing what these mean. 'deflection' is the
+        largest deflection the collisions grouped into a step may accumulate,
+        measured as
+        :math:`\\langle 1-\\mu \\rangle`. It cuts elastic scattering into a
+        grouped part and a part transported one collision at a time, and it
+        bounds how far one step may run; setting it to zero groups nothing,
+        which is single-event transport. 'energy_loss' is the largest fraction
+        of its kinetic energy a particle may give those collisions over one
+        step. Both default to 0.01 and are capped at 0.2, where
+        PENELOPE caps its :math:`C_1` and :math:`C_2`. Only meaningful with
+        :attr:`electron_transport`.
     delayed_photon_scaling : bool
         Indicate whether to scale the fission photon yield by (EGP + EGD)/EGP
         where EGP is the energy release of prompt photons and EGD is the energy
         release of delayed photons.
 
         .. versionadded:: 0.12
+    density_effect : bool
+        Whether to apply the Sternheimer density-effect correction to the
+        collision stopping power. Defaults to True and should stay there: the
+        screening is real, and switching it off overstates the collision
+        stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It exists for
+        Fano cavity tests, whose theorem requires the mass stopping power to be
+        independent of density. Setting it to False removes every density
+        dependence the collision model has: the Sternheimer correction itself,
+        and the plasma term in the oscillator resonance energies, which would
+        otherwise leave the same element with two different loss spectra at
+        two different densities.
+
+        .. versionadded:: 0.17.0
+    electron_transport : bool
+        Whether to transport electrons and positrons as individual particles,
+        simulating every interaction as a discrete event rather than depositing
+        their energy locally or spreading it with the thick-target
+        approximation. Requires photon transport and an electron data library,
+        and makes :attr:`electron_treatment` inapplicable.
+
+        .. versionadded:: 0.17.0
+    bremsstrahlung_split : int
+        Number of photons emitted per radiative event, each carrying 1/n of the
+        weight. A variance reduction for problems whose answer depends on the
+        spectrum or the direction of the photons charged particles radiate,
+        rather than only on how much energy they carry away, and particularly
+        where the part of the spectrum that matters is a tail that analog
+        emission reaches too rarely. The draws are independent, so splitting
+        buys tries at reaching that tail rather than copies of one photon.
+        Energy is then conserved in the mean rather than event by event, which
+        adds noise to :attr:`heating` tallies, so it defaults to 1 (no
+        splitting). Ignored, with a warning, without
+        :attr:`electron_transport`.
+
+        .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
@@ -432,7 +485,10 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
+        self._density_effect = None
+        self._electron_transport = None
         self._photon_transport = None
+        self._bremsstrahlung_split = None
         self._atomic_relaxation = None
         self._plot_seed = None
         self._ptables = None
@@ -686,6 +742,34 @@ class Settings:
     def confidence_intervals(self, confidence_intervals: bool):
         cv.check_type('confidence interval', confidence_intervals, bool)
         self._confidence_intervals = confidence_intervals
+
+    @property
+    def density_effect(self) -> bool:
+        return self._density_effect
+
+    @density_effect.setter
+    def density_effect(self, density_effect: bool):
+        cv.check_type('density effect', density_effect, bool)
+        self._density_effect = density_effect
+
+    @property
+    def electron_transport(self) -> bool:
+        return self._electron_transport
+
+    @electron_transport.setter
+    def electron_transport(self, electron_transport: bool):
+        cv.check_type('electron transport', electron_transport, bool)
+        self._electron_transport = electron_transport
+
+    @property
+    def bremsstrahlung_split(self) -> int:
+        return self._bremsstrahlung_split
+
+    @bremsstrahlung_split.setter
+    def bremsstrahlung_split(self, n: int):
+        cv.check_type('bremsstrahlung split', n, Integral)
+        cv.check_greater_than('bremsstrahlung split', n, 0)
+        self._bremsstrahlung_split = n
 
     @property
     def electron_treatment(self) -> str:
@@ -1171,6 +1255,18 @@ class Settings:
                          'energy_positron']:
                 cv.check_type('energy cutoff', cutoff[key], Real)
                 cv.check_greater_than('energy cutoff', cutoff[key], 0.0)
+            elif key == 'deflection':
+                cv.check_type('deflection cutoff', cutoff[key], Real)
+                cv.check_greater_than('deflection cutoff', cutoff[key],
+                                      0.0, equality=True)
+                cv.check_less_than('deflection cutoff', cutoff[key], 0.2,
+                                   equality=True)
+            elif key == 'energy_loss':
+                cv.check_type('energy loss cutoff', cutoff[key], Real)
+                cv.check_greater_than('energy loss cutoff', cutoff[key],
+                                      0.0)
+                cv.check_less_than('energy loss cutoff', cutoff[key], 0.2,
+                                   equality=True)
             else:
                 msg = f'Unable to set cutoff to "{key}" which is unsupported ' \
                     'by OpenMC'
@@ -1707,6 +1803,21 @@ class Settings:
         if self._confidence_intervals is not None:
             element = ET.SubElement(root, "confidence_intervals")
             element.text = str(self._confidence_intervals).lower()
+
+    def _create_density_effect_subelement(self, root):
+        if self._density_effect is not None:
+            element = ET.SubElement(root, "density_effect")
+            element.text = str(self._density_effect).lower()
+
+    def _create_electron_transport_subelement(self, root):
+        if self._electron_transport is not None:
+            element = ET.SubElement(root, "electron_transport")
+            element.text = str(self._electron_transport).lower()
+
+    def _create_bremsstrahlung_split_subelement(self, root):
+        if self._bremsstrahlung_split is not None:
+            element = ET.SubElement(root, "bremsstrahlung_split")
+            element.text = str(self._bremsstrahlung_split)
 
     def _create_electron_treatment_subelement(self, root):
         if self._electron_treatment is not None:
@@ -2255,6 +2366,21 @@ class Settings:
         if text is not None:
             self.max_order = int(text)
 
+    def _density_effect_from_xml_element(self, root):
+        text = get_text(root, 'density_effect')
+        if text is not None:
+            self.density_effect = text in ('true', '1')
+
+    def _electron_transport_from_xml_element(self, root):
+        text = get_text(root, 'electron_transport')
+        if text is not None:
+            self.electron_transport = text in ('true', '1')
+
+    def _bremsstrahlung_split_from_xml_element(self, root):
+        text = get_text(root, 'bremsstrahlung_split')
+        if text is not None:
+            self.bremsstrahlung_split = int(text)
+
     def _photon_transport_from_xml_element(self, root):
         text = get_text(root, 'photon_transport')
         if text is not None:
@@ -2307,6 +2433,7 @@ class Settings:
             for key in ('energy_neutron', 'energy_photon', 'energy_electron',
                         'energy_positron', 'weight', 'weight_avg', 'time_neutron',
                         'time_photon', 'time_electron', 'time_positron',
+                        'deflection', 'energy_loss',
                         'survival_normalization'):
                 value = get_text(elem, key)
                 if value is not None:
@@ -2618,6 +2745,9 @@ class Settings:
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
+        self._create_density_effect_subelement(element)
+        self._create_electron_transport_subelement(element)
+        self._create_bremsstrahlung_split_subelement(element)
         self._create_photon_transport_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
@@ -2737,6 +2867,9 @@ class Settings:
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
+        settings._density_effect_from_xml_element(elem)
+        settings._electron_transport_from_xml_element(elem)
+        settings._bremsstrahlung_split_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)

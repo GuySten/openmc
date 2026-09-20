@@ -548,9 +548,11 @@ void Tabular::init(
 
 double Tabular::sample_unbiased(uint64_t* seed) const
 {
-  // Sample value of CDF
-  double c = prn(seed);
+  return this->sample_at(prn(seed));
+}
 
+double Tabular::sample_at(double c) const
+{
   // Find first CDF bin which is above the sampled value
   auto c_iter = std::lower_bound(c_.begin() + 1, c_.end(), c);
   int i = std::distance(c_.begin(), c_iter) - 1;

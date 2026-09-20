@@ -13,6 +13,7 @@
 
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
 #include "openmc/distribution.h"
@@ -54,6 +55,8 @@ bool confidence_intervals {false};
 bool create_delayed_neutrons {true};
 bool create_fission_neutrons {true};
 bool delayed_photon_scaling {true};
+bool density_effect {true};
+bool electron_transport {false};
 bool entropy_on {false};
 bool event_based {false};
 bool ifp_delayed_group_on {false};
@@ -111,7 +114,17 @@ int64_t max_particles_in_flight {100000};
 int max_particle_events {1000000};
 
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
-array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
+// The fastest condensed history that does not move the answer. Measured on a
+// 1 MeV depth dose in carbon, the hardest case of the benchmarks this was
+// written for -- the lightest target, at the energy where the grouped
+// collisions deflect the most and elastic scattering is the smallest share of
+// them. Against single-event transport it agrees everywhere to 2.1 standard
+// errors; 0.01 reaches 4.9, which is a visible difference. C2 rarely binds
+// once the angular ceiling is applied and is left as a guard.
+int bremsstrahlung_split {1};
+double deflection_cutoff {0.01};
+double energy_loss_cutoff {0.01};
+array<double, 4> energy_cutoff {0.0, 1000.0, 1000.0, 1000.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
 int legendre_to_tabular_points {C_NONE};
@@ -617,7 +630,9 @@ void read_settings_xml(pugi::xml_node root)
   }
 
   // Check for electron treatment
+  bool electron_treatment_set = false;
   if (check_for_node(root, "electron_treatment")) {
+    electron_treatment_set = true;
     auto temp_str = get_node_value(root, "electron_treatment", true, true);
     if (temp_str == "led") {
       electron_treatment = ElectronTreatment::LED;
@@ -635,6 +650,84 @@ void read_settings_xml(pugi::xml_node root)
     if (!run_CE && photon_transport) {
       fatal_error("Photon transport is not currently supported in "
                   "multigroup mode");
+    }
+  }
+
+  // Check for electron transport
+  if (check_for_node(root, "electron_transport")) {
+    electron_transport = get_node_value_bool(root, "electron_transport");
+
+    if (!run_CE && electron_transport) {
+      fatal_error("Electron transport is not currently supported in "
+                  "multigroup mode");
+    }
+  }
+
+  // The density-effect correction. Switching it off is not a physical choice:
+  // the Sternheimer screening is real and leaving it out overstates the
+  // collision stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It is
+  // here because Fano's theorem needs it. The theorem holds when the mass
+  // stopping power does not depend on density, and the density effect is
+  // precisely the term that breaks that, so a cavity test run with it on
+  // measures Sternheimer rather than the condensed-history algorithm it is
+  // meant to stress.
+  if (check_for_node(root, "density_effect")) {
+    density_effect = get_node_value_bool(root, "density_effect");
+    if (!density_effect && electron_transport) {
+      warning("The density-effect correction is disabled. Collision stopping "
+              "powers will be those of the free atom, which is correct only "
+              "for a verification test that asks for it.");
+    }
+  }
+
+  // Bremsstrahlung splitting: a variance reduction for problems whose answer
+  // is driven by the photons electrons make, and which are sensitive to the
+  // spectrum or direction of those photons rather than only to how much
+  // energy they carry.
+  if (check_for_node(root, "bremsstrahlung_split")) {
+    bremsstrahlung_split =
+      std::stoi(get_node_value(root, "bremsstrahlung_split"));
+    if (bremsstrahlung_split < 1) {
+      fatal_error("Bremsstrahlung splitting must emit at least one photon.");
+    }
+  }
+
+  // Everything above can be set in any order and in any combination, so what
+  // one setting means for another is settled here, once, rather than where it
+  // happens to be read. A setting that does not apply is ignored with a word
+  // about it: refusing to run over one would make a script that sweeps a
+  // parameter fail on the cases where the parameter does not bite.
+  if (electron_transport) {
+    // Electron transport is meaningless without photon transport, and the
+    // per-element data it needs is only loaded when photon transport is on.
+    if (!photon_transport) {
+      warning("Electron transport requires photon transport; enabling it.");
+      photon_transport = true;
+    }
+    // The thick-target approximation stands in for electrons that are not
+    // transported, and sample_electron_reaction() ignores it when they are.
+    // Turning it off here keeps its tables from being built at all.
+    // Only worth saying to someone who asked for it. It is the default, so
+    // warning whenever it is merely still set tells every user of electron
+    // transport about a setting they never touched.
+    if (electron_treatment_set &&
+        electron_treatment == ElectronTreatment::TTB) {
+      warning("Electron treatment 'ttb' is ignored when electron transport "
+              "is enabled; bremsstrahlung is sampled per event instead.");
+    }
+    electron_treatment = ElectronTreatment::LED;
+  } else {
+    // Nothing below transports a charged particle, so the settings that only
+    // describe how one is transported have nothing to act on.
+    if (bremsstrahlung_split > 1) {
+      warning("Bremsstrahlung splitting is ignored without electron "
+              "transport.");
+      bremsstrahlung_split = 1;
+    }
+    if (!density_effect) {
+      warning("The density-effect correction setting is ignored without "
+              "electron transport.");
+      density_effect = true;
     }
   }
 
@@ -766,7 +859,54 @@ void read_settings_xml(pugi::xml_node root)
     }
     if (check_for_node(node_cutoff, "energy_electron")) {
       energy_cutoff[2] =
-        std::stof(get_node_value(node_cutoff, "energy_electron"));
+        std::stod(get_node_value(node_cutoff, "energy_electron"));
+    }
+    // How far a condensed-history step may run before it has to stop and
+    // look again. These sit here because everything they are measured
+    // against is here: the step may not carry a charged particle below the
+    // energy cutoff of its own kind, and what a grouped collision may emit is
+    // bounded by the electron and photon cutoffs above. They carry no
+    // particle name because they say how finely a step is integrated rather
+    // than which particles matter, so one value serves every charged particle
+    // the transport follows.
+    if (check_for_node(node_cutoff, "deflection")) {
+      deflection_cutoff = std::stod(get_node_value(node_cutoff, "deflection"));
+      if (deflection_cutoff < 0.0) {
+        fatal_error("Deflection cutoff cannot be negative.");
+      }
+      if (!electron_transport) {
+        warning("The deflection cutoff is ignored without electron "
+                "transport.");
+      }
+      // Clamped rather than refused: a coarser step than this is still a
+      // request for the coarsest step there is, and stopping a run over a
+      // quality knob helps nobody. The Python interface refuses it at the
+      // point of assignment, where saying so is more use.
+      if (deflection_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Deflection cutoff of {} is past the {} a "
+                            "condensed-history step is meaningful up to, and "
+                            "has been reduced to it.",
+          deflection_cutoff, MAX_STEP_COARSENESS));
+        deflection_cutoff = MAX_STEP_COARSENESS;
+      }
+    }
+    if (check_for_node(node_cutoff, "energy_loss")) {
+      energy_loss_cutoff =
+        std::stod(get_node_value(node_cutoff, "energy_loss"));
+      if (energy_loss_cutoff <= 0.0) {
+        fatal_error("Energy loss cutoff must be greater than zero.");
+      }
+      if (!electron_transport) {
+        warning("The energy loss cutoff is ignored without electron "
+                "transport.");
+      }
+      if (energy_loss_cutoff > MAX_STEP_COARSENESS) {
+        warning(fmt::format("Energy loss cutoff of {} is past the {} a "
+                            "condensed-history step is meaningful up to, and "
+                            "has been reduced to it.",
+          energy_loss_cutoff, MAX_STEP_COARSENESS));
+        energy_loss_cutoff = MAX_STEP_COARSENESS;
+      }
     }
     if (check_for_node(node_cutoff, "energy_positron")) {
       energy_cutoff[3] =

@@ -186,7 +186,7 @@ struct NuclideMicroXS {
 //! current energy
 //==============================================================================
 
-struct ElementMicroXS {
+struct PhotoAtomicMicroXS {
   int index_grid;         //!< index on element energy grid
   double last_E {0.0};    //!< last evaluated energy in [eV]
   double interp_factor;   //!< interpolation factor on energy grid
@@ -198,9 +198,81 @@ struct ElementMicroXS {
 };
 
 //==============================================================================
+//! Cached microscopic electron cross sections for a particular element at the
+//! current energy
+//==============================================================================
+
+struct ElectroAtomicMicroXS {
+  int index_grid;      //!< index on element energy grid
+  double last_E {0.0}; //!< last evaluated energy in [eV]
+  //! Charge of the projectile these were evaluated for: 0 for an electron, 1
+  //! for a positron. Almost everything below is charge dependent -- the
+  //! elastic table, annihilation, the Salvat factor on bremsstrahlung -- so
+  //! energy alone is not a sufficient cache key.
+  int last_q {-1};
+  double interp_factor;  //!< interpolation factor on energy grid
+  double total;          //!< microscopic total electron xs
+  double elastic;        //!< microscopic elastic xs
+  double annihilation;   //!< microscopic in-flight annihilation xs, zero for
+                         //!< electrons
+  double bremsstrahlung; //!< microscopic bremsstrahlung xs
+
+  //! The soft/hard split a mixed condensed-history step is taken from. The
+  //! hard cross sections are the parts of the channels above that stay
+  //! discrete; what is left of them is described by the soft quantities
+  //! instead. The inelastic collisions are not here at all: they belong to
+  //! the medium rather than to the atom, so Material splits them itself. All
+  //! zero, and hard_total equal to total, unless the run asked for condensed
+  //! history with the deflection cutoff.
+  double hard_elastic;
+  double hard_bremsstrahlung;
+  double hard_total;      //!< includes annihilation, which is never grouped
+  double hard_majorant;   //!< upper bound on hard_total over one step
+  double soft_rate;       //!< collisions being grouped, per unit path
+  double soft_stopping;   //!< restricted stopping power in [b eV]
+  double soft_straggling; //!< second moment of that loss in [b eV^2]
+  double soft_xs1;        //!< first transport xs of the soft deflections [b]
+  double soft_xs2;        //!< second transport xs of the same [b]
+};
+
+//==============================================================================
 // MacroXS contains cached macroscopic cross sections for the material a
 // particle is traveling through
 //==============================================================================
+
+//==============================================================================
+//! Everything a condensed-history step needs from the material it runs through
+//!
+//! Macroscopic, at the projectile's current energy: [1/cm] for the rates,
+//! [eV/cm] for the stopping power and [eV^2/cm] for the straggling. Only
+//! meaningful while a charged particle is being tracked.
+//!
+//! These say nothing about which charged particle it is. The step machinery
+//! reads them and the material fills them; what species-specific data went
+//! into filling them stays on the far side of this seam, which is what a
+//! second charged particle would supply its own version of.
+//==============================================================================
+
+struct StepXS {
+  double hard {0.0};          //!< rate of the interactions that stay discrete
+  double hard_majorant {0.0}; //!< bound on `hard` over one step
+  double soft_rate {0.0};     //!< rate of the grouped ones
+  double stopping {0.0};      //!< restricted stopping power
+  double straggling {0.0};    //!< second moment of the restricted loss
+  double xs1_soft {0.0};      //!< first transport xs of the grouped deflections
+  double xs2_soft {0.0};      //!< second
+  //! Rate of the inelastic collisions the oscillator model describes, in
+  //! [1/cm]. They belong to the material rather than to any atom in it, so
+  //! the reaction is chosen against this before an element is sampled at all.
+  //! It is the discrete rate: what a grouped step leaves behind, or the whole
+  //! of it when nothing is grouped.
+  double inelastic {0.0};
+  //! The same rate with nothing grouped, in [1/cm]. A flight that declines to
+  //! group is transported on the full cross section, so the share of
+  //! macro_xs().total that belongs to the inelastic channel is this rather
+  //! than the discrete rate above. Equal to it when nothing is grouped.
+  double inelastic_full {0.0};
+};
 
 struct MacroXS {
   double total;       //!< macroscopic total xs
@@ -214,6 +286,12 @@ struct MacroXS {
   double incoherent;      //!< macroscopic incoherent xs
   double photoelectric;   //!< macroscopic photoelectric xs
   double pair_production; //!< macroscopic pair production xs
+
+  //! The condensed-history step, last so that it stays out of the way. Every
+  //! neutron transported reads total, absorption, fission and nu_fission
+  //! together, and seven doubles in the middle of them put those four in
+  //! different cache lines.
+  StepXS step;
 };
 
 //==============================================================================
@@ -494,7 +572,8 @@ private:
   // Data members -- see public: below for descriptions
 
   vector<NuclideMicroXS> neutron_xs_;
-  vector<ElementMicroXS> photon_xs_;
+  vector<PhotoAtomicMicroXS> photon_xs_;
+  vector<ElectroAtomicMicroXS> electron_xs_;
   MacroXS macro_xs_;
   CacheDataMG mg_xs_cache_;
 
@@ -512,6 +591,19 @@ private:
   double time_ {0.0};
   double time_last_ {0.0};
   double wgt_last_ {1.0};
+
+  //! A mixed condensed-history step in progress. The step runs from one hard
+  //! interaction to the next with the grouped deflection applied at a point
+  //! inside it, so it spans two advances: one up to that hinge and one beyond
+  //! it. Zero length means no step is in progress and the next advance starts
+  //! one.
+  double ch_length_ {0.0};      //!< path left to run after the hinge, in [cm]
+  double ch_s_lambda1_ {0.0};   //!< first transport optical depth of the step
+  double ch_s_lambda2_ {0.0};   //!< second
+  double ch_majorant_ {0.0};    //!< bound the step's flight was drawn from
+  bool ch_at_hinge_ {false};    //!< the next collision event is the hinge
+  bool ch_in_step_ {false};     //!< a grouped step is under way
+  bool ch_hard_at_end_ {false}; //!< a hard interaction ends the step
 
   bool fission_ {false};
   TallyEvent event_;
@@ -588,7 +680,15 @@ public:
   const NuclideMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
 
   // Microscopic photon cross sections
-  ElementMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  PhotoAtomicMicroXS& photon_xs(int i) { return photon_xs_[i]; }
+  const PhotoAtomicMicroXS& photon_xs(int i) const { return photon_xs_[i]; }
+
+  // Microscopic electron cross sections
+  ElectroAtomicMicroXS& electron_xs(int i) { return electron_xs_[i]; }
+  const ElectroAtomicMicroXS& electron_xs(int i) const
+  {
+    return electron_xs_[i];
+  }
 
   // Macroscopic cross sections
   MacroXS& macro_xs() { return macro_xs_; }
@@ -635,6 +735,36 @@ public:
   bool alive() const { return wgt_ != 0.0; }
 
   // Polar scattering angle after a collision
+  double& ch_length() { return ch_length_; }
+  double& ch_s_lambda1() { return ch_s_lambda1_; }
+  double& ch_s_lambda2() { return ch_s_lambda2_; }
+  double& ch_majorant() { return ch_majorant_; }
+  bool& ch_at_hinge() { return ch_at_hinge_; }
+  bool& ch_in_step() { return ch_in_step_; }
+  bool& ch_hard_at_end() { return ch_hard_at_end_; }
+
+  //! Abandon any condensed-history step in progress
+  //!
+  //! The step is built from the material it started in and from a straight
+  //! line through it, so neither survives a surface crossing. It does not
+  //! survive the particle either: one of these objects is reused for every
+  //! history on a thread, so a step left in progress by a particle that died
+  //! inside it would otherwise be inherited by whatever is tracked next.
+  //!
+  //! Everything is cleared, not just the flags the readers are guarded by.
+  //! Leaving the optical depths and the majorant behind costs nothing while
+  //! the guards hold, and costs a great deal the moment one does not.
+  void ch_reset()
+  {
+    ch_length_ = 0.0;
+    ch_s_lambda1_ = 0.0;
+    ch_s_lambda2_ = 0.0;
+    ch_majorant_ = 0.0;
+    ch_at_hinge_ = false;
+    ch_in_step_ = false;
+    ch_hard_at_end_ = false;
+  }
+
   double& mu() { return mu_; }
   const double& mu() const { return mu_; }
 

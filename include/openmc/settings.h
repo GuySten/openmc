@@ -58,9 +58,11 @@ extern bool
 extern bool create_delayed_neutrons; //!< create delayed fission neutrons?
 extern bool cmfd_run;                //!< is a CMFD run?
 extern bool
-  delayed_photon_scaling; //!< Scale fission photon yield to include delayed
-extern bool entropy_on;   //!< calculate Shannon entropy?
-extern bool event_based;  //!< use event-based mode (instead of history-based)
+  delayed_photon_scaling;   //!< Scale fission photon yield to include delayed
+extern bool density_effect; //!< Sternheimer correction applied?
+extern bool electron_transport; //!< electron transport turned on?
+extern bool entropy_on;         //!< calculate Shannon entropy?
+extern bool event_based; //!< use event-based mode (instead of history-based)
 extern bool ifp_delayed_group_on; //!< Store delayed group IFP data?
 extern bool ifp_lifetime_on;      //!< Store lifetime IFP data?
 extern bool legendre_to_tabular; //!< convert Legendre distributions to tabular?
@@ -124,7 +126,16 @@ extern int64_t
   max_particles_in_flight;      //!< Max num. event-based particles in flight
 extern int max_particle_events; //!< Maximum number of particle events
 extern ElectronTreatment
-  electron_treatment; //!< how to treat secondary electrons
+  electron_treatment;            //!< how to treat secondary electrons
+extern int bremsstrahlung_split; //!< photons emitted per radiative event,
+                                 //!< each carrying 1/n of the weight
+extern double
+  deflection_cutoff; //!< most the grouped collisions may deflect a
+                     //!< charged particle over one condensed-history
+                     //!< step; zero transports every collision
+extern double energy_loss_cutoff; //!< largest fraction of its energy a charged
+                                  //!< particle may give the grouped collisions
+                                  //!< in one condensed-history step
 extern array<double, 4>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
 extern array<double, 4>

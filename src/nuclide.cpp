@@ -1163,10 +1163,34 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
 
         // Read element data from HDF5
         hid_t group = open_group(file_id, element.c_str());
-        data::elements.push_back(make_unique<PhotonInteraction>(group));
+        data::elements.push_back(make_unique<Element>(group));
 
         close_group(group);
         file_close(file_id);
+        if (settings::electron_transport) {
+          LibraryKey key {Library::Type::electron, element};
+          const auto& it = data::library_map.find(key);
+          if (it == data::library_map.end()) {
+            set_errmsg("Element '" + std::string {element} +
+                       "' is not present in library.");
+            return OPENMC_E_DATA;
+          }
+
+          int idx = it->second;
+          const auto& filename = data::libraries[idx].path_;
+          write_message(6, "Reading {} from {} ", element, filename);
+
+          // Open file and make sure version is sufficient
+          hid_t file_id = file_open(filename, 'r');
+          check_data_version(file_id);
+
+          // Read element data from HDF5
+          hid_t group = open_group(file_id, element.c_str());
+          data::elements.back()->read_electron_data(group);
+
+          close_group(group);
+          file_close(file_id);
+        }
       }
     }
   }

@@ -11,8 +11,6 @@ from . import HDF5_VERSION
 from .ace import get_metadata, Table, Library
 from .angle_distribution import AngleDistribution
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
-from .energy_distribution import ContinuousTabular
-from .function import Tabulated1D
 from .photon import (_BREMSSTRAHLUNG, _SUBSHELLS, MASS_ELECTRON_EV,
                      _load_bremsstrahlung)
 
@@ -23,28 +21,6 @@ from .photon import (_BREMSSTRAHLUNG, _SUBSHELLS, MASS_ELECTRON_EV,
 _PHOTON_CUTOFF = 1.0
 
 __all__ = ['IncidentElectron']
-
-
-def _tabular_from_cdf(x, c, name):
-    """Build a histogram Tabular from a tabulated cumulative distribution.
-
-    ACE stores these distributions as abscissae plus cumulative probabilities.
-    Converting to the histogram probabilities that :class:`Tabular` expects
-    requires dividing by the bin widths, so a repeated abscissa would yield inf
-    or nan and propagate silently into the exported library.
-
-    """
-    dx = np.diff(x)
-    if np.any(dx <= 0.0):
-        bad = int(np.argmax(dx <= 0.0))
-        raise ValueError(
-            f'Non-increasing abscissa in {name}: value {x[bad]} at index {bad} '
-            f'is followed by {x[bad + 1]}. The cumulative distribution cannot '
-            'be differentiated.')
-    p = np.append(np.diff(c) / dx, 0.0)
-    dist = Tabular(x, p, interpolation='histogram')
-    dist.c = c
-    return dist
 
 
 # Dirac partial-wave elastic cross sections are read from a pre-generated HDF5
@@ -62,10 +38,10 @@ _ELASTIC_DPWA = {}
 def _with_cdf(x, p):
     """Tabular carrying the cumulative the HDF5 writers and the transport expect.
 
-    AngleDistribution and ContinuousTabular both write a tabulated CDF
-    alongside the density, and the sampler inverts that CDF rather than
-    reintegrating the density. Building it here with the same trapezoidal rule
-    the interpolation implies keeps the two consistent.
+    AngleDistribution writes a tabulated CDF alongside the density, and the
+    sampler inverts that CDF rather than reintegrating the density. Building
+    it here with the same trapezoidal rule the interpolation implies keeps the
+    two consistent.
     """
     c = np.concatenate(([0.0], np.cumsum(0.5 * (p[:-1] + p[1:]) * np.diff(x))))
     total = c[-1]
@@ -85,16 +61,24 @@ def _log_interp(x, xp, fp):
 class IncidentElectron:
     r"""Electron and positron interaction data.
 
-    This class stores the elastic, atomic excitation, electroionization and
-    bremsstrahlung data needed to transport electrons and positrons as
-    individual particles. It is assembled from three sources: the excitation
-    and electroionization data come from the eprdata ACE tables of the EPICS
-    evaluated libraries, the elastic differential cross sections from a Dirac
-    partial-wave calculation distributed with OpenMC, and the bremsstrahlung
-    photon spectra from the scaled cross sections already carried by the photon
-    library. To create an instance, use the factory method
-    :meth:`IncidentElectron.from_ace`, which reads the first and adds the other
-    two itself.
+    This class stores the elastic, electroionization and bremsstrahlung data
+    needed to transport electrons and positrons as individual particles. It is
+    assembled from three sources: the electroionization cross sections come
+    from the eprdata ACE tables of the EPICS evaluated libraries, the elastic
+    differential cross sections from a Dirac partial-wave calculation
+    distributed with OpenMC, and the bremsstrahlung photon spectra from the
+    scaled cross sections already carried by the photon library. To create an
+    instance, use the factory method :meth:`IncidentElectron.from_ace`, which
+    reads the first and adds the other two itself.
+
+    Inelastic collisions are not sampled from tabulated spectra. The transport
+    builds them from the Sternheimer-Liljequist oscillator model of the
+    medium, which needs the mean excitation energy and the subshell binding
+    energies and nothing else, so neither the evaluated excitation channel nor
+    the knock-on spectra are carried here. What remains of the evaluation is
+    the ionization cross section of each subshell, which the inner-shell
+    oscillators are renormalized to so that characteristic x-ray yields rest
+    on evaluated data.
 
     .. versionadded:: 0.17.0
 
@@ -127,14 +111,6 @@ class IncidentElectron:
     energy_grid : numpy.ndarray
         Incident kinetic energies in [eV] that every cross section here is
         tabulated on
-    excitation_energy_loss : numpy.ndarray
-        Average energy lost to an atomic excitation in [eV], on
-        :attr:`energy_grid`. The evaluation tabulates only this average, not a
-        spectrum.
-    excitation_xs : numpy.ndarray
-        Atomic excitation cross section in [b] on :attr:`energy_grid`
-    ionization_dist : dict
-        Knock-on energy distributions keyed by subshell index
     ionization_xs : dict
         Electroionization cross sections in [b] keyed by subshell index, each
         on :attr:`energy_grid`
@@ -160,10 +136,7 @@ class IncidentElectron:
         self.elastic_energy_range = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_photon_cutoff = None
-        self.excitation_xs = None
-        self.excitation_energy_loss = None
         self.ionization_xs = {}  # Keyed by subshell index
-        self.ionization_dist = {} # Keyed by subshell index
         self.shells = []
 
     def __repr__(self):
@@ -187,7 +160,7 @@ class IncidentElectron:
     def from_ace(cls, ace_table_or_filename, photon_cutoff=_PHOTON_CUTOFF):
         """Generate incident electron data from an ACE table
 
-        The excitation and electroionization data come from the table. Elastic
+        The electroionization cross sections come from the table. Elastic
         scattering and bremsstrahlung do not: their evaluated distributions are
         tabulated on far too few incident energies to interpolate, so they are
         taken from the calculated datasets distributed with OpenMC, the way the
@@ -221,77 +194,35 @@ class IncidentElectron:
 
         # Parse NXS/JXS array layout
         n_energy = ace.nxs[8]
-        n_xl = ace.nxs[9]
         n_subshells = ace.nxs[7]
 
 
         j_shell = ace.jxs[11]           # SUBSH: subshell designators
         j_energy = ace.jxs[19]          # ESZE: electron energy grid + cross sections
-        j_excitation = ace.jxs[20]      # EXCIT: excitation energy-loss table
-        j_ionization = ace.jxs[23]      # EION: electroionization table info
 
         data.shells = [_SUBSHELLS[int(i)] for i in ace.xss[j_shell : j_shell + n_subshells]]
         data.energy_grid = ace.xss[j_energy : j_energy + n_energy]*EV_PER_MEV
 
         j_xs = j_energy + n_energy
 
-        # Read cross sections from the ESZE block. The layout is, in order:
-        # energy grid, total, elastic, bremsstrahlung, excitation, total
-        # electroionization, then one block per subshell. Only excitation is
-        # taken from it. The total and the total electroionization are
-        # redundant, the first with the sum of the partials and the second
-        # with the subshell blocks read below; the elastic and bremsstrahlung
-        # columns belong to distributions this reader does not produce, and
-        # reading them would only leave two numbers to be overwritten.
-        data.excitation_xs = ace.xss[j_xs + 3 * n_energy : j_xs + 4 * n_energy]
-
-        # Average excitation energy loss, from the EXCIT block at JXS(20).
-        # This is NOT at JXS(5), which locates the photon heating numbers.
-        # Both the abscissa and the tabulated loss are stored in MeV.
-        data.excitation_energy_loss = Tabulated1D(
-            ace.xss[j_excitation : j_excitation + n_xl]*EV_PER_MEV,
-            ace.xss[j_excitation + n_xl : j_excitation + 2 * n_xl]*EV_PER_MEV)
-
+        # The subshell electroionization cross sections, from the tail of the
+        # ESZE block. Its layout is, in order: energy grid, total, elastic,
+        # bremsstrahlung, excitation, total electroionization, then one block
+        # per subshell, and only those last blocks are taken.
+        #
+        # Nothing before them is wanted. The total and the total
+        # electroionization are redundant, the first with the sum of the
+        # partials and the second with the subshell blocks themselves; the
+        # elastic and bremsstrahlung columns belong to distributions this
+        # reader does not produce; and the excitation column, like the EXCIT
+        # block at JXS(20) beside it, describes a channel the transport no
+        # longer has, excitation and ionization being one channel of the
+        # oscillator model split by whether the transfer cleared a binding
+        # energy.
         j_subshell_xs = j_xs + 5 * n_energy
         for s, shell in enumerate(data.shells):
             start_idx = j_subshell_xs + s * n_energy
             data.ionization_xs[shell] = ace.xss[start_idx : start_idx + n_energy]
-
-        ni = ace.xss[j_ionization : j_ionization + n_subshells].astype(int)
-        locinfo = ace.xss[j_ionization + n_subshells: j_ionization + 2*n_subshells].astype(int)
-        loctab = ace.xss[j_ionization + 2*n_subshells: j_ionization + 3*n_subshells].astype(int)
-        for s, shell in enumerate(data.shells):
-            energy = ace.xss[locinfo[s]:locinfo[s]+ni[s]]*EV_PER_MEV
-            ls = ace.xss[locinfo[s]+ni[s]:locinfo[s]+2*ni[s]].astype(int)
-            offsets = ace.xss[locinfo[s]+2*ni[s]:locinfo[s]+3*ni[s]].astype(int)
-            energy_out = []
-            for i in range(ni[s]):
-                start = loctab[s] + offsets[i]
-                e = ace.xss[start:start + ls[i]]*EV_PER_MEV
-                c = ace.xss[start + ls[i]:start + 2*ls[i]]
-                energy_out.append(_tabular_from_cdf(
-                    e, c, f'electroionization table {i} of subshell {shell}'))
-            # Log-log interpolation between the tabulated incident energies.
-            # These grids are extremely sparse -- aluminium's K shell jumps
-            # from 15.8 keV to 501 keV with nothing in between -- and a linear
-            # weight puts 83% of that interval on the lower table.
-            #
-            # Measured against the ICRU-37 collision stopping power between 50
-            # and 300 keV, where the density effect vanishes, a linear weight
-            # runs 5-9% low and a logarithmic one 1-3% low, consistently for
-            # every element tested from beryllium to tantalum. The residual is
-            # the shell correction, which the Bethe form of the reference
-            # omits and which grows with Z in the same way.
-            #
-            # Unit-base scaling must stay off here, as the transport code has
-            # it. These spectra are not self-similar -- the low end is anchored
-            # near the binding energy while the tip follows the kinematic limit
-            # (E - B)/2 -- so rescaling a low-energy table's shape onto a much
-            # wider range drives the mean energy transfer far too high: with
-            # unit-base on, the collision stopping power comes out at 1.3 to
-            # 2.1 times ICRU-37.
-            data.ionization_dist[shell] = ContinuousTabular(
-                [len(energy)], [5], energy, energy_out)
 
         # Add partial-wave elastic and Seltzer-Berger bremsstrahlung data
         data._add_dpwa_elastic()
@@ -340,19 +271,12 @@ class IncidentElectron:
             data.elastic_dist[particle] = AngleDistribution.from_hdf5(
                 pgroup['distribution'])
 
-        excitation_group = group['excitation']
-        data.excitation_xs = excitation_group['xs'][()]
-        data.excitation_energy_loss = Tabulated1D.from_hdf5(
-            excitation_group['energy_loss'])
-
         ionization_group = group['ionization']
         data.shells = [s.decode() if isinstance(s, bytes) else s
                        for s in ionization_group.attrs['designators']]
         xs = ionization_group['xs'][()]
         for i, shell in enumerate(data.shells):
             data.ionization_xs[shell] = xs[i]
-            data.ionization_dist[shell] = ContinuousTabular.from_hdf5(
-                ionization_group[shell])
 
         bremsstrahlung_group = group['bremsstrahlung']
         data.bremsstrahlung_xs = bremsstrahlung_group['xs'][()]
@@ -404,20 +328,12 @@ class IncidentElectron:
                 self.elastic_dist[particle].to_hdf5(
                     pgroup.create_group("distribution"))
 
-            excitation_group = group.create_group("excitation")
-            excitation_group.create_dataset("xs", data=self.excitation_xs)
-            self.excitation_energy_loss.to_hdf5(excitation_group, "energy_loss")
-
             ionization_group = group.create_group("ionization")
             ionization_group.attrs['designators'] = np.array(self.shells, dtype='S')
             xs = np.zeros((len(self.shells), len(self.energy_grid)))
             for i, shell in enumerate(self.shells):
                 xs[i] = self.ionization_xs[shell]
             ionization_group.create_dataset("xs", data=xs)
-
-            for shell in self.shells:
-                shell_group = ionization_group.create_group(shell)
-                self.ionization_dist[shell].to_hdf5(shell_group)
 
             bremsstrahlung_group = group.create_group("bremsstrahlung")
             bremsstrahlung_group.create_dataset("xs", data=self.bremsstrahlung_xs)

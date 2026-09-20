@@ -893,11 +893,24 @@ transport falls back to sampling them individually for that step. Two moments
 describe a sum of :math:`N` collisions to about :math:`1/\sqrt{N}` and no
 better, and a step that removes ten collisions was not going to be much faster
 than simulating them. This is what decides, with no input from the user, where
-a run stops being condensed history: in a thin region, near an interface,
-wherever the geometry cuts the step short, and at low energy, where collisions
-are violent enough that few of them fit under the angular ceiling. A 10 keV
-electron in carbon fits four and is transported one collision at a time; a
-1 MeV one fits 150.
+a run stops being condensed history: wherever the geometry cuts the step
+short, and at low energy, where collisions are violent enough that few of them
+fit under the angular ceiling. A 10 keV electron in carbon fits four and is
+transported one collision at a time; a 1 MeV one fits 150.
+
+It is a floor on how much a step must be worth, not a ceiling on how much it
+may cover, and the difference matters near an interface. The threshold turns
+grouping off only in a region thinner than about thirty soft mean free paths;
+above that the step is capped by the distance to the boundary and by nothing
+else, so a region a few hundred mean free paths across is crossed in one or
+two steps. PENELOPE bounds that case separately, asking for of order ten
+artificial events per body traversal and offering a per-body maximum step
+length to enforce it. OpenMC has no such control: the only knobs are
+``deflection`` and ``energy_loss``, whose step limits scale with the mean free
+path and so cannot be tightened in a low-density region without paying the
+same factor everywhere else. A cavity test at the default cutoffs is
+therefore run with very few hinges across the cavity, which is a real
+difference from PENELOPE rather than a tuning choice.
 
 The Grouped Deflection
 ~~~~~~~~~~~~~~~~~~~~~~

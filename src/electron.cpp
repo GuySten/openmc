@@ -387,6 +387,11 @@ double bhabha_moment(double E, double W_lo, double W_hi, int order)
   return openmc::bhabha_moment(FreeCollision {E}, E, W_lo, W_hi, order);
 }
 
+double moller_moment(double E, double W_lo, double W_hi, int order)
+{
+  return openmc::moller_moment(FreeCollision {E}, E, W_lo, W_hi, order);
+}
+
 } // namespace detail
 
 namespace {

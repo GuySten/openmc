@@ -420,6 +420,41 @@ double density_effect(const vector<double>& f, const vector<double>& e_b_sq,
   double e_p_sq, double n_conduction, double rho, double E, double tol,
   int max_iter);
 
+//! Spin term of the Berger-Seltzer collision stopping power, restricted to
+//! energy transfers below a cutoff
+//!
+//! This is the \f$F^\pm\f$ of ICRU 37, in the form Berger and Seltzer give it
+//! for a restricted stopping power: the collision loss counting only transfers
+//! under \f$\Delta\f$. The stopping power itself is
+//!
+//! \f[ S = \frac{2\pi r_e^2 m c^2}{\beta^2} n_e \left[
+//!     \ln\frac{\tau^2(\tau+2)}{2(I/mc^2)^2} + F^\pm(\tau, \Delta)
+//!     - \delta \right]. \f]
+//!
+//! What makes it worth having in this form is an identity rather than a
+//! convenience. The transfers it leaves out are exactly those the free binary
+//! cross section describes, so
+//!
+//! \f[ F^\pm(\tau, \Delta_{max}) - F^\pm(\tau, \Delta)
+//!     = \int_{\Delta}^{\Delta_{max}} \varepsilon
+//!       \frac{d\sigma_{M,B}}{d\varepsilon} d\varepsilon \f]
+//!
+//! holds identically -- verified to machine precision in the unit tests
+//! against moller_moment() and bhabha_moment(). A scheme that takes its soft
+//! collision loss from this and its hard collisions from the free cross
+//! section above the same cutoff therefore reproduces the ICRU 37 total
+//! exactly, at every energy and every cutoff, with nothing to calibrate. This
+//! is how EGSnrc is built (PEGS4's SPIONB), and the two forms agree term by
+//! term.
+//!
+//! \param[in] tau Kinetic energy in units of the electron rest mass
+//! \param[in] delta_cut Largest transfer counted, in the same units. The
+//!   unrestricted stopping power is \f$\tau/2\f$ for an electron and
+//!   \f$\tau\f$ for a positron; larger values are clamped to those.
+//! \param[in] positron Whether the projectile is a positron
+//! \return \f$F^\pm(\tau, \Delta)\f$, dimensionless
+double berger_seltzer_spin_term(double tau, double delta_cut, bool positron);
+
 //! Read material data from materials.xml
 void read_materials_xml();
 

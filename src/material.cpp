@@ -1838,6 +1838,47 @@ double sternheimer_adjustment(const vector<double>& f,
   return rho;
 }
 
+double berger_seltzer_spin_term(double tau, double delta_cut, bool positron)
+{
+  double gamma = tau + 1.0;
+  double gamma_sq = gamma * gamma;
+  double beta_sq = tau * (tau + 2.0) / gamma_sq;
+
+  // A positron is distinguishable from the electron it strikes and may give
+  // it everything; an electron is not, and the faster of the two leaving is
+  // the one called the primary, so half is the most it can transfer
+  double d_max = positron ? tau : 0.5 * tau;
+  double d = std::min(delta_cut, d_max);
+  if (!(d > 0.0))
+    return 0.0;
+
+  // Berger and Seltzer write the restricted term with the whole transfer
+  // logarithm inside it, which is what makes ln((tau - d) d) appear; the
+  // unrestricted forms this code has always used fold ln(tau^2/4) of that
+  // into the leading logarithm instead. Both charges differ by exactly that,
+  // so taking it back out here leaves a term that drops into the existing
+  // stopping-power expression without touching anything else, and that equals
+  // the old closed forms at the kinematic limit. The unit tests check both of
+  // those rather than trusting them.
+  double offset = std::log(0.25 * tau * tau);
+
+  if (positron) {
+    double t2 = tau + 2.0;
+    double d2 = d * d;
+    double d3 = d2 * d;
+    double d4 = d3 * d;
+    return std::log(tau * d) -
+           (beta_sq / tau) *
+             (tau + 2.0 * d - 1.5 * d2 / t2 - (d - d3 / 3.0) / (t2 * t2) -
+               (0.5 * d2 - tau * d3 / 3.0 + 0.25 * d4) / (t2 * t2 * t2)) -
+           offset;
+  }
+
+  return -1.0 - beta_sq + std::log((tau - d) * d) + tau / (tau - d) +
+         (0.5 * d * d + (2.0 * tau + 1.0) * std::log1p(-d / tau)) / gamma_sq -
+         offset;
+}
+
 double density_effect(const vector<double>& f, const vector<double>& e_b_sq,
   double e_p_sq, double n_conduction, double rho, double E, double tol,
   int max_iter)

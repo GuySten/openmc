@@ -504,6 +504,13 @@ double compton_energy_ratio(double alpha, double mu, double pz);
 //! \param[in] order 0, 1 or 2
 double bhabha_moment(double E, double W_lo, double W_hi, int order);
 
+//! The same for the free Moller cross section, whose transfer runs to E/2
+//!
+//! \param[in] E Incident kinetic energy in [eV]
+//! \param[in] W_lo, W_hi Range of energy transfer in [eV]
+//! \param[in] order 0, 1 or 2
+double moller_moment(double E, double W_lo, double W_hi, int order);
+
 } // namespace detail
 
 std::pair<double, double> klein_nishina(double alpha, uint64_t* seed);

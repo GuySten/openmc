@@ -8,6 +8,7 @@
 #include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_angle.h"
+#include "openmc/material.h"
 #include "openmc/particle_data.h"
 #include "openmc/photon.h"
 #include "openmc/settings.h"
@@ -415,4 +416,82 @@ TEST_CASE("the inelastic thresholds follow the transport cutoffs")
 
   openmc::settings::energy_cutoff = saved;
   openmc::settings::energy_loss_cutoff = saved_loss;
+}
+
+// The identity the grouped collision channel is built on
+// ------------------------------------------------------
+// A mixed scheme needs the collision loss split in two at a cutoff: the part
+// below it, carried continuously, and the part above it, sampled one
+// collision at a time. Berger and Seltzer give the first in closed form and
+// the free binary cross section gives the second, and the two are not
+// independent -- the transfers the restricted stopping power leaves out are
+// exactly the ones the binary cross section describes. So
+//
+//     F(tau, Delta_max) - F(tau, Delta) = integral of eps dsigma/deps
+//
+// over [Delta, Delta_max]. If it holds, a scheme built from those two pieces
+// reproduces the ICRU 37 total exactly at every energy and every cutoff, with
+// nothing left to calibrate. If it ever stops holding, the two halves no
+// longer add up and the grouped channel is silently wrong by the difference.
+TEST_CASE("restricted stopping power and the free cross section are "
+          "complementary")
+{
+  constexpr double mc2 = openmc::MASS_ELECTRON_EV;
+
+  for (double tau : {0.1, 1.0, 10.0, 100.0, 200.0}) {
+    double E = tau * mc2;
+    for (double frac : {1.0e-5, 1.0e-3, 1.0e-2, 0.1}) {
+      double d = frac * tau;
+
+      // Electron: the free cross section is Moller's and stops at E/2
+      double lost = openmc::berger_seltzer_spin_term(tau, 0.5 * tau, false) -
+                    openmc::berger_seltzer_spin_term(tau, d, false);
+      double hard = openmc::detail::moller_moment(E, frac * E, 0.5 * E, 1);
+      CHECK_THAT(hard, WithinRel(lost, 1.0e-12));
+
+      // Positron: Bhabha's, and it runs to the whole kinetic energy
+      lost = openmc::berger_seltzer_spin_term(tau, tau, true) -
+             openmc::berger_seltzer_spin_term(tau, d, true);
+      hard = openmc::detail::bhabha_moment(E, frac * E, E, 1);
+      CHECK_THAT(hard, WithinRel(lost, 1.0e-12));
+    }
+  }
+}
+
+// The restricted form at its kinematic limit must be the unrestricted one,
+// which the material stopping power writes in the more familiar closed form.
+// Two derivations of the same quantity, which is what makes the check worth
+// making.
+//
+// Compared absolutely rather than relatively. The two forms are algebraically
+// identical and differ only by rounding, but the restricted one reaches the
+// answer by subtracting ln(tau^2/4) from terms of its own size, and at
+// tau = 1000 that leaves about eleven digits. What the term feeds is a
+// bracket of order twenty-five, so an absolute agreement of 1e-9 is five
+// orders tighter than anything the stopping power can notice, where a
+// relative one would be testing floating-point arithmetic.
+TEST_CASE("the unrestricted limit recovers the ICRU 37 spin term")
+{
+  for (double tau : {0.01, 0.1, 1.0, 10.0, 100.0, 1000.0}) {
+    double gamma = tau + 1.0;
+    double beta_sq = tau * (tau + 2.0) / (gamma * gamma);
+
+    double closed_form = (1.0 - beta_sq) * (1.0 + tau * tau / 8.0 -
+                                             (2.0 * tau + 1.0) * std::log(2.0));
+    CHECK_THAT(openmc::berger_seltzer_spin_term(tau, 0.5 * tau, false),
+      WithinAbs(closed_form, 1.0e-9));
+
+    double t = tau + 2.0;
+    closed_form =
+      std::log(4.0) -
+      (beta_sq / 12.0) * (23.0 + 14.0 / t + 10.0 / (t * t) + 4.0 / (t * t * t));
+    CHECK_THAT(openmc::berger_seltzer_spin_term(tau, tau, true),
+      WithinAbs(closed_form, 1.0e-9));
+  }
+
+  // Asking for more than the kinematics allow is the unrestricted case
+  CHECK(openmc::berger_seltzer_spin_term(5.0, 100.0, false) ==
+        openmc::berger_seltzer_spin_term(5.0, 2.5, false));
+  CHECK(openmc::berger_seltzer_spin_term(5.0, 100.0, true) ==
+        openmc::berger_seltzer_spin_term(5.0, 5.0, true));
 }

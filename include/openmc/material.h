@@ -250,24 +250,16 @@ public:
   CollisionMoments gos_collision_moments(
     int q_index, double E, double w_cc) const;
 
-  //! Density-effect correction actually applied to collisions, per charge
+  //! Sample one inelastic collision from the oscillator model
   //!
-  //! The Sternheimer correction less the amount by which the evaluated
-  //! spectra already fall short of the free atom's stopping power, floored at
-  //! zero. Taking the whole correction off data that never reached the free
-  //! atom's value removes the same strength twice. See init_inelastic_transport
-  //! for what this buys and what it assumes.
+  //! Which oscillator it was with comes from the tabulated cumulative, and
+  //! the rest from sample_gos_collision(). The subshell the oscillator stands
+  //! for is where the vacancy is left, so the relaxation follows from the
+  //! same draw rather than from a separate model bolted beside it.
   //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  double screening_correction(int q_index, double E) const;
-
-  //! Resonance energy in [eV] of the Sternheimer-Liljequist oscillator
-  //! standing for electroionization subshell \p i_shell of the element with
-  //! global index \p i_element. Returns zero when this material carries no
-  //! oscillator data, which closes the distant channel and leaves every
-  //! collision a close one.
-  double oscillator_energy(int i_element, int i_shell) const;
+  //! \param[inout] p Particle undergoing the collision
+  //! \return Whether anything was sampled
+  bool sample_inelastic(Particle& p) const;
 
   //----------------------------------------------------------------------------
   // Data
@@ -310,12 +302,9 @@ public:
   //! collision_stopping_power().
   array<tensor::Tensor<double>, 2> collision_stopping_;
   //! Natural log of the mean excitation energy in [eV], from the oscillator
-  //! table. collision_moments() needs it at every cross section lookup.
+  //! table. It is the one experimental input the inelastic model has, and
+  //! both the Sternheimer adjustment and the ICRU 37 check read it.
   double log_I_ {0.0};
-  //! The share of the density effect the evaluated data can absorb, per
-  //! projectile charge, on data::brems_e_grid. See screening_correction().
-  array<tensor::Tensor<double>, 2> screening_;
-
   //! The Sternheimer-Liljequist oscillators of this material, one per
   //! electroionization subshell, concatenated over the distinct elements.
   //! Every electron sits on a real photoatomic subshell -- there is no
@@ -349,79 +338,35 @@ public:
   //! cent, because an oscillator's total cross section counts distant
   //! collisions that excite without ionising and the evaluated one does not.
   array<tensor::Tensor<double>, 2> oscillator_renorm_;
-  //! Global element index of each block of oscillator_, and the
-  //! reverse lookup the transport uses -- an inelastic collision asks for a
-  //! resonance energy by element index, and a linear scan would be paid for on
-  //! every one of them
+
+  //! What the oscillator model contributes to the transport, per electron,
+  //! tabulated on data::brems_e_grid, one set per projectile charge.
+  //!
+  //! gos_collision_moments() is what builds these; it loops over every
+  //! oscillator and is far too slow to call once per cross section lookup.
+  //! What the transport reads is these six interpolations, which is the same
+  //! shape as the per-element tables beside them.
+  struct GosTables {
+    tensor::Tensor<double> hard;       //!< rate of the discrete collisions [b]
+    tensor::Tensor<double> majorant;   //!< bound on it over one step [b]
+    tensor::Tensor<double> stopping;   //!< grouped stopping power [b eV]
+    tensor::Tensor<double> straggling; //!< its second moment [b eV^2]
+    tensor::Tensor<double> xs1;        //!< grouped angular moments [b]
+    tensor::Tensor<double> xs2;
+    //! Cumulative share of the hard rate, oscillator by oscillator, so that
+    //! choosing which one a collision was with is a binary search rather than
+    //! a sum over the list. PENELOPE's EINAC.
+    tensor::Tensor<double> cumulative;
+  };
+  array<GosTables, 2> gos_;
+  //! Global element index of each block of oscillator_, and the reverse
+  //! lookup: which block an element's oscillators start in
   vector<int> oscillator_element_;
+  //! Global nuclide index a collision with each block is attributed to
+  vector<int> oscillator_nuclide_;
   std::unordered_map<int, int> oscillator_block_;
-  //! Oscillator block of each global element index, or -1. Same content as
-  //! the map above, laid out flat: sample_recoil() asks for a resonance
-  //! energy by element index once per inelastic collision, which is too often
-  //! to hash for it.
-  vector<int> element_block_;
-  //! Oscillator block of each entry in nuclide_, or -1. The map above is what
-  //! builds this; the transport reads this, because a hash lookup per element
-  //! per cross section evaluation is not free.
-  vector<int> nuclide_block_;
   //! Start of each block in oscillator_, with a trailing end marker
   vector<int> oscillator_offset_;
-
-  //! First transport cross section of the grouped inelastic collisions, in
-  //! [b], one table per block of oscillator_ and per projectile charge,
-  //! on that element's electron energy grid. It lives here rather than in
-  //! Element because the recoil model that sets the deflection cuts between
-  //! close and distant collisions at an oscillator energy of the material's,
-  //! and because the density effect enters the same cut. Empty unless a run
-  //! asked for condensed history.
-  array<vector<tensor::Tensor<double>>, 2> inelastic_xs1_;
-  //! Stopping power and straggling the density effect screens out of the
-  //! grouped inelastic channel, per oscillator block and projectile charge.
-  //! Tabulated per material because the screening is, the Sternheimer
-  //! correction belonging to the medium and not to the atom.
-  array<vector<tensor::Tensor<double>>, 2> inelastic_soft_screened_s_;
-  array<vector<tensor::Tensor<double>>, 2> inelastic_soft_screened_w2_;
-  //! Collision stopping power the evaluated data delivers after screening,
-  //! per oscillator block and charge, in [b eV] on the element's grid
-  array<vector<tensor::Tensor<double>>, 2> inelastic_total_s_;
-
-  //! First transport cross section of the grouped inelastic collisions of one
-  //! element of this material, in [b]
-  //!
-  //! \param[in] i_element Global element index
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! First transport cross section of the grouped inelastic deflections
-  //!
-  //! Takes the grid position the caller already computed rather than the
-  //! energy: this runs for every element on every charged-particle cross
-  //! section lookup, and Element::calculate_electron_xs has just searched that
-  //! same grid for the same energy.
-  //!
-  //! \param[in] i_nuclide Index into this material's nuclide list
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] i_grid Index on the element's electron energy grid
-  //! \param[in] f Interpolation factor on that interval
-  //! Grouped stopping power and straggling the density effect screens away
-  //!
-  //! Both are per atom of the nuclide, as the element's own restricted moments
-  //! are, so the caller weights them by the same atom density.
-  //!
-  //! \param[in] i_nuclide Index into this material's nuclide list
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] i_grid Index on the element's electron energy grid
-  //! \param[in] f Interpolation factor on that grid
-  //! \param[out] s Screened stopping power in [b eV]
-  //! \param[out] w2 Screened second moment in [b eV^2]
-  void inelastic_soft_screened(int i_nuclide, int q_index, int i_grid, double f,
-    double& s, double& w2) const;
-
-  //! Collision stopping power the evaluated data delivers, per atom, in [b eV]
-  double inelastic_total_s(
-    int i_nuclide, int q_index, int i_grid, double f) const;
-
-  double inelastic_transport_xs(
-    int i_nuclide, int q_index, int i_grid, double f) const;
 
 private:
   //----------------------------------------------------------------------------
@@ -450,21 +395,25 @@ private:
   //! electroionization subshell
   void init_electron_oscillators();
 
-  //! Tabulate the transport cross section of the grouped inelastic collisions
-  void init_inelastic_transport();
-
   //! Build oscillator_renorm_: the evaluated rate for the inner shells, and
   //! a common compensation on the rest so the total is the ICRU 37 collision
   //! stopping power exactly
   void init_oscillator_renorm();
 
+  //! Tabulate what the oscillator model contributes to the transport
+  void init_gos_tables();
+
   //! Evaluated ionisation cross section of the subshell one oscillator stands
   //! for, in [b]
   double evaluated_subshell_xs(int k, double E) const;
 
+  //! Which element, subshell and nuclide an oscillator stands for
+  bool resolve_oscillator(
+    int k, int& i_element, int& i_shell, int& i_nuclide) const;
+
   //! Refuse to transport charged particles on tables that were not built
   //
-  //! Called once at the end of init_inelastic_transport(). An accessor that
+  //! Called once at the end of init_electron_oscillators(). An accessor that
   //! cannot find a table returns zero, which is what single-event transport
   //! wants; the same zero from a table that should exist would be a wrong
   //! density effect or a wrong stopping power rather than a missing one, and

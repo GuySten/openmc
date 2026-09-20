@@ -153,6 +153,11 @@ class IncidentElectron:
         # integrated cross section but changes its first moment a great deal
         self.elastic_xs = {}
         self.elastic_dist = {}
+        # Range the partial-wave elastic data covers, or None when the
+        # distributions came from somewhere that does not record one. Outside
+        # it the transport clamps the cross sections to the endpoints, so it
+        # is written out to let the transport refuse to run there.
+        self.elastic_energy_range = None
         self.bremsstrahlung_xs = None
         self.bremsstrahlung_photon_cutoff = None
         self.excitation_xs = None
@@ -390,8 +395,9 @@ class IncidentElectron:
             # energy grid, and outside it the cross sections are clamped to the
             # endpoints. Record the real range so the transport can refuse to
             # run where the elastic data is frozen rather than falling.
-            elastic_group.attrs["energy_min"] = self.elastic_energy_range[0]
-            elastic_group.attrs["energy_max"] = self.elastic_energy_range[1]
+            if self.elastic_energy_range is not None:
+                elastic_group.attrs["energy_min"] = self.elastic_energy_range[0]
+                elastic_group.attrs["energy_max"] = self.elastic_energy_range[1]
             for particle in ('electron', 'positron'):
                 pgroup = elastic_group.create_group(particle)
                 pgroup.create_dataset("xs", data=self.elastic_xs[particle])

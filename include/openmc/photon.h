@@ -4,7 +4,6 @@
 #include "openmc/array.h"
 #include "openmc/distribution_angle.h"
 #include "openmc/distribution_energy.h"
-#include "openmc/electroionization.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -99,81 +98,11 @@ public:
   //! Elastic cross section in [b] at one energy
   double elastic_xs(int q_index, double E) const;
 
-  //! Collision stopping power the hard inelastic channel carries, per atom
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \return Stopping power in [b eV]
-  double inelastic_hard_stopping(int q_index, double E) const;
-
-  //! Collision stopping power of the evaluated data, unscreened, per atom
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \return Stopping power in [b eV]
-  double inelastic_unscreened_stopping(int q_index, double E) const;
-
-  //! First transport cross section of the grouped inelastic collisions, in [b]
-  //!
-  //! Grouping a collision takes its deflection away with its energy loss, and
-  //! that deflection is not small: in carbon it is a quarter of what elastic
-  //! scattering contributes, against a per cent or two in tungsten, where
-  //! \f$Z^2\f$ puts nuclear elastic scattering far ahead.
-  //!
-  //! The angle comes from the recoil the collision leaves, and the model that
-  //! decides how much recoil that is cuts between close and distant collisions
-  //! at an oscillator energy belonging to the material rather than to the
-  //! atom. So this is tabulated per material, which is why the oscillator
-  //! energies and the density-effect correction are passed in.
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] w_r Oscillator energy of each electroionization subshell in
-  //!   this material, in [eV]
-  //! \param[in] delta Density-effect correction on the electron energy grid
-  //! \param[out] xs1 First transport cross section in [b], on that grid
-  //! \param[out] s_screened Stopping power the density effect screens out of
-  //!   the grouped channel, in [b eV] on that grid, to be subtracted from the
-  //!   element's own restricted stopping power
-  //! \param[out] w2_screened The same for the second moment, in [b eV^2]
-  //! \param[out] s_total Collision stopping power the evaluated data delivers
-  //!   after that screening, over the whole spectrum, in [b eV] on that grid
-  void compute_inelastic_transport(int q_index, const vector<double>& w_r,
-    const vector<double>& delta, tensor::Tensor<double>& xs1,
-    tensor::Tensor<double>& s_screened, tensor::Tensor<double>& w2_screened,
-    tensor::Tensor<double>& s_total) const;
-
   //! Electron energy grid this element's cross sections are tabulated on
   const tensor::Tensor<double>& electron_energy() const
   {
     return electron_energy_;
   }
-
-  double ionization_hard_fraction(int q_index, int i_shell, double E) const;
-  double bhabha_hard_fraction(int i_shell, double E) const;
-
-  double excitation(double E) const;
-
-  //! Electroionization: Moller scattering for an electron, Bhabha for a
-  //! positron. Returns false when a positron's sampled transfer is rejected,
-  //! which leaves the particle untouched -- see compute_moller_majorant().
-  bool ionization(Particle& p, int i_shell, bool hard = false) const;
-
-  //! Sample an energy transfer from the free binary cross section
-  //!
-  //! Moller's for an electron and Bhabha's for a positron, over a window the
-  //! caller has already checked the hard channel was built from. The 1/W^2
-  //! the shape is built around is inverted exactly and the rest is carried by
-  //! rejection.
-  //!
-  //! \param[inout] p Projectile, whose energy sets the shape
-  //! \param[in] W_lo Lower limit on the transfer in [eV]
-  //! \param[in] W_hi Upper limit in [eV], below the projectile's energy
-  //! \return Energy transfer in [eV], zero if the window is empty
-  double sample_free_transfer(Particle& p, double W_lo, double W_hi) const;
-
-  //! \param[in] hard Restrict the choice to the hard part of each subshell's
-  //!   cross section, for a collision that ends a condensed-history step
-  int sample_ionization_shell(Particle& p, bool hard = false) const;
 
   //! Evaluated ionisation cross section of one subshell at one energy
   //!
@@ -186,18 +115,6 @@ public:
 
   void bremsstrahlung(Particle& p, double k_min = 0.0) const;
 
-  //! Bhabha scattering above the Moller kinematic limit
-  //
-  //! A Moller collision cannot transfer more than half of what is left after
-  //! the binding energy is paid, so the evaluated knock-on spectra stop there
-  //! and a positron's larger transfers are simply absent from them. This is
-  //! that missing range, which lies far above every binding energy and is
-  //! therefore free-electron territory.
-  void bhabha(Particle& p, int i_shell, double w_min = 0.0) const;
-
-  //! Sample the subshell in which such a collision occurs
-  int sample_bhabha_shell(Particle& p, bool hard = false) const;
-
   //! Emit the knock-on electron and deflect the projectile, for a transfer of
   //! W out of which the atom keeps the binding energy e_b, the collision
   //! having handed the atom a recoil energy Q
@@ -207,30 +124,6 @@ public:
   //! Q = W recovers the free binary collision, in which the two are the
   //! familiar Moller pair.
   void emit_knock_on(Particle& p, double W, double e_b, double Q) const;
-
-  //! Sample the recoil energy of an inelastic collision transferring W out of
-  //! subshell i_shell
-  //
-  //! A free electron takes up the whole transfer, Q = W. A bound one does not:
-  //! in a distant collision the atom is excited as a whole, through a
-  //! dipole-like interaction whose recoil is far smaller than the binary value
-  //! and which PENELOPE splits into a longitudinal part, distributed as
-  //! 1/(Q(Q+2mc^2)) up to the subshell's oscillator resonance, and a transverse
-  //! part that carries no momentum at all.
-  //
-  //! Which of the two occurred is decided by how much of the evaluated cross
-  //! section at this transfer the free binary collision can account for: that
-  //! ratio is the probability the collision was close. \p density is the
-  //! evaluated spectrum's density at W, without which the decision falls back
-  //! to comparing W with the resonance energy.
-  //!
-  //! \param[out] declined Whether the density effect screened this collision
-  //!   away. A distant transverse collision an isolated atom would have made
-  //!   is suppressed in a medium, and what is suppressed does not happen: this
-  //!   is how the Sternheimer correction reaches the stopping power rather
-  //!   than merely the recoil.
-  double sample_recoil(
-    Particle& p, int i_shell, double W, double density, bool& declined) const;
 
   //! Two-photon annihilation of a positron in flight
   //
@@ -324,10 +217,6 @@ public:
   //! charge: 0 for an electron, 1 for a positron
   array<tensor::Tensor<double>, 2> elastic_;
   array<AngleDistribution, 2> elastic_angle_;
-  //! Transport moments <1-mu> and <(3/2)(1-mu^2)> of the elastic distribution,
-  //! on the electron energy grid, indexed by projectile charge
-  array<tensor::Tensor<double>, 2> elastic_mu1_;
-  array<tensor::Tensor<double>, 2> elastic_mu2_;
   //! Soft/hard split of the elastic distribution at
   //! settings::deflection_cutoff, on the electron energy grid,
   //! indexed by projectile charge. The cutoff is held as the deflection 1-mu
@@ -335,50 +224,20 @@ public:
   //! tungsten, so four digits of the cosine carry no information, and both the
   //! interpolation between grid points and the deflection the sampler works in
   //! would inherit the loss.
-  array<tensor::Tensor<double>, 2> elastic_dcut_;
   array<tensor::Tensor<double>, 2> elastic_p_hard_;
   array<tensor::Tensor<double>, 2> elastic_mu1_soft_;
   array<tensor::Tensor<double>, 2> elastic_mu2_soft_;
-  //! Soft inelastic stopping power and straggling in [b eV] and [b eV^2] per
-  //! atom, on the electron energy grid, indexed by projectile charge. Every
-  //! channel a mixed step groups is summed into these, the bremsstrahlung one
-  //! with the positron's radiative yield factor already applied.
-  array<tensor::Tensor<double>, 2> inelastic_soft_s_;
-  array<tensor::Tensor<double>, 2> inelastic_soft_w2_;
-  //! Fraction of each inelastic channel that stays a discrete collision, on
+  //! Energy the grouped bremsstrahlung carries off and its second moment, in
+  //! [b eV] and [b eV^2] per atom, on the electron energy grid and indexed by
+  //! projectile charge, with the positron's radiative yield factor already
+  //! applied. The inelastic collisions a step groups are the medium's, not
+  //! the atom's, so they are Material's to tabulate.
+  array<tensor::Tensor<double>, 2> brems_soft_s_;
+  array<tensor::Tensor<double>, 2> brems_soft_w2_;
+  //! Fraction of the bremsstrahlung rate that stays a discrete collision, on
   //! the electron energy grid and indexed by projectile charge, since the two
-  //! projectiles have different cutoffs and so different thresholds. The
-  //! electroionization one carries a subshell index as well. Bhabha scattering
-  //! exists only for a positron, so it takes no charge index.
-  array<tensor::Tensor<double>, 2> excitation_p_hard_;
-  array<tensor::Tensor<double>, 2> ionization_p_hard_;
-  //! The two halves of the hard electroionization channel, whose differential
-  //! cross section is max(evaluated, free binary). The first is the evaluated
-  //! spectrum's own tail above the soft cutoff (carrying the positron's
-  //! majorant factor, since that half is sampled by reweighting rejection);
-  //! the second is the amount by which the free cross section exceeds it,
-  //! with the bound its rejection is drawn against. All in [b] on the electron
-  //! energy grid. See compute_soft_inelastic().
-  array<tensor::Tensor<double>, 2> ionization_hard_eval_;
-  array<tensor::Tensor<double>, 2> ionization_deficit_xs_;
-  array<tensor::Tensor<double>, 2> ionization_deficit_bound_;
-  array<tensor::Tensor<double>, 2> ionization_deficit_xi_;
-  //! Collision stopping power the hard inelastic channel carries, in [b eV] on
-  //! the electron energy grid. An element quantity, so the material's pinning
-  //! reads it rather than rebuilding it per material.
-  array<tensor::Tensor<double>, 2> inelastic_hard_s_;
-  //! Collision stopping power the evaluated data delivers unscreened and
-  //! unrestricted, in [b eV]. The medium's screening is measured against it.
-  array<tensor::Tensor<double>, 2> inelastic_unscreened_s_;
+  //! projectiles have different cutoffs and so different thresholds.
   array<tensor::Tensor<double>, 2> brems_p_hard_;
-  tensor::Tensor<double> bhabha_p_hard_;
-  //! The same two summed over subshells, in [b], which is all a cross section
-  //! lookup wants. Summing them there instead meant walking every subshell and
-  //! searching the energy grid once per subshell, on every lookup of every
-  //! flight -- forty-four searches per lookup in tungsten, for a number that
-  //! does not depend on the particle.
-  array<tensor::Tensor<double>, 2> ionization_hard_xs_;
-  tensor::Tensor<double> bhabha_hard_xs_;
   //! Hard cross section in [b], and an upper bound on it over the energies one
   //! step can cover. The flight to the next hard interaction is drawn from the
   //! bound, which does not change along the step, and the excess is taken back
@@ -394,25 +253,14 @@ public:
   //! section, which is still falling as 1/E^2.
   double elastic_energy_min_ {0.0};
   double elastic_energy_max_ {INFTY};
+  //! Evaluated electroionization cross section per subshell, in [b] on the
+  //! electron energy grid. The transport samples inelastic collisions from
+  //! the medium's oscillator model rather than from these, but the shells
+  //! bound above the transport cutoffs have their oscillators renormalised to
+  //! them: characteristic x-ray yields rest on that rate and it is the one
+  //! thing the delta-oscillator model is not good enough at. See
+  //! Material::init_oscillator_renorm().
   tensor::Tensor<double> electroionization_;
-  //! Electroionization summed over subshells, and Bhabha likewise, on the
-  //! electron energy grid. The transport wants only the total at an energy,
-  //! and summing a slice for it on every cross section lookup meant walking
-  //! every subshell and heap-allocating the slice's shape and strides to do
-  //! it. Summed once here instead.
-  tensor::Tensor<double> ionization_sum_;
-  tensor::Tensor<double> bhabha_sum_;
-  vector<unique_ptr<ElectroionizationSpectrum>> ionization_dist_;
-  //! Bhabha cross section above the Moller limit, per subshell, on
-  //! electron_energy_. Filled by compute_bhabha_xs(), used only for positrons.
-  tensor::Tensor<double> bhabha_;
-
-  //! Largest value the Bhabha-to-Moller ratio takes at each grid energy.
-  //! Filled by compute_moller_majorant(), used only for positrons.
-  tensor::Tensor<double> moller_majorant_;
-
-  tensor::Tensor<double> excitation_;
-  Tabulated1D excitation_energy_loss_;
   tensor::Tensor<double> electron_bremsstrahlung_;
 
   //! Lowest emitted photon energy the bremsstrahlung cross section above was
@@ -423,30 +271,14 @@ public:
   static constexpr int MAX_STACK_SIZE =
     7; //!< maximum possible size of atomic relaxation stack
 private:
-  //! Integrate the free Bhabha differential cross section over the transfers
-  //! the evaluated knock-on spectra cannot reach, for every subshell and every
-  //! point of the electron energy grid
-  void compute_bhabha_xs();
-
-  //! Sum the per-subshell inelastic spectra over subshells, once at load
-  void compute_inelastic_sums();
-
-  //! Tabulate the largest Bhabha-to-Moller ratio at each grid energy, which is
-  //! the factor by which a positron's electroionization cross section is
-  //! raised to make it a majorant of the true one
-  void compute_moller_majorant();
-
-  //! Tabulate the soft/hard split of the inelastic channels
+  //! Tabulate the soft/hard split of the channels the atom owns, and the
+  //! hard cross section and its majorant
   //!
   //! The thresholds are not free parameters: they follow from the transport
   //! cutoffs, since a collision whose every product would be killed on
   //! creation is one that nothing is lost by grouping. See
-  //! soft_collision_cutoff() and soft_radiative_cutoff().
-  void compute_soft_inelastic();
-
-  //! Tabulate the collision stopping power the evaluated spectra deliver,
-  //! unscreened and unrestricted. Built for every run, not only a grouped one.
-  void compute_unscreened_stopping();
+  //! soft_radiative_cutoff().
+  void compute_step_tables();
 
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)

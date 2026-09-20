@@ -24,6 +24,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/random_dist.h"
 #include "openmc/search.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -410,7 +411,6 @@ void Material::finalize()
     // Build the oscillator model used by the inelastic angular partition
     if (settings::electron_transport) {
       this->init_electron_oscillators();
-      this->init_inelastic_transport();
     }
 
     // Assign thermal scattering tables
@@ -743,6 +743,7 @@ void Material::init_electron_oscillators()
   // the opposite of what the model wants -- the adjustment is solved again
   // below on the rebuilt list itself.
   oscillator_element_.clear();
+  oscillator_nuclide_.clear();
   oscillator_offset_.clear();
   oscillator_.clear();
   oscillator_block_.clear();
@@ -760,6 +761,18 @@ void Material::init_electron_oscillators()
     const auto& elm = *data::elements[kv.first];
     oscillator_block_[kv.first] = oscillator_element_.size();
     oscillator_element_.push_back(kv.first);
+    // Which nuclide a collision with this block is attributed to. An element
+    // can stand for several nuclides of the material and the collision is
+    // with the element, not with any one of them, so the first is taken --
+    // the same one the element loop would have reached first.
+    int i_nuc = -1;
+    for (int i = 0; i < element_.size(); ++i) {
+      if (element_[i] == kv.first) {
+        i_nuc = nuclide_[i];
+        break;
+      }
+    }
+    oscillator_nuclide_.push_back(i_nuc);
     oscillator_offset_.push_back(oscillator_.size());
     for (int j = 0; j < elm.electron_shell_map_.size(); ++j) {
       const auto& shell = elm.shells_[elm.electron_shell_map_[j]];
@@ -772,12 +785,6 @@ void Material::init_electron_oscillators()
     }
   }
   oscillator_offset_.push_back(oscillator_.size());
-
-  element_block_.assign(data::elements.size(), -1);
-  for (const auto& kv : oscillator_block_) {
-    if (kv.first >= 0 && kv.first < element_block_.size())
-      element_block_[kv.first] = kv.second;
-  }
 
   // Re-solve the adjustment on this list, so that sum_i f_i ln(W_i) = ln(I)
   // holds for the oscillators actually used. This is one more Newton solve per
@@ -795,27 +802,9 @@ void Material::init_electron_oscillators()
   }
 
   this->init_oscillator_renorm();
+  this->init_gos_tables();
+  this->check_electron_tables();
 }
-
-double Material::screening_correction(int q_index, double E) const
-{
-  if (q_index < 0 || q_index > 1)
-    return 0.0;
-  const auto& v = screening_[q_index];
-  auto n = v.size();
-  if (n == 0)
-    return this->density_effect_correction(E);
-
-  const auto& grid = data::brems_e_grid;
-  if (E <= grid(0))
-    return v(0);
-  if (E >= grid(n - 1))
-    return v(n - 1);
-  int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
-  double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
-  return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
-}
-
 //! Renormalise each oscillator, and compensate so the total is ICRU 37
 //
 // PENELOPE's scheme, and both halves of it are needed. The shells bound above
@@ -840,15 +829,31 @@ double Material::screening_correction(int q_index, double E) const
 // The oscillators are laid out in blocks, one per distinct element, in the
 // same order as that element's electroionization subshells, so an index into
 // the flat list resolves to an element and a shell within it.
-double Material::evaluated_subshell_xs(int k, double E) const
+//! Which element and subshell an oscillator stands for
+//
+// The oscillators are laid out in blocks, one per distinct element, in the
+// same order as that element's electroionization subshells, so an index into
+// the flat list resolves to both.
+bool Material::resolve_oscillator(
+  int k, int& i_element, int& i_shell, int& i_nuclide) const
 {
   for (int b = 0; b + 1 < oscillator_offset_.size(); ++b) {
     if (k >= oscillator_offset_[b] && k < oscillator_offset_[b + 1]) {
-      return data::elements[oscillator_element_[b]]->subshell_ionization_xs(
-        k - oscillator_offset_[b], E);
+      i_element = oscillator_element_[b];
+      i_shell = k - oscillator_offset_[b];
+      i_nuclide = oscillator_nuclide_[b];
+      return true;
     }
   }
-  return 0.0;
+  return false;
+}
+
+double Material::evaluated_subshell_xs(int k, double E) const
+{
+  int i_element, i_shell, i_nuclide;
+  if (!this->resolve_oscillator(k, i_element, i_shell, i_nuclide))
+    return 0.0;
+  return data::elements[i_element]->subshell_ionization_xs(i_shell, E);
 }
 
 void Material::init_oscillator_renorm()
@@ -865,6 +870,7 @@ void Material::init_oscillator_renorm()
     std::max(settings::energy_cutoff[ParticleType::photon().transport_index()],
       settings::energy_cutoff[ParticleType::electron().transport_index()]);
 
+  bool warned = false;
   for (int q = 0; q < 2; ++q) {
     bool positron = q == 1;
     oscillator_renorm_[q] =
@@ -876,12 +882,14 @@ void Material::init_oscillator_renorm()
 
       double s_inner = 0.0;
       double s_outer = 0.0;
+      double s_raw = 0.0;
       int n_outer = 0;
       vector<double> r(n_osc, 1.0);
       for (int k = 0; k < n_osc; ++k) {
         const auto& o = oscillator_[k];
         auto g = gos_oscillator(E, o.u_b, o.w_r, delta, 0.0, positron);
         double s_k = o.f * (g.s_soft + g.s_hard);
+        s_raw += s_k;
         bool inner = o.u_b > u_min;
         if (inner) {
           // Renormalised to the free-atom cross section: the ratio is taken
@@ -909,16 +917,21 @@ void Material::init_oscillator_renorm()
         // ones to be scaled to. Rather than clamp and leave the total wrong,
         // fall back to one factor over every oscillator: the rates lose their
         // grip on the evaluated cross sections, but the stopping power is
-        // what the transport is built on and it stays right.
-        double whole = s_inner + s_outer;
-        double common = (whole > 0.0) ? target / whole : 1.0;
-        warning(fmt::format(
-          "In material {} at {:.4g} eV the renormalised inner shells carry "
-          "{:.4g} of a collision stopping power of {:.4g} b eV per electron, "
-          "leaving {:.4g} for the {} outer oscillators. The rates are scaled "
-          "together there rather than shell by shell, so inner-shell "
-          "ionisation follows the model rather than the evaluated data.",
-          id_, E, s_inner, target, s_outer, n_outer));
+        // what the transport is built on and it stays right. The factor is
+        // measured against the UNrenormalised total, since it replaces the
+        // inner-shell scaling rather than compounding with it.
+        double common = (s_raw > 0.0) ? target / s_raw : 1.0;
+        if (!warned) {
+          warned = true;
+          warning(fmt::format(
+            "In material {} at {:.4g} eV the renormalised inner shells carry "
+            "{:.4g} of a collision stopping power of {:.4g} b eV per "
+            "electron, leaving {:.4g} for the {} outer oscillators. The rates "
+            "are scaled together there rather than shell by shell, so "
+            "inner-shell ionisation follows the model rather than the "
+            "evaluated data. Reported once per material.",
+            id_, E, s_inner, target, s_outer, n_outer));
+        }
         for (int k = 0; k < n_osc; ++k)
           oscillator_renorm_[q](k, i) = common;
         continue;
@@ -929,6 +942,170 @@ void Material::init_oscillator_renorm()
       }
     }
   }
+}
+
+//! Tabulate what the oscillator model contributes to the transport
+//
+// Everything here is per electron of the material, on the same grid the
+// density effect lives on. The transport multiplies by the electron density
+// the particle actually sees, density multiplier and all.
+void Material::init_gos_tables()
+{
+  auto n_grid = data::brems_e_grid.size();
+  auto n_osc = oscillator_.size();
+  if (n_osc == 0 || n_grid < 2)
+    return;
+
+  vector<double> energy(n_grid);
+  for (int i = 0; i < n_grid; ++i)
+    energy[i] = data::brems_e_grid(i);
+
+  for (int q = 0; q < 2; ++q) {
+    ParticleType projectile =
+      (q == 0) ? ParticleType::electron() : ParticleType::positron();
+    bool positron = q == 1;
+    auto& t = gos_[q];
+    t.hard = tensor::zeros<double>({n_grid});
+    t.stopping = tensor::zeros<double>({n_grid});
+    t.straggling = tensor::zeros<double>({n_grid});
+    t.xs1 = tensor::zeros<double>({n_grid});
+    t.xs2 = tensor::zeros<double>({n_grid});
+    t.cumulative = tensor::zeros<double>({n_osc, static_cast<size_t>(n_grid)});
+
+    vector<double> hard(n_grid), lowest(n_grid);
+    for (int i = 0; i < n_grid; ++i) {
+      double E = energy[i];
+      // Nothing is grouped in single-event mode, so every oscillator's whole
+      // cross section is discrete. The model stays finite there because each
+      // one has a threshold of its own, which is what lets the two schemes
+      // share it.
+      double w_cc = (settings::deflection_cutoff > 0.0)
+                      ? soft_collision_cutoff(projectile, E)
+                      : 0.0;
+      double delta = density_effect_(i);
+
+      double running = 0.0;
+      for (int k = 0; k < n_osc; ++k) {
+        const auto& o = oscillator_[k];
+        auto g = gos_oscillator(E, o.u_b, o.w_r, delta, w_cc, positron);
+        double r = o.f * oscillator_renorm_[q](k, i);
+        running += r * g.xs_hard;
+        t.cumulative(k, i) = running;
+        t.stopping(i) += r * g.s_soft;
+        t.straggling(i) += r * g.w2_soft;
+        t.xs1(i) += r * g.xs1_soft;
+        t.xs2(i) += r * g.xs2_soft;
+      }
+      t.hard(i) = running;
+      // Normalised, so a draw against it needs no total
+      if (running > 0.0) {
+        for (int k = 0; k < n_osc; ++k)
+          t.cumulative(k, i) /= running;
+      }
+
+      hard[i] = running;
+      lowest[i] = E - MAX_SOFT_LOSS_OVERSHOOT * soft_loss_budget(projectile, E);
+    }
+
+    // The same scan the per-element hard channels use: a bound on the rate
+    // over every energy a step begun here can reach
+    vector<double> majorant = step_majorant(energy, hard, lowest);
+    t.majorant = tensor::zeros<double>({n_grid});
+    for (int i = 0; i < n_grid; ++i)
+      t.majorant(i) = majorant[i];
+  }
+}
+
+bool Material::sample_inelastic(Particle& p) const
+{
+  int q = p.type().is_positron() ? 1 : 0;
+  const auto& t = gos_[q];
+  auto n_grid = data::brems_e_grid.size();
+  auto n_osc = oscillator_.size();
+  if (n_osc == 0 || t.cumulative.size() != n_osc * n_grid)
+    return false;
+
+  double E = p.E();
+  const auto& grid = data::brems_e_grid;
+  int i;
+  if (E <= grid(0)) {
+    i = 0;
+  } else if (E >= grid(n_grid - 1)) {
+    i = n_grid - 1;
+  } else {
+    // One of the two bracketing points, chosen with the interpolation
+    // fraction as its probability, rather than a blend of two cumulatives --
+    // which is not a cumulative. PENELOPE does the same.
+    int j = lower_bound_index(grid.cbegin(), grid.cend(), E);
+    double f = std::log(E / grid(j)) / std::log(grid(j + 1) / grid(j));
+    i = (prn(p.current_seed()) < f) ? j + 1 : j;
+  }
+
+  // Which oscillator. The cumulative is normalised, so this is a plain
+  // binary search on a uniform draw.
+  double xi = prn(p.current_seed());
+  int lo = 0;
+  int hi = n_osc - 1;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    if (xi > t.cumulative(mid, i)) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  int k = lo;
+
+  const auto& o = oscillator_[k];
+  double w_cc = (settings::deflection_cutoff > 0.0)
+                  ? soft_collision_cutoff(p.type(), E)
+                  : 0.0;
+  auto c = sample_gos_collision(E, o.u_b, o.w_r,
+    this->density_effect_correction(E), w_cc, q == 1, p.current_seed());
+  if (!(c.w > 0.0) || c.w >= E)
+    return false;
+
+  int i_element = -1;
+  int i_shell = -1;
+  int i_nuclide = -1;
+  bool resolved = this->resolve_oscillator(k, i_element, i_shell, i_nuclide);
+  if (resolved)
+    p.event_nuclide() = i_nuclide;
+
+  // The projectile is deflected through the momentum transfer and the
+  // knock-on leaves along it, so the two are coplanar with azimuths differing
+  // by pi. Both are measured from the direction the projectile came in on,
+  // which is why that is captured before either is applied.
+  Direction u_inc = p.u();
+  double phi = uniform_distribution(0., 2.0 * PI, p.current_seed());
+
+  // The projectile loses the whole transfer; the ejected electron carries
+  // what is left of it once the shell has been paid for, and the vacancy
+  // carries the rest away through the relaxation below.
+  if (c.e_knock > 0.0) {
+    Direction u_knock = rotate_angle(u_inc, c.mu_knock, &phi, p.current_seed());
+    p.create_secondary(p.wgt(), u_knock, c.e_knock, ParticleType::electron());
+  }
+  p.mu() = c.mu;
+  phi += PI;
+  p.u() = rotate_angle(u_inc, c.mu, &phi, p.current_seed());
+  p.E() = E - c.w;
+
+  p.event() = TallyEvent::SCATTER;
+  if (resolved && c.ionised) {
+    // There is no ENDF MT for total electroionization; 534 upwards name the
+    // individual subshells, which is what the data resolves anyway
+    const auto& elm = *data::elements[i_element];
+    p.event_mt() =
+      533 + elm.shells_[elm.electron_shell_map_[i_shell]].index_subshell;
+    if (settings::atomic_relaxation && elm.has_atomic_relaxation_)
+      elm.atomic_relaxation(elm.electron_shell_map_[i_shell], p);
+  } else {
+    // The transfer stayed under the binding energy, so the atom was excited
+    // as a whole and no vacancy was left behind.
+    p.event_mt() = ELECTROEXCITATION;
+  }
+  return true;
 }
 
 Material::CollisionMoments Material::gos_collision_moments(
@@ -1075,17 +1252,6 @@ double Material::density_effect_correction(double E) const
   int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
   double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
   return density_effect_(i) + f * (density_effect_(i + 1) - density_effect_(i));
-}
-
-double Material::oscillator_energy(int i_element, int i_shell) const
-{
-  if (i_element < 0 || i_element >= element_block_.size())
-    return 0.0;
-  int i = element_block_[i_element];
-  if (i < 0)
-    return 0.0;
-  int j = oscillator_offset_[i] + i_shell;
-  return (j < oscillator_offset_[i + 1]) ? oscillator_[j].w_r : 0.0;
 }
 
 void Material::init_bremsstrahlung()
@@ -1402,114 +1568,6 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().pair_production += atom_density * micro.pair_production;
   }
 }
-
-void Material::init_inelastic_transport()
-{
-  // How much of the density effect the evaluated data can absorb.
-  //
-  // The correction is defined against the free atom, and the evaluated spectra
-  // do not reach the free atom's collision stopping power: in copper at 16 MeV
-  // they deliver 1.61 MeV cm^2/g where Bethe gives 1.72, and the shortfall
-  // grows with energy. Taking the whole correction off a spectrum that is
-  // already short of it removes the same strength twice -- which sent the
-  // single-event stopping power from 8 per cent above ICRU 37 to 7 per cent
-  // below it. So the screening applied is the correction less the shortfall,
-  // floored at zero.
-  //
-  // This is a calibration and not a derivation: it assumes the evaluated
-  // shortfall lies in the distant channel the screening acts on, which is
-  // where the relativistic rise lives but is not established term by term.
-  // What it buys is that both transport modes land on the same measured
-  // stopping power -- the grouped one by the pinning in calculate_electron_xs,
-  // the single-event one by this -- rather than disagreeing by 15 per cent,
-  // and that a run does not change stopping power from region to region as
-  // steps decline to group.
-  auto n_grid = data::brems_e_grid.size();
-  constexpr double bohr_radius_cm =
-    PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
-  constexpr double r_e = bohr_radius_cm / (FINE_STRUCTURE * FINE_STRUCTURE);
-  constexpr double collision_const =
-    2.0 * PI * 1.0e24 * r_e * r_e * MASS_ELECTRON_EV;
-  double n_electron = 0.0;
-  for (int i = 0; i < nuclide_.size(); ++i) {
-    n_electron += this->atom_density(i, 1.0) * data::elements[element_[i]]->Z_;
-  }
-  for (int q = 0; q < 2; ++q) {
-    screening_[q] = tensor::Tensor<double>({n_grid});
-    for (int i = 0; i < n_grid; ++i) {
-      double E = data::brems_e_grid(i);
-      double gamma = 1.0 + E / MASS_ELECTRON_EV;
-      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
-      double prefactor =
-        (beta_sq > 0.0) ? collision_const / beta_sq * n_electron : 0.0;
-      double unscreened = 0.0;
-      for (int k = 0; k < nuclide_.size(); ++k) {
-        unscreened +=
-          this->atom_density(k, 1.0) *
-          data::elements[element_[k]]->inelastic_unscreened_stopping(q, E);
-      }
-      // collision_stopping_ already carries the correction, so adding it back
-      // gives the free atom's value on the same footing
-      double free_atom = collision_stopping_[q].size() == n_grid
-                           ? collision_stopping_[q](i) * n_electron +
-                               prefactor * density_effect_(i)
-                           : 0.0;
-      double shortfall =
-        (prefactor > 0.0 && unscreened > 0.0 && free_atom > unscreened)
-          ? (free_atom - unscreened) / prefactor
-          : 0.0;
-      screening_[q](i) = std::max(0.0, density_effect_(i) - shortfall);
-    }
-  }
-
-  if (settings::deflection_cutoff <= 0.0)
-    return;
-
-  int n_block = oscillator_offset_.size() - 1;
-  for (int q = 0; q < 2; ++q) {
-    inelastic_xs1_[q].assign(std::max(0, n_block), tensor::Tensor<double> {});
-    inelastic_soft_screened_s_[q].assign(
-      std::max(0, n_block), tensor::Tensor<double> {});
-    inelastic_soft_screened_w2_[q].assign(
-      std::max(0, n_block), tensor::Tensor<double> {});
-    inelastic_total_s_[q].assign(
-      std::max(0, n_block), tensor::Tensor<double> {});
-  }
-
-  // Resolve every nuclide's oscillator block once, here, rather than hashing
-  // for it on every lookup during transport
-  nuclide_block_.assign(nuclide_.size(), -1);
-  for (int i = 0; i < nuclide_.size(); ++i) {
-    auto it = oscillator_block_.find(element_[i]);
-    if (it != oscillator_block_.end())
-      nuclide_block_[i] = it->second;
-  }
-
-  for (int b = 0; b < n_block; ++b) {
-    int i_element = oscillator_element_[b];
-    const auto& element {*data::elements[i_element]};
-    vector<double> w_r;
-    for (int k = oscillator_offset_[b]; k < oscillator_offset_[b + 1]; ++k)
-      w_r.push_back(oscillator_[k].w_r);
-
-    // The density-effect correction on this element's own energy grid, which
-    // is not the one it is tabulated on
-    const auto& grid = element.electron_energy();
-    vector<double> delta(grid.size());
-    for (int j = 0; j < grid.size(); ++j) {
-      delta[j] = this->screening_correction(0, grid(j));
-    }
-
-    for (int q = 0; q < 2; ++q) {
-      element.compute_inelastic_transport(q, w_r, delta, inelastic_xs1_[q][b],
-        inelastic_soft_screened_s_[q][b], inelastic_soft_screened_w2_[q][b],
-        inelastic_total_s_[q][b]);
-    }
-  }
-
-  this->check_electron_tables();
-}
-
 //! Refuse to transport charged particles on tables that were not built
 //
 // Every accessor below returns zero for a table it cannot find, which is what
@@ -1533,6 +1591,14 @@ void Material::check_electron_tables() const
   };
 
   require(density_effect_.size() == n_grid, "density-effect table");
+  for (int q = 0; q < 2; ++q) {
+    require(
+      collision_stopping_[q].size() == n_grid, "collision stopping power");
+    require(gos_[q].hard.size() == n_grid, "oscillator cross section table");
+    require(gos_[q].majorant.size() == n_grid, "oscillator majorant");
+    require(gos_[q].cumulative.size() == n_grid * oscillator_.size(),
+      "oscillator cumulative");
+  }
 
   // The grouped and discrete halves of the collision loss have to add up to
   // the stopping power the material has. They do so identically rather than
@@ -1558,14 +1624,22 @@ void Material::check_electron_tables() const
     for (int i = 0; i < n_grid; ++i) {
       double E = data::brems_e_grid(i);
       double total = collision_stopping_[q](i);
-      double w_cc = soft_collision_cutoff(projectile, E);
-      if (!(total > 0.0) || !(w_cc > 0.0))
+      if (!(total > 0.0))
         continue;
+
       // The oscillator model is what the transport runs on, and what has to
       // land on ICRU 37. It does so by construction -- the sum rules fix it,
       // and the compensation in init_oscillator_renorm() repairs what the
       // inner-shell renormalisation costs -- so a discrepancy here means one
       // of those has stopped holding rather than a tolerance wanting widened.
+      //
+      // Checked at the cutoff the transport will actually use, including zero:
+      // every oscillator has a threshold of its own, so the model stays finite
+      // there and single-event transport is held to the same total as a
+      // grouped one.
+      double w_cc = settings::deflection_cutoff > 0.0
+                      ? soft_collision_cutoff(projectile, E)
+                      : 0.0;
       auto gos = this->gos_collision_moments(q, E, w_cc);
       double gos_total = gos.s_soft + gos.s_hard;
       if (gos_total > 0.0 && std::abs(gos_total - total) > 1.0e-6 * total) {
@@ -1578,6 +1652,8 @@ void Material::check_electron_tables() const
           id_, gos_total, E, total));
       }
 
+      if (!(w_cc > 0.0))
+        continue;
       auto m = this->collision_moments(q, E, w_cc);
 
       // The split has a second limit, and it is the medium's rather than the
@@ -1605,12 +1681,6 @@ void Material::check_electron_tables() const
     }
   }
 
-  for (int q = 0; q < 2; ++q) {
-    require(
-      collision_stopping_[q].size() == n_grid, "collision stopping power");
-    require(screening_[q].size() == n_grid, "density-effect screening");
-  }
-
   // The oscillator list the recoil model reads, one block per element with one
   // entry per subshell of it
   int n_block = oscillator_offset_.empty() ? 0 : oscillator_offset_.size() - 1;
@@ -1622,98 +1692,15 @@ void Material::check_electron_tables() const
       "a complete oscillator block for " + elm.name_);
   }
   for (int i = 0; i < nuclide_.size(); ++i) {
-    require(element_block_[element_[i]] >= 0,
+    require(oscillator_block_.count(element_[i]) > 0,
       "an oscillator block for " + data::elements[element_[i]]->name_);
   }
-
-  if (settings::deflection_cutoff <= 0.0)
-    return;
-
-  // Built only when something is grouped, and then for every block. These sit
-  // on the element's own energy grid rather than on the one above, because
-  // that is the grid the evaluated spectra they are integrals of are
-  // tabulated on.
-  for (int q = 0; q < 2; ++q) {
-    require(inelastic_xs1_[q].size() == n_block, "grouped transport table");
-    for (int b = 0; b < n_block; ++b) {
-      auto n = data::elements[oscillator_element_[b]]->electron_energy().size();
-      require(inelastic_soft_screened_s_[q][b].size() == n,
-        "grouped screened stopping power");
-      require(inelastic_soft_screened_w2_[q][b].size() == n,
-        "grouped screened straggling");
-      require(
-        inelastic_total_s_[q][b].size() == n, "evaluated total stopping power");
-      require(inelastic_xs1_[q][b].size() == n,
-        "grouped inelastic transport cross section");
-    }
-  }
-}
-
-void Material::inelastic_soft_screened(
-  int i_nuclide, int q_index, int i_grid, double f, double& s, double& w2) const
-{
-  s = 0.0;
-  w2 = 0.0;
-  if (q_index < 0 || q_index > 1 || inelastic_soft_screened_s_[q_index].empty())
-    return;
-  if (i_nuclide < 0 || i_nuclide >= nuclide_block_.size())
-    return;
-  int block = nuclide_block_[i_nuclide];
-  if (block < 0 || block >= inelastic_soft_screened_s_[q_index].size())
-    return;
-
-  const auto& sv = inelastic_soft_screened_s_[q_index][block];
-  const auto& wv = inelastic_soft_screened_w2_[q_index][block];
-  if (sv.size() < 2 || i_grid < 0 || i_grid + 1 >= sv.size())
-    return;
-  s = std::max(0.0, sv(i_grid) + f * (sv(i_grid + 1) - sv(i_grid)));
-  w2 = std::max(0.0, wv(i_grid) + f * (wv(i_grid + 1) - wv(i_grid)));
-}
-
-double Material::inelastic_total_s(
-  int i_nuclide, int q_index, int i_grid, double f) const
-{
-  if (q_index < 0 || q_index > 1 || inelastic_total_s_[q_index].empty())
-    return 0.0;
-  if (i_nuclide < 0 || i_nuclide >= nuclide_block_.size())
-    return 0.0;
-  int block = nuclide_block_[i_nuclide];
-  if (block < 0 || block >= inelastic_total_s_[q_index].size())
-    return 0.0;
-  const auto& v = inelastic_total_s_[q_index][block];
-  if (v.size() < 2 || i_grid < 0 || i_grid + 1 >= v.size())
-    return 0.0;
-  return std::max(0.0, v(i_grid) + f * (v(i_grid + 1) - v(i_grid)));
-}
-
-double Material::inelastic_transport_xs(
-  int i_nuclide, int q_index, int i_grid, double f) const
-{
-  // Empty whenever the run did not ask for condensed history, while the
-  // oscillator blocks it is indexed by are not
-  if (q_index < 0 || q_index > 1 || inelastic_xs1_[q_index].empty())
-    return 0.0;
-  if (i_nuclide < 0 || i_nuclide >= nuclide_block_.size())
-    return 0.0;
-  int block = nuclide_block_[i_nuclide];
-  if (block < 0 || block >= inelastic_xs1_[q_index].size())
-    return 0.0;
-
-  // Tabulated on the element's own electron energy grid, which is the grid
-  // i_grid and f were found on
-  const auto& v = inelastic_xs1_[q_index][block];
-  if (v.size() < 2 || i_grid < 0 || i_grid + 1 >= v.size())
-    return 0.0;
-  return std::max(0.0, v(i_grid) + f * (v(i_grid + 1) - v(i_grid)));
 }
 
 void Material::calculate_electron_xs(Particle& p) const
 {
-  // Collision stopping power the evaluated data delivers, accumulated beside
-  // the rest so the grouped channel can be held to the right total below
-  double s_evaluated = 0.0;
   double electron_density = 0.0;
-  bool have_evaluated = false;
+  int q = p.type().is_positron() ? 1 : 0;
 
   // Add contribution from each nuclide in material
   for (int i = 0; i < nuclide_.size(); ++i) {
@@ -1725,7 +1712,6 @@ void Material::calculate_electron_xs(Particle& p) const
 
     // Calculate microscopic cross section for this nuclide
     const auto& micro {p.electron_xs(i_element)};
-    int q = p.type().is_positron() ? 1 : 0;
     if (p.E() != micro.last_E || q != micro.last_q) {
       data::elements[i_element]->calculate_electron_xs(p);
     }
@@ -1736,78 +1722,73 @@ void Material::calculate_electron_xs(Particle& p) const
     // Copy atom density of nuclide in material
     double atom_density = this->atom_density(i, p.density_mult());
 
-    // Add contributions to material macroscopic cross sections
+    // The atom's own channels: elastic, bremsstrahlung and annihilation
     p.macro_xs().total += atom_density * micro.total;
     p.macro_xs().step.hard += atom_density * micro.hard_total;
     p.macro_xs().step.hard_majorant += atom_density * micro.hard_majorant;
     p.macro_xs().step.soft_rate += atom_density * micro.soft_rate;
-    // The element's restricted moments are the free atom's. What the medium
-    // screens away is this material's, the Sternheimer correction belonging to
-    // the medium, so it is subtracted here rather than tabulated on the
-    // element. Clamped at zero: the two are integrals of the same spectrum
-    // over the same range and the screened one is a share of it, but they are
-    // interpolated on the grid separately and nothing guarantees the order
-    // survives that to the last bit.
-    double s_screened, w2_screened;
-    this->inelastic_soft_screened(
-      i, q, micro.index_grid, micro.interp_factor, s_screened, w2_screened);
-    p.macro_xs().step.stopping +=
-      atom_density * std::max(0.0, micro.soft_stopping - s_screened);
-    p.macro_xs().step.straggling +=
-      atom_density * std::max(0.0, micro.soft_straggling - w2_screened);
+    p.macro_xs().step.stopping += atom_density * micro.soft_stopping;
+    p.macro_xs().step.straggling += atom_density * micro.soft_straggling;
+    p.macro_xs().step.xs1_soft += atom_density * micro.soft_xs1;
+    p.macro_xs().step.xs2_soft += atom_density * micro.soft_xs2;
 
-    double s_total =
-      this->inelastic_total_s(i, q, micro.index_grid, micro.interp_factor);
-    if (s_total > 0.0) {
-      s_evaluated += atom_density * s_total;
-      electron_density += atom_density * data::elements[i_element]->Z_;
-      have_evaluated = true;
-    }
-    // The elastic part comes from the element; the inelastic part is this
-    // material's, the recoil model having been solved with its oscillators.
-    // 1 - P_2(mu) is 3(1 - mu) for deflections as small as these.
-    double xs1_inelastic =
-      this->inelastic_transport_xs(i, q, micro.index_grid, micro.interp_factor);
-    p.macro_xs().step.xs1_soft +=
-      atom_density * (micro.soft_xs1 + xs1_inelastic);
-    p.macro_xs().step.xs2_soft +=
-      atom_density * (micro.soft_xs2 + 3.0 * xs1_inelastic);
+    electron_density += atom_density * data::elements[i_element]->Z_;
   }
 
-  // Hold the grouped channel to the collision stopping power the material must
-  // reproduce. The hard collisions are sampled from the evaluated spectra and
-  // carry whatever those give, so what is left for the grouped channel is the
-  // ICRU 37 total less that hard part -- which is what this adds, the loop
-  // above having left the evaluated soft part in place and s_evaluated holding
-  // the evaluated total. Every quantity here is a collision one, so the soft
-  // radiative loss the same accumulator carries rides through untouched.
+  // The inelastic collisions, which belong to the medium rather than to any
+  // atom in it: the oscillator strengths are shares of all its electrons and
+  // the resonance energies are fixed by its mean excitation energy. Summing
+  // the model over the oscillators is far too slow to do here, so what is
+  // read is the tabulation init_gos_tables() left behind.
   //
-  // Without this the run transports on the evaluated stopping power, and the
-  // evaluated spectra do not integrate to ICRU 37: in copper at 16 MeV they
-  // fall 8.8 per cent below the free atom, against which the Sternheimer
-  // screening is worth 15.5 per cent, so the net is 5.3 per cent high before
-  // screening and 10 per cent low after it. Neither is the stopping power the
-  // material has.
-  //
-  // The mean is pinned and the straggling deliberately is not. What the
-  // evaluated spectra are short of is the relativistic rise, which is distant
-  // strength at small W: it carries a share of the first moment and almost
-  // none of the second, since the second weights by W^2. Scaling the
-  // straggling by the same factor as the mean would therefore put the
-  // correction where it does not belong and widen a distribution that is
-  // already the right width. What checks that is the Landau most probable
-  // loss, which is a property of the shape rather than of the mean.
-  int q = p.type().is_positron() ? 1 : 0;
-  if (have_evaluated) {
-    double target = electron_density * this->collision_stopping_power(q, p.E());
-    if (target > 0.0) {
-      p.macro_xs().step.stopping =
-        std::max(0.0, p.macro_xs().step.stopping + target - s_evaluated);
+  // The stopping power this adds, with the discrete collisions above the
+  // cutoff, is the ICRU 37 collision stopping power exactly -- by the sum
+  // rules the oscillators satisfy and the compensation that repairs what the
+  // inner-shell renormalisation costs. check_electron_tables() refuses to run
+  // if it is not.
+  const auto& t = gos_[q];
+  auto n_grid = data::brems_e_grid.size();
+  if (electron_density > 0.0 && t.hard.size() == n_grid) {
+    const auto& grid = data::brems_e_grid;
+    double E = p.E();
+    int i;
+    double f;
+    if (E <= grid(0)) {
+      i = 0;
+      f = 0.0;
+    } else if (E >= grid(n_grid - 1)) {
+      i = n_grid - 2;
+      f = 1.0;
+    } else {
+      i = lower_bound_index(grid.cbegin(), grid.cend(), E);
+      f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
     }
-  }
+    auto on_grid = [i, f](const tensor::Tensor<double>& v) {
+      return v(i) + f * (v(i + 1) - v(i));
+    };
 
-  // Resolved once here for the collisions that follow at this energy
-  p.macro_xs().step.screening = this->screening_correction(q, p.E());
+    double hard = electron_density * on_grid(t.hard);
+    p.macro_xs().step.hard += hard;
+    p.macro_xs().step.inelastic = hard;
+    // The larger of the two bracketing bounds rather than a blend, for the
+    // same reason the element's channels take it that way: a blend of two
+    // bounds is not a bound where the rate is concave between them.
+    p.macro_xs().step.hard_majorant +=
+      electron_density *
+      std::max(on_grid(t.hard), std::max(t.majorant(i), t.majorant(i + 1)));
+    p.macro_xs().step.stopping += electron_density * on_grid(t.stopping);
+    p.macro_xs().step.straggling += electron_density * on_grid(t.straggling);
+    p.macro_xs().step.xs1_soft += electron_density * on_grid(t.xs1);
+    p.macro_xs().step.xs2_soft += electron_density * on_grid(t.xs2);
+
+    // The rate of the collisions being grouped, which only decides whether
+    // grouping is worth it. The soft inelastic rate is not finite in this
+    // model -- an oscillator takes its resonance energy however small -- so
+    // what stands for it is the discrete rate, which is the right order and
+    // is what the step actually has to beat.
+    p.macro_xs().total += hard;
+    p.macro_xs().step.soft_rate += hard;
+  }
 }
 
 void Material::set_id(int32_t id)
@@ -1935,7 +1916,6 @@ void Material::set_densities(
   // describes the material this one used to be.
   if (settings::electron_transport) {
     this->init_electron_oscillators();
-    this->init_inelastic_transport();
   }
 
   // Assign S(a,b) tables

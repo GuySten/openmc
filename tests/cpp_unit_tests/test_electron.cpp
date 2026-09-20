@@ -8,6 +8,7 @@
 #include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_angle.h"
+#include "openmc/gos.h"
 #include "openmc/material.h"
 #include "openmc/particle_data.h"
 #include "openmc/photon.h"
@@ -494,4 +495,68 @@ TEST_CASE("the unrestricted limit recovers the ICRU 37 spin term")
         openmc::berger_seltzer_spin_term(5.0, 2.5, false));
   CHECK(openmc::berger_seltzer_spin_term(5.0, 100.0, true) ==
         openmc::berger_seltzer_spin_term(5.0, 5.0, true));
+}
+
+// The sum rule the oscillator model stands on
+// -------------------------------------------
+// The Sternheimer-Liljequist GOS is not fitted to stopping-power data. Its
+// oscillator strengths sum to Z and its resonance energies satisfy
+// sum_k f_k ln W_k = ln I, and those are the same two constraints that
+// determine the Bethe stopping power -- so the model has to reproduce ICRU 37
+// rather than merely happening to.
+//
+// The purest statement of that needs no data at all. One oscillator carrying
+// every electron, placed at W = I, must give back the Bethe formula for a
+// medium with that mean excitation energy. If it ever stops doing so, the
+// model has come loose from the thing that makes it defensible.
+TEST_CASE("one oscillator at the mean excitation energy gives Bethe")
+{
+  for (double I : {78.0, 322.0, 823.0}) {
+    for (double E : {1.0e5, 1.0e6, 1.0e7, 1.0e8}) {
+      // Nothing grouped, so the whole cross section is in the hard channel
+      auto m = openmc::gos_oscillator(E, 0.0, I, 0.0, 0.0);
+      CHECK(m.s_soft == 0.0);
+
+      double tau = E / openmc::MASS_ELECTRON_EV;
+      double gamma = tau + 1.0;
+      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
+      double bethe = openmc::berger_seltzer_spin_term(tau, 0.5 * tau, false) +
+                     std::log(tau * tau * (tau + 2.0) / 2.0) -
+                     2.0 * (std::log(I) - std::log(openmc::MASS_ELECTRON_EV));
+
+      // Both in units of the leading constant, which cancels
+      constexpr double bohr = openmc::PLANCK_C * openmc::FINE_STRUCTURE /
+                              (2.0 * openmc::PI * openmc::MASS_ELECTRON_EV) *
+                              1.0e-8;
+      constexpr double r_e =
+        bohr / (openmc::FINE_STRUCTURE * openmc::FINE_STRUCTURE);
+      double k = 2.0 * openmc::PI * 1.0e24 * r_e * r_e *
+                 openmc::MASS_ELECTRON_EV / beta_sq;
+
+      CHECK_THAT(m.s_hard, WithinRel(k * bethe, 1.0e-3));
+    }
+  }
+}
+
+// Splitting the same oscillator at a cutoff must not change what it carries:
+// the soft and hard parts are one cross section either side of a line, which
+// is the property a mixed scheme needs and the reason the model can serve
+// single-event transport and condensed history without a seam between them.
+TEST_CASE("the oscillator split conserves its moments")
+{
+  for (double u_b : {0.0, 60.0, 8979.0}) {
+    double w_r = (u_b > 0.0) ? 1.3 * u_b + 40.0 : 90.0;
+    for (double E : {1.0e5, 1.0e6, 1.0e8}) {
+      auto whole = openmc::gos_oscillator(E, u_b, w_r, 0.3, 0.0);
+      for (double w_cc : {1.0e2, 1.0e3, 1.0e4}) {
+        auto split = openmc::gos_oscillator(E, u_b, w_r, 0.3, w_cc);
+        CHECK_THAT(split.xs_soft + split.xs_hard,
+          WithinRel(whole.xs_soft + whole.xs_hard, 1.0e-12));
+        CHECK_THAT(split.s_soft + split.s_hard,
+          WithinRel(whole.s_soft + whole.s_hard, 1.0e-12));
+        CHECK_THAT(split.w2_soft + split.w2_hard,
+          WithinRel(whole.w2_soft + whole.w2_hard, 1.0e-12));
+      }
+    }
+  }
 }

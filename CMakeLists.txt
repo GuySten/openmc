@@ -336,6 +336,7 @@ list(APPEND libopenmc_SOURCES
   src/finalize.cpp
   src/geometry.cpp
   src/geometry_aux.cpp
+  src/gos.cpp
   src/hdf5_interface.cpp
   src/ifp.cpp
   src/initialize.cpp

@@ -960,11 +960,13 @@ void Material::init_gos_tables()
   for (int i = 0; i < n_grid; ++i)
     energy[i] = data::brems_e_grid(i);
 
-  for (int q = 0; q < 2; ++q) {
+  // Sum the model over the oscillators at one cutoff. At zero cutoff there is
+  // no soft channel, so the soft moments come back zero of their own accord
+  // and every field is still filled -- the tables are read unconditionally.
+  auto tabulate = [&](GosTables& t, int q, bool grouped) {
     ParticleType projectile =
       (q == 0) ? ParticleType::electron() : ParticleType::positron();
     bool positron = q == 1;
-    auto& t = gos_[q];
     t.hard = tensor::zeros<double>({n_grid});
     t.stopping = tensor::zeros<double>({n_grid});
     t.straggling = tensor::zeros<double>({n_grid});
@@ -975,13 +977,7 @@ void Material::init_gos_tables()
     vector<double> hard(n_grid), lowest(n_grid);
     for (int i = 0; i < n_grid; ++i) {
       double E = energy[i];
-      // Nothing is grouped in single-event mode, so every oscillator's whole
-      // cross section is discrete. The model stays finite there because each
-      // one has a threshold of its own, which is what lets the two schemes
-      // share it.
-      double w_cc = (settings::deflection_cutoff > 0.0)
-                      ? soft_collision_cutoff(projectile, E)
-                      : 0.0;
+      double w_cc = grouped ? soft_collision_cutoff(projectile, E) : 0.0;
       double delta = density_effect_(i);
 
       double running = 0.0;
@@ -1007,19 +1003,35 @@ void Material::init_gos_tables()
       lowest[i] = E - MAX_SOFT_LOSS_OVERSHOOT * soft_loss_budget(projectile, E);
     }
 
-    // The same scan the per-element hard channels use: a bound on the rate
-    // over every energy a step begun here can reach
+    // A bound on the rate over every energy a step begun here can reach
     vector<double> majorant = step_majorant(energy, hard, lowest);
     t.majorant = tensor::zeros<double>({n_grid});
     for (int i = 0; i < n_grid; ++i)
       t.majorant(i) = majorant[i];
+  };
+
+  // The whole cross section, which single-event transport runs on and which a
+  // step that declines to group falls back to, is always built. The soft/hard
+  // split beside it is built only when something is actually grouped.
+  bool grouped = settings::deflection_cutoff > 0.0;
+  for (int q = 0; q < 2; ++q) {
+    tabulate(gos_full_[q], q, false);
+    if (grouped) {
+      tabulate(gos_[q], q, true);
+    } else {
+      gos_[q] = gos_full_[q];
+    }
   }
 }
 
-bool Material::sample_inelastic(Particle& p) const
+bool Material::sample_inelastic(Particle& p, bool hard) const
 {
   int q = p.type().is_positron() ? 1 : 0;
-  const auto& t = gos_[q];
+  // The table has to be the one the rate was counted from. A collision
+  // ending a grouped step comes from the discrete channel; one on a flight
+  // that declined to group comes from the whole cross section, and drawing it
+  // from the discrete table would sample a spectrum the rate never described.
+  const auto& t = hard ? gos_[q] : gos_full_[q];
   auto n_grid = data::brems_e_grid.size();
   auto n_osc = oscillator_.size();
   if (n_osc == 0 || t.cumulative.size() != n_osc * n_grid)
@@ -1057,9 +1069,7 @@ bool Material::sample_inelastic(Particle& p) const
   int k = lo;
 
   const auto& o = oscillator_[k];
-  double w_cc = (settings::deflection_cutoff > 0.0)
-                  ? soft_collision_cutoff(p.type(), E)
-                  : 0.0;
+  double w_cc = hard ? soft_collision_cutoff(p.type(), E) : 0.0;
   auto c = sample_gos_collision(E, o.u_b, o.w_r,
     this->density_effect_correction(E), w_cc, q == 1, p.current_seed());
   if (!(c.w > 0.0) || c.w >= E)
@@ -1598,6 +1608,16 @@ void Material::check_electron_tables() const
     require(gos_[q].majorant.size() == n_grid, "oscillator majorant");
     require(gos_[q].cumulative.size() == n_grid * oscillator_.size(),
       "oscillator cumulative");
+    require(gos_full_[q].hard.size() == n_grid, "ungrouped oscillator table");
+    require(gos_full_[q].cumulative.size() == n_grid * oscillator_.size(),
+      "ungrouped oscillator cumulative");
+    // The whole rate cannot be under the discrete part of itself. They are
+    // equal when nothing is grouped and the first is larger otherwise, so a
+    // violation means the two tables were built from different models.
+    for (int i = 0; i < n_grid; ++i) {
+      require(gos_full_[q].hard(i) >= gos_[q].hard(i) * (1.0 - 1.0e-9),
+        "a whole inelastic rate at least as large as its discrete part");
+    }
   }
 
   // The grouped and discrete halves of the collision loss have to add up to
@@ -1747,8 +1767,10 @@ void Material::calculate_electron_xs(Particle& p) const
   // inner-shell renormalisation costs. check_electron_tables() refuses to run
   // if it is not.
   const auto& t = gos_[q];
+  const auto& tf = gos_full_[q];
   auto n_grid = data::brems_e_grid.size();
-  if (electron_density > 0.0 && t.hard.size() == n_grid) {
+  if (electron_density > 0.0 && t.hard.size() == n_grid &&
+      tf.hard.size() == n_grid) {
     const auto& grid = data::brems_e_grid;
     double E = p.E();
     int i;
@@ -1767,9 +1789,15 @@ void Material::calculate_electron_xs(Particle& p) const
       return v(i) + f * (v(i + 1) - v(i));
     };
 
+    // Two rates, because a condensed-history run uses both. The discrete one
+    // is what may end a grouped step; the whole one is what a flight that
+    // declined to group -- and every flight of a single-event run -- is
+    // transported on. They are equal when nothing is grouped.
     double hard = electron_density * on_grid(t.hard);
+    double full = electron_density * on_grid(tf.hard);
     p.macro_xs().step.hard += hard;
     p.macro_xs().step.inelastic = hard;
+    p.macro_xs().step.inelastic_full = full;
     // The larger of the two bracketing bounds rather than a blend, for the
     // same reason the element's channels take it that way: a blend of two
     // bounds is not a bound where the rate is concave between them.
@@ -1781,13 +1809,17 @@ void Material::calculate_electron_xs(Particle& p) const
     p.macro_xs().step.xs1_soft += electron_density * on_grid(t.xs1);
     p.macro_xs().step.xs2_soft += electron_density * on_grid(t.xs2);
 
-    // The rate of the collisions being grouped, which only decides whether
-    // grouping is worth it. The soft inelastic rate is not finite in this
-    // model -- an oscillator takes its resonance energy however small -- so
-    // what stands for it is the discrete rate, which is the right order and
-    // is what the step actually has to beat.
-    p.macro_xs().total += hard;
-    p.macro_xs().step.soft_rate += hard;
+    // The total a flight is drawn from carries the whole inelastic channel.
+    // Carrying the discrete rate instead would drop every transfer under the
+    // cutoff from any flight that declined to group, with no grouped channel
+    // left to supply them.
+    p.macro_xs().total += full;
+
+    // The rate of the collisions actually being grouped, which decides
+    // whether grouping is worth it. Every oscillator has a threshold of its
+    // own, so this is finite and is the difference of the two rates rather
+    // than the proxy the discrete rate used to stand in as.
+    p.macro_xs().step.soft_rate += std::max(0.0, full - hard);
   }
 }
 

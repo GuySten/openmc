@@ -587,8 +587,10 @@ void sample_electron_reaction(Particle& p)
   // chosen against the material's rate before an element is sampled at all.
   const auto& mat {*model::materials[p.material()]};
   double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
-  if (prn(p.current_seed()) * total < p.macro_xs().step.inelastic) {
-    if (!mat.sample_inelastic(p))
+  double inelastic =
+    hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full;
+  if (prn(p.current_seed()) * total < inelastic) {
+    if (!mat.sample_inelastic(p, hard))
       // Nothing could be sampled, so nothing happened. Leaving event() as
       // KILL is right: the heating balance then evaluates to zero.
       return;
@@ -663,8 +665,10 @@ void sample_positron_reaction(Particle& p)
   // chosen against the material's rate before an element is sampled at all.
   const auto& mat {*model::materials[p.material()]};
   double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
-  if (prn(p.current_seed()) * total < p.macro_xs().step.inelastic) {
-    if (!mat.sample_inelastic(p))
+  double inelastic =
+    hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full;
+  if (prn(p.current_seed()) * total < inelastic) {
+    if (!mat.sample_inelastic(p, hard))
       // Nothing could be sampled, so nothing happened. Leaving event() as
       // KILL is right: the heating balance then evaluates to zero.
       return;
@@ -776,8 +780,9 @@ int sample_electron_element(Particle& p, bool hard)
   // less that share -- normalising on the whole total would leave a slice of
   // it belonging to nothing, and the scan below would run off the end.
   const auto& mat {model::materials[p.material()]};
-  double total = (hard ? p.macro_xs().step.hard : p.macro_xs().total) -
-                 p.macro_xs().step.inelastic;
+  double total =
+    (hard ? p.macro_xs().step.hard : p.macro_xs().total) -
+    (hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full);
   double cutoff = prn(p.current_seed()) * total;
 
   double prob = 0.0;

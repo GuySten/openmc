@@ -97,3 +97,100 @@ def test_photon_threshold():
 def test_hdf5_version_is_bumped():
     """The level attribute set changed, so the format version must say so."""
     assert openmc.data.HDF5_VERSION >= (3, 1)
+
+
+class _FakeACE:
+    """Minimal stand-in for an ACE table holding a single LAW=3 entry.
+
+    `LevelInelastic.from_ace` reads the table type, the two XSS words of the
+    distribution and the atomic weight ratio of the header, and nothing else.
+    """
+
+    def __init__(self, data_type, threshold, mass_ratio, awr):
+        self.name = f'82000.30{data_type}'
+        self.data_type = openmc.data.ace.TableType(data_type)
+        self.atomic_weight_ratio = awr
+        self.xss = np.array([threshold/openmc.data.EV_PER_MEV, mass_ratio])
+
+
+def _neutron_words(A, q_value):
+    """The LAW=3 words as written with neutron kinematics."""
+    return (A + 1.0)/A*abs(q_value), (A/(A + 1.0))**2
+
+
+def _photon_words(A, q_value):
+    """The LAW=3 words as written with photonuclear kinematics."""
+    return abs(q_value), (A - 1.0)/A
+
+
+def test_from_ace_neutron():
+    A, q_value = 206.19, -7.368e6
+    threshold, mass_ratio = _neutron_words(A, q_value)
+    dist = LevelInelastic.from_ace(_FakeACE('c', threshold, mass_ratio, A), 0)
+
+    assert dist.particle == 'neutron'
+    assert dist.mass == pytest.approx(A)
+    assert dist.q_value == pytest.approx(q_value)
+
+
+def test_from_ace_photonuclear():
+    A, q_value = 206.19, -7.368e6
+    threshold, mass_ratio = _photon_words(A, q_value)
+    dist = LevelInelastic.from_ace(_FakeACE('u', threshold, mass_ratio, A), 0)
+
+    assert dist.particle == 'photon'
+    assert dist.mass == pytest.approx(A)
+    assert dist.q_value == pytest.approx(q_value)
+
+
+def test_from_ace_photonuclear_with_neutron_kinematics():
+    """Older NJOY wrote photonuclear LAW=3 parameters with neutron kinematics.
+
+    Those tables are what the photonuclear libraries in circulation are made
+    of, so reading one must warn and recover |Q| with the convention it was
+    written in -- not refuse the table and take library generation down with
+    it.
+    """
+    A, q_value = 206.19, -7.368e6
+    threshold, mass_ratio = _neutron_words(A, q_value)
+    ace = _FakeACE('u', threshold, mass_ratio, A)
+
+    with pytest.warns(UserWarning, match='neutron kinematics'):
+        dist = LevelInelastic.from_ace(ace, 0)
+
+    # The projectile comes from the table type, so the distribution is still
+    # photonuclear; only the reading of the two words changes.
+    assert dist.particle == 'photon'
+    assert dist.mass == pytest.approx(A)
+    assert dist.q_value == pytest.approx(q_value)
+
+    # Reading it as though it carried the modern words would put the mass at
+    # roughly A/2 and |Q| out by the recoil factor (A + 1)/A.
+    assert dist.q_value != pytest.approx(-threshold)
+
+
+def test_from_ace_inconsistent_mass_raises():
+    """A mass ratio matching neither convention is a broken or misparsed
+    table, and the caller hears about it."""
+    ace = _FakeACE('u', 7.368e6, 0.5, 206.19)
+    with pytest.raises(ValueError, match='atomic weight ratio'):
+        LevelInelastic.from_ace(ace, 0)
+
+    ace = _FakeACE('c', 7.368e6, 0.5, 206.19)
+    with pytest.raises(ValueError, match='atomic weight ratio'):
+        LevelInelastic.from_ace(ace, 0)
+
+
+def test_from_ace_nonphysical_mass_ratio_raises():
+    """A mass ratio outside the range either convention can produce cannot be
+    inverted at all, and must not raise something opaque like a domain or
+    zero-division error."""
+    ace = _FakeACE('u', 7.368e6, -1.0, 206.19)
+    with pytest.raises(ValueError, match='nothing physical'):
+        LevelInelastic.from_ace(ace, 0)
+
+
+def test_from_ace_unsupported_table_type():
+    ace = _FakeACE('h', *_neutron_words(206.19, -7.368e6), 206.19)
+    with pytest.raises(NotImplementedError):
+        LevelInelastic.from_ace(ace, 0)

@@ -893,6 +893,55 @@ class DiscretePhoton(EnergyDistribution):
         return cls(primary_flag, energy, ace.atomic_weight_ratio)
 
 
+# Relative tolerance used when checking the target mass implied by the two XSS
+# words of an ACE LAW=3 distribution against the atomic weight ratio in the
+# table header. Recovering A from the second word inverts a quantity close to
+# unity, which amplifies its relative error by roughly (A+1)/2 for a neutron
+# projectile and A for a photon -- a few hundred for a heavy nuclide -- so a
+# perfectly consistent file still misses the default rel_tol of 1e-9.
+_LEVEL_MASS_REL_TOL = 1e-6
+
+
+def _level_params_from_ace(threshold, mass_ratio, kinematics):
+    """Recover (mass, q_value) from the two words of an ACE LAW=3 entry.
+
+    Parameters
+    ----------
+    threshold : float
+        First LAW=3 word, converted to eV
+    mass_ratio : float
+        Second LAW=3 word
+    kinematics : {'neutron', 'photon'}
+        Convention the two words were written with. For 'neutron',
+        threshold = (A + 1)/A |Q| and mass_ratio = (A/(A + 1))^2; for
+        'photon', threshold = |Q| and mass_ratio = (A - 1)/A.
+
+    Returns
+    -------
+    tuple of float or None
+        Target mass in neutron masses and Q-value in eV, or None if
+        `mass_ratio` lies outside the range this convention can produce --
+        which is what happens when a file is read with the wrong one.
+
+    """
+    if kinematics == 'neutron':
+        if not 0.0 < mass_ratio < 1.0:
+            return None
+        root = sqrt(mass_ratio)
+        return 1.0/(1.0/root - 1.0), -threshold*root
+
+    if not 0.0 <= mass_ratio < 1.0:
+        return None
+    return 1.0/(1.0 - mass_ratio), -threshold
+
+
+def _level_mass_agrees(params, atomic_weight_ratio):
+    """Check a mass recovered by :func:`_level_params_from_ace` against the
+    atomic weight ratio of the ACE table it came from."""
+    return params is not None and isclose(
+        atomic_weight_ratio, params[0], rel_tol=_LEVEL_MASS_REL_TOL)
+
+
 class LevelInelastic(EnergyDistribution):
     r"""Level inelastic scattering
 
@@ -1045,29 +1094,40 @@ class LevelInelastic(EnergyDistribution):
 
         threshold = ace.xss[idx]*EV_PER_MEV
         mass_ratio = ace.xss[idx + 1]
-        if particle == 'neutron':
-            mass = 1.0/(1.0/sqrt(mass_ratio) - 1.0)
-            q_value = -threshold*sqrt(mass_ratio)
-        else:
-            mass = 1.0/(1.0 - mass_ratio)
-            q_value = -threshold
+        awr = ace.atomic_weight_ratio
 
-        # Inverting mass_ratio amplifies its relative error by roughly
-        # (A+1)/2 -- a factor of ~120 for A=238 -- so a consistent file can
-        # still miss the default rel_tol of 1e-9. A disagreement larger than
-        # this means the two XSS words are not what they are read as here,
-        # which is a file the caller should hear about rather than have
-        # silently patched up.
-        if not isclose(ace.atomic_weight_ratio, mass, rel_tol=1e-6):
+        # The mass recovered from mass_ratio has to agree with the atomic
+        # weight ratio in the table header. That is the only self-consistency
+        # check available here, and it also tells the two conventions apart.
+        params = _level_params_from_ace(threshold, mass_ratio, particle)
+
+        if particle == 'photon' and not _level_mass_agrees(params, awr):
+            # Older versions of NJOY wrote the LAW=3 parameters of a
+            # photonuclear table with neutron kinematics, which is how the
+            # photonuclear libraries in circulation are encoded. Those two
+            # words still determine |Q| exactly, so read them with the
+            # convention they were written in rather than refusing the table;
+            # the distribution built from them is a photonuclear one either
+            # way, since the projectile comes from the table type.
+            legacy = _level_params_from_ace(threshold, mass_ratio, 'neutron')
+            if _level_mass_agrees(legacy, awr):
+                warn(f'Level inelastic (LAW=3) distribution in {ace.name} '
+                     'uses neutron kinematics, as older versions of NJOY '
+                     'wrote for photonuclear tables. Interpreting its '
+                     'parameters with that convention.')
+                params = legacy
+
+        if not _level_mass_agrees(params, awr):
+            implied = 'nothing physical' if params is None else (
+                f'a target mass of {params[0]} neutron masses')
             raise ValueError(
-                f'Level inelastic distribution in {ace.name} implies a target '
-                f'mass of {mass} neutron masses, but the table gives an atomic '
-                f'weight ratio of {ace.atomic_weight_ratio}.')
+                f'Level inelastic distribution in {ace.name} has a mass ratio '
+                f'of {mass_ratio}, which implies {implied}, but the table '
+                f'gives an atomic weight ratio of {awr}.')
 
         # The header value is the authoritative one, and carries no inversion
-        # error; the two now agree to 1e-6 either way.
-        mass = ace.atomic_weight_ratio
-        return cls(q_value, mass, particle=particle)
+        # error; the two agree to _LEVEL_MASS_REL_TOL either way.
+        return cls(params[1], awr, particle=particle)
 
 
 class ContinuousTabular(EnergyDistribution):

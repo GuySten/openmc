@@ -89,6 +89,7 @@ int openmc_finalize()
   settings::create_delayed_neutrons = true;
   settings::bremsstrahlung_split = 1;
   settings::deflection_cutoff = 0.01;
+  settings::density_effect = true;
   settings::electron_transport = false;
   settings::electron_treatment = ElectronTreatment::LED;
   settings::delayed_photon_scaling = true;

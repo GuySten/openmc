@@ -306,10 +306,11 @@ charged particle, so a flux tally over electrons or positrons needs
 
 The ``<bremsstrahlung_split>`` element gives the number of photons emitted per
 radiative event, each carrying the emitting particle's weight divided by that
-number. It is a variance reduction for problems whose answer is driven by the
-photons electrons make and lives in a thin high-energy tail that analog
-emission reaches too rarely -- photonuclear yields from an electron beam being
-the case it was written for.
+number. It is a variance reduction for problems whose answer depends on the
+spectrum or the direction of the photons charged particles radiate, rather
+than only on how much energy they carry away, and particularly where the part
+of the spectrum that matters is a tail that analog emission reaches too
+rarely.
 
 The emissions are drawn independently rather than copied, so splitting buys
 tries at reaching that tail rather than copies of one photon, and draws that
@@ -319,7 +320,8 @@ what a single emission takes, so its own history stays fair while the photon
 field is right in expectation. Energy is then conserved in the mean rather than
 event by event.
 
-Requires the ``<electron_transport>`` element to be true.
+Ignored, with a warning, when ``<electron_transport>`` is not enabled: nothing
+radiates that there is anything to split.
 
   *Default*: 1, which is no splitting and is bit-for-bit the unsplit transport
 
@@ -345,6 +347,38 @@ secondary bremsstrahlung photons (``ttb``). It is ignored, with a warning, when
 photon at a time.
 
   *Default*: ttb
+
+.. _density_effect:
+
+-----------------------------
+``<density_effect>`` Element
+-----------------------------
+
+The ``<density_effect>`` element indicates whether the Sternheimer
+density-effect correction is applied to the collision stopping power of
+electrons and positrons. It is solved per material from the same oscillator
+model the recoil model uses, against the mean excitation energy of the medium.
+
+Setting it to false is not a physical choice. The screening is real, and
+leaving it out gives the collision stopping power of the free atom -- too high
+by 0.23 MeV cm^2/g in copper at 16 MeV, a sixth of the whole -- so a run that
+disables it is not simulating the material it names. OpenMC warns when it is
+switched off.
+
+It exists for the Fano cavity test, which is the stringent check on a
+condensed-history implementation. Fano's theorem holds that a medium of
+uniform composition and arbitrary density, under a source of charged particles
+uniform per unit mass, deposits the same energy per unit mass everywhere,
+whatever the density. That makes the ratio between a cavity and its
+surroundings a pure measure of the transport algorithm -- of the path-length
+correction, the boundary crossing and the grouped step -- with no experimental
+data needed. The theorem holds only while the mass stopping power is
+independent of density, and the density effect is exactly the term that breaks
+it, so the test requires this element to be false.
+
+  *Default*: true
+
+  .. versionadded:: 0.17.0
 
 .. _electron_transport:
 

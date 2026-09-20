@@ -13,8 +13,6 @@ import pytest
 import openmc.data
 from openmc.data import IncidentElectron
 from openmc.data.angle_distribution import AngleDistribution
-from openmc.data.energy_distribution import ContinuousTabular
-from openmc.data.function import Tabulated1D
 from openmc.stats import Tabular
 
 
@@ -42,17 +40,8 @@ def synthetic():
         dists = [_tabular(mu, np.exp(w * mu) + 1.0e-3) for _ in energy]
         data.elastic_dist[particle] = AngleDistribution(energy, dists)
 
-    data.excitation_xs = np.array([1.0, 0.8, 0.6, 0.4])
-    data.excitation_energy_loss = Tabulated1D(energy, np.array(
-        [1.0, 2.0, 3.0, 4.0]))
-
     data.shells = ['K']
     data.ionization_xs['K'] = np.array([0.0, 0.5, 0.4, 0.3])
-    e_out = np.array([1.0, 10.0, 100.0])
-    p_out = np.array([1.0e-2, 1.0e-3, 1.0e-4])
-    data.ionization_dist['K'] = ContinuousTabular(
-        [len(energy)], [5], energy,
-        [_tabular(e_out, p_out) for _ in energy])
 
     data.bremsstrahlung_xs = np.array([0.1, 0.2, 0.3, 0.4])
     data.bremsstrahlung_photon_cutoff = 1.0
@@ -84,7 +73,6 @@ def test_roundtrip(synthetic, run_in_tmpdir):
     assert back.elastic_energy_range == synthetic.elastic_energy_range
 
     np.testing.assert_allclose(back.energy_grid, synthetic.energy_grid)
-    np.testing.assert_allclose(back.excitation_xs, synthetic.excitation_xs)
     np.testing.assert_allclose(back.bremsstrahlung_xs,
                                synthetic.bremsstrahlung_xs)
     for particle in ('electron', 'positron'):
@@ -97,7 +85,6 @@ def test_roundtrip(synthetic, run_in_tmpdir):
 
 def test_cross_sections_are_non_negative(synthetic):
     """Nothing the transport reads may be negative at a tabulated point."""
-    assert np.all(synthetic.excitation_xs >= 0.0)
     assert np.all(synthetic.bremsstrahlung_xs >= 0.0)
     for particle in ('electron', 'positron'):
         assert np.all(synthetic.elastic_xs[particle] >= 0.0)
@@ -136,7 +123,6 @@ def test_from_ace_if_available(symbol):
     assert set(data.elastic_xs) == {'electron', 'positron'}
     for particle in ('electron', 'positron'):
         assert len(data.elastic_xs[particle]) == n
-    assert len(data.excitation_xs) == n
     assert len(data.bremsstrahlung_xs) == n
     for shell in data.shells:
         assert len(data.ionization_xs[shell]) == n

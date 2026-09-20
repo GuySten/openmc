@@ -147,7 +147,7 @@ private:
 //! energy
 //==============================================================================
 
-struct NeutronMicroXS {
+struct NuclideMicroXS {
   // Microscopic cross sections in barns
   double total;      //!< total cross section
   double absorption; //!< absorption (disappearance)
@@ -207,31 +207,24 @@ struct ElectroAtomicMicroXS {
   double last_E {0.0}; //!< last evaluated energy in [eV]
   //! Charge of the projectile these were evaluated for: 0 for an electron, 1
   //! for a positron. Almost everything below is charge dependent -- the
-  //! elastic table, the majorant on the ionization cross section, Bhabha,
-  //! annihilation, the Salvat factor on bremsstrahlung -- so energy alone is
-  //! not a sufficient cache key.
+  //! elastic table, annihilation, the Salvat factor on bremsstrahlung -- so
+  //! energy alone is not a sufficient cache key.
   int last_q {-1};
   double interp_factor;  //!< interpolation factor on energy grid
   double total;          //!< microscopic total electron xs
   double elastic;        //!< microscopic elastic xs
-  double excitation;     //!< microscopic excitation xs
-  double ionization;     //!< microscopic ionization xs; for a positron this is
-                         //!< a majorant, made exact by rejection
-  double bhabha;         //!< microscopic Bhabha xs above the Moller limit,
-                         //!< zero for electrons
   double annihilation;   //!< microscopic in-flight annihilation xs, zero for
                          //!< electrons
   double bremsstrahlung; //!< microscopic bremsstrahlung xs
 
   //! The soft/hard split a mixed condensed-history step is taken from. The
   //! hard cross sections are the parts of the channels above that stay
-  //! discrete; what is left of them is described by the three soft quantities
-  //! instead. All zero, and hard_total equal to total, unless the run asked
-  //! for condensed history with the deflection cutoff.
+  //! discrete; what is left of them is described by the soft quantities
+  //! instead. The inelastic collisions are not here at all: they belong to
+  //! the medium rather than to the atom, so Material splits them itself. All
+  //! zero, and hard_total equal to total, unless the run asked for condensed
+  //! history with the deflection cutoff.
   double hard_elastic;
-  double hard_excitation;
-  double hard_ionization;
-  double hard_bhabha;
   double hard_bremsstrahlung;
   double hard_total;      //!< includes annihilation, which is never grouped
   double hard_majorant;   //!< upper bound on hard_total over one step
@@ -281,6 +274,12 @@ struct StepXS {
   double straggling {0.0};    //!< second moment of the restricted loss
   double xs1_soft {0.0};      //!< first transport xs of the grouped deflections
   double xs2_soft {0.0};      //!< second
+  //! Rate of the inelastic collisions the oscillator model describes, in
+  //! [1/cm]. They belong to the material rather than to any atom in it, so
+  //! the reaction is chosen against this before an element is sampled at all.
+  //! It is the discrete rate: what a grouped step leaves behind, or the whole
+  //! of it when nothing is grouped.
+  double inelastic {0.0};
 };
 
 struct MacroXS {
@@ -582,7 +581,7 @@ private:
   //==========================================================================
   // Data members -- see public: below for descriptions
 
-  vector<NeutronMicroXS> neutron_xs_;
+  vector<NuclideMicroXS> neutron_xs_;
   vector<PhotoAtomicMicroXS> photon_xs_;
   vector<PhotonuclearMicroXS> photonuclear_xs_;
   vector<ElectroAtomicMicroXS> electron_xs_;
@@ -688,8 +687,8 @@ public:
 
   // Cross section caches
   // Microscopic neutron cross sections
-  NeutronMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
-  const NeutronMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
+  NuclideMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
+  const NuclideMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
 
   // Microscopic photon cross sections
   PhotoAtomicMicroXS& photon_xs(int i) { return photon_xs_[i]; }

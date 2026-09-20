@@ -176,24 +176,6 @@ double AngleDistribution::sample_impl(
   return mu;
 }
 
-void AngleDistribution::transport_moments(
-  vector<double>& energy, vector<double>& mu1, vector<double>& mu2) const
-{
-  energy = energy_;
-  mu1.clear();
-  mu2.clear();
-  mu1.reserve(distribution_.size());
-  mu2.reserve(distribution_.size());
-
-  for (const auto& dist : distribution_) {
-    double m1, m2;
-    angular_moments(
-      dist->x(), dist->p(), dist->interp() == Interpolation::histogram, m1, m2);
-    mu1.push_back(m1);
-    mu2.push_back(m2);
-  }
-}
-
 void AngleDistribution::restricted_moments(double c1, vector<double>& energy,
   vector<double>& mu_cut, vector<double>& p_hard, vector<double>& mu1_soft,
   vector<double>& mu2_soft) const

@@ -1162,6 +1162,58 @@ void add_to_time_grid(vector<double> grid)
   model::time_grid.swap(merged);
 }
 
+namespace {
+
+//! Whether a score is weighted by the estimator's flux
+//
+// The scores that are not are the ones built from the collision energy
+// balance or from counting events, which a charged particle can supply.
+bool score_uses_flux(int score)
+{
+  switch (score) {
+  case SCORE_EVENTS:
+  case HEATING:
+  case HEATING_LOCAL:
+  case DAMAGE_ENERGY:
+  case SCORE_PULSE_HEIGHT:
+    return false;
+  default:
+    return true;
+  }
+}
+
+//! Refuse a flux-weighted score a charged-particle tally cannot estimate
+void check_charged_flux_estimator(const Tally& tally)
+{
+  const auto* filter = tally.get_filter<ParticleFilter>();
+  if (!filter)
+    return;
+
+  // Only when the tally is about charged particles and nothing else. A tally
+  // that also covers neutrons or photons is estimating those correctly, and
+  // the charged-particle bins of it are the documented zero.
+  const auto& particles = filter->particles();
+  if (particles.empty())
+    return;
+  for (auto type : particles) {
+    if (!type.is_electron() && !type.is_positron())
+      return;
+  }
+
+  for (auto score : tally.scores_) {
+    if (score_uses_flux(score)) {
+      fatal_error(fmt::format(
+        "Tally {} scores {} over charged particles with the {} estimator, "
+        "which estimates their flux as zero and would return zero for every "
+        "bin. Use a tracklength estimator.",
+        tally.id_, reaction_name(score),
+        tally.estimator_ == TallyEstimator::ANALOG ? "analog" : "collision"));
+    }
+  }
+}
+
+} // namespace
+
 void setup_active_tallies()
 {
   model::active_tallies.clear();
@@ -1185,6 +1237,19 @@ void setup_active_tallies()
       switch (tally.type_) {
 
       case TallyType::VOLUME:
+        // The analog and collision estimators of the flux are built from a
+        // collision rate, and a charged particle's cross section is not a
+        // rate of the same kind: most of what it loses it loses continuously,
+        // and under condensed history the collisions that remain are a
+        // deliberate subset. Both estimators therefore give a charged
+        // particle a flux of zero, so every flux-weighted score in a tally
+        // filtered to one comes back identically zero. That is not an answer
+        // the tally is entitled to return without saying so.
+        if (settings::electron_transport &&
+            (tally.estimator_ == TallyEstimator::ANALOG ||
+              tally.estimator_ == TallyEstimator::COLLISION)) {
+          check_charged_flux_estimator(tally);
+        }
         switch (tally.estimator_) {
         case TallyEstimator::ANALOG:
           model::active_analog_tallies.push_back(i);
@@ -1211,6 +1276,19 @@ void setup_active_tallies()
         break;
 
       case TallyType::PULSE_HEIGHT:
+        // Pulse-height scoring follows photons only: a collision credits the
+        // whole energy to the cell it happened in and the secondaries carry
+        // their share back out again. A transported electron is not accounted
+        // for either way -- it is credited where the photon interacted and
+        // never debited when it leaves, and the bremsstrahlung it makes is
+        // debited in whatever cell the photon was born in rather than where
+        // the electron that made it was. That is right for a detector of one
+        // cell and wrong for any other, silently, so say so.
+        if (settings::electron_transport) {
+          warning("Pulse-height tallies do not account for transported "
+                  "electrons leaving the scoring cell. The result is correct "
+                  "only if the cell is large enough that they do not.");
+        }
         model::active_pulse_height_tallies.push_back(i);
         break;
       }

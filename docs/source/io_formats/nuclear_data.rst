@@ -215,6 +215,13 @@ when electron transport is enabled. Every cross section here is tabulated
 against the element's own ``energy`` grid, which is the electron library's and
 is not the photon library's grid.
 
+Only the channels that belong to the atom are stored: elastic scattering,
+bremsstrahlung, and the subshell ionization cross sections. The inelastic
+collisions are the medium's rather than any atom's -- the oscillator
+strengths are shares of all its electrons and the resonance energies are
+fixed by its mean excitation energy -- so they are built at load time from
+the material's composition and are not tabulated per element.
+
 **/**
 
 :Attributes: - **filetype** (*char[]*) -- String indicating the type of file
@@ -227,6 +234,17 @@ is not the photon library's grid.
 :Datasets:
            - **energy** (*double[]*) -- Energies in [eV] at which cross sections
              are tabulated
+
+**/<element>/elastic/**
+
+:Attributes:
+             - **energy_min**, **energy_max** (*double*) -- Range in [eV] the
+               partial-wave calculation covers. Outside it the cross sections
+               below are clamped to their endpoints, which is wrong rather
+               than merely approximate for the transport cross section, so the
+               transport refuses to run there. Optional: an element whose
+               distributions came from a source that records no range carries
+               neither.
 
 **/<element>/elastic/<particle>/**
 
@@ -249,12 +267,6 @@ another and their first moments as much as a factor of three apart.
              cover the full range of the scattering cosine; nothing is split
              out of the forward direction.
 
-**/<element>/excitation/**
-
-:Datasets: - **xs** (*double[]*) -- Atomic excitation cross section in [b]
-           - **energy_loss** (:ref:`function <1d_functions>`) -- Average energy
-             lost to excitation in [eV] as a function of incident energy
-
 **/<element>/ionization/**
 
 :Attributes:
@@ -266,15 +278,14 @@ another and their first moments as much as a factor of three apart.
 
 :Datasets:
            - **xs** (*double[][]*) -- Electroionization cross section in [b]
-             for each subshell
-
-**/<element>/ionization/<designator>/**
-
-:Object type: A :ref:`continuous tabular <continuous_tabular>` distribution of
-              the kinetic energy in [eV] of the ejected knock-on electron at
-              each incident energy. The polar angles of both electrons follow
-              from the energy transfer and are not sampled, so no angular
-              distribution accompanies it.
+             for each subshell. Inelastic collisions are not sampled from
+             these: the transport builds them from the
+             Sternheimer-Liljequist oscillator model of the medium, which is
+             why no knock-on spectrum and no excitation channel is stored.
+             What these fix is the rate at which the shells bound above the
+             transport cutoffs are ionized, the oscillators standing for them
+             being renormalized to these, so that characteristic x-ray yields
+             rest on evaluated data.
 
 **/<element>/bremsstrahlung/**
 

@@ -4,14 +4,10 @@
 #include "openmc/bremsstrahlung.h"
 #include "openmc/condensed_history.h"
 #include "openmc/constants.h"
-#include "openmc/distribution_multi.h"
+#include "openmc/gos.h"
 #include "openmc/hdf5_interface.h"
-#include "openmc/material.h"
 #include "openmc/math_functions.h"
-#include "openmc/message_passing.h"
-#include "openmc/nuclide.h"
 #include "openmc/particle.h"
-#include "openmc/physics.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
@@ -22,9 +18,6 @@
 #include <algorithm> // for max, min
 #include <cmath>
 #include <fmt/core.h>
-#include <limits>
-#include <stdexcept>
-#include <tuple> // for tie
 
 namespace openmc {
 
@@ -49,12 +42,12 @@ namespace {
 tensor::Tensor<double> moments_on_grid(const tensor::Tensor<double>& grid,
   const vector<double>& energy, const vector<double>& value)
 {
-  int n = grid.size();
+  auto n = grid.size();
   auto out = tensor::zeros<double>({n});
   if (energy.size() < 2)
     return out;
 
-  for (int i = 0; i < n; ++i) {
+  for (decltype(n) i = 0; i < n; ++i) {
     double E = grid(i);
     int k = lower_bound_index(energy.begin(), energy.end(), E);
     k = std::max(0, std::min(k, static_cast<int>(energy.size()) - 2));
@@ -127,29 +120,16 @@ void Element::read_electron_data(hid_t group)
     close_group(qdist);
     close_group(qgroup);
 
-    // Transport moments of the elastic distribution, tabulated once here onto
-    // the electron energy grid. <1-mu> is what sets the scale a condensed
-    // history step may cover: after a path s the mean deflection is
-    // exp(-s n sigma_el <1-mu>), so 1/(n sigma_el <1-mu>) is the first
-    // transport mean free path. Computing them at load costs one pass over
-    // data already in memory and needs nothing the library does not ship.
-    vector<double> m_energy, m1, m2;
-    elastic_angle_[q].transport_moments(m_energy, m1, m2);
-    elastic_mu1_[q] = moments_on_grid(electron_energy_, m_energy, m1);
-    elastic_mu2_[q] = moments_on_grid(electron_energy_, m_energy, m2);
-
-    // Where the same distribution splits into soft and hard, for a mixed
-    // condensed-history step. C1 = 0 is the default and means every collision
-    // is hard, so this costs nothing until a run asks for it.
+    // Where the elastic distribution splits into soft and hard, for a mixed
+    // condensed-history step, and the transport moments of the soft half.
+    // <1-mu> is what sets the scale a step may cover: after a path s the mean
+    // deflection is exp(-s n sigma_el <1-mu>), so 1/(n sigma_el <1-mu>) is the
+    // first transport mean free path. C1 = 0 is the default and means every
+    // collision is hard, so this costs nothing until a run asks for it.
     if (settings::deflection_cutoff > 0.0) {
       vector<double> s_energy, mu_cut, p_hard, m1_soft, m2_soft;
       elastic_angle_[q].restricted_moments(settings::deflection_cutoff,
         s_energy, mu_cut, p_hard, m1_soft, m2_soft);
-      vector<double> dcut(mu_cut.size());
-      for (int i = 0; i < mu_cut.size(); ++i) {
-        dcut[i] = std::max(0.0, 1.0 - mu_cut[i]);
-      }
-      elastic_dcut_[q] = moments_on_grid(electron_energy_, s_energy, dcut);
       elastic_p_hard_[q] = moments_on_grid(electron_energy_, s_energy, p_hard);
       elastic_mu1_soft_[q] =
         moments_on_grid(electron_energy_, s_energy, m1_soft);
@@ -159,28 +139,11 @@ void Element::read_electron_data(hid_t group)
   }
   close_group(rgroup);
 
-  // Read excitation
-  rgroup = open_group(group, "excitation");
-  read_dataset(rgroup, "xs", excitation_);
-  hid_t dset = open_dataset(rgroup, "energy_loss");
-  excitation_energy_loss_ = Tabulated1D {dset};
-  close_dataset(dset);
-  close_group(rgroup);
-
   // Read ionization
   rgroup = open_group(group, "ionization");
   read_dataset(rgroup, "xs", electroionization_);
   vector<std::string> designators;
   read_attribute(rgroup, "designators", designators);
-  for (auto designator : designators) {
-    hid_t shell_group = open_group(rgroup, designator.c_str());
-    // Knock-on spectra are anchored at the subshell binding energy and end at
-    // the kinematic limit, so they are neither self-similar nor safe to remap
-    // onto an interpolated endpoint range; see ElectroionizationSpectrum.
-    ionization_dist_.push_back(
-      make_unique<ElectroionizationSpectrum>(shell_group));
-    close_group(shell_group);
-  }
   close_group(rgroup);
 
   // Map each electroionization subshell onto the corresponding entry of
@@ -227,60 +190,15 @@ void Element::read_electron_data(hid_t group)
   read_attribute(rgroup, "photon_cutoff", bremsstrahlung_photon_cutoff_);
   close_group(rgroup);
 
-  this->compute_moller_majorant();
-  this->compute_bhabha_xs();
-  this->compute_inelastic_sums();
-
-  // The soft/hard split of the inelastic channels, which needs every one of
-  // them loaded and so comes last. Skipped unless a run asks for condensed
+  // The soft/hard split of the channels the atom owns, which needs every one
+  // of them loaded and so comes last. Skipped unless a run asks for condensed
   // history, since it is the only thing that reads it.
   if (settings::deflection_cutoff > 0.0) {
-    this->compute_soft_inelastic();
+    this->compute_step_tables();
   }
 }
 
 namespace {
-
-//! The free Moller and Bhabha differential cross sections, as functions of the
-//! fraction eps = W/T of its kinetic energy the projectile transfers
-//
-//! Both carry the same leading constant, so only their shapes are written here
-//! and the constant cancels wherever the two are divided. The coefficients are
-//! PENELOPE's.
-struct FreeCollision {
-  double b1, b2, b3, b4; //!< Bhabha
-  double amol, moller_c; //!< Moller
-
-  explicit FreeCollision(double E)
-  {
-    double gamma = 1.0 + E / MASS_ELECTRON_EV;
-    // ((gamma-1)/gamma)^2, the constant term of the Moller shape and the
-    // common factor of every Bhabha coefficient
-    amol = std::pow((gamma - 1.0) / gamma, 2);
-    double g12 = (gamma + 1.0) * (gamma + 1.0);
-    b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
-    b2 = amol * (3.0 + 1.0 / g12);
-    b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
-    b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
-    moller_c = (2.0 * gamma - 1.0) / (gamma * gamma);
-  }
-
-  double bhabha(double x) const
-  {
-    return (1.0 + x * (-b1 + x * (b2 + x * (-b3 + x * b4)))) / (x * x);
-  }
-
-  double moller(double x) const
-  {
-    double u = 1.0 - x;
-    return 1.0 / (x * x) + 1.0 / (u * u) + amol - moller_c / (x * u);
-  }
-
-  //! Ratio of the two. It tends to 1 as x tends to 0, where both become
-  //! Rutherford's 1/x^2, so it leaves the soft collisions -- which are almost
-  //! all of them -- alone. Relativistically it is 1 - 2x to good accuracy.
-  double ratio(double x) const { return this->bhabha(x) / this->moller(x); }
-};
 
 //! Integral of W^order times the Bhabha cross section shape over W, with the
 //! leading constant dropped. Every term is elementary.
@@ -318,13 +236,6 @@ double bhabha_moment(
 }
 
 //! The cross section itself, which is the zeroth moment
-double bhabha_integral(
-  const FreeCollision& c, double E, double W_lo, double W_hi)
-{
-  return bhabha_moment(c, E, W_lo, W_hi, 0);
-}
-
-//! Integral of W^order times the Moller cross section shape over W
 //!
 //! The counterpart of bhabha_moment() for the electron, and elementary in the
 //! same way: the shape is 1/x^2 + 1/(1-x)^2 + A - C/(x(1-x)), every term of
@@ -374,117 +285,12 @@ double bhabha_moment(double E, double W_lo, double W_hi, int order)
   return openmc::bhabha_moment(FreeCollision {E}, E, W_lo, W_hi, order);
 }
 
+double moller_moment(double E, double W_lo, double W_hi, int order)
+{
+  return openmc::moller_moment(FreeCollision {E}, E, W_lo, W_hi, order);
+}
+
 } // namespace detail
-
-namespace {
-
-//! 2 pi r_e^2 m_e c^2 in [b eV], the constant both cross sections carry. The
-//! classical electron radius is written as alpha^2 a_0 so that it follows from
-//! the constants already tabulated rather than adding one.
-constexpr double BOHR_RADIUS_CM =
-  PLANCK_C * FINE_STRUCTURE / (2.0 * PI * MASS_ELECTRON_EV) * 1.0e-8;
-constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
-constexpr double COLLISION_CONST =
-  2.0 * PI * 1.0e24 * R_E * R_E * MASS_ELECTRON_EV;
-
-} // namespace
-
-void Element::compute_moller_majorant()
-{
-  int n_energy = electron_energy_.size();
-  moller_majorant_ = tensor::Tensor<double>({static_cast<size_t>(n_energy)});
-
-  // The evaluated knock-on spectra describe a Moller collision. A positron's
-  // spectrum is the same thing reweighted by the ratio of the two free cross
-  // sections: the final state is identical, an electron ejected with W - B, so
-  // whatever the binding does to one it does to the other and it cancels in
-  // the ratio. That is a far weaker assumption than either cross section being
-  // free, and it is the one PENELOPE makes when it applies Moller and Bhabha
-  // per oscillator.
-  //
-  // The reweighting is done by rejection during the collision, so the cross
-  // section has to be a majorant of the true one: the largest the ratio gets
-  // over the accessible transfers. Above about 1 MeV that is 1, the ratio
-  // being 1 - 2x; below it the ratio rises above 1 near x = 0.3 and the
-  // majorant follows it.
-  constexpr int N_SCAN = 512;
-  for (int j = 0; j < n_energy; ++j) {
-    FreeCollision c {electron_energy_(j)};
-    double peak = 1.0;
-    for (int k = 0; k <= N_SCAN; ++k) {
-      // Logarithmic in x, since the ratio varies fastest near the ends
-      double x = std::exp(
-        std::log(1.0e-8) + k * (std::log(0.5) - std::log(1.0e-8)) / N_SCAN);
-      peak = std::max(peak, c.ratio(x));
-    }
-    // A majorant that is a shade too small would bias the sampling, so the
-    // scan's own resolution is paid for here
-    moller_majorant_(j) = peak * 1.001;
-  }
-}
-
-//! Sum the per-subshell inelastic spectra over subshells, once
-//!
-//! calculate_electron_xs() needs the total at an energy and nothing else. It
-//! was taking a slice across subshells at each of the two bracketing grid
-//! points and summing that, which walks every subshell and, because a slice
-//! carries its own shape and strides, allocates twice to do it -- on every
-//! cross section lookup of every charged particle.
-void Element::compute_inelastic_sums()
-{
-  int n_shell = electroionization_.shape(0);
-  int n_energy = electron_energy_.size();
-
-  ionization_sum_ =
-    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
-  for (int s = 0; s < n_shell; ++s) {
-    for (int j = 0; j < n_energy; ++j) {
-      ionization_sum_(j) += electroionization_(s, j);
-    }
-  }
-
-  bhabha_sum_ =
-    tensor::zeros<double>(std::vector<size_t> {static_cast<size_t>(n_energy)});
-  if (bhabha_.shape(0) == n_shell) {
-    for (int s = 0; s < n_shell; ++s) {
-      for (int j = 0; j < n_energy; ++j) {
-        bhabha_sum_(j) += bhabha_(s, j);
-      }
-    }
-  }
-}
-
-void Element::compute_bhabha_xs()
-{
-  int n_shell = electroionization_.shape(0);
-  int n_energy = electron_energy_.size();
-  bhabha_ = tensor::Tensor<double>(
-    {static_cast<size_t>(n_shell), static_cast<size_t>(n_energy)});
-
-  for (int i = 0; i < n_shell; ++i) {
-    const auto& shell {shells_[electron_shell_map_[i]]};
-    double B = shell.binding_energy;
-    double n_e = shell.num_electrons;
-
-    for (int j = 0; j < n_energy; ++j) {
-      double E = electron_energy_(j);
-      bhabha_(i, j) = 0.0;
-      if (n_e <= 0.0 || E <= B)
-        continue;
-
-      // A Moller collision gives the knock-on at most half of what is left
-      // after the binding energy is paid, so the largest transfer it can make
-      // is (T + B)/2. A positron may transfer everything. The gap between the
-      // two is this channel, and it lies far above every binding energy.
-      double W_lo = 0.5 * (E + B);
-      FreeCollision c {E};
-      double gamma = 1.0 + E / MASS_ELECTRON_EV;
-      double beta_sq = 1.0 - 1.0 / (gamma * gamma);
-      bhabha_(i, j) =
-        n_e * COLLISION_CONST / beta_sq * bhabha_integral(c, E, W_lo, E);
-    }
-  }
-}
 
 namespace {
 
@@ -531,27 +337,27 @@ double chi_integral(
 
 } // namespace
 
-void Element::compute_soft_inelastic()
+//! Tabulate the soft/hard split of the channels the atom owns
+//!
+//! The inelastic collisions are the medium's rather than any atom's -- their
+//! oscillator strengths are shares of all its electrons and their resonance
+//! energies are fixed by its mean excitation energy -- so Material builds
+//! that split from the oscillator model. What is left here is
+//! bremsstrahlung, whose photons below the radiative cutoff are grouped into
+//! the step, and the assembly of the hard cross section and its majorant from
+//! the fractions the atom's channels contribute.
+void Element::compute_step_tables()
 {
   int n_energy = electron_energy_.size();
-  int n_shell = electroionization_.shape(0);
   auto shape_1d = std::vector<size_t> {static_cast<size_t>(n_energy)};
-  auto shape_2d = std::vector<size_t> {
-    static_cast<size_t>(n_shell), static_cast<size_t>(n_energy)};
 
   for (int q = 0; q < 2; ++q) {
-    inelastic_soft_s_[q] = tensor::zeros<double>(shape_1d);
-    inelastic_soft_w2_[q] = tensor::zeros<double>(shape_1d);
-    excitation_p_hard_[q] = tensor::zeros<double>(shape_1d);
+    brems_soft_s_[q] = tensor::zeros<double>(shape_1d);
+    brems_soft_w2_[q] = tensor::zeros<double>(shape_1d);
     brems_p_hard_[q] = tensor::zeros<double>(shape_1d);
-    ionization_p_hard_[q] = tensor::zeros<double>(shape_2d);
-    ionization_hard_free_[q] = tensor::zeros<double>(shape_2d);
-    ionization_hard_xs_[q] = tensor::zeros<double>(shape_1d);
     hard_total_[q] = tensor::zeros<double>(shape_1d);
     hard_majorant_[q] = tensor::zeros<double>(shape_1d);
   }
-  bhabha_p_hard_ = tensor::zeros<double>(shape_2d);
-  bhabha_hard_xs_ = tensor::zeros<double>(shape_1d);
 
   const auto& T = data::brems_e_grid;
   int n_brems_e = T.size();
@@ -560,9 +366,6 @@ void Element::compute_soft_inelastic()
 
   for (int j = 0; j < n_energy; ++j) {
     double E = electron_energy_(j);
-    FreeCollision c {E};
-    double gamma = 1.0 + E / MASS_ELECTRON_EV;
-    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
 
     // The scaled bremsstrahlung cross section, blended across the two
     // bracketing incident energies exactly as the sampler blends it. It does
@@ -588,114 +391,20 @@ void Element::compute_soft_inelastic()
       have_chi = true;
     }
 
-    // Everything below is per projectile charge, because the two thresholds
-    // differ: a positron's own cutoff bounds how much a grouped event may take
-    // from it, and that cutoff is not the electron's.
+    // Per projectile charge, because the two thresholds differ: a positron's
+    // own cutoff bounds how much a grouped event may take from it, and that
+    // cutoff is not the electron's.
     for (int q = 0; q < 2; ++q) {
       // The electron library covers exactly two projectiles, so this is
       // where its charge index becomes a particle again
       ParticleType projectile =
         (q == 0) ? ParticleType::electron() : ParticleType::positron();
-      double w_cc = soft_collision_cutoff(projectile, E);
+
+      // The rate is taken from the library rather than rebuilt here, and only
+      // the fraction of it below the cutoff is computed from the scaled cross
+      // section, so the total emission rate stays exactly what the
+      // single-event transport uses.
       double w_cr = soft_radiative_cutoff(projectile, E);
-      double headroom = soft_projectile_headroom(projectile, E);
-      double s = 0.0;
-      double w2 = 0.0;
-
-      // Atomic excitation, which emits nothing at all -- OpenMC deposits the
-      // de-excitation energy where the collision happened -- so the only bound
-      // on it is that it leave the projectile above its cutoff. The evaluated
-      // loss is one number per collision rather than a distribution, so its
-      // second moment is the square of that loss.
-      double loss = std::max(0.0, E - this->excitation(E));
-      if (loss > 0.0 && loss < headroom) {
-        s += excitation_(j) * loss;
-        w2 += excitation_(j) * loss * loss;
-        // Note an excitation collision changes the projectile's energy and
-        // not its direction, so however much of the stopping power it carries
-        // it contributes nothing to the transport cross section computed in
-        // compute_inelastic_transport().
-      } else {
-        excitation_p_hard_[q](j) = 1.0;
-      }
-
-      // Electroionization, subshell by subshell. The cut is on the energy the
-      // projectile gives up, so it sits at W_cc - B in the knock-on spectrum:
-      // the atom keeps the binding energy and only the rest is carried away.
-      for (int i = 0; i < n_shell; ++i) {
-        const auto& shell {shells_[electron_shell_map_[i]]};
-        double B = shell.binding_energy;
-        double sigma = electroionization_(i, j);
-        double e_cut = w_cc - B;
-
-        double xi_cut = 0.0;
-        if (sigma > 0.0 && e_cut > 0.0) {
-          // A positron's spectrum is the tabulated one reweighted by the free
-          // Bhabha-to-Moller ratio. The weighting goes inside the integral
-          // rather than onto the result: it varies across the spectrum, and it
-          // is exactly what the rejection in ionization() applies collision by
-          // collision.
-          std::function<double(double)> weight = [&c, B, E](double e_out) {
-            return c.ratio((e_out + B) / E);
-          };
-          double m0, m1, m2;
-          ionization_dist_[i]->restricted_moments(
-            E, e_cut, q == 0 ? nullptr : &weight, xi_cut, m0, m1, m2);
-          s += sigma * (m1 + B * m0);
-          w2 += sigma * (m2 + 2.0 * B * m1 + B * B * m0);
-        }
-        ionization_p_hard_[q](i, j) = 1.0 - xi_cut;
-
-        // Transfers above the Moller limit, which only a positron can make.
-        // They lie far above every binding energy, so this channel is usually
-        // hard in its entirety -- but not for a projectile barely above the
-        // cutoff, where half its energy is still below W_cc.
-        double n_e = shell.num_electrons;
-        double W_lo = 0.5 * (E + B);
-        if (q == 1 && n_e > 0.0 && E > B && W_lo < E) {
-          double K = n_e * COLLISION_CONST / beta_sq;
-          double W_soft = std::min(w_cc, E);
-          if (W_soft > W_lo) {
-            s += K * bhabha_moment(c, E, W_lo, W_soft, 1);
-            w2 += K * bhabha_moment(c, E, W_lo, W_soft, 2);
-          }
-          double total = bhabha_moment(c, E, W_lo, E, 0);
-          double hard = bhabha_moment(c, E, std::max(W_lo, W_soft), E, 0);
-          bhabha_p_hard_(i, j) = (total > 0.0) ? hard / total : 0.0;
-          bhabha_hard_xs_(j) += bhabha_(i, j) * bhabha_p_hard_(i, j);
-        }
-
-        // The hard channel itself is the free binary cross section, not the
-        // evaluated spectrum's tail. Above W_cc -- keV and up, and above every
-        // binding energy that carries an appreciable share of the electrons --
-        // the struck electron is free and Moller's cross section is what the
-        // collision is, while the evaluated spectra are not: in copper at
-        // 16 MeV they run 10 to 17 per cent over it between 50 and 500 keV and
-        // 10 to 27 per cent under it above 2 MeV. That is the wrong shape in
-        // exactly the way that matters, the rare large transfers being what
-        // separates the most probable loss from the mean, so a spectrum short
-        // in the tail and long in the middle reports a Landau peak too far out
-        // and with no edge on it.
-        //
-        // What is left below W_cc stays the evaluated spectrum's, where the
-        // binding it accounts for is the whole point, and the total is held to
-        // ICRU 37 by the material either way.
-        double W_split = std::max(w_cc, B);
-        double W_top = (q == 0) ? 0.5 * E : 0.5 * (E + B);
-        if (n_e > 0.0 && W_top > W_split) {
-          double K = n_e * COLLISION_CONST / beta_sq;
-          double free_hard = (q == 0)
-                               ? K * moller_moment(c, E, W_split, W_top, 0)
-                               : K * bhabha_moment(c, E, W_split, W_top, 0);
-          ionization_hard_free_[q](i, j) = std::max(0.0, free_hard);
-          ionization_hard_xs_[q](j) += std::max(0.0, free_hard);
-        }
-      }
-
-      // Bremsstrahlung. The rate is taken from the library rather than rebuilt
-      // here, and only the fraction of it below the cutoff is computed from
-      // the scaled cross section, so the total emission rate stays exactly
-      // what the single-event transport uses.
       double k_min = bremsstrahlung_photon_cutoff_;
       double k_cut = std::min(w_cr, E);
       double total = have_chi ? chi_integral(chi, k_min / E, 1.0, 0) : 0.0;
@@ -708,28 +417,26 @@ void Element::compute_soft_inelastic()
         double xs = electron_bremsstrahlung_(j);
         if (q == 1)
           xs *= salvat_factor(Z_ * Z_, E);
-        s += xs * E * chi_integral(chi, kappa_min, kappa_cut, 1) / total;
-        w2 += xs * E * E * chi_integral(chi, kappa_min, kappa_cut, 2) / total;
+        brems_soft_s_[q](j) =
+          xs * E * chi_integral(chi, kappa_min, kappa_cut, 1) / total;
+        brems_soft_w2_[q](j) =
+          xs * E * E * chi_integral(chi, kappa_min, kappa_cut, 2) / total;
       } else {
         brems_p_hard_[q](j) = 1.0;
       }
 
-      inelastic_soft_s_[q](j) = s;
-      inelastic_soft_w2_[q](j) = w2;
-
       // The hard cross section at this energy, assembled from the fractions
       // just tabulated. It depends on nothing but the energy and the charge,
       // which is what lets the flight be drawn from a bound on it.
-      double ion_hard = ionization_hard_xs_[q](j);
+      //
+      // In-flight annihilation is never grouped. Its photons carry away more
+      // than the positron's kinetic energy, so no bound on the energy the
+      // projectile gives up bounds what they can reach, and a grouped
+      // annihilation would be an annihilation that did not happen.
       double brems_hard = electron_bremsstrahlung_(j) * brems_p_hard_[q](j);
-      if (q == 1) {
-        // No Moller majorant here any more: the hard channel is sampled from
-        // Bhabha's own cross section, so there is no reweighting to pay for.
+      if (q == 1)
         brems_hard *= salvat_factor(Z_ * Z_, E);
-      }
       hard_total_[q](j) = elastic_[q](j) * elastic_p_hard_[q](j) +
-                          excitation_(j) * excitation_p_hard_[q](j) + ion_hard +
-                          (q == 1 ? bhabha_hard_xs_(j) : 0.0) +
                           (q == 1 ? this->annihilation_xs(E) : 0.0) +
                           brems_hard;
     }
@@ -738,8 +445,7 @@ void Element::compute_soft_inelastic()
   // An upper bound on the hard cross section over the energies one step can
   // reach, which is what the flight is actually drawn from. The bound only has
   // to hold; a shade of slack costs a few declined interactions and a shade of
-  // shortfall would bias the flight, so the same small margin the Moller
-  // majorant uses is paid here.
+  // shortfall would bias the flight, so a small margin is paid here.
   //
   // How far down to look is set by how much energy a step can actually take,
   // which is more than the budget it is allowed to take on average. The
@@ -776,57 +482,6 @@ void Element::compute_soft_inelastic()
   }
 }
 
-int Element::sample_bhabha_shell(Particle& p, bool hard) const
-{
-  const auto& xs {p.electron_xs(index_)};
-  int n_shell = bhabha_.shape(0);
-  int i_grid = xs.index_grid;
-  double f = xs.interp_factor;
-
-  auto weight = [&](int i) {
-    double sigma =
-      bhabha_(i, i_grid) + f * (bhabha_(i, i_grid + 1) - bhabha_(i, i_grid));
-    return hard ? sigma * this->bhabha_hard_fraction(i, p.E()) : sigma;
-  };
-
-  double total = 0.0;
-  for (int i = 0; i < n_shell; ++i) {
-    total += weight(i);
-  }
-  double cutoff = prn(p.current_seed()) * total;
-  double prob = 0.0;
-  for (int i = 0; i < n_shell; ++i) {
-    prob += weight(i);
-    if (prob > cutoff)
-      return i;
-  }
-  return n_shell - 1;
-}
-
-void Element::bhabha(Particle& p, int i_shell, double w_min) const
-{
-  double E = p.E();
-  double B = shells_[electron_shell_map_[i_shell]].binding_energy;
-  // A collision ending a condensed-history step transfers more than the
-  // step's cutoff; below it the channel was grouped into the stopping power
-  double W_lo = std::max(0.5 * (E + B), w_min);
-  if (W_lo >= E)
-    return;
-
-  // Sample the transfer from 1/W^2 over [W_lo, T] and take the rest of the
-  // Bhabha shape by rejection; it is at most 1 on this interval
-  FreeCollision c {E};
-  double W;
-  while (true) {
-    double xi = prn(p.current_seed());
-    W = W_lo * E / (E - xi * (E - W_lo));
-    if (prn(p.current_seed()) < c.bhabha(W / E) * (W * W) / (E * E))
-      break;
-  }
-
-  this->emit_knock_on(p, W, B, W);
-}
-
 void Element::calculate_electron_xs(Particle& p) const
 {
   // Perform binary search on the element energy grid in order to determine
@@ -853,7 +508,7 @@ void Element::calculate_electron_xs(Particle& p) const
   // the factor is unbounded, and extrapolating linearly sends the partials
   // negative: below the first grid point the elastic cross section then
   // exceeds the total and the sampler is pinned on the elastic branch for
-  // ever. That is reachable, because the default electron cutoff is zero.
+  // ever. That is reachable whenever the cutoff is left at zero.
   double f = (E - electron_energy_(i_grid)) /
              (electron_energy_(i_grid + 1) - electron_energy_(i_grid));
   f = std::max(0.0, std::min(1.0, f));
@@ -866,31 +521,6 @@ void Element::calculate_electron_xs(Particle& p) const
   int q = p.type().is_positron() ? 1 : 0;
   xs.elastic =
     elastic_[q](i_grid) + f * (elastic_[q](i_grid + 1) - elastic_[q](i_grid));
-
-  // Calculate microscopic excitation cross section
-  xs.excitation =
-    excitation_(i_grid) + f * (excitation_(i_grid + 1) - excitation_(i_grid));
-
-  // Calculate microscopic ionization cross section
-  xs.ionization = ionization_sum_(i_grid) +
-                  f * (ionization_sum_(i_grid + 1) - ionization_sum_(i_grid));
-
-  xs.bhabha = 0.0;
-  if (p.type().is_positron()) {
-    // A positron's spectrum is the evaluated one reweighted by the free
-    // Bhabha-to-Moller ratio, applied by rejection inside the collision. That
-    // makes this a majorant rather than the cross section itself: raising it
-    // here and declining a fraction of the collisions there leaves the rate at
-    // the reweighted integral without anyone having to evaluate that integral.
-    xs.ionization *=
-      moller_majorant_(i_grid) +
-      f * (moller_majorant_(i_grid + 1) - moller_majorant_(i_grid));
-
-    // Transfers above the Moller limit, which the evaluated spectra cannot
-    // reach at all, are a channel of their own
-    xs.bhabha =
-      bhabha_sum_(i_grid) + f * (bhabha_sum_(i_grid + 1) - bhabha_sum_(i_grid));
-  }
 
   // In-flight annihilation is a channel a positron has and an electron does
   // not. Over a whole slowing-down history it is far from rare: about one
@@ -909,19 +539,21 @@ void Element::calculate_electron_xs(Particle& p) const
     xs.bremsstrahlung *= salvat_factor(Z_ * Z_, E);
   }
 
-  // Calculate microscopic total cross section
-  xs.total = xs.elastic + xs.excitation + xs.ionization + xs.bhabha +
-             xs.annihilation + xs.bremsstrahlung;
+  // Calculate microscopic total cross section. The inelastic collisions are
+  // not here: they come from the material's oscillator model, which needs the
+  // mean excitation energy and the density effect of the medium and so cannot
+  // be an element's to give. What the element owns are the channels that
+  // belong to the atom alone.
+  xs.total = xs.elastic + xs.annihilation + xs.bremsstrahlung;
 
   // Split it into the part a condensed-history step transports one collision
   // at a time and the part it groups. Without condensed history every channel
   // is hard, which is what leaves the transport below untouched.
-  if (settings::deflection_cutoff > 0.0 &&
-      inelastic_soft_s_[q].size() == n_grid) {
+  if (settings::deflection_cutoff > 0.0 && brems_p_hard_[q].size() == n_grid) {
     // Every one of these is a straight interpolation on the index already in
-    // hand. They were accessor calls, each searching the energy grid again --
-    // elastic_split() and inelastic_soft() among them, so the lookup searched
-    // a grid of several hundred points a dozen times over for one energy.
+    // hand. They were accessor calls, each searching the energy grid again,
+    // so the lookup searched a grid of several hundred points a dozen times
+    // over for one energy.
     auto on_grid = [i_grid, f](const tensor::Tensor<double>& v) {
       return v(i_grid) + f * (v(i_grid + 1) - v(i_grid));
     };
@@ -929,43 +561,38 @@ void Element::calculate_electron_xs(Particle& p) const
     xs.hard_elastic = xs.elastic * on_grid(elastic_p_hard_[q]);
 
     // Elastic only. The grouped inelastic collisions deflect as well, and by
-    // no small amount, but what they deflect by depends on the material -- see
-    // compute_inelastic_transport() -- so Material adds that part.
+    // no small amount, but what they deflect by is the material's, so Material
+    // adds that part from the oscillator model.
     xs.soft_xs1 = xs.elastic * on_grid(elastic_mu1_soft_[q]);
     xs.soft_xs2 = xs.elastic * on_grid(elastic_mu2_soft_[q]);
 
-    xs.hard_excitation = xs.excitation * on_grid(excitation_p_hard_[q]);
-
-    // Electroionization resolves its split per subshell, so the hard part is
-    // the shell cross sections weighted by their own fractions rather than the
-    // total weighted by an average -- summed at load, since it depends on
-    // nothing but the energy. A positron's cross section carries the majorant
-    // it is sampled with, and the fractions are quantiles of the spectrum, so
-    // the majorant passes straight through.
-    // The hard channel is the free binary cross section rather than a share
-    // of the evaluated one, so it is not bounded by xs.ionization and is not
-    // reweighted for a positron: Bhabha's cross section is what it already is.
-    xs.hard_ionization = on_grid(ionization_hard_xs_[q]);
-
-    xs.hard_bhabha = std::min(xs.bhabha, on_grid(bhabha_hard_xs_));
-
     xs.hard_bremsstrahlung = xs.bremsstrahlung * on_grid(brems_p_hard_[q]);
+
+    // The energy the grouped bremsstrahlung carries off, and its second
+    // moment. The grouped inelastic collisions take energy too, but what they
+    // take is the material's, so Material adds that part from the oscillator
+    // model.
+    xs.soft_stopping = on_grid(brems_soft_s_[q]);
+    xs.soft_straggling = on_grid(brems_soft_w2_[q]);
 
     // In-flight annihilation is never grouped. Its photons carry away more
     // than the positron's kinetic energy, so no bound on the energy the
     // projectile gives up bounds what they can reach, and a grouped
     // annihilation would be an annihilation that did not happen.
-    xs.hard_total = xs.hard_elastic + xs.hard_excitation + xs.hard_ionization +
-                    xs.hard_bhabha + xs.annihilation + xs.hard_bremsstrahlung;
-    xs.hard_majorant = std::max(xs.hard_total, on_grid(hard_majorant_[q]));
+    xs.hard_total = xs.hard_elastic + xs.annihilation + xs.hard_bremsstrahlung;
+    // The larger of the two bracketing bounds, not the interpolation between
+    // them. hard_majorant_ bounds the hard cross section over the energies a
+    // step can reach FROM each grid point, and a linear blend of two such
+    // bounds can dip below the true maximum wherever the cross section is
+    // concave across the interval -- which would bias the flight silently,
+    // the violation warning firing once and never again. Taking the larger is
+    // rigorous and is one comparison cheaper than the blend.
+    const auto& hm = hard_majorant_[q];
+    xs.hard_majorant = std::max(
+      xs.hard_total, std::max(hm(xs.index_grid), hm(xs.index_grid + 1)));
     xs.soft_rate = std::max(0.0, xs.total - xs.hard_total);
-    xs.soft_stopping = on_grid(inelastic_soft_s_[q]);
-    xs.soft_straggling = on_grid(inelastic_soft_w2_[q]);
   } else {
     xs.hard_elastic = xs.elastic;
-    xs.hard_excitation = xs.excitation;
-    xs.hard_ionization = xs.ionization;
-    xs.hard_bhabha = xs.bhabha;
     xs.hard_bremsstrahlung = xs.bremsstrahlung;
     xs.hard_total = xs.total;
     xs.hard_majorant = xs.total;
@@ -1010,465 +637,19 @@ double Element::elastic_scatter_hard(int q_index, double E, double xs_elastic,
   // already interpolated them for this energy. Asking the element for them
   // again searched the energy grid twice more per hard elastic collision, and
   // hard elastic is the commonest hard channel there is.
+  //
+  // The cut is exact in probability and interpolated in angle. Restricting the
+  // quantile to p_hard makes the sampled fraction equal the share of the cross
+  // section that stayed hard, whatever the tables do in between; what is
+  // approximate is the mu the cut lands on, the distribution at E being the
+  // blend of the two tables bracketing it rather than a table of its own. That
+  // is the interpolation error of the angular data and not an error of the
+  // split.
   double p_hard = (xs_elastic > 0.0)
                     ? std::min(1.0, std::max(0.0, xs_hard) / xs_elastic)
                     : 1.0;
   return elastic_angle_[q_index].sample_restricted(E, p_hard, seed);
 }
-
-ElasticSplit Element::elastic_split(int q_index, double E) const
-{
-  ElasticSplit split;
-  int n = electron_energy_.size();
-  if (n < 2 || elastic_[q_index].size() != n)
-    return split;
-
-  // Same clamped lookup the cross sections use
-  int i =
-    upper_bound_index(electron_energy_.cbegin(), electron_energy_.cend(), E);
-  i = std::max(0, std::min(i, n - 2));
-  double f =
-    (E - electron_energy_(i)) / (electron_energy_(i + 1) - electron_energy_(i));
-  f = std::max(0.0, std::min(1.0, f));
-
-  auto interp = [i, f](const tensor::Tensor<double>& v) {
-    return v(i) + f * (v(i + 1) - v(i));
-  };
-
-  double xs = std::max(0.0, interp(elastic_[q_index]));
-
-  // Single-event transport, which is what C1 = 0 asks for and what a library
-  // without the split tabulated gets: the cutoff sits at mu = 1, every
-  // collision is hard and nothing is grouped.
-  if (elastic_p_hard_[q_index].size() != n) {
-    split.xs_hard = xs;
-    return split;
-  }
-
-  split.mu_cut = 1.0 - std::max(0.0, interp(elastic_dcut_[q_index]));
-  split.xs_hard = std::max(0.0, xs * interp(elastic_p_hard_[q_index]));
-  split.xs1_soft = std::max(0.0, xs * interp(elastic_mu1_soft_[q_index]));
-  split.xs2_soft = std::max(0.0, xs * interp(elastic_mu2_soft_[q_index]));
-  return split;
-}
-
-void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
-{
-  s = 0.0;
-  w2 = 0.0;
-  int n = electron_energy_.size();
-  if (n < 2 || inelastic_soft_s_[q_index].size() != n)
-    return;
-
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& sv = inelastic_soft_s_[q_index];
-  const auto& wv = inelastic_soft_w2_[q_index];
-  s = std::max(0.0, sv(i) + f * (sv(i + 1) - sv(i)));
-  w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
-}
-
-void Element::compute_inelastic_transport(int q_index,
-  const vector<double>& w_r, const vector<double>& delta,
-  tensor::Tensor<double>& xs1, tensor::Tensor<double>& s_screened,
-  tensor::Tensor<double>& w2_screened, tensor::Tensor<double>& s_total) const
-{
-  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
-  int n_energy = electron_energy_.size();
-  int n_shell = electroionization_.shape(0);
-  std::vector<size_t> shape_1d {static_cast<size_t>(n_energy)};
-  xs1 = tensor::zeros<double>(shape_1d);
-  s_screened = tensor::zeros<double>(shape_1d);
-  w2_screened = tensor::zeros<double>(shape_1d);
-  s_total = tensor::zeros<double>(shape_1d);
-  if (settings::deflection_cutoff <= 0.0 || w_r.size() != n_shell)
-    return;
-
-  for (int j = 0; j < n_energy; ++j) {
-    double E = electron_energy_(j);
-    ParticleType projectile =
-      (q_index == 0) ? ParticleType::electron() : ParticleType::positron();
-    double w_cc = soft_collision_cutoff(projectile, E);
-    if (!(w_cc > 0.0) || E <= 0.0)
-      continue;
-
-    double pc = std::sqrt(E * (E + two_m));
-    double gamma = 1.0 + E / MASS_ELECTRON_EV;
-    double beta_sq = 1.0 - 1.0 / (gamma * gamma);
-    FreeCollision c {E};
-
-    // Transverse strength of a distant collision, which is the one the
-    // density effect acts on. It hands over no momentum at all, so every
-    // collision that goes this way is deflected through exactly nothing.
-    double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
-    double c_tra =
-      std::max(0.0, c_tra_free - (j < delta.size() ? delta[j] : 0.0));
-
-    double total = 0.0;
-    double s_scr = 0.0;
-    double w2_scr = 0.0;
-
-    // Share of the collisions at this transfer the density effect screens
-    // away, by the same branches sample_recoil() takes: a distant collision is
-    // drawn against the unscreened transverse strength, and the slice between
-    // the screened and the unscreened one does not happen. Removing what it
-    // would have carried is what puts the Sternheimer correction into the
-    // grouped channel, so that a step agrees with the single-event transport
-    // it is built to reproduce.
-    auto screened_share = [&](int i, double B, double n_e, double sigma,
-                            double e_out, double density, double c_tra_free,
-                            double c_tra) {
-      double W = e_out + B;
-      if (!(W > 0.0) || W >= E || w_r[i] <= 0.0)
-        return 0.0;
-      double pc_out = std::sqrt((E - W) * (E - W + two_m));
-      double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
-      double cq_min_sq = cq_min * cq_min;
-      double q_min =
-        cq_min_sq /
-        (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
-          MASS_ELECTRON_EV);
-      if (q_min >= w_r[i])
-        return 0.0;
-
-      double p_close = 1.0;
-      if (density > 0.0) {
-        double sigma_free =
-          n_e * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
-        p_close = std::min(1.0, sigma_free / (sigma * density));
-      } else if (W > w_r[i]) {
-        return 0.0;
-      }
-
-      double c_lon =
-        std::log(w_r[i] * (q_min + two_m) / (q_min * (w_r[i] + two_m)));
-      if (!(c_lon > 0.0))
-        return 0.0;
-      return (1.0 - p_close) * (c_tra_free - c_tra) / (c_tra_free + c_lon);
-    };
-    for (int i = 0; i < n_shell; ++i) {
-      const auto& shell {shells_[electron_shell_map_[i]]};
-      double B = shell.binding_energy;
-      double sigma = electroionization_(i, j);
-      double e_cut = w_cc - B;
-      if (sigma <= 0.0 || e_cut <= 0.0 || w_r[i] <= 0.0)
-        continue;
-      double n_e = shell.num_electrons;
-
-      // The deflection one collision makes, averaged over the recoil the
-      // model would have sampled for it. Written from the same branches
-      // sample_recoil() takes, so that what is removed from the discrete
-      // channel is exactly what is added to the grouped one.
-      auto deflection = [&](double e_out, double density) {
-        double W = e_out + B;
-        if (!(W > 0.0) || W >= E)
-          return 0.0;
-        double pc_out = std::sqrt((E - W) * (E - W + two_m));
-        double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
-        double cq_min_sq = cq_min * cq_min;
-        double q_min =
-          cq_min_sq /
-          (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
-            MASS_ELECTRON_EV);
-        double denom = 2.0 * pc * pc_out;
-        if (!(denom > 0.0))
-          return 0.0;
-
-        // A close collision leaves the whole transfer as recoil
-        double mu_close = std::max(0.0, (W * (W + two_m) - cq_min_sq) / denom);
-        if (q_min >= w_r[i])
-          return mu_close;
-
-        // Share of the collisions that struck a single electron, which is
-        // what the free cross section can account for
-        double p_close = 1.0;
-        if (density > 0.0) {
-          double sigma_free =
-            n_e * COLLISION_CONST / beta_sq * c.moller(W / E) / (E * E);
-          p_close = std::min(1.0, sigma_free / (sigma * density));
-        } else if (W > w_r[i]) {
-          return mu_close;
-        }
-
-        // Distant. The longitudinal recoil runs over [q_min, w_r] as
-        // 1/(Q(Q+2m)), so its mean deflection is elementary; the transverse
-        // part contributes nothing.
-        double c_lon =
-          std::log(w_r[i] * (q_min + two_m) / (q_min * (w_r[i] + two_m)));
-        if (!(c_lon > 0.0))
-          return p_close * mu_close;
-        double mu_lon =
-          std::max(0.0, (two_m * (w_r[i] - q_min) / c_lon - cq_min_sq) / denom);
-        double f_lon = (c_tra > 0.0) ? c_lon / (c_tra + c_lon) : 1.0;
-        return p_close * mu_close + (1.0 - p_close) * f_lon * mu_lon;
-      };
-
-      auto screened = [&](double e_out, double density) {
-        return screened_share(
-          i, B, n_e, sigma, e_out, density, c_tra_free, c_tra);
-      };
-
-      total +=
-        sigma * ionization_dist_[i]->restricted_integral(E, e_cut, deflection);
-      s_scr += sigma * ionization_dist_[i]->restricted_integral(
-                         E, e_cut, [&](double e_out, double density) {
-                           return screened(e_out, density) * (e_out + B);
-                         });
-      w2_scr += sigma * ionization_dist_[i]->restricted_integral(
-                          E, e_cut, [&](double e_out, double density) {
-                            double W = e_out + B;
-                            return screened(e_out, density) * W * W;
-                          });
-    }
-
-    // Transfers above the Moller limit, which only a positron makes and which
-    // are free collisions by construction
-    if (q_index == 1) {
-      for (int i = 0; i < n_shell; ++i) {
-        const auto& shell {shells_[electron_shell_map_[i]]};
-        double B = shell.binding_energy;
-        double n_e = shell.num_electrons;
-        double W_lo = 0.5 * (E + B);
-        double W_soft = std::min(w_cc, E);
-        if (n_e <= 0.0 || E <= B || W_soft <= W_lo)
-          continue;
-        // First order in W is enough here: these transfers are soft only for
-        // a projectile barely above its cutoff, where the channel is small
-        double K = n_e * COLLISION_CONST / beta_sq;
-        total += K * bhabha_moment(c, E, W_lo, W_soft, 1) * MASS_ELECTRON_EV /
-                 (E * (E + two_m));
-      }
-    }
-
-    // What the evaluated data actually delivers as collision stopping power
-    // once the screening has taken its share -- over the whole spectrum, hard
-    // transfers included, and over every subshell rather than only those with
-    // room below the soft cutoff. The caller compares it with the stopping
-    // power the material must reproduce and holds the grouped channel to the
-    // difference.
-    double s_tot = 0.0;
-    double loss_ex = std::max(0.0, E - this->excitation(E));
-    if (loss_ex > 0.0 && loss_ex < E)
-      s_tot += excitation_(j) * loss_ex;
-    for (int i = 0; i < n_shell; ++i) {
-      const auto& shell {shells_[electron_shell_map_[i]]};
-      double B = shell.binding_energy;
-      double sigma = electroionization_(i, j);
-      double n_e = shell.num_electrons;
-      if (sigma <= 0.0 || E <= B)
-        continue;
-
-      // Below the soft cutoff the evaluated spectrum is what the transport
-      // takes, less what the screening declines. A positron's spectrum is the
-      // tabulated one reweighted by the free Bhabha-to-Moller ratio, the same
-      // weighting the collision applies by rejection, so that goes inside the
-      // integral too.
-      double e_soft = w_cc - B;
-      if (e_soft > 0.0) {
-        s_tot +=
-          sigma * ionization_dist_[i]->restricted_integral(
-                    E, e_soft, [&](double e_out, double density) {
-                      double W = e_out + B;
-                      if (!(W > 0.0) || W >= E)
-                        return 0.0;
-                      double weight =
-                        (q_index == 0) ? 1.0 : c.ratio((e_out + B) / E);
-                      return weight * W *
-                             (1.0 - screened_share(i, B, n_e, sigma, e_out,
-                                      density, c_tra_free, c_tra));
-                    });
-      }
-
-      // Above it the transport draws from the free binary cross section, so
-      // that is what it removes there -- not the evaluated tail
-      double K = n_e * COLLISION_CONST / beta_sq;
-      double W_split = std::max(w_cc, B);
-      double W_top = (q_index == 0) ? 0.5 * E : 0.5 * (E + B);
-      if (n_e > 0.0 && W_top > W_split) {
-        s_tot += K * ((q_index == 0) ? moller_moment(c, E, W_split, W_top, 1)
-                                     : bhabha_moment(c, E, W_split, W_top, 1));
-      }
-
-      // Transfers above the Moller limit, which only a positron makes
-      double W_lo = 0.5 * (E + B);
-      if (q_index == 1 && n_e > 0.0 && W_lo < E) {
-        s_tot += K * bhabha_moment(c, E, W_lo, E, 1);
-      }
-    }
-
-    xs1(j) = std::max(0.0, total);
-    s_screened(j) = std::max(0.0, s_scr);
-    w2_screened(j) = std::max(0.0, w2_scr);
-    s_total(j) = std::max(0.0, s_tot);
-  }
-}
-
-double Element::excitation_hard_fraction(int q_index, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 || excitation_p_hard_[q_index].size() != n)
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = excitation_p_hard_[q_index];
-  return std::max(0.0, std::min(1.0, v(i) + f * (v(i + 1) - v(i))));
-}
-
-double Element::ionization_hard_fraction(
-  int q_index, int i_shell, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 ||
-      ionization_p_hard_[q_index].size() != n * electroionization_.shape(0))
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = ionization_p_hard_[q_index];
-  return std::max(0.0,
-    std::min(1.0, v(i_shell, i) + f * (v(i_shell, i + 1) - v(i_shell, i))));
-}
-
-double Element::bhabha_hard_fraction(int i_shell, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 || bhabha_p_hard_.size() != n * electroionization_.shape(0))
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = bhabha_p_hard_;
-  return std::max(0.0,
-    std::min(1.0, v(i_shell, i) + f * (v(i_shell, i + 1) - v(i_shell, i))));
-}
-
-double Element::bremsstrahlung_hard_fraction(int q_index, double E) const
-{
-  int n = electron_energy_.size();
-  if (n < 2 || brems_p_hard_[q_index].size() != n)
-    return 1.0;
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& v = brems_p_hard_[q_index];
-  return std::max(0.0, std::min(1.0, v(i) + f * (v(i + 1) - v(i))));
-}
-
-double Element::excitation(double E) const
-{
-  // The loss table clamps below its first abscissa, so an electron under that
-  // energy would be handed a loss larger than it has
-  return std::max(0.0, E - excitation_energy_loss_(E));
-}
-
-double Element::sample_free_transfer(
-  Particle& p, double W_lo, double W_hi) const
-{
-  double E = p.E();
-  double x_lo = W_lo / E;
-  double x_hi = W_hi / E;
-  if (!(x_lo > 0.0) || !(x_hi > x_lo) || x_hi >= 1.0)
-    return 0.0;
-
-  FreeCollision c {E};
-  bool positron = p.type().is_positron();
-
-  // Majorant of the shape times x^2, which is 1 at x = 0 and rises from
-  // there. Every term is monotone in x over [0, 1/2] or has a sign that lets
-  // it be dropped, so the bound is the end point.
-  double u_hi = 1.0 - x_hi;
-  double majorant;
-  if (positron) {
-    majorant = 1.0 + c.b1 * x_hi + c.b2 * x_hi * x_hi +
-               c.b3 * x_hi * x_hi * x_hi + c.b4 * x_hi * x_hi * x_hi * x_hi;
-  } else {
-    majorant = 1.0 + x_hi * x_hi / (u_hi * u_hi) + c.amol * x_hi * x_hi;
-  }
-
-  // Sample the 1/x^2 the shape is built around, which is exactly invertible,
-  // and carry the rest by rejection
-  double inv_lo = 1.0 / x_lo;
-  double inv_hi = 1.0 / x_hi;
-  for (int it = 0; it < 100; ++it) {
-    double x = 1.0 / (inv_lo - prn(p.current_seed()) * (inv_lo - inv_hi));
-    double shape = positron ? c.bhabha(x) : c.moller(x);
-    if (prn(p.current_seed()) * majorant <= shape * x * x)
-      return x * E;
-  }
-  return x_lo * E;
-}
-
-bool Element::ionization(Particle& p, int i_shell, bool hard) const
-{
-  // Binding energies live on shells_. Note this is NOT binding_energy_, which
-  // belongs to the shorter Compton Doppler broadening shell list and would be
-  // indexed out of bounds here.
-  double e_b = shells_[electron_shell_map_[i_shell]].binding_energy;
-
-  // A hard collision is one above W_cc, which is keV and up. There the struck
-  // electron is free and the transfer is drawn from the free binary cross
-  // section the hard channel was built from, not from the evaluated spectrum:
-  // see compute_soft_inelastic(). Being a close collision by construction it
-  // leaves the whole transfer as recoil, so no recoil model is consulted and
-  // nothing screens it -- the density effect acts on distant collisions, and
-  // this is the opposite of one.
-  if (hard) {
-    double E = p.E();
-    double W_lo = std::max(soft_collision_cutoff(p.type(), E), e_b);
-    double W_hi = p.type().is_positron() ? 0.5 * (E + e_b) : 0.5 * E;
-    double W = this->sample_free_transfer(p, W_lo, W_hi);
-    if (!(W > e_b) || W >= E)
-      return false;
-    this->emit_knock_on(p, W, e_b, W);
-    return true;
-  }
-
-  double density;
-  double xi = prn(p.current_seed());
-  double E_knock = ionization_dist_[i_shell]->at_quantile(p.E(), xi, &density);
-
-  // The tabulated spectra describe a Moller collision. For a positron the
-  // final state is the same -- an electron ejected with E_knock, the atom left
-  // with a vacancy -- but the projectile factor is Bhabha's, so the spectrum
-  // is reweighted by the ratio of the two free cross sections. Binding cancels
-  // in that ratio. The cross section was raised to a majorant to pay for this
-  // rejection, so declining here is a real outcome and not a lost collision.
-  if (p.type().is_positron()) {
-    const auto& xs {p.electron_xs(index_)};
-    double majorant = moller_majorant_(xs.index_grid) +
-                      xs.interp_factor * (moller_majorant_(xs.index_grid + 1) -
-                                           moller_majorant_(xs.index_grid));
-    FreeCollision c {p.E()};
-    double x = (E_knock + e_b) / p.E();
-    if (prn(p.current_seed()) * majorant >= c.ratio(x))
-      return false;
-  }
-
-  // The scattered primary must be left with positive energy. The blended
-  // spectrum can exceed the kinematic limit in a band roughly 0.1 eV wide just
-  // above each subshell threshold, where the first tabulated table sits at
-  // E = B exactly: there the limit (E-B)/2 is zero while the table still
-  // carries outgoing energies. Everywhere else the blend is safe, because
-  // log((E-B)/2) is concave in log E and so the geometric chord between two
-  // tabulated maxima lies below the affine limit. Clamp rather than abort:
-  // this is a known property of the interpolation, not a corrupt library, and
-  // killing a run hours in over a 0.1 eV band would be indefensible.
-  double w_max = 0.5 * (p.E() - e_b);
-  if (E_knock > w_max)
-    E_knock = std::max(0.0, std::nextafter(w_max, 0.0));
-
-  double W = E_knock + e_b;
-
-  // The recoil model is what identifies a distant transverse collision, and
-  // the density effect screens a share of those away. Declining here is a real
-  // outcome, as it is for the positron reweighting above: the medium simply
-  // does not make this collision, and the projectile carries on unchanged.
-  bool declined = false;
-  double Q = this->sample_recoil(p, i_shell, W, density, declined);
-  if (declined)
-    return false;
-
-  this->emit_knock_on(p, W, e_b, Q);
-  return true;
-}
-
 void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
 {
   constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
@@ -1511,148 +692,17 @@ void Element::emit_knock_on(Particle& p, double W, double e_b, double Q) const
   p.u() = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
   p.E() = E - W;
 }
-
-double Element::sample_recoil(
-  Particle& p, int i_shell, double W, double density, bool& declined) const
+double Element::subshell_ionization_xs(int i_shell, double E) const
 {
-  constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
-  double E = p.E();
-  declined = false;
-
-  // Resonance energy of the oscillator standing for this subshell. It is a
-  // property of the material, not of the atom alone, because the outer shells
-  // are screened by the medium they sit in.
-  const auto& mat = *model::materials[p.material()];
-  double w_r = mat.oscillator_energy(index_, i_shell);
-
-  // Smallest recoil the collision can leave, reached when the projectile is
-  // not deflected
-  double pc = std::sqrt(E * (E + two_m));
-  double pc_out = std::sqrt((E - W) * (E - W + two_m));
-  double cq_min = W * (2.0 * E - W + two_m) / (pc + pc_out);
-  // Q(Q + 2mc^2) = (cq)^2 inverted without subtracting nearly equal terms
-  double cq_min_sq = cq_min * cq_min;
-  double q_min =
-    cq_min_sq / (std::sqrt(MASS_ELECTRON_EV * MASS_ELECTRON_EV + cq_min_sq) +
-                  MASS_ELECTRON_EV);
-
-  // No room below the resonance -- or no oscillator data at all -- leaves the
-  // close collision as the only possibility
-  if (q_min >= w_r)
-    return W;
-
-  double beta_sq =
-    E * (E + two_m) / ((E + MASS_ELECTRON_EV) * (E + MASS_ELECTRON_EV));
-
-  // Was it a close collision? The free binary cross section at this transfer
-  // is known in closed form, and whatever share of the evaluated cross section
-  // it accounts for is the share of collisions that struck a single electron:
-  //
-  //     P_close(W) = (dsigma_free/dW) / (dsigma_eval/dW)
-  //
-  // This is what PENELOPE's cut at the resonance energy amounts to for its own
-  // delta oscillator, which places all distant strength at exactly W_i. The
-  // evaluated spectra spread that strength over a range of W instead, so the
-  // cut would hand close kinematics to the part of it lying above W_i, and
-  // there is a good deal: for the carbon L3 shell it is a quarter of the
-  // collisions where the free cross section can account for a sixteenth.
-  //
-  // For a positron the evaluated spectrum is reweighted by the Bhabha-to-
-  // Moller ratio and the free cross section is Bhabha's, so the ratio cancels
-  // out of the test and the same Moller form serves both charges -- which is
-  // the same conclusion PENELOPE reaches, its distant interactions being
-  // identical for the two.
-  if (density > 0.0) {
-    const auto& xs {p.electron_xs(index_)};
-    int i_grid = xs.index_grid;
-    double sigma = electroionization_(i_shell, i_grid) +
-                   xs.interp_factor * (electroionization_(i_shell, i_grid + 1) -
-                                        electroionization_(i_shell, i_grid));
-    const auto& shell = shells_[electron_shell_map_[i_shell]];
-    FreeCollision c {E};
-    double sigma_free = shell.num_electrons * COLLISION_CONST / beta_sq *
-                        c.moller(W / E) / (E * E);
-    if (prn(p.current_seed()) * sigma * density < sigma_free)
-      return W;
-  } else if (W > w_r) {
-    // Without the density, fall back to PENELOPE's own cut
-    return W;
-  }
-
-  // Distant interaction. The transverse part hands over no momentum; the
-  // longitudinal part is distributed as 1/(Q(Q + 2mc^2)) between the two
-  // bounds. The two are weighted by their cross sections, whose common factor
-  // f_i / W_i cancels.
-  double c_lon = std::log(w_r * (q_min + two_m) / (q_min * (w_r + two_m)));
-
-  // The density effect is a screening of the transverse strength, and what it
-  // screens away does not happen at all: an isolated atom would have made this
-  // collision and the medium does not. So the choice below is drawn against
-  // the UNSCREENED distant strength L + c_lon and has three outcomes, the
-  // third being the screened slice -- which is what carries the density effect
-  // into the energy loss. Weighting only the two that remain, as the split
-  // alone would, would redistribute the recoil and leave the stopping power at
-  // its free-atom value, too high by 2 pi r_e^2 m c^2 n_e delta / beta^2 --
-  // 0.23 MeV cm^2/g for copper at 16 MeV, a sixth of the whole.
-  double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
-  double c_tra = std::max(0.0, c_tra_free - mat.density_effect_correction(E));
-  double u = prn(p.current_seed()) * (c_tra_free + c_lon);
-  if (u < c_tra)
-    return q_min;
-  if (u >= c_tra + c_lon) {
-    declined = true;
+  int n = electron_energy_.size();
+  if (n < 2 || i_shell < 0 || i_shell >= electroionization_.shape(0))
     return 0.0;
-  }
-
-  // Invert the longitudinal distribution
-  double a = std::exp(prn(p.current_seed()) * c_lon);
-  return two_m * a * q_min / (q_min + two_m - a * q_min);
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  double a = electroionization_(i_shell, i);
+  double b = electroionization_(i_shell, i + 1);
+  return std::max(0.0, a + f * (b - a));
 }
-
-int Element::sample_ionization_shell(Particle& p, bool hard) const
-{
-  const auto& xs {p.electron_xs(index_)};
-  int n_shell = electroionization_.shape(0);
-  int i_grid = xs.index_grid;
-  double f = xs.interp_factor;
-  int q = p.type().is_positron() ? 1 : 0;
-
-  // For a collision ending a condensed-history step the weights are the hard
-  // parts of the shell cross sections, which differ shell by shell: the cut
-  // sits at W_cc - B, so a deeply bound shell keeps more of its spectrum.
-  auto weight = [&](int i) {
-    if (hard) {
-      const auto& v = ionization_hard_free_[q];
-      return v(i, i_grid) + f * (v(i, i_grid + 1) - v(i, i_grid));
-    }
-    return electroionization_(i, i_grid) +
-           f * (electroionization_(i, i_grid + 1) -
-                 electroionization_(i, i_grid));
-  };
-
-  // Summed here rather than taken from xs.ionization, which for a positron
-  // carries the majorant factor. Only the relative weights matter, and a
-  // factor common to every shell cancels out of them.
-  double total = 0.0;
-  for (int i = 0; i < n_shell; ++i) {
-    total += weight(i);
-  }
-  double cutoff = prn(p.current_seed()) * total;
-
-  int i_shell;
-  double prob = 0.0;
-  for (i_shell = 0; i_shell < n_shell; ++i_shell) {
-    // Increment probability to compare to cutoff
-    prob += weight(i_shell);
-    if (prob > cutoff)
-      return i_shell;
-  }
-
-  // If we made it here, no shell was sampled
-  p.write_restart();
-  fatal_error("Did not sample any electron shell during electro-ionization.");
-}
-
 namespace {
 
 //! Polar angle of a bremsstrahlung photon, from Koch and Motz formula 2BS
@@ -1788,7 +838,7 @@ double Element::sample_bremsstrahlung_energy(
     return 0.0;
 
   double ratio = E / k_min;
-  while (true) {
+  for (int it = 0; it < MAX_REJECTION; ++it) {
     double k = k_min * std::pow(ratio, prn(seed));
     double x = k / E;
     int j = lower_bound_index(kappa.cbegin(), kappa.cend(), x);
@@ -1800,6 +850,11 @@ double Element::sample_bremsstrahlung_energy(
     if (prn(seed) * chi_max < chi)
       return k;
   }
+
+  // Unreachable while chi_max bounds the table it was built from. Falling back
+  // to the softest photon the channel can emit keeps the emission rate right
+  // and costs the spectrum nothing measurable if it ever is reached.
+  return k_min;
 }
 
 double Element::annihilation_xs(double E) const
@@ -1842,8 +897,8 @@ void Element::annihilation(Particle& p) const
   // normalised to its own maximum, as in EGSnrc.
   double ep0 = 1.0 / (a + pc);
   double span = std::log((1.0 - ep0) / ep0);
-  double ep;
-  while (true) {
+  double ep = ep0;
+  for (int it = 0; it < MAX_REJECTION; ++it) {
     ep = ep0 * std::exp(span * prn(p.current_seed()));
     double arg = ep * a - 1.0;
     double rejection = 1.0 - arg * arg / (ep * (a * a - 2.0));
@@ -1898,7 +953,8 @@ void Element::bremsstrahlung(Particle& p, double k_min) const
   // what makes a photon worth having here is its energy: copying one photon
   // n times gives n tries at the same energy, while drawing n times gives n
   // tries at reaching the thin high-energy end of the spectrum, which is the
-  // part a photonuclear or pair-production answer is starved of.
+  // part an answer sensitive to the shape of the photon field, rather than to
+  // how much energy it carries, is starved of.
   //
   // The electron cannot lose all of them -- it emitted one photon, not n. It
   // loses the first draw, which is an unbiased sample of what one emission

@@ -112,6 +112,15 @@ class Settings:
         release of delayed photons.
 
         .. versionadded:: 0.12
+    density_effect : bool
+        Whether to apply the Sternheimer density-effect correction to the
+        collision stopping power. Defaults to True and should stay there: the
+        screening is real, and switching it off overstates the collision
+        stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It exists for
+        Fano cavity tests, whose theorem requires the mass stopping power to be
+        independent of density -- which is the very term this correction adds.
+
+        .. versionadded:: 0.17.0
     electron_transport : bool
         Whether to transport electrons and positrons as individual particles,
         simulating every interaction as a discrete event rather than depositing
@@ -122,13 +131,16 @@ class Settings:
         .. versionadded:: 0.17.0
     bremsstrahlung_split : int
         Number of photons emitted per radiative event, each carrying 1/n of the
-        weight. A variance reduction for problems driven by the photons that
-        electrons make, where the answer depends on a thin high-energy tail
-        that analog emission samples too rarely. The draws are independent, so
-        splitting buys tries at reaching that tail rather than copies of one
-        photon. Energy is then conserved in the mean rather than event by
-        event, which adds noise to :attr:`heating` tallies, so it defaults to
-        1 (no splitting) and requires :attr:`electron_transport`.
+        weight. A variance reduction for problems whose answer depends on the
+        spectrum or the direction of the photons charged particles radiate,
+        rather than only on how much energy they carry away, and particularly
+        where the part of the spectrum that matters is a tail that analog
+        emission reaches too rarely. The draws are independent, so splitting
+        buys tries at reaching that tail rather than copies of one photon.
+        Energy is then conserved in the mean rather than event by event, which
+        adds noise to :attr:`heating` tallies, so it defaults to 1 (no
+        splitting). Ignored, with a warning, without
+        :attr:`electron_transport`.
 
         .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}
@@ -487,6 +499,7 @@ class Settings:
 
         self._confidence_intervals = None
         self._electron_treatment = None
+        self._density_effect = None
         self._electron_transport = None
         self._photon_transport = None
         self._photonuclear_physics = None
@@ -745,6 +758,15 @@ class Settings:
     def confidence_intervals(self, confidence_intervals: bool):
         cv.check_type('confidence interval', confidence_intervals, bool)
         self._confidence_intervals = confidence_intervals
+
+    @property
+    def density_effect(self) -> bool:
+        return self._density_effect
+
+    @density_effect.setter
+    def density_effect(self, density_effect: bool):
+        cv.check_type('density effect', density_effect, bool)
+        self._density_effect = density_effect
 
     @property
     def electron_transport(self) -> bool:
@@ -1816,6 +1838,11 @@ class Settings:
             element = ET.SubElement(root, "confidence_intervals")
             element.text = str(self._confidence_intervals).lower()
 
+    def _create_density_effect_subelement(self, root):
+        if self._density_effect is not None:
+            element = ET.SubElement(root, "density_effect")
+            element.text = str(self._density_effect).lower()
+
     def _create_electron_transport_subelement(self, root):
         if self._electron_transport is not None:
             element = ET.SubElement(root, "electron_transport")
@@ -2383,6 +2410,11 @@ class Settings:
         if text is not None:
             self.max_order = int(text)
 
+    def _density_effect_from_xml_element(self, root):
+        text = get_text(root, 'density_effect')
+        if text is not None:
+            self.density_effect = text in ('true', '1')
+
     def _electron_transport_from_xml_element(self, root):
         text = get_text(root, 'electron_transport')
         if text is not None:
@@ -2767,6 +2799,7 @@ class Settings:
         self._create_atomic_relaxation_subelement(element)
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
+        self._create_density_effect_subelement(element)
         self._create_electron_transport_subelement(element)
         self._create_bremsstrahlung_split_subelement(element)
         self._create_photon_transport_subelement(element)
@@ -2890,6 +2923,7 @@ class Settings:
         settings._atomic_relaxation_from_xml_element(elem)
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
+        settings._density_effect_from_xml_element(elem)
         settings._electron_transport_from_xml_element(elem)
         settings._bremsstrahlung_split_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)

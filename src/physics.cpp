@@ -599,6 +599,20 @@ void sample_electron_reaction(Particle& p)
   bool hard = p.ch_hard_at_end();
   p.ch_reset();
 
+  // The inelastic collisions belong to the medium rather than to any atom in
+  // it -- the oscillator strengths are shares of all its electrons and the
+  // resonance energies are fixed by its mean excitation energy -- so they are
+  // chosen against the material's rate before an element is sampled at all.
+  const auto& mat {*model::materials[p.material()]};
+  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
+  if (prn(p.current_seed()) * total < p.macro_xs().step.inelastic) {
+    if (!mat.sample_inelastic(p))
+      // Nothing could be sampled, so nothing happened. Leaving event() as
+      // KILL is right: the heating balance then evaluates to zero.
+      return;
+    return;
+  }
+
   // Sample element within material
   int i_element = sample_electron_element(p, hard);
   const auto& micro {p.electron_xs(i_element)};
@@ -619,43 +633,6 @@ void sample_electron_reaction(Particle& p)
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
-    return;
-  }
-
-  // Excitation
-  prob += hard ? micro.hard_excitation : micro.excitation;
-  if (prob > cutoff) {
-    p.E() = element.excitation(p.E());
-    p.event() = TallyEvent::SCATTER;
-    p.event_mt() = ELECTROEXCITATION;
-    return;
-  }
-
-  // Moller scattering
-  prob += hard ? micro.hard_ionization : micro.ionization;
-  if (prob > cutoff) {
-    // Sample which atomic subshell was ionized based on the subshell cross
-    // sections
-    int i_shell = element.sample_ionization_shell(p, hard);
-
-    // Generate secondary knock-on electron and adjust primary energy
-    if (!element.ionization(p, i_shell, hard))
-      // The density effect screened this collision away, so nothing changed.
-      // Leaving event() as KILL is correct here: the heating balance then
-      // evaluates to zero, which is right for a collision that did not happen.
-      return;
-    p.event() = TallyEvent::SCATTER;
-    // There is no ENDF MT for total electroionization; 534 upwards name the
-    // individual subshells, which is what the data resolves anyway
-    p.event_mt() =
-      533 +
-      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
-
-    // Trigger relaxation (Fluorescence / Auger)
-    if (settings::atomic_relaxation && i_shell >= 0 &&
-        element.has_atomic_relaxation_) {
-      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
-    }
     return;
   }
 
@@ -694,10 +671,23 @@ void sample_positron_reaction(Particle& p)
   }
 
   // Only the interactions a grouped step did not group may end it; see
-  // sample_electron_reaction. Bhabha scattering above the Moller limit takes
-  // its own hard fraction, and annihilation is never grouped at all.
+  // sample_electron_reaction. Annihilation is never grouped at all.
   bool hard = p.ch_hard_at_end();
   p.ch_reset();
+
+  // The inelastic collisions belong to the medium rather than to any atom in
+  // it -- the oscillator strengths are shares of all its electrons and the
+  // resonance energies are fixed by its mean excitation energy -- so they are
+  // chosen against the material's rate before an element is sampled at all.
+  const auto& mat {*model::materials[p.material()]};
+  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
+  if (prn(p.current_seed()) * total < p.macro_xs().step.inelastic) {
+    if (!mat.sample_inelastic(p))
+      // Nothing could be sampled, so nothing happened. Leaving event() as
+      // KILL is right: the heating balance then evaluates to zero.
+      return;
+    return;
+  }
 
   // Sample element within material
   int i_element = sample_electron_element(p, hard);
@@ -719,59 +709,6 @@ void sample_positron_reaction(Particle& p)
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = ELECTRON_ELASTIC;
-    return;
-  }
-
-  // Excitation
-  prob += hard ? micro.hard_excitation : micro.excitation;
-  if (prob > cutoff) {
-    p.E() = element.excitation(p.E());
-    p.event() = TallyEvent::SCATTER;
-    p.event_mt() = ELECTROEXCITATION;
-    return;
-  }
-
-  // Bhabha scattering, below the Moller kinematic limit: the evaluated
-  // spectrum reweighted by the free Bhabha-to-Moller ratio. The cross section
-  // is a majorant, so a rejected transfer is a real outcome -- the positron
-  // simply carries on unchanged.
-  prob += hard ? micro.hard_ionization : micro.ionization;
-  if (prob > cutoff) {
-    int i_shell = element.sample_ionization_shell(p, hard);
-    if (!element.ionization(p, i_shell, hard))
-      // The reweighting declined this collision, so nothing changed. Leaving
-      // event() as KILL is correct here: the heating balance then evaluates to
-      // zero, which is right for a collision that did not happen.
-      return;
-    p.event() = TallyEvent::SCATTER;
-    p.event_mt() =
-      533 +
-      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
-
-    // Trigger relaxation (Fluorescence / Auger)
-    if (settings::atomic_relaxation && i_shell >= 0 &&
-        element.has_atomic_relaxation_) {
-      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
-    }
-    return;
-  }
-
-  // Bhabha scattering, above that limit: transfers the evaluated spectra
-  // cannot reach at all, far above every binding energy and so exactly where
-  // the free cross section is the right description
-  prob += hard ? micro.hard_bhabha : micro.bhabha;
-  if (prob > cutoff) {
-    int i_shell = element.sample_bhabha_shell(p, hard);
-    element.bhabha(
-      p, i_shell, hard ? soft_collision_cutoff(p.type(), p.E()) : 0.0);
-    p.event() = TallyEvent::SCATTER;
-    p.event_mt() =
-      533 +
-      element.shells_[element.electron_shell_map_[i_shell]].index_subshell;
-    if (settings::atomic_relaxation && i_shell >= 0 &&
-        element.has_atomic_relaxation_) {
-      element.atomic_relaxation(element.electron_shell_map_[i_shell], p);
-    }
     return;
   }
 
@@ -902,12 +839,15 @@ int sample_photonuclear_nuclide(Particle& p, bool biased)
 
 int sample_electron_element(Particle& p, bool hard)
 {
-  // Sample cumulative distribution function
-  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
-  double cutoff = prn(p.current_seed()) * total;
-
-  // Get pointers to elements, densities
+  // Sample cumulative distribution function. The inelastic collisions are
+  // the medium's and were already offered their share of the rate before this
+  // was called, so what is left to divide among the elements is the total
+  // less that share -- normalising on the whole total would leave a slice of
+  // it belonging to nothing, and the scan below would run off the end.
   const auto& mat {model::materials[p.material()]};
+  double total = (hard ? p.macro_xs().step.hard : p.macro_xs().total) -
+                 p.macro_xs().step.inelastic;
+  double cutoff = prn(p.current_seed()) * total;
 
   double prob = 0.0;
   for (int i = 0; i < mat->element_.size(); ++i) {

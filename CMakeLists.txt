@@ -327,7 +327,6 @@ list(APPEND libopenmc_SOURCES
   src/distribution_multi.cpp
   src/distribution_spatial.cpp
   src/eigenvalue.cpp
-  src/electroionization.cpp
   src/electron.cpp
   src/endf.cpp
   src/error.cpp
@@ -336,6 +335,7 @@ list(APPEND libopenmc_SOURCES
   src/finalize.cpp
   src/geometry.cpp
   src/geometry_aux.cpp
+  src/gos.cpp
   src/hdf5_interface.cpp
   src/ifp.cpp
   src/initialize.cpp

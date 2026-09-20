@@ -368,10 +368,42 @@ bool Particle::apply_condensed_hinge()
 
 double Particle::sample_condensed_step()
 {
+  // A grouped step is capped at the distance to the boundary, so a step the
+  // geometry cut short ends ON that boundary -- and the hinge splits it, so
+  // the leg beyond the hinge is the step's length less the hinge, which
+  // differs from the boundary distance recomputed at the hinge only by
+  // rounding. The transport loop crosses a surface only when the collision
+  // distance is strictly greater than the distance to it, so that leg is
+  // taken as a collision and the particle is left a few ULP INSIDE the
+  // surface, with the advance having cleared the token that says which
+  // surface it is on.
+  //
+  // From there the geometry cannot help it. A surface closer than TINY_BIT
+  // with no token to vouch for it is treated as one already crossed and
+  // skipped, so distance_to_boundary reports the far side of the model: the
+  // particle flies out through the boundary without ever crossing it, and
+  // goes on depositing energy and spawning secondaries in the void outside,
+  // where nothing can find a cell and the run dies of lost particles. In a
+  // slab thinner than a step it took a tenth of all histories.
+  //
+  // Single-event transport never meets this. Its flight is an exponential
+  // draw that has no reason to land near the boundary; a grouped step is put
+  // there by construction.
+  //
+  // So a step that ends within the geometry's own tolerance of the boundary
+  // is handed back as ending just beyond it, which picks the crossing. The
+  // particle still stops exactly on the surface -- event_advance takes the
+  // smaller of the two distances -- and what it loses is at most a hinge it
+  // would have taken a hair before leaving the cell anyway.
+  auto ends_at_boundary = [&](double d) {
+    double b = boundary().distance();
+    return (b - d < TINY_BIT) ? std::nextafter(b, INFTY) : d;
+  };
+
   // A step already under way: this advance is the part of it beyond the hinge
   if (ch_at_hinge()) {
     ch_at_hinge() = false;
-    return ch_length();
+    return ends_at_boundary(ch_length());
   }
 
   const auto& xs {macro_xs()};
@@ -416,7 +448,7 @@ double Particle::sample_condensed_step()
   ch_at_hinge() = true;
   ch_in_step() = true;
   ch_hard_at_end() = step.ends_in_collision;
-  return step.hinge;
+  return ends_at_boundary(step.hinge);
 }
 
 void Particle::apply_soft_energy_loss(double distance)
@@ -434,11 +466,14 @@ void Particle::apply_soft_energy_loss(double distance)
 
   // The step may not take more than the particle has. Reaching that is the
   // energy ceiling failing to do its job, so it is worth noticing rather than
-  // silently clamping.
-  if (loss >= E()) {
+  // silently clamping. The step is left in place rather than reset here: the
+  // clamped loss is still the grouped loss of this segment and belongs at a
+  // point drawn inside it, and resetting would send score_soft_deposition
+  // home and leave the whole of it to be deposited at the segment's end by
+  // stop_below_cutoff(). The particle is about to stop either way, so there
+  // is no later step for the state to confuse.
+  if (loss >= E())
     loss = E();
-    this->ch_reset();
-  }
   E() -= loss;
 }
 

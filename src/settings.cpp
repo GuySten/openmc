@@ -55,6 +55,7 @@ bool confidence_intervals {false};
 bool create_delayed_neutrons {true};
 bool create_fission_neutrons {true};
 bool delayed_photon_scaling {true};
+bool density_effect {true};
 bool electron_transport {false};
 bool entropy_on {false};
 bool event_based {false};
@@ -659,6 +660,23 @@ void read_settings_xml(pugi::xml_node root)
     if (!run_CE && electron_transport) {
       fatal_error("Electron transport is not currently supported in "
                   "multigroup mode");
+    }
+
+    // The density-effect correction. Switching it off is not a physical choice:
+    // the Sternheimer screening is real and leaving it out overstates the
+    // collision stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It is
+    // here because Fano's theorem needs it. The theorem holds when the mass
+    // stopping power does not depend on density, and the density effect is
+    // precisely the term that breaks that, so a cavity test run with it on
+    // measures Sternheimer rather than the condensed-history algorithm it is
+    // meant to stress.
+    if (check_for_node(root, "density_effect")) {
+      density_effect = get_node_value_bool(root, "density_effect");
+      if (!density_effect) {
+        warning("The density-effect correction is disabled. Collision stopping "
+                "powers will be those of the free atom, which is correct only "
+                "for a verification test that asks for it.");
+      }
     }
 
     if (electron_transport) {

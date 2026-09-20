@@ -58,7 +58,8 @@ extern bool
 extern bool create_delayed_neutrons; //!< create delayed fission neutrons?
 extern bool cmfd_run;                //!< is a CMFD run?
 extern bool
-  delayed_photon_scaling; //!< Scale fission photon yield to include delayed
+  delayed_photon_scaling;   //!< Scale fission photon yield to include delayed
+extern bool density_effect; //!< Sternheimer correction applied?
 extern bool electron_transport; //!< electron transport turned on?
 extern bool entropy_on;         //!< calculate Shannon entropy?
 extern bool event_based; //!< use event-based mode (instead of history-based)

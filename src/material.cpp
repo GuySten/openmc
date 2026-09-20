@@ -659,8 +659,16 @@ void Material::init_electron_oscillators()
   auto n_e = data::brems_e_grid.size();
   density_effect_ = tensor::Tensor<double>({n_e});
   for (int i = 0; i < n_e; ++i) {
-    density_effect_(i) = density_effect(osc.f, osc.e_b_sq, osc.e_p_sq,
-      osc.n_conduction, osc.rho, data::brems_e_grid(i), 1.0e-6, 100);
+    // Zeroing the table here is what settings::density_effect switches off,
+    // and it is the only place that needs to know: everything downstream --
+    // the recoil model's screened slice, the grouped channel's screened
+    // moments and the Berger-Seltzer stopping power below -- reads the
+    // correction from this table or from the accessor over it.
+    density_effect_(i) =
+      settings::density_effect
+        ? density_effect(osc.f, osc.e_b_sq, osc.e_p_sq, osc.n_conduction,
+            osc.rho, data::brems_e_grid(i), 1.0e-6, 100)
+        : 0.0;
   }
 
   // Tabulate the collision stopping power the material must reproduce, on the

@@ -651,6 +651,19 @@ void Material::collision_stopping_power(double* s_col, bool positron)
 
 void Material::init_electron_oscillators()
 {
+  // Every table below lives on this grid, and everything the charged-particle
+  // transport reads is interpolated on it. Without it the tables would be
+  // empty and the transport would run on zeros -- no density effect, no
+  // collision stopping power to hold the grouped channel to -- which is a
+  // wrong answer rather than a missing one, so it is refused here.
+  if (data::brems_e_grid.size() < 2) {
+    fatal_error("Electron transport needs the bremsstrahlung energy grid from "
+                "the photon library, which was not read. Check that the "
+                "library carries bremsstrahlung data for every element in "
+                "material " +
+                std::to_string(id_) + ".");
+  }
+
   auto osc = this->oscillator_table();
 
   // Tabulate the density-effect correction. It enters the distant transverse
@@ -1275,6 +1288,75 @@ void Material::init_inelastic_transport()
       element.compute_inelastic_transport(q, w_r, delta, inelastic_xs1_[q][b],
         inelastic_soft_screened_s_[q][b], inelastic_soft_screened_w2_[q][b],
         inelastic_total_s_[q][b]);
+    }
+  }
+
+  this->check_electron_tables();
+}
+
+//! Refuse to transport charged particles on tables that were not built
+//
+// Every accessor below returns zero for a table it cannot find, which is what
+// the single-event mode wants -- it builds no grouped tables and reads none.
+// The same zero returned because a table that should exist is missing or
+// short is a different thing entirely: it is not a missing density effect or
+// a missing stopping power but a wrong one, silently, in a direction nothing
+// downstream can notice. So what must exist is checked once, here, where the
+// material can be named.
+void Material::check_electron_tables() const
+{
+  auto n_grid = data::brems_e_grid.size();
+  auto require = [&](bool ok, const std::string& what) {
+    if (!ok) {
+      fatal_error("Charged-particle transport in material " +
+                  std::to_string(id_) + " has no " + what +
+                  ". This is a bug in the setup rather than a property of the "
+                  "data; transporting on it would give a wrong answer without "
+                  "saying so.");
+    }
+  };
+
+  require(density_effect_.size() == n_grid, "density-effect table");
+  for (int q = 0; q < 2; ++q) {
+    require(
+      collision_stopping_[q].size() == n_grid, "collision stopping power");
+    require(screening_[q].size() == n_grid, "density-effect screening");
+  }
+
+  // The oscillator list the recoil model reads, one block per element with one
+  // entry per subshell of it
+  int n_block = oscillator_offset_.empty() ? 0 : oscillator_offset_.size() - 1;
+  require(n_block == oscillator_element_.size(), "oscillator blocks");
+  for (int b = 0; b < n_block; ++b) {
+    const auto& elm = *data::elements[oscillator_element_[b]];
+    require(oscillator_offset_[b + 1] - oscillator_offset_[b] ==
+              elm.electron_shell_map_.size(),
+      "a complete oscillator block for " + elm.name_);
+  }
+  for (int i = 0; i < nuclide_.size(); ++i) {
+    require(element_block_[element_[i]] >= 0,
+      "an oscillator block for " + data::elements[element_[i]]->name_);
+  }
+
+  if (settings::deflection_cutoff <= 0.0)
+    return;
+
+  // Built only when something is grouped, and then for every block. These sit
+  // on the element's own energy grid rather than on the one above, because
+  // that is the grid the evaluated spectra they are integrals of are
+  // tabulated on.
+  for (int q = 0; q < 2; ++q) {
+    require(inelastic_xs1_[q].size() == n_block, "grouped transport table");
+    for (int b = 0; b < n_block; ++b) {
+      auto n = data::elements[oscillator_element_[b]]->electron_energy().size();
+      require(inelastic_soft_screened_s_[q][b].size() == n,
+        "grouped screened stopping power");
+      require(inelastic_soft_screened_w2_[q][b].size() == n,
+        "grouped screened straggling");
+      require(
+        inelastic_total_s_[q][b].size() == n, "evaluated total stopping power");
+      require(inelastic_xs1_[q][b].size() == n,
+        "grouped inelastic transport cross section");
     }
   }
 }

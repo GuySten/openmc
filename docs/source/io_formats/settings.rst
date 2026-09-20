@@ -306,10 +306,11 @@ charged particle, so a flux tally over electrons or positrons needs
 
 The ``<bremsstrahlung_split>`` element gives the number of photons emitted per
 radiative event, each carrying the emitting particle's weight divided by that
-number. It is a variance reduction for problems whose answer is driven by the
-photons electrons make and lives in a thin high-energy tail that analog
-emission reaches too rarely -- photonuclear yields from an electron beam being
-the case it was written for.
+number. It is a variance reduction for problems whose answer depends on the
+spectrum or the direction of the photons charged particles radiate, rather
+than only on how much energy they carry away, and particularly where the part
+of the spectrum that matters is a tail that analog emission reaches too
+rarely.
 
 The emissions are drawn independently rather than copied, so splitting buys
 tries at reaching that tail rather than copies of one photon, and draws that
@@ -319,7 +320,8 @@ what a single emission takes, so its own history stays fair while the photon
 field is right in expectation. Energy is then conserved in the mean rather than
 event by event.
 
-Requires the ``<electron_transport>`` element to be true.
+Ignored, with a warning, when ``<electron_transport>`` is not enabled: nothing
+radiates that there is anything to split.
 
   *Default*: 1, which is no splitting and is bit-for-bit the unsplit transport
 

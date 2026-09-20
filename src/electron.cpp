@@ -637,8 +637,8 @@ void Element::compute_soft_inelastic()
       // a hundredth of the kinetic energy: in carbon below about 70 keV, where
       // steps already decline to group.
       double loss = std::max(0.0, E - this->excitation(E));
-      double loss_ceiling =
-        std::min(headroom, MAX_SOFT_LOSS_SHARE * soft_loss_budget(projectile, E));
+      double loss_ceiling = std::min(
+        headroom, MAX_SOFT_LOSS_SHARE * soft_loss_budget(projectile, E));
       if (loss > 0.0 && loss < loss_ceiling) {
         s += excitation_(j) * loss;
         w2 += excitation_(j) * loss * loss;
@@ -2130,7 +2130,8 @@ void Element::bremsstrahlung(Particle& p, double k_min) const
   // what makes a photon worth having here is its energy: copying one photon
   // n times gives n tries at the same energy, while drawing n times gives n
   // tries at reaching the thin high-energy end of the spectrum, which is the
-  // part a photonuclear or pair-production answer is starved of.
+  // part an answer sensitive to the shape of the photon field, rather than to
+  // how much energy it carries, is starved of.
   //
   // The electron cannot lose all of them -- it emitted one photon, not n. It
   // loses the first draw, which is an unbiased sample of what one emission

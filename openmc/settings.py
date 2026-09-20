@@ -131,13 +131,16 @@ class Settings:
         .. versionadded:: 0.17.0
     bremsstrahlung_split : int
         Number of photons emitted per radiative event, each carrying 1/n of the
-        weight. A variance reduction for problems driven by the photons that
-        electrons make, where the answer depends on a thin high-energy tail
-        that analog emission samples too rarely. The draws are independent, so
-        splitting buys tries at reaching that tail rather than copies of one
-        photon. Energy is then conserved in the mean rather than event by
-        event, which adds noise to :attr:`heating` tallies, so it defaults to
-        1 (no splitting) and requires :attr:`electron_transport`.
+        weight. A variance reduction for problems whose answer depends on the
+        spectrum or the direction of the photons charged particles radiate,
+        rather than only on how much energy they carry away, and particularly
+        where the part of the spectrum that matters is a tail that analog
+        emission reaches too rarely. The draws are independent, so splitting
+        buys tries at reaching that tail rather than copies of one photon.
+        Energy is then conserved in the mean rather than event by event, which
+        adds noise to :attr:`heating` tallies, so it defaults to 1 (no
+        splitting). Ignored, with a warning, without
+        :attr:`electron_transport`.
 
         .. versionadded:: 0.17.0
     electron_treatment : {'led', 'ttb'}

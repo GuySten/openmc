@@ -302,10 +302,8 @@ double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
   double xi_hi, const std::function<double(double, double)>& f) const
 {
   double total = 0.0;
-  this->integrate_quantile(
-    E, xi_lo, xi_hi, [&](double x, double density, double w) {
-      total += w * f(x, density);
-    });
+  this->integrate_quantile(E, xi_lo, xi_hi,
+    [&](double x, double density, double w) { total += w * f(x, density); });
   return total;
 }
 

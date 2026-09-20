@@ -661,57 +661,73 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Electron transport is not currently supported in "
                   "multigroup mode");
     }
+  }
 
-    // The density-effect correction. Switching it off is not a physical choice:
-    // the Sternheimer screening is real and leaving it out overstates the
-    // collision stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It is
-    // here because Fano's theorem needs it. The theorem holds when the mass
-    // stopping power does not depend on density, and the density effect is
-    // precisely the term that breaks that, so a cavity test run with it on
-    // measures Sternheimer rather than the condensed-history algorithm it is
-    // meant to stress.
-    if (check_for_node(root, "density_effect")) {
-      density_effect = get_node_value_bool(root, "density_effect");
-      if (!density_effect) {
-        warning("The density-effect correction is disabled. Collision stopping "
-                "powers will be those of the free atom, which is correct only "
-                "for a verification test that asks for it.");
-      }
-    }
-
-    if (electron_transport) {
-      // Electron transport is meaningless without photon transport, and the
-      // per-element data it needs is only loaded when photon transport is on.
-      if (!photon_transport) {
-        warning("Electron transport requires photon transport; enabling it.");
-        photon_transport = true;
-      }
-      // The thick-target approximation stands in for electrons that are not
-      // transported, and sample_electron_reaction() ignores it when they are.
-      // Turning it off here keeps its tables from being built at all.
-      // Only worth saying to someone who asked for it. It is the default, so
-      // warning whenever it is merely still set tells every user of electron
-      // transport about a setting they never touched.
-      if (electron_treatment_set &&
-          electron_treatment == ElectronTreatment::TTB) {
-        warning("Electron treatment 'ttb' is ignored when electron transport "
-                "is enabled; bremsstrahlung is sampled per event instead.");
-      }
-      electron_treatment = ElectronTreatment::LED;
+  // The density-effect correction. Switching it off is not a physical choice:
+  // the Sternheimer screening is real and leaving it out overstates the
+  // collision stopping power by 0.23 MeV cm^2/g in copper at 16 MeV. It is
+  // here because Fano's theorem needs it. The theorem holds when the mass
+  // stopping power does not depend on density, and the density effect is
+  // precisely the term that breaks that, so a cavity test run with it on
+  // measures Sternheimer rather than the condensed-history algorithm it is
+  // meant to stress.
+  if (check_for_node(root, "density_effect")) {
+    density_effect = get_node_value_bool(root, "density_effect");
+    if (!density_effect && electron_transport) {
+      warning("The density-effect correction is disabled. Collision stopping "
+              "powers will be those of the free atom, which is correct only "
+              "for a verification test that asks for it.");
     }
   }
 
-  // Bremsstrahlung splitting: a variance reduction for problems driven by the
-  // photons electrons make, where the answer lives in a thin high-energy tail
-  // that analog emission samples too rarely.
+  // Bremsstrahlung splitting: a variance reduction for problems whose answer
+  // is driven by the photons electrons make, and which are sensitive to the
+  // spectrum or direction of those photons rather than only to how much
+  // energy they carry.
   if (check_for_node(root, "bremsstrahlung_split")) {
     bremsstrahlung_split =
       std::stoi(get_node_value(root, "bremsstrahlung_split"));
     if (bremsstrahlung_split < 1) {
       fatal_error("Bremsstrahlung splitting must emit at least one photon.");
     }
-    if (bremsstrahlung_split > 1 && !electron_transport) {
-      fatal_error("Bremsstrahlung splitting requires electron transport.");
+  }
+
+  // Everything above can be set in any order and in any combination, so what
+  // one setting means for another is settled here, once, rather than where it
+  // happens to be read. A setting that does not apply is ignored with a word
+  // about it: refusing to run over one would make a script that sweeps a
+  // parameter fail on the cases where the parameter does not bite.
+  if (electron_transport) {
+    // Electron transport is meaningless without photon transport, and the
+    // per-element data it needs is only loaded when photon transport is on.
+    if (!photon_transport) {
+      warning("Electron transport requires photon transport; enabling it.");
+      photon_transport = true;
+    }
+    // The thick-target approximation stands in for electrons that are not
+    // transported, and sample_electron_reaction() ignores it when they are.
+    // Turning it off here keeps its tables from being built at all.
+    // Only worth saying to someone who asked for it. It is the default, so
+    // warning whenever it is merely still set tells every user of electron
+    // transport about a setting they never touched.
+    if (electron_treatment_set &&
+        electron_treatment == ElectronTreatment::TTB) {
+      warning("Electron treatment 'ttb' is ignored when electron transport "
+              "is enabled; bremsstrahlung is sampled per event instead.");
+    }
+    electron_treatment = ElectronTreatment::LED;
+  } else {
+    // Nothing below transports a charged particle, so the settings that only
+    // describe how one is transported have nothing to act on.
+    if (bremsstrahlung_split > 1) {
+      warning("Bremsstrahlung splitting is ignored without electron "
+              "transport.");
+      bremsstrahlung_split = 1;
+    }
+    if (!density_effect) {
+      warning("The density-effect correction setting is ignored without "
+              "electron transport.");
+      density_effect = true;
     }
   }
 
@@ -858,6 +874,10 @@ void read_settings_xml(pugi::xml_node root)
       if (deflection_cutoff < 0.0) {
         fatal_error("Deflection cutoff cannot be negative.");
       }
+      if (!electron_transport) {
+        warning("The deflection cutoff is ignored without electron "
+                "transport.");
+      }
       // Clamped rather than refused: a coarser step than this is still a
       // request for the coarsest step there is, and stopping a run over a
       // quality knob helps nobody. The Python interface refuses it at the
@@ -875,6 +895,10 @@ void read_settings_xml(pugi::xml_node root)
         std::stod(get_node_value(node_cutoff, "energy_loss"));
       if (energy_loss_cutoff <= 0.0) {
         fatal_error("Energy loss cutoff must be greater than zero.");
+      }
+      if (!electron_transport) {
+        warning("The energy loss cutoff is ignored without electron "
+                "transport.");
       }
       if (energy_loss_cutoff > MAX_STEP_COARSENESS) {
         warning(fmt::format("Energy loss cutoff of {} is past the {} a "

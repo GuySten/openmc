@@ -328,3 +328,134 @@ def test_inner_shell_vacancies_survive_grouping(tmp_path):
     assert abs(grouped - single) < 3.0 * spread, (
         f'K x-ray yield {grouped:.4e} grouped against {single:.4e} '
         'single-event: grouping is losing inner-shell vacancies')
+
+
+# What the settings mean together
+# -------------------------------
+# The charged-particle settings arrived one at a time and can be combined
+# freely, including with the settings that predate them. What one means for
+# another is decided in one place, and these are the combinations that place
+# has to get right. A setting that does not apply is ignored with a warning
+# rather than refused: a script sweeping a parameter should not fail on the
+# cases where the parameter does not bite.
+def _combination_model(tmp_path, name, electron_transport=True, **kwargs):
+    openmc.reset_auto_ids()
+    mat = openmc.Material()
+    mat.add_element('C', 1.0)
+    mat.set_density('g/cm3', 1.7)
+    outer = openmc.Sphere(r=1.0, boundary_type='vacuum')
+    cell = openmc.Cell(fill=mat, region=-outer)
+
+    settings = openmc.Settings()
+    settings.run_mode = 'fixed source'
+    settings.particles = 20
+    settings.batches = 2
+    settings.seed = 3
+    settings.photon_transport = True
+    settings.electron_transport = electron_transport
+    settings.cutoff = {'energy_electron': CUTOFF, 'energy_positron': CUTOFF,
+                       'energy_photon': CUTOFF}
+    settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point((0.0, 0.0, 0.0)),
+        energy=openmc.stats.delta_function(E0), particle='electron')
+    for key, value in kwargs.items():
+        if key == 'cutoff':
+            settings.cutoff = {**settings.cutoff, **value}
+        else:
+            setattr(settings, key, value)
+
+    heating = openmc.Tally(name='heating')
+    heating.scores = ['heating']
+    return openmc.Model(openmc.Geometry([cell]), openmc.Materials([mat]),
+                        settings, openmc.Tallies([heating]))
+
+
+def _run_capturing(model, tmp_path, name):
+    """Run and give back (combined output, heating) -- heating None if it died"""
+    import subprocess
+    cwd = tmp_path / name
+    cwd.mkdir(parents=True, exist_ok=True)
+    model.export_to_model_xml(cwd / 'model.xml')
+    proc = subprocess.run(['openmc'], cwd=cwd, capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    if proc.returncode != 0:
+        return out, None
+    sp = list(cwd.glob('statepoint.*.h5'))
+    with openmc.StatePoint(sp[0]) as s:
+        return out, s.get_tally(name='heating').mean.ravel()[0]
+
+
+def test_settings_that_do_not_apply_are_ignored(tmp_path):
+    """Without electron transport the charged-particle knobs have no target
+
+    Each is ignored with a word about it, and the answer is the one the run
+    would have given without it. Refusing to run would be worse: these are
+    quality and variance-reduction knobs, and a sweep over one should not
+    fail on the cases where nothing charged is transported.
+    """
+    plain, plain_heat = _run_capturing(
+        _combination_model(tmp_path, 'plain', electron_transport=False),
+        tmp_path, 'plain')
+    assert plain_heat is not None, plain
+
+    for name, kwargs, phrase in [
+        ('split', {'bremsstrahlung_split': 3}, 'Bremsstrahlung splitting'),
+        ('density', {'density_effect': False}, 'density-effect correction'),
+        ('deflect', {'cutoff': {'deflection': 0.05}}, 'deflection cutoff'),
+        ('loss', {'cutoff': {'energy_loss': 0.05}}, 'energy loss cutoff'),
+    ]:
+        out, heat = _run_capturing(
+            _combination_model(tmp_path, name, electron_transport=False,
+                               **kwargs), tmp_path, name)
+        assert heat is not None, out
+        assert 'ignored' in out and phrase in out, out
+        assert heat == pytest.approx(plain_heat, rel=1e-10), (
+            f'{name} changed the answer although it does not apply')
+
+
+def test_ttb_gives_way_to_electron_transport(tmp_path):
+    """Asking for both says so, and transports rather than approximating"""
+    out, heat = _run_capturing(
+        _combination_model(tmp_path, 'ttb', electron_treatment='ttb'),
+        tmp_path, 'ttb')
+    assert heat is not None, out
+    assert 'ttb' in out and 'ignored' in out, out
+
+    _, led = _run_capturing(
+        _combination_model(tmp_path, 'led', electron_treatment='led'),
+        tmp_path, 'led')
+    assert heat == pytest.approx(led, rel=1e-10)
+
+
+def test_electron_transport_turns_photon_transport_on(tmp_path):
+    """The data it needs is loaded with the photons, so it says so and does it"""
+    model = _combination_model(tmp_path, 'nophoton')
+    model.settings.photon_transport = False
+    out, heat = _run_capturing(model, tmp_path, 'nophoton')
+    assert heat is not None, out
+    assert 'requires photon transport' in out, out
+
+
+def test_charged_flux_with_a_collision_estimator_is_refused(tmp_path):
+    """Zero for every bin is not an answer a tally may return in silence"""
+    for estimator in ('analog', 'collision'):
+        model = _combination_model(tmp_path, f'flux_{estimator}')
+        flux = openmc.Tally(name='flux')
+        flux.filters = [openmc.ParticleFilter(['electron'])]
+        flux.scores = ['flux']
+        flux.estimator = estimator
+        model.tallies.append(flux)
+
+        out, heat = _run_capturing(model, tmp_path, f'flux_{estimator}')
+        assert heat is None, 'the run should have stopped'
+        assert 'tracklength' in out, out
+
+    # and a tracklength estimator of the same tally runs
+    model = _combination_model(tmp_path, 'flux_tl')
+    flux = openmc.Tally(name='flux')
+    flux.filters = [openmc.ParticleFilter(['electron'])]
+    flux.scores = ['flux']
+    flux.estimator = 'tracklength'
+    model.tallies.append(flux)
+    out, heat = _run_capturing(model, tmp_path, 'flux_tl')
+    assert heat is not None, out

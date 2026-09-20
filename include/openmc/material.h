@@ -374,6 +374,15 @@ private:
   //! Tabulate the transport cross section of the grouped inelastic collisions
   void init_inelastic_transport();
 
+  //! Refuse to transport charged particles on tables that were not built
+  //
+  //! Called once at the end of init_inelastic_transport(). An accessor that
+  //! cannot find a table returns zero, which is what single-event transport
+  //! wants; the same zero from a table that should exist would be a wrong
+  //! density effect or a wrong stopping power rather than a missing one, and
+  //! nothing downstream could notice.
+  void check_electron_tables() const;
+
   //! Initialize bremsstrahlung data
   void init_bremsstrahlung();
 

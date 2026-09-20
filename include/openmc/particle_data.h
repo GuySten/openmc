@@ -147,7 +147,7 @@ private:
 //! energy
 //==============================================================================
 
-struct NeutronMicroXS {
+struct NuclideMicroXS {
   // Microscopic cross sections in barns
   double total;      //!< total cross section
   double absorption; //!< absorption (disappearance)
@@ -572,7 +572,7 @@ private:
   //==========================================================================
   // Data members -- see public: below for descriptions
 
-  vector<NeutronMicroXS> neutron_xs_;
+  vector<NuclideMicroXS> neutron_xs_;
   vector<PhotoAtomicMicroXS> photon_xs_;
   vector<ElectroAtomicMicroXS> electron_xs_;
   MacroXS macro_xs_;
@@ -677,8 +677,8 @@ public:
 
   // Cross section caches
   // Microscopic neutron cross sections
-  NeutronMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
-  const NeutronMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
+  NuclideMicroXS& neutron_xs(int i) { return neutron_xs_[i]; }
+  const NuclideMicroXS& neutron_xs(int i) const { return neutron_xs_[i]; }
 
   // Microscopic photon cross sections
   PhotoAtomicMicroXS& photon_xs(int i) { return photon_xs_[i]; }

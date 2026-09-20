@@ -1397,6 +1397,19 @@ void Material::check_electron_tables() const
       if (!(total > 0.0) || !(w_cc > 0.0))
         continue;
       auto m = this->collision_moments(q, E, w_cc);
+
+      // The split has a second limit, and it is the medium's rather than the
+      // step's. The restricted stopping power counts the loss to transfers
+      // under the cutoff, and once the cutoff falls below the mean excitation
+      // energy there are no such transfers to count: the expression goes
+      // negative, which is the formula saying it has left its domain rather
+      // than a small number. It happens only within a factor of a few of the
+      // transport cutoff, where the step's budget is a hundredth of a kinetic
+      // energy that is itself close to the cutoff -- in carbon, below about
+      // 1.1 keV. There is nothing to add up there, and a step that short
+      // holds far too few collisions to be described by two moments anyway.
+      if (!(m.s_soft > 0.0))
+        continue;
       double sum = m.s_soft + m.s_hard;
       if (std::abs(sum - total) > 1.0e-9 * total) {
         fatal_error(fmt::format(

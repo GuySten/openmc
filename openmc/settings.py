@@ -120,7 +120,7 @@ class Settings:
         Fano cavity tests, whose theorem requires the mass stopping power to be
         independent of density -- which is the very term this correction adds.
 
-        .. versionadded:: 0.15.3
+        .. versionadded:: 0.17.0
     electron_transport : bool
         Whether to transport electrons and positrons as individual particles,
         simulating every interaction as a discrete event rather than depositing

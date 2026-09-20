@@ -378,7 +378,7 @@ it, so the test requires this element to be false.
 
   *Default*: true
 
-  .. versionadded:: 0.15.3
+  .. versionadded:: 0.17.0
 
 .. _electron_transport:
 

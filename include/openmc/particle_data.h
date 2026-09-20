@@ -268,6 +268,11 @@ struct StepXS {
   double straggling {0.0};    //!< second moment of the restricted loss
   double xs1_soft {0.0};      //!< first transport xs of the grouped deflections
   double xs2_soft {0.0};      //!< second
+  //! Density-effect screening of the distant inelastic strength, in the same
+  //! units as the correction itself. It belongs to the material and the
+  //! energy, so it is resolved here, once per cross section lookup, rather
+  //! than searched for again in every inelastic collision.
+  double screening {0.0};
 };
 
 struct MacroXS {

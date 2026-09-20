@@ -159,7 +159,9 @@ constexpr double MAX_SOFT_LOSS_SHARE = 0.1;
 //! \f[ \frac{\Omega}{S} = \frac{\int W^2 d\sigma}{\int W d\sigma}
 //!     \le W_{cc}, \f]
 //!
-//! since every transfer in those integrals is under the soft cutoff. That
+//! since every transfer in those integrals is under the soft cutoff -- which
+//! is why grouped excitation, whose transfer is a fixed loss rather than a
+//! draw from that spectrum, is held under the same ceiling. That
 //! cutoff is in turn held under MAX_SOFT_LOSS_SHARE of the budget, so the
 //! variance is under a tenth of the mean squared, which puts the two branches
 //! of sample_soft_energy_loss() at 1.55 and 1.65 budgets respectively. Two

@@ -466,11 +466,14 @@ void Particle::apply_soft_energy_loss(double distance)
 
   // The step may not take more than the particle has. Reaching that is the
   // energy ceiling failing to do its job, so it is worth noticing rather than
-  // silently clamping.
-  if (loss >= E()) {
+  // silently clamping. The step is left in place rather than reset here: the
+  // clamped loss is still the grouped loss of this segment and belongs at a
+  // point drawn inside it, and resetting would send score_soft_deposition
+  // home and leave the whole of it to be deposited at the segment's end by
+  // stop_below_cutoff(). The particle is about to stop either way, so there
+  // is no later step for the state to confuse.
+  if (loss >= E())
     loss = E();
-    this->ch_reset();
-  }
   E() -= loss;
 }
 

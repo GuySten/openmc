@@ -256,11 +256,12 @@ double ElectroionizationSpectrum::soft_quantile(double E, double e_cut) const
   return 0.5 * (lo + hi);
 }
 
-double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
-  double xi_hi, const std::function<double(double, double)>& f) const
+void ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
+  double xi_hi,
+  const std::function<void(double, double, double)>& accumulate) const
 {
   if (distribution_.empty() || !(xi_hi > xi_lo))
-    return 0.0;
+    return;
 
   // Break the range at the cumulative nodes of both tables the blend uses,
   // since the map is smooth only between them
@@ -283,7 +284,6 @@ double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
   std::sort(nodes.begin(), nodes.end());
   nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
 
-  double total = 0.0;
   for (int k = 0; k + 1 < nodes.size(); ++k) {
     double a = nodes[k];
     double b = nodes[k + 1];
@@ -293,9 +293,19 @@ double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
       double xi = mid + half * GL_X[g];
       double density;
       double x = this->at_quantile(E, xi, &density);
-      total += half * GL_W[g] * f(x, density);
+      accumulate(x, density, half * GL_W[g]);
     }
   }
+}
+
+double ElectroionizationSpectrum::integrate_quantile(double E, double xi_lo,
+  double xi_hi, const std::function<double(double, double)>& f) const
+{
+  double total = 0.0;
+  this->integrate_quantile(
+    E, xi_lo, xi_hi, [&](double x, double density, double w) {
+      total += w * f(x, density);
+    });
   return total;
 }
 

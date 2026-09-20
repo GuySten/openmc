@@ -57,12 +57,12 @@ namespace {
 tensor::Tensor<double> moments_on_grid(const tensor::Tensor<double>& grid,
   const vector<double>& energy, const vector<double>& value)
 {
-  int n = grid.size();
+  auto n = grid.size();
   auto out = tensor::zeros<double>({n});
   if (energy.size() < 2)
     return out;
 
-  for (int i = 0; i < n; ++i) {
+  for (decltype(n) i = 0; i < n; ++i) {
     double E = grid(i);
     int k = lower_bound_index(energy.begin(), energy.end(), E);
     k = std::max(0, std::min(k, static_cast<int>(energy.size()) - 2));
@@ -620,12 +620,26 @@ void Element::compute_soft_inelastic()
       double w2 = 0.0;
 
       // Atomic excitation, which emits nothing at all -- OpenMC deposits the
-      // de-excitation energy where the collision happened -- so the only bound
-      // on it is that it leave the projectile above its cutoff. The evaluated
-      // loss is one number per collision rather than a distribution, so its
-      // second moment is the square of that loss.
+      // de-excitation energy where the collision happened -- so nothing it
+      // produces can be lost and the only bound from that side is that it
+      // leave the projectile above its cutoff. The evaluated loss is one
+      // number per collision rather than a distribution, so its second moment
+      // is the square of that loss.
+      //
+      // The same ceiling that caps W_cc applies here, and for the same reason.
+      // A step describes its loss by a mean and a variance, and the bound on
+      // how far the sampled loss may overshoot the mean -- which is what the
+      // hard majorant is scanned over -- rests on Omega/S being under a tenth
+      // of the budget. For excitation Omega/S is the loss itself, so an
+      // excitation costing more than that has to be sampled one collision at a
+      // time however little it emits. It binds only at the bottom of the
+      // range, where the loss per collision is tens of eV against a budget of
+      // a hundredth of the kinetic energy: in carbon below about 70 keV, where
+      // steps already decline to group.
       double loss = std::max(0.0, E - this->excitation(E));
-      if (loss > 0.0 && loss < headroom) {
+      double loss_ceiling =
+        std::min(headroom, MAX_SOFT_LOSS_SHARE * soft_loss_budget(projectile, E));
+      if (loss > 0.0 && loss < loss_ceiling) {
         s += excitation_(j) * loss;
         w2 += excitation_(j) * loss * loss;
         // Note an excitation collision changes the projectile's energy and
@@ -710,6 +724,17 @@ void Element::compute_soft_inelastic()
         // soft cutoff and an analytic cross section -- so both are built here,
         // once per element, rather than in the per-material pass.
         double W_split = std::max(w_cc, B);
+        // Two conventions meet here and the difference between them is B. The
+        // free cross sections are those of a projectile on an electron at
+        // rest, so their transfer runs to E/2 for the indistinguishable pair
+        // and to E for the positron; the evaluated spectra count the binding
+        // energy in the transfer, so theirs runs to (E + B)/2. The free part
+        // of the hard channel therefore stops at the free limit and the
+        // evaluated part carries the sliver above it on its own -- which is
+        // right, since the free cross section says nothing there. For the
+        // positron the free limit is E, and (E + B)/2 is where its own
+        // channel above the Moller limit begins, so W_top is that instead and
+        // the rest is bhabha_.
         double W_top = (q == 0) ? 0.5 * E : 0.5 * (E + B);
         double K = n_e * COLLISION_CONST / beta_sq;
         auto free_dcs = [&](double W) {
@@ -1034,9 +1059,9 @@ void Element::calculate_electron_xs(Particle& p) const
   if (settings::deflection_cutoff > 0.0 &&
       inelastic_soft_s_[q].size() == n_grid) {
     // Every one of these is a straight interpolation on the index already in
-    // hand. They were accessor calls, each searching the energy grid again --
-    // inelastic_soft() among them, so the lookup searched
-    // a grid of several hundred points a dozen times over for one energy.
+    // hand. They were accessor calls, each searching the energy grid again,
+    // so the lookup searched a grid of several hundred points a dozen times
+    // over for one energy.
     auto on_grid = [i_grid, f](const tensor::Tensor<double>& v) {
       return v(i_grid) + f * (v(i_grid + 1) - v(i_grid));
     };
@@ -1134,26 +1159,18 @@ double Element::elastic_scatter_hard(int q_index, double E, double xs_elastic,
   // already interpolated them for this energy. Asking the element for them
   // again searched the energy grid twice more per hard elastic collision, and
   // hard elastic is the commonest hard channel there is.
+  //
+  // The cut is exact in probability and interpolated in angle. Restricting the
+  // quantile to p_hard makes the sampled fraction equal the share of the cross
+  // section that stayed hard, whatever the tables do in between; what is
+  // approximate is the mu the cut lands on, the distribution at E being the
+  // blend of the two tables bracketing it rather than a table of its own. That
+  // is the interpolation error of the angular data and not an error of the
+  // split.
   double p_hard = (xs_elastic > 0.0)
                     ? std::min(1.0, std::max(0.0, xs_hard) / xs_elastic)
                     : 1.0;
   return elastic_angle_[q_index].sample_restricted(E, p_hard, seed);
-}
-
-void Element::inelastic_soft(int q_index, double E, double& s, double& w2) const
-{
-  s = 0.0;
-  w2 = 0.0;
-  int n = electron_energy_.size();
-  if (n < 2 || inelastic_soft_s_[q_index].size() != n)
-    return;
-
-  double f;
-  int i = grid_index(electron_energy_, E, f);
-  const auto& sv = inelastic_soft_s_[q_index];
-  const auto& wv = inelastic_soft_w2_[q_index];
-  s = std::max(0.0, sv(i) + f * (sv(i + 1) - sv(i)));
-  w2 = std::max(0.0, wv(i) + f * (wv(i + 1) - wv(i)));
 }
 
 void Element::compute_unscreened_stopping()
@@ -1380,17 +1397,24 @@ void Element::compute_inelastic_transport(int q_index,
           i, B, n_e, sigma, e_out, density, c_tra_free, c_tra);
       };
 
-      total +=
-        sigma * ionization_dist_[i]->restricted_integral(E, e_cut, deflection);
-      s_scr += sigma * ionization_dist_[i]->restricted_integral(
-                         E, e_cut, [&](double e_out, double density) {
-                           return screened(e_out, density) * (e_out + B);
-                         });
-      w2_scr += sigma * ionization_dist_[i]->restricted_integral(
-                          E, e_cut, [&](double e_out, double density) {
-                            double W = e_out + B;
-                            return screened(e_out, density) * W * W;
-                          });
+      // All three are integrals of the same spectrum over the same range, so
+      // they are taken in one pass: the quadrature point costs two binary
+      // searches and a blend, and the integrands cost a few flops each.
+      double t_i = 0.0;
+      double s_i = 0.0;
+      double w2_i = 0.0;
+      ionization_dist_[i]->integrate_quantile(E, 0.0,
+        ionization_dist_[i]->soft_quantile(E, e_cut),
+        [&](double e_out, double density, double weight) {
+          t_i += weight * deflection(e_out, density);
+          double W = e_out + B;
+          double scr = weight * screened(e_out, density);
+          s_i += scr * W;
+          w2_i += scr * W * W;
+        });
+      total += sigma * t_i;
+      s_scr += sigma * s_i;
+      w2_scr += sigma * w2_i;
     }
 
     // Transfers above the Moller limit, which only a positron makes and which
@@ -1753,6 +1777,15 @@ double Element::sample_recoil(
   // out of the test and the same Moller form serves both charges -- which is
   // the same conclusion PENELOPE reaches, its distant interactions being
   // identical for the two.
+  //
+  // The assumption is that everything the evaluated cross section has beyond
+  // the free one is distant. It is the same assumption the density-effect
+  // shortfall in Material::init_inelastic_transport() rests on, and it is a
+  // model rather than a decomposition the data carries: the evaluated spectra
+  // do not say which collisions were close. Where a condensed-history step is
+  // running this only bears on transfers above the soft cutoff, which is 1 keV
+  // by default and above the binding energy of everything but the inner
+  // shells; in single-event transport it bears on all of them.
   if (density > 0.0) {
     const auto& xs {p.electron_xs(index_)};
     int i_grid = xs.index_grid;
@@ -1786,8 +1819,7 @@ double Element::sample_recoil(
   // its free-atom value, too high by 2 pi r_e^2 m c^2 n_e delta / beta^2 --
   // 0.23 MeV cm^2/g for copper at 16 MeV, a sixth of the whole.
   double c_tra_free = -std::log1p(-beta_sq) - beta_sq;
-  double c_tra = std::max(0.0,
-    c_tra_free - mat.screening_correction(p.type().is_positron() ? 1 : 0, E));
+  double c_tra = std::max(0.0, c_tra_free - p.macro_xs().step.screening);
   double u = prn(p.current_seed()) * (c_tra_free + c_lon);
   if (u < c_tra)
     return q_min;

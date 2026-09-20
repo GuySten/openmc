@@ -276,6 +276,11 @@ public:
   //! every one of them
   vector<int> oscillator_element_;
   std::unordered_map<int, int> oscillator_block_;
+  //! Oscillator block of each global element index, or -1. Same content as
+  //! the map above, laid out flat: sample_recoil() asks for a resonance
+  //! energy by element index once per inelastic collision, which is too often
+  //! to hash for it.
+  vector<int> element_block_;
   //! Oscillator block of each entry in nuclide_, or -1. The map above is what
   //! builds this; the transport reads this, because a hash lookup per element
   //! per cross section evaluation is not free.

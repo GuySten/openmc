@@ -133,6 +133,23 @@ public:
   double integrate_quantile(double E, double xi_lo, double xi_hi,
     const std::function<double(double, double)>& f) const;
 
+  //! Integrate several integrands over a quantile range in one pass
+  //!
+  //! The quadrature point costs more than the integrand: reaching one means
+  //! inverting two tabulated cumulatives by binary search and blending them.
+  //! Where a caller wants several moments of the same spectrum over the same
+  //! range -- the transport cross section, the restricted stopping power and
+  //! the restricted straggling all are -- it should pay for the points once
+  //! and accumulate them itself.
+  //!
+  //! \param[in] E Incident electron kinetic energy in [eV]
+  //! \param[in] xi_lo Lower quantile
+  //! \param[in] xi_hi Upper quantile
+  //! \param[in] accumulate Called at each quadrature point with the knock-on
+  //!   energy, the density there and the quadrature weight
+  void integrate_quantile(double E, double xi_lo, double xi_hi,
+    const std::function<void(double, double, double)>& accumulate) const;
+
 private:
   //! Outgoing spectrum tabulated for one incident energy
   struct Table {

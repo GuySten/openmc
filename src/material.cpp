@@ -771,6 +771,12 @@ void Material::init_electron_oscillators()
   }
   oscillator_offset_.push_back(oscillator_energy_.size());
 
+  element_block_.assign(data::elements.size(), -1);
+  for (const auto& kv : oscillator_block_) {
+    if (kv.first >= 0 && kv.first < element_block_.size())
+      element_block_[kv.first] = kv.second;
+  }
+
   // Re-solve the adjustment on this list, so that sum_i f_i ln(W_i) = ln(I)
   // holds for the oscillators actually used. This is one more Newton solve per
   // material at setup, and it scales each resonance by what the Sternheimer
@@ -845,10 +851,11 @@ double Material::density_effect_correction(double E) const
 
 double Material::oscillator_energy(int i_element, int i_shell) const
 {
-  auto it = oscillator_block_.find(i_element);
-  if (it == oscillator_block_.end())
+  if (i_element < 0 || i_element >= element_block_.size())
     return 0.0;
-  int i = it->second;
+  int i = element_block_[i_element];
+  if (i < 0)
+    return 0.0;
   int j = oscillator_offset_[i] + i_shell;
   return (j < oscillator_offset_[i + 1]) ? oscillator_energy_[j] : 0.0;
 }
@@ -1411,14 +1418,26 @@ void Material::calculate_electron_xs(Particle& p) const
   // screening is worth 15.5 per cent, so the net is 5.3 per cent high before
   // screening and 10 per cent low after it. Neither is the stopping power the
   // material has.
+  //
+  // The mean is pinned and the straggling deliberately is not. What the
+  // evaluated spectra are short of is the relativistic rise, which is distant
+  // strength at small W: it carries a share of the first moment and almost
+  // none of the second, since the second weights by W^2. Scaling the
+  // straggling by the same factor as the mean would therefore put the
+  // correction where it does not belong and widen a distribution that is
+  // already the right width. What checks that is the Landau most probable
+  // loss, which is a property of the shape rather than of the mean.
+  int q = p.type().is_positron() ? 1 : 0;
   if (have_evaluated) {
-    int q = p.type().is_positron() ? 1 : 0;
     double target = electron_density * this->collision_stopping_power(q, p.E());
     if (target > 0.0) {
       p.macro_xs().step.stopping =
         std::max(0.0, p.macro_xs().step.stopping + target - s_evaluated);
     }
   }
+
+  // Resolved once here for the collisions that follow at this energy
+  p.macro_xs().step.screening = this->screening_correction(q, p.E());
 }
 
 void Material::set_id(int32_t id)

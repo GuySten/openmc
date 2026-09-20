@@ -99,18 +99,6 @@ public:
   //! Elastic cross section in [b] at one energy
   double elastic_xs(int q_index, double E) const;
 
-  //! Soft inelastic energy loss, per atom and per unit path
-  //!
-  //! The stopping power restricted to collisions the mixed scheme groups, and
-  //! the second moment of the same energy loss, which is the straggling that
-  //! grouping would otherwise throw away.
-  //!
-  //! \param[in] q_index 0 for an electron, 1 for a positron
-  //! \param[in] E Kinetic energy in [eV]
-  //! \param[out] s Restricted stopping power in [b eV]
-  //! \param[out] w2 Second moment of the restricted loss in [b eV^2]
-  void inelastic_soft(int q_index, double E, double& s, double& w2) const;
-
   //! Collision stopping power the hard inelastic channel carries, per atom
   //!
   //! \param[in] q_index 0 for an electron, 1 for a positron

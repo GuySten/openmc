@@ -927,10 +927,10 @@ void initialize_data()
       data::energy_max[photon] =
         std::min(data::energy_max[photon], data::energy_max[electron]);
 
-      // The default charged-particle cutoff is zero, which would let a
-      // particle fall below the tabulated range and be transported on clamped
-      // cross sections. Raise it to where the data begins unless the user
-      // asked for something higher.
+      // A cutoff set below the data would let a particle fall out of the
+      // tabulated range and be transported on clamped cross sections. Raise
+      // it to where the data begins unless the user asked for something
+      // higher; the default of 1 keV is above it for every element.
       for (auto t : charged) {
         if (settings::energy_cutoff[t] < data::energy_min[t]) {
           settings::energy_cutoff[t] = data::energy_min[t];

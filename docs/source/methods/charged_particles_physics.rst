@@ -13,14 +13,26 @@ shorter stopping ranges compared to neutrons and photons, especially in
 high-density materials.
 
 When electron transport is enabled, electrons and positrons are instead
-transported explicitly by an analog single-event scheme, described in
-:ref:`electron_transport` below. Every elastic, excitation, electroionization
-and bremsstrahlung interaction is sampled individually; there is no
-condensed-history step and no multiple-scattering theory. This is far more
-expensive -- a 1 MeV electron undergoes on the order of :math:`10^5`
-interactions before it ranges out -- but it makes no assumption about the step
-length and remains valid where condensed-history schemes break down, which is
-generally below about 1 keV.
+transported explicitly, as described in :ref:`electron_transport` below. The
+interaction physics is the same either way; what differs is how much of it is
+simulated one collision at a time.
+
+In the analog single-event scheme, every elastic, excitation,
+electroionization and bremsstrahlung interaction is sampled individually.
+Nothing is condensed and no multiple-scattering theory is used, so no
+assumption is made about the step length and the scheme remains valid where
+condensed-history schemes break down, which is generally below about 1 keV.
+It is also expensive: a 1 MeV electron undergoes on the order of
+:math:`10^5` interactions before it ranges out.
+
+The default is a mixed, or class II, condensed-history scheme built on top of
+that same physics, described in `Condensed History`_. The interactions too
+weak to be worth following individually are grouped into a step and replaced
+by their first two moments; everything else is still sampled one collision at
+a time, exactly as the single-event scheme would. How much is grouped is set
+by the ``deflection`` and ``energy_loss`` cutoffs of the ``<cutoff>`` element,
+and setting ``deflection`` to zero groups nothing and recovers single-event
+transport exactly.
 
 -----------------------------
 Charged Particle Interactions
@@ -374,12 +386,15 @@ in opposite directions.
 Electron Transport
 ------------------
 
-When electron transport is enabled, electrons and positrons are transported by
-an analog single-event scheme. The distance to the next interaction is sampled
-from the total electroatomic cross section, one of the four channels below is
-selected in proportion to its cross section, and that interaction is sampled in
-full. Nothing is condensed into a step: there is no multiple-scattering
-distribution, no substep energy loss, and no path-length correction.
+The four interaction channels below are what the transport is built from,
+under either scheme. In the analog single-event scheme the distance to the
+next interaction is sampled from the total electroatomic cross section, one of
+the four channels is selected in proportion to its cross section, and that
+interaction is sampled in full; nothing is condensed into a step. Under the
+default mixed scheme the same channels are split into a grouped part and a
+part still sampled this way, as `Condensed History`_ describes; the sections
+below describe the physics of each channel, and the splitting is described
+there.
 
 The inelastic interaction data are those of the EPICS evaluated libraries, in
 particular the Evaluated Electron Data Library (EEDL), read from the eprdata
@@ -794,6 +809,219 @@ below the binding energy of the least-bound shell, and excitation can also
 vanish at some energy above 10 eV depending on the element. Between those
 thresholds an electron can take a very large number of elastic steps without
 losing energy. Setting the cutoff no lower than about 12 eV avoids this.
+
+Condensed History
+-----------------
+
+Following every interaction of an electron is exact and slow. Most of those
+interactions barely change the particle: an elastic collision that turns it
+through a fraction of a degree, an ionization that costs it a few tens of eV.
+The mixed, or class II, scheme of Berger separates the interactions by how
+much they matter rather than by kind. Those above a cutoff -- the *hard*
+interactions -- are sampled individually, exactly as the single-event scheme
+samples them. Those below it -- the *soft* interactions -- are grouped into a
+step and replaced by the first two moments of what they would have done.
+
+The step runs from one hard interaction to the next. Over it the grouped
+collisions contribute one deflection and one energy loss, sampled from the
+artificial distributions below, and each channel's cutoff is what decides how
+much of it is grouped.
+
+Where the Cutoffs Come From
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Elastic scattering is cut by angle. The ``deflection`` cutoff, PENELOPE's
+:math:`C_1`, is the largest mean deflection :math:`\langle 1 - \mu \rangle`
+the grouped collisions of one step may accumulate. It is applied to the step
+rather than obtained from it: in PENELOPE the step is one hard mean free path
+by construction, so the soft deflection over it is
+:math:`\sigma_{1,\text{soft}}/\sigma_{\text{hard}}`; here the step is a
+sampled flight, which runs past a mean free path as often as not and is cut
+short by the energy ceiling and by the geometry besides, so the bound is
+imposed on the length directly.
+
+The inelastic channels are cut by energy, and not by a parameter of their own.
+A collision may be grouped only when nothing it would have produced would have
+been transported anyway, so the soft cutoff :math:`W_{cc}` of each channel is
+the transport cutoff of the secondary it makes: the electron cutoff for a
+knock-on, the photon cutoff for a bremsstrahlung photon. Raising those cutoffs
+therefore groups more. A second bound limits how much: no single grouped
+collision may carry more than
+:math:`\texttt{MAX\_SOFT\_LOSS\_SHARE} = 1/10` of the step's own energy
+budget, since a step describing its loss by a mean and a variance cannot have
+either resting on one event.
+
+The step is bounded in length by both cutoffs, by the ``energy_loss``
+fraction of the kinetic energy (PENELOPE's :math:`C_2`), by the distance to
+the nearest boundary, and by the energy left above the particle's own
+transport cutoff. Both fractions are capped at
+:math:`\texttt{MAX\_STEP\_COARSENESS} = 0.2`, where PENELOPE caps them: past
+that a step turning the particle through some 37 degrees at one point is no
+longer describing a path, and a step taking a fifth of the kinetic energy has
+moved far enough that the cross sections it began with belong to a different
+particle.
+
+A step is taken only if it would group at least
+:math:`\texttt{MIN\_GROUPED\_COLLISIONS} = 30` collisions; otherwise the
+transport falls back to sampling them individually for that step. Two moments
+describe a sum of :math:`N` collisions to about :math:`1/\sqrt{N}` and no
+better, and a step that removes ten collisions was not going to be much faster
+than simulating them. This is what decides, with no input from the user, where
+a run stops being condensed history: in a thin region, near an interface,
+wherever the geometry cuts the step short, and at low energy, where collisions
+are violent enough that few of them fit under the angular ceiling. A 10 keV
+electron in carbon fits four and is transported one collision at a time; a
+1 MeV one fits 150.
+
+The Grouped Deflection
+~~~~~~~~~~~~~~~~~~~~~~
+
+Over a path :math:`s` the Legendre moments of the accumulated soft deflection
+decay as
+
+.. math::
+    :label: ch-moment-decay
+
+    \langle \mu \rangle = e^{-s/\lambda_1}, \qquad
+    \langle P_2(\mu) \rangle = e^{-s/\lambda_2},
+
+with :math:`1/\lambda_\ell = n\sigma_\ell` built from the soft part of the
+elastic distribution alone, where :math:`\sigma_\ell` is the
+:math:`\ell`-th transport cross section. The inelastic channels contribute to
+:math:`\sigma_1` as well, from the recoil kinematics of the grouped
+ionization and excitation collisions.
+
+What a class II scheme needs from the grouped collisions is those two moments,
+so the distribution used to carry them is the simplest one that carries both
+exactly: two uniform pieces meeting at :math:`\mu_0`, the lower one carrying
+probability :math:`a`, with
+
+.. math::
+    :label: ch-artificial-angular
+
+    \mu_0 = \frac{3\langle\mu^2\rangle - 1}{2\langle\mu\rangle}, \qquad
+    a = \frac{1 + \mu_0 - 2\langle\mu\rangle}{2}.
+
+Its shape means nothing; anything more elaborate would assert detail the
+moments do not contain. Both moments come back exactly over the range in which
+:math:`a` stays a probability, which is every pair a real angular distribution
+can produce. Outside it the first moment is still exact and the second is as
+close as the form allows, which is the right way round: the first is what sets
+the transport mean free path. This is PENELOPE's choice.
+
+The Grouped Energy Loss
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Over the same path the grouped collisions take a mean :math:`sS` and a
+variance :math:`s\Omega`, where :math:`S` is the restricted stopping power and
+:math:`\Omega` the restricted straggling parameter, both integrals of the soft
+part of the inelastic cross sections:
+
+.. math::
+    :label: ch-restricted-moments
+
+    S = n \int_0^{W_{cc}} W \frac{d\sigma}{dW}\, dW, \qquad
+    \Omega = n \int_0^{W_{cc}} W^2 \frac{d\sigma}{dW}\, dW.
+
+Matching that mean and variance is the whole content of a restricted stopping
+power with straggling, so again the simplest distribution carrying both is
+used. Which one that is depends on how wide the loss is relative to its mean:
+a uniform distribution can reach a variance of
+:math:`\langle\omega\rangle^2/3` before it would have to go negative, and past
+that the distribution becomes a uniform piece with an atom at zero -- the step
+either loses nothing or loses a good deal, which is what a broad straggling
+distribution physically is.
+
+Because every transfer in those integrals is under the soft cutoff,
+:math:`\Omega/S \le W_{cc}`, and the cutoff is in turn held under a tenth of
+the step's budget, so the sampled loss cannot overshoot its mean by more than
+a factor :math:`\texttt{MAX\_SOFT\_LOSS\_OVERSHOOT} = 2`. That bound is what
+the hard cross section is bounded over.
+
+The Random Hinge
+~~~~~~~~~~~~~~~~
+
+The grouped deflection and the grouped energy loss are applied at a single
+point drawn uniformly along the step. Putting the whole deflection at the end
+would leave the particle travelling in a straight line for the length of the
+step and lose the lateral spread; putting it at the start would overstate it.
+Drawing the point uniformly reproduces the correct mean lateral displacement
+to first order. This is PENELOPE's random hinge.
+
+The grouped energy loss is deposited at a point drawn uniformly inside each
+leg of the step, which reproduces the profile of a constant deposition rate
+along the path but not its shape within one step. A ``heating`` tally on a
+mesh much finer than the step length therefore sees a deposition spread
+correctly on average and not within a step.
+
+The Hard Cross Section and the Delta Interaction
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The hard cross section changes along the step as the particle loses energy, so
+the distance to the next hard interaction cannot be sampled from its value at
+the start. Instead a majorant :math:`\Sigma_{\max}` bounding it over the whole
+energy window the step may reach is used, the distance is sampled from that,
+and on arrival the interaction is accepted with probability
+:math:`\Sigma_{\text{hard}}(E)/\Sigma_{\max}`. A rejected draw is a *delta
+interaction*: the particle is left untouched and the next distance is sampled
+from the same majorant. This is Woodcock tracking in energy rather than in
+space, and it is exact for any valid majorant. The majorant is tabulated per
+material over the energy grid and taken as the larger of the bounds at the two
+grid points bracketing the step's window, so that it bounds the cross section
+between them as well as at them. A runtime warning is issued if it is ever
+found not to bound.
+
+The Collision Stopping Power
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The evaluated subshell spectra are used for the shape of the energy loss, and
+the density-effect correction of Sternheimer_ is applied to the distant part
+of each collision, as described in `Electroionization`_. Two things follow
+that are specific to the grouped channel.
+
+First, the evaluated spectra do not integrate to the collision stopping power
+the material has. In copper at 16 MeV they deliver 1.61 MeV cm\ :sup:`2`/g
+where the free-atom Bethe formula gives 1.72, and the shortfall grows with
+energy, being essentially the relativistic rise. Taking the whole
+density-effect correction off a spectrum already short of it would remove the
+same strength twice, so the correction applied is reduced by that shortfall
+and floored at zero. This is a calibration rather than a derivation: it
+assumes the evaluated shortfall lies in the distant channel the correction
+acts on, which is where the relativistic rise lives but is not established
+term by term.
+
+Second, the grouped channel is held to the collision stopping power of
+Berger and Seltzer (ICRU 37) directly. The hard collisions are sampled from
+the data and carry whatever it gives, so what is left for the grouped channel
+is the ICRU 37 total less that hard part. The mean is pinned this way; the
+straggling is not, so the variance of the grouped loss is that of the
+evaluated spectrum whose mean has been rescaled.
+
+Known Differences From Single-Event Transport
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The two schemes are built to agree, and ``deflection = 0`` reproduces the
+single-event one exactly, but they are not identical where grouping is active.
+
+* The knock-on spectrum has a seam at :math:`W_{cc}`. Below it the transfers
+  come from the evaluated subshell spectra; above it the hard channel carries
+  the larger of the evaluated and the free binary (Møller or Bhabha) cross
+  section at each transfer, with the excess of the free one sampled from the
+  free differential cross section. The two differ by some ten per cent in the
+  middle of the range in copper.
+
+* The mean collision loss of a grouped step is ICRU 37's; that of a step that
+  declines to group is the evaluated data's, reduced by the density effect.
+  Since whether a step groups depends on the region -- thin regions and the
+  neighbourhood of every boundary decline -- a single run can transport on the
+  two within one problem. The reduced correction above is what keeps the
+  difference small; it is not zero.
+
+* A grouped step deposits its loss at a point drawn uniformly along each leg,
+  not continuously.
+
+* Tallies that count interactions rather than score energy see the grouped
+  collisions as one event rather than as the many they stand for.
 
 .. _ELSEPA: https://www.sciencedirect.com/science/article/pii/S0010465504004795
 

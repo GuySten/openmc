@@ -16,12 +16,44 @@ constexpr double R_E = BOHR_RADIUS_CM / (FINE_STRUCTURE * FINE_STRUCTURE);
 constexpr double COLLISION_CONST =
   2.0 * PI * 1.0e24 * R_E * R_E * MASS_ELECTRON_EV;
 
-//! Moments of the close (binary) cross section over [w_lo, w_hi]
+//! Moments of the close Bhabha cross section over [w_lo, w_hi]
 //
-// Moller's cross section written for a projectile of total energy `ee`, whose
-// antiderivatives are elementary. For a bound shell `ee` is E + U: the
-// collision is with an electron that has to be paid for before it can be
-// ejected.
+// The positron is distinguishable from the electron it strikes, so the shape
+// is Bhabha's and the transfer runs to the whole kinetic energy rather than
+// half of it. The four coefficients are the same ones FreeCollision carries.
+void close_moments_positron(double E, double amol, double w_lo, double w_hi,
+  double& m0, double& m1, double& m2)
+{
+  if (!(w_hi > w_lo) || !(w_lo > 0.0))
+    return;
+  double gamma = 1.0 + E / MASS_ELECTRON_EV;
+  double g12 = (gamma + 1.0) * (gamma + 1.0);
+  double b1 = amol * (2.0 * g12 - 1.0) / (gamma * gamma - 1.0);
+  double b2 = amol * (3.0 + 1.0 / g12);
+  double b3 = amol * 2.0 * gamma * (gamma - 1.0) / g12;
+  double b4 = amol * (gamma - 1.0) * (gamma - 1.0) / g12;
+  double e2 = E * E;
+  double e3 = e2 * E;
+  double e4 = e3 * E;
+  double d1 = w_hi - w_lo;
+  double d2 = w_hi * w_hi - w_lo * w_lo;
+  double d3 = w_hi * w_hi * w_hi - w_lo * w_lo * w_lo;
+  double d4 = std::pow(w_hi, 4) - std::pow(w_lo, 4);
+  double d5 = std::pow(w_hi, 5) - std::pow(w_lo, 5);
+  double lg = std::log(w_hi / w_lo);
+  m0 += 1.0 / w_lo - 1.0 / w_hi - b1 * lg / E + b2 * d1 / e2 -
+        b3 * d2 / (2.0 * e3) + b4 * d3 / (3.0 * e4);
+  m1 += lg - b1 * d1 / E + b2 * d2 / (2.0 * e2) - b3 * d3 / (3.0 * e3) +
+        b4 * d4 / (4.0 * e4);
+  m2 += d1 - b1 * d2 / (2.0 * E) + b2 * d3 / (3.0 * e2) - b3 * d4 / (4.0 * e3) +
+        b4 * d5 / (5.0 * e4);
+}
+
+//! Moments of the close Moller cross section over [w_lo, w_hi]
+//
+// Written for a projectile of total energy `ee`, whose antiderivatives are
+// elementary. For a bound shell `ee` is E + U: the collision is with an
+// electron that has to be paid for before it can be ejected.
 void close_moments(double ee, double amol, double w_lo, double w_hi, double& m0,
   double& m1, double& m2)
 {
@@ -44,7 +76,7 @@ void close_moments(double ee, double amol, double w_lo, double w_hi, double& m0,
 } // namespace
 
 GosMoments gos_oscillator(
-  double E, double u_b, double w_r, double delta, double w_cc)
+  double E, double u_b, double w_r, double delta, double w_cc, bool positron)
 {
   GosMoments m;
   constexpr double two_m = 2.0 * MASS_ELECTRON_EV;
@@ -76,15 +108,15 @@ GosMoments gos_oscillator(
       q_kp = u_b * (E / w_m);
       w_m = E;
     }
-    ee = E + u_b;
-    w_cmax = 0.5 * ee;
+    ee = positron ? E : E + u_b;
+    w_cmax = positron ? E : 0.5 * ee;
     w_dmax = std::min(w_cmax, w_m);
   } else {
     w_m = E;
     w_kp = w_r;
     q_kp = w_r;
     ee = E;
-    w_cmax = 0.5 * E;
+    w_cmax = positron ? E : 0.5 * E;
     w_dmax = w_kp + 1.0;
   }
 
@@ -177,13 +209,20 @@ GosMoments gos_oscillator(
   // ==========================================================================
   // Close collisions: the binary cross section above the threshold
   if (w_cmax > w_thr + 1.0e-6) {
+    auto close = [&](double lo, double hi, double& n0, double& n1, double& n2) {
+      if (positron) {
+        close_moments_positron(E, amol, lo, hi, n0, n1, n2);
+      } else {
+        close_moments(ee, amol, lo, hi, n0, n1, n2);
+      }
+    };
     if (w_cc < w_thr) {
-      close_moments(ee, amol, w_thr, w_cmax, m.xs_hard, m.s_hard, m.w2_hard);
+      close(w_thr, w_cmax, m.xs_hard, m.s_hard, m.w2_hard);
     } else if (w_cc > w_cmax) {
-      close_moments(ee, amol, w_thr, w_cmax, m.xs_soft, m.s_soft, m.w2_soft);
+      close(w_thr, w_cmax, m.xs_soft, m.s_soft, m.w2_soft);
     } else {
-      close_moments(ee, amol, w_cc, w_cmax, m.xs_hard, m.s_hard, m.w2_hard);
-      close_moments(ee, amol, w_thr, w_cc, m.xs_soft, m.s_soft, m.w2_soft);
+      close(w_cc, w_cmax, m.xs_hard, m.s_hard, m.w2_hard);
+      close(w_thr, w_cc, m.xs_soft, m.s_soft, m.w2_soft);
     }
   }
 

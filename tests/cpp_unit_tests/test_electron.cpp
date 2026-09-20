@@ -544,18 +544,20 @@ TEST_CASE("one oscillator at the mean excitation energy gives Bethe")
 // single-event transport and condensed history without a seam between them.
 TEST_CASE("the oscillator split conserves its moments")
 {
-  for (double u_b : {0.0, 60.0, 8979.0}) {
-    double w_r = (u_b > 0.0) ? 1.3 * u_b + 40.0 : 90.0;
-    for (double E : {1.0e5, 1.0e6, 1.0e8}) {
-      auto whole = openmc::gos_oscillator(E, u_b, w_r, 0.3, 0.0);
-      for (double w_cc : {1.0e2, 1.0e3, 1.0e4}) {
-        auto split = openmc::gos_oscillator(E, u_b, w_r, 0.3, w_cc);
-        CHECK_THAT(split.xs_soft + split.xs_hard,
-          WithinRel(whole.xs_soft + whole.xs_hard, 1.0e-12));
-        CHECK_THAT(split.s_soft + split.s_hard,
-          WithinRel(whole.s_soft + whole.s_hard, 1.0e-12));
-        CHECK_THAT(split.w2_soft + split.w2_hard,
-          WithinRel(whole.w2_soft + whole.w2_hard, 1.0e-12));
+  for (bool positron : {false, true}) {
+    for (double u_b : {0.0, 60.0, 8979.0}) {
+      double w_r = (u_b > 0.0) ? 1.3 * u_b + 40.0 : 90.0;
+      for (double E : {1.0e5, 1.0e6, 1.0e8}) {
+        auto whole = openmc::gos_oscillator(E, u_b, w_r, 0.3, 0.0, positron);
+        for (double w_cc : {1.0e2, 1.0e3, 1.0e4}) {
+          auto split = openmc::gos_oscillator(E, u_b, w_r, 0.3, w_cc, positron);
+          CHECK_THAT(split.xs_soft + split.xs_hard,
+            WithinRel(whole.xs_soft + whole.xs_hard, 1.0e-12));
+          CHECK_THAT(split.s_soft + split.s_hard,
+            WithinRel(whole.s_soft + whole.s_hard, 1.0e-12));
+          CHECK_THAT(split.w2_soft + split.w2_hard,
+            WithinRel(whole.w2_soft + whole.w2_hard, 1.0e-12));
+        }
       }
     }
   }

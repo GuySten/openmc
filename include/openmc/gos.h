@@ -59,9 +59,15 @@ struct GosMoments {
 //! \param[in] w_cc Soft cutoff in [eV]. Zero puts everything in the hard
 //!   channel, which is single-event transport and is exact: every oscillator
 //!   has a threshold, so the cross section stays finite there.
+//! \param[in] positron Whether the projectile is a positron. Only the close
+//!   collisions differ: the shape is Bhabha's rather than Moller's and the
+//!   transfer runs to the whole kinetic energy, the two being
+//!   distinguishable. The distant interactions are identical for the two
+//!   charges, which is Salvat's observation and the reason this is one
+//!   routine rather than two.
 //! \return The moments above and below the cutoff
-GosMoments gos_oscillator(
-  double E, double u_b, double w_r, double delta, double w_cc);
+GosMoments gos_oscillator(double E, double u_b, double w_r, double delta,
+  double w_cc, bool positron = false);
 
 } // namespace openmc
 

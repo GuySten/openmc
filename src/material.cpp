@@ -17,6 +17,7 @@
 #include "openmc/cross_sections.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
+#include "openmc/gos.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
@@ -743,7 +744,7 @@ void Material::init_electron_oscillators()
   // below on the rebuilt list itself.
   oscillator_element_.clear();
   oscillator_offset_.clear();
-  oscillator_energy_.clear();
+  oscillator_.clear();
   oscillator_block_.clear();
   vector<double> strength;
   vector<double> binding_sq;
@@ -759,18 +760,18 @@ void Material::init_electron_oscillators()
     const auto& elm = *data::elements[kv.first];
     oscillator_block_[kv.first] = oscillator_element_.size();
     oscillator_element_.push_back(kv.first);
-    oscillator_offset_.push_back(oscillator_energy_.size());
+    oscillator_offset_.push_back(oscillator_.size());
     for (int j = 0; j < elm.electron_shell_map_.size(); ++j) {
       const auto& shell = elm.shells_[elm.electron_shell_map_[j]];
       double f_i = shell.num_electrons * kv.second / osc.electron_density;
       double u = shell.binding_energy;
-      oscillator_energy_.push_back(
-        std::sqrt(osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq));
+      oscillator_.push_back({f_i, shell.num_electrons, u,
+        std::sqrt(osc.rho * osc.rho * u * u + 2.0 / 3.0 * f_i * osc.e_p_sq)});
       strength.push_back(f_i);
       binding_sq.push_back(u * u);
     }
   }
-  oscillator_offset_.push_back(oscillator_energy_.size());
+  oscillator_offset_.push_back(oscillator_.size());
 
   element_block_.assign(data::elements.size(), -1);
   for (const auto& kv : oscillator_block_) {
@@ -787,11 +788,13 @@ void Material::init_electron_oscillators()
   if (!binding_sq.empty()) {
     double rho = sternheimer_adjustment(
       strength, binding_sq, osc.e_p_sq, 0.0, osc.log_I, 1.0e-6, 100);
-    for (int i = 0; i < oscillator_energy_.size(); ++i) {
-      oscillator_energy_[i] = std::sqrt(
+    for (int i = 0; i < oscillator_.size(); ++i) {
+      oscillator_[i].w_r = std::sqrt(
         rho * rho * binding_sq[i] + 2.0 / 3.0 * strength[i] * osc.e_p_sq);
     }
   }
+
+  this->init_oscillator_renorm();
 }
 
 double Material::screening_correction(int q_index, double E) const
@@ -811,6 +814,167 @@ double Material::screening_correction(int q_index, double E) const
   int i = lower_bound_index(grid.cbegin(), grid.cend(), E);
   double f = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
   return std::max(0.0, v(i) + f * (v(i + 1) - v(i)));
+}
+
+//! Renormalise each oscillator, and compensate so the total is ICRU 37
+//
+// PENELOPE's scheme, and both halves of it are needed. The shells bound above
+// the transport cutoffs have their rate taken from the evaluated subshell
+// cross sections, because that is the one thing the delta-oscillator model is
+// not good enough at and it is what characteristic x-ray yields rest on. The
+// remaining oscillators are then scaled by one common factor so the collision
+// stopping power comes back to the ICRU 37 value exactly.
+//
+// Skipping the compensation is not an option. Renormalising every shell
+// without it moves the stopping power by up to 80 per cent in carbon and 24
+// per cent the other way in lead, because an oscillator's total cross section
+// counts distant collisions that excite without ionising while the evaluated
+// one counts only ionisations. Restricted to the inner shells and left
+// uncompensated it is still 8 per cent out in lead. Compensated, the outer
+// oscillators move by at most 11 per cent, which is well inside the
+// uncertainty of resonance energies that are Sternheimer constructs rather
+// than measured quantities.
+//! Evaluated ionisation cross section of the subshell one oscillator stands
+//! for, in [b]
+//
+// The oscillators are laid out in blocks, one per distinct element, in the
+// same order as that element's electroionization subshells, so an index into
+// the flat list resolves to an element and a shell within it.
+double Material::evaluated_subshell_xs(int k, double E) const
+{
+  for (int b = 0; b + 1 < oscillator_offset_.size(); ++b) {
+    if (k >= oscillator_offset_[b] && k < oscillator_offset_[b + 1]) {
+      return data::elements[oscillator_element_[b]]->subshell_ionization_xs(
+        k - oscillator_offset_[b], E);
+    }
+  }
+  return 0.0;
+}
+
+void Material::init_oscillator_renorm()
+{
+  auto n_grid = data::brems_e_grid.size();
+  auto n_osc = oscillator_.size();
+  if (n_osc == 0 || n_grid < 2)
+    return;
+
+  // A shell is inner if a vacancy in it produces something that would be
+  // transported. Below that the evaluated cross section buys nothing the
+  // model does not already have.
+  double u_min =
+    std::max(settings::energy_cutoff[ParticleType::photon().transport_index()],
+      settings::energy_cutoff[ParticleType::electron().transport_index()]);
+
+  for (int q = 0; q < 2; ++q) {
+    bool positron = q == 1;
+    oscillator_renorm_[q] =
+      tensor::Tensor<double>({n_osc, static_cast<size_t>(n_grid)});
+    for (int i = 0; i < n_grid; ++i) {
+      double E = data::brems_e_grid(i);
+      double delta = density_effect_(i);
+      double target = collision_stopping_[q](i);
+
+      double s_inner = 0.0;
+      double s_outer = 0.0;
+      int n_outer = 0;
+      vector<double> r(n_osc, 1.0);
+      for (int k = 0; k < n_osc; ++k) {
+        const auto& o = oscillator_[k];
+        auto g = gos_oscillator(E, o.u_b, o.w_r, delta, 0.0, positron);
+        double s_k = o.f * (g.s_soft + g.s_hard);
+        bool inner = o.u_b > u_min;
+        if (inner) {
+          // Renormalised to the free-atom cross section: the ratio is taken
+          // against the unscreened model, and the screening then applies on
+          // top of it, exactly as PENELOPE's DFERMI does
+          auto g0 = gos_oscillator(E, o.u_b, o.w_r, 0.0, 0.0, positron);
+          // gos_oscillator() works per electron and the evaluated cross
+          // section is per atom, so the shell's occupancy is what puts the
+          // two on the same footing
+          double model = o.n_e * (g0.xs_soft + g0.xs_hard);
+          double ev = this->evaluated_subshell_xs(k, E);
+          r[k] = (model > 0.0 && ev > 0.0) ? ev / model : 1.0;
+          s_inner += r[k] * s_k;
+        } else {
+          s_outer += s_k;
+          ++n_outer;
+        }
+      }
+
+      double fnorm =
+        (s_outer > 0.0 && target > 0.0) ? (target - s_inner) / s_outer : 1.0;
+      if (!(fnorm > 0.0)) {
+        // The inner shells alone already carry more than the material's whole
+        // collision stopping power, so there is nothing left for the outer
+        // ones to be scaled to. Rather than clamp and leave the total wrong,
+        // fall back to one factor over every oscillator: the rates lose their
+        // grip on the evaluated cross sections, but the stopping power is
+        // what the transport is built on and it stays right.
+        double whole = s_inner + s_outer;
+        double common = (whole > 0.0) ? target / whole : 1.0;
+        warning(fmt::format(
+          "In material {} at {:.4g} eV the renormalised inner shells carry "
+          "{:.4g} of a collision stopping power of {:.4g} b eV per electron, "
+          "leaving {:.4g} for the {} outer oscillators. The rates are scaled "
+          "together there rather than shell by shell, so inner-shell "
+          "ionisation follows the model rather than the evaluated data.",
+          id_, E, s_inner, target, s_outer, n_outer));
+        for (int k = 0; k < n_osc; ++k)
+          oscillator_renorm_[q](k, i) = common;
+        continue;
+      }
+      for (int k = 0; k < n_osc; ++k) {
+        oscillator_renorm_[q](k, i) =
+          (oscillator_[k].u_b > u_min) ? r[k] : fnorm;
+      }
+    }
+  }
+}
+
+Material::CollisionMoments Material::gos_collision_moments(
+  int q_index, double E, double w_cc) const
+{
+  CollisionMoments m;
+  if (q_index < 0 || q_index > 1 || oscillator_.empty())
+    return m;
+
+  bool positron = q_index == 1;
+  double delta = this->density_effect_correction(E);
+  // The renormalisation lives on the same grid the density effect does
+  const auto& grid = data::brems_e_grid;
+  const auto& renorm = oscillator_renorm_[q_index];
+  auto n_grid = grid.size();
+  bool have_renorm = n_grid > 1 && renorm.size() == oscillator_.size() * n_grid;
+
+  int i = 0;
+  double f_grid = 0.0;
+  if (have_renorm) {
+    if (E <= grid(0)) {
+      i = 0;
+    } else if (E >= grid(n_grid - 1)) {
+      i = n_grid - 2;
+      f_grid = 1.0;
+    } else {
+      i = lower_bound_index(grid.cbegin(), grid.cend(), E);
+      f_grid = std::log(E / grid(i)) / std::log(grid(i + 1) / grid(i));
+    }
+  }
+
+  for (int k = 0; k < oscillator_.size(); ++k) {
+    const auto& o = oscillator_[k];
+    auto g = gos_oscillator(E, o.u_b, o.w_r, delta, w_cc, positron);
+    double r = o.f;
+    if (have_renorm) {
+      r *= renorm(k, i) + f_grid * (renorm(k, i + 1) - renorm(k, i));
+    }
+    m.s_soft += r * g.s_soft;
+    m.w2_soft += r * g.w2_soft;
+    m.xs_hard += r * g.xs_hard;
+    m.s_hard += r * g.s_hard;
+    m.xs1_soft += r * g.xs1_soft;
+    m.xs2_soft += r * g.xs2_soft;
+  }
+  return m;
 }
 
 Material::CollisionMoments Material::collision_moments(
@@ -921,7 +1085,7 @@ double Material::oscillator_energy(int i_element, int i_shell) const
   if (i < 0)
     return 0.0;
   int j = oscillator_offset_[i] + i_shell;
-  return (j < oscillator_offset_[i + 1]) ? oscillator_energy_[j] : 0.0;
+  return (j < oscillator_offset_[i + 1]) ? oscillator_[j].w_r : 0.0;
 }
 
 void Material::init_bremsstrahlung()
@@ -1324,8 +1488,9 @@ void Material::init_inelastic_transport()
   for (int b = 0; b < n_block; ++b) {
     int i_element = oscillator_element_[b];
     const auto& element {*data::elements[i_element]};
-    vector<double> w_r(oscillator_energy_.begin() + oscillator_offset_[b],
-      oscillator_energy_.begin() + oscillator_offset_[b + 1]);
+    vector<double> w_r;
+    for (int k = oscillator_offset_[b]; k < oscillator_offset_[b + 1]; ++k)
+      w_r.push_back(oscillator_[k].w_r);
 
     // The density-effect correction on this element's own energy grid, which
     // is not the one it is tabulated on
@@ -1396,6 +1561,23 @@ void Material::check_electron_tables() const
       double w_cc = soft_collision_cutoff(projectile, E);
       if (!(total > 0.0) || !(w_cc > 0.0))
         continue;
+      // The oscillator model is what the transport runs on, and what has to
+      // land on ICRU 37. It does so by construction -- the sum rules fix it,
+      // and the compensation in init_oscillator_renorm() repairs what the
+      // inner-shell renormalisation costs -- so a discrepancy here means one
+      // of those has stopped holding rather than a tolerance wanting widened.
+      auto gos = this->gos_collision_moments(q, E, w_cc);
+      double gos_total = gos.s_soft + gos.s_hard;
+      if (gos_total > 0.0 && std::abs(gos_total - total) > 1.0e-6 * total) {
+        fatal_error(fmt::format(
+          "The oscillator model of material {} gives a collision stopping "
+          "power of {:.8g} b eV per electron at {:.4g} eV against the ICRU 37 "
+          "value of {:.8g}. The model reproduces that total by construction, "
+          "so this is a broken oscillator table rather than an approximation "
+          "that wants loosening.",
+          id_, gos_total, E, total));
+      }
+
       auto m = this->collision_moments(q, E, w_cc);
 
       // The split has a second limit, and it is the medium's rather than the

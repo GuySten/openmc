@@ -1838,6 +1838,18 @@ double Element::sample_recoil(
   return two_m * a * q_min / (q_min + two_m - a * q_min);
 }
 
+double Element::subshell_ionization_xs(int i_shell, double E) const
+{
+  int n = electron_energy_.size();
+  if (n < 2 || i_shell < 0 || i_shell >= electroionization_.shape(0))
+    return 0.0;
+  double f;
+  int i = grid_index(electron_energy_, E, f);
+  double a = electroionization_(i_shell, i);
+  double b = electroionization_(i_shell, i + 1);
+  return std::max(0.0, a + f * (b - a));
+}
+
 int Element::sample_ionization_shell(Particle& p, bool hard) const
 {
   const auto& xs {p.electron_xs(index_)};

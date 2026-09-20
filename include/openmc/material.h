@@ -221,16 +221,34 @@ public:
   //! interpolations of the two halves on different grids would leave the sum
   //! right only where the grids fall.
   struct CollisionMoments {
-    double s_soft {0.0};  //!< restricted stopping power in [b eV]
-    double w2_soft {0.0}; //!< second moment of the restricted loss in [b eV^2]
-    double xs_hard {0.0}; //!< hard binary cross section in [b]
-    double s_hard {0.0};  //!< stopping power the hard channel carries [b eV]
+    double s_soft {0.0};   //!< restricted stopping power in [b eV]
+    double w2_soft {0.0};  //!< second moment of the restricted loss in [b eV^2]
+    double xs_hard {0.0};  //!< hard binary cross section in [b]
+    double s_hard {0.0};   //!< stopping power the hard channel carries [b eV]
+    double xs1_soft {0.0}; //!< first angular moment of the grouped ones, [b]
+    double xs2_soft {0.0}; //!< second
   };
 
   //! \param[in] q_index 0 for an electron, 1 for a positron
   //! \param[in] E Kinetic energy in [eV]
   //! \param[in] w_cc Soft cutoff in [eV]; zero groups nothing
   CollisionMoments collision_moments(int q_index, double E, double w_cc) const;
+
+  //! The same split, taken from the oscillator model rather than from the
+  //! Berger-Seltzer pair
+  //!
+  //! This is what the transport runs on. Every oscillator's moments are
+  //! summed with its renormalisation factor, so the total is the ICRU 37
+  //! collision stopping power and the two halves are one cross section either
+  //! side of the cutoff. Unlike collision_moments() it stays valid at zero
+  //! cutoff, every oscillator having a threshold of its own, which is what
+  //! lets single-event transport and condensed history share one model.
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[in] w_cc Soft cutoff in [eV]; zero groups nothing
+  CollisionMoments gos_collision_moments(
+    int q_index, double E, double w_cc) const;
 
   //! Density-effect correction actually applied to collisions, per charge
   //!
@@ -298,10 +316,40 @@ public:
   //! projectile charge, on data::brems_e_grid. See screening_correction().
   array<tensor::Tensor<double>, 2> screening_;
 
-  //! Oscillator resonance energies in [eV], one per electroionization subshell,
-  //! concatenated over the distinct elements of this material
-  vector<double> oscillator_energy_;
-  //! Global element index of each block of oscillator_energy_, and the
+  //! The Sternheimer-Liljequist oscillators of this material, one per
+  //! electroionization subshell, concatenated over the distinct elements.
+  //! Every electron sits on a real photoatomic subshell -- there is no
+  //! conduction term -- and the adjustment factor is solved on this list so
+  //! that sum_k f_k ln W_k = ln I holds for the oscillators actually used.
+  //! That constraint, with sum_k f_k = 1, is what makes the model reproduce
+  //! the ICRU 37 collision stopping power rather than merely resemble it.
+  struct Oscillator {
+    double f {0.0};   //!< share of the material's electrons it carries
+    double n_e {0.0}; //!< electrons in the subshell, per atom of its element
+    double u_b {0.0}; //!< ionisation energy in [eV]
+    double w_r {0.0}; //!< resonance energy in [eV]
+  };
+  vector<Oscillator> oscillator_;
+  //! Scale factor on each oscillator's whole set of moments, per projectile
+  //! charge, on data::brems_e_grid.
+  //!
+  //! The oscillator model gives the shape of every inelastic collision but
+  //! not, for an inner shell, a rate good enough for characteristic x-ray
+  //! yields. PENELOPE reconciles the two by renormalising: the tabulated
+  //! ionisation cross section sets the rate, the model keeps the shape, and
+  //! one factor scales the cross section, the stopping power, the straggling
+  //! and the angular moments together so the energy bookkeeping closes on its
+  //! own rather than having to be arranged.
+  //!
+  //! The shells bound above the transport cutoffs are scaled to the evaluated
+  //! subshell cross sections; the rest are scaled by a common factor chosen
+  //! so the collision stopping power comes back to ICRU 37 exactly. That
+  //! second step is PENELOPE's FNORM, and it is not optional: renormalising
+  //! every shell without it moves the stopping power by as much as 80 per
+  //! cent, because an oscillator's total cross section counts distant
+  //! collisions that excite without ionising and the evaluated one does not.
+  array<tensor::Tensor<double>, 2> oscillator_renorm_;
+  //! Global element index of each block of oscillator_, and the
   //! reverse lookup the transport uses -- an inelastic collision asks for a
   //! resonance energy by element index, and a linear scan would be paid for on
   //! every one of them
@@ -316,11 +364,11 @@ public:
   //! builds this; the transport reads this, because a hash lookup per element
   //! per cross section evaluation is not free.
   vector<int> nuclide_block_;
-  //! Start of each block in oscillator_energy_, with a trailing end marker
+  //! Start of each block in oscillator_, with a trailing end marker
   vector<int> oscillator_offset_;
 
   //! First transport cross section of the grouped inelastic collisions, in
-  //! [b], one table per block of oscillator_energy_ and per projectile charge,
+  //! [b], one table per block of oscillator_ and per projectile charge,
   //! on that element's electron energy grid. It lives here rather than in
   //! Element because the recoil model that sets the deflection cuts between
   //! close and distant collisions at an oscillator energy of the material's,
@@ -404,6 +452,15 @@ private:
 
   //! Tabulate the transport cross section of the grouped inelastic collisions
   void init_inelastic_transport();
+
+  //! Build oscillator_renorm_: the evaluated rate for the inner shells, and
+  //! a common compensation on the rest so the total is the ICRU 37 collision
+  //! stopping power exactly
+  void init_oscillator_renorm();
+
+  //! Evaluated ionisation cross section of the subshell one oscillator stands
+  //! for, in [b]
+  double evaluated_subshell_xs(int k, double E) const;
 
   //! Refuse to transport charged particles on tables that were not built
   //

@@ -175,6 +175,15 @@ public:
   //!   cross section, for a collision that ends a condensed-history step
   int sample_ionization_shell(Particle& p, bool hard = false) const;
 
+  //! Evaluated ionisation cross section of one subshell at one energy
+  //!
+  //! What the oscillator model's rate for that shell is renormalised to.
+  //!
+  //! \param[in] i_shell Index into electron_shell_map_
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return Cross section in [b]
+  double subshell_ionization_xs(int i_shell, double E) const;
+
   void bremsstrahlung(Particle& p, double k_min = 0.0) const;
 
   //! Bhabha scattering above the Moller kinematic limit

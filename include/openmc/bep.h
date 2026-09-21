@@ -121,6 +121,11 @@ class Particle;
 
 constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 
+//! Floor on tree_site_weight, so that a tree whose weight is measured
+//! anomalously small one generation cannot ask for an unbounded population
+//! the next.
+constexpr double MIN_SITE_WEIGHT {1.0e-8};
+
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in
 // step, and the vector is the one that carries the information.
@@ -166,6 +171,37 @@ extern vector<int> cell_ref_tree;
 
 //! cell index -> perturbations touching that cell.
 extern vector<vector<int>> cell_perts;
+
+//! Weight each tree banks its shadow fission sites at, one per tree.
+//!
+//! An ordinary eigenvalue calculation banks fission sites of UNIT weight and
+//! puts the parent's weight into the PROBABILITY of banking one at all --
+//! see create_fission_sites(), where nu is an integer count. That is fine
+//! while every neutron weighs about one, and ruinous below it: a neutron of
+//! weight 1e-3 becomes a one-in-a-thousand lottery for a weight-1 site, so
+//! everything a low-weight source gains by being sampled smoothly is thrown
+//! away again at its first fission.
+//!
+//! A tree's sites are banked at this weight instead, and their number scales
+//! up to match, which leaves the banked weight unchanged and its variance far
+//! lower. The value is a weight window on the shadow fission bank: 1.0 is
+//! exactly what an eigenvalue calculation does today, and is what every tree
+//! carrying full-weight neutrons keeps.
+extern vector<double> tree_site_weight;
+
+//! Weight tree `tree` banks its fission sites at. Always 1 for a driver
+//! particle, so nothing outside a shadow tree is affected.
+inline double site_weight(int tree)
+{
+  return (tree >= 0 && tree < static_cast<int>(tree_site_weight.size()))
+           ? tree_site_weight[tree]
+           : 1.0;
+}
+
+//! Choose each tree's site weight from the weight it actually carried this
+//! generation, so that every tree transports a comparable number of sites
+//! whatever weight its particles happen to have. Called once per generation.
+void update_site_weights();
 
 struct BranchSite {
   Position r;

@@ -37,6 +37,7 @@ vector<Perturbation> perturbations;
 vector<int> tree_pert;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
+vector<double> tree_site_weight;
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
@@ -266,6 +267,9 @@ void init()
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
   tau.assign(tree_pert.size() * nd, 0.0);
+  // Unit weight until a generation has been run to measure from, which is
+  // exactly what an eigenvalue calculation does anyway.
+  tree_site_weight.assign(tree_pert.size(), 1.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_branch_sites.assign(num_threads(), {});
   tau_history.clear();
@@ -499,6 +503,55 @@ void run_shadow_pass()
   }
 }
 
+void update_site_weights()
+{
+  // Zero turns the whole thing off: every tree banks unit-weight sites, as an
+  // ordinary eigenvalue calculation does.
+  if (settings::perturbation_population_ratio <= 0.0)
+    return;
+
+  int nd = settings::bep_n_generation + 1;
+
+  // Total weight each tree carried this generation, summed over depth.
+  vector<double> total(tree_pert.size(), 0.0);
+  for (size_t t = 0; t < tree_pert.size(); ++t) {
+    for (int d = 0; d < nd; ++d)
+      total[t] += tau[tau_index(static_cast<int>(t), d)];
+  }
+
+  for (size_t ip = 0; ip < perturbations.size(); ++ip) {
+    const Perturbation& p = perturbations[ip];
+
+    // Measured against the reference trees this perturbation is scored
+    // against, since those are what set the scale of "a normal population"
+    // for it.
+    double w_ref = 0.0;
+    for (int32_t ci : p.cells)
+      w_ref += total[cell_ref_tree[ci]];
+
+    double w_pert = total[p.tree];
+    if (w_ref <= 0.0 || w_pert <= 0.0)
+      continue; // nothing measured yet; leave it at unit weight
+
+    // Site weight that would give this tree
+    // perturbation_population_ratio times the reference population.
+    double target =
+      w_pert / (settings::perturbation_population_ratio * w_ref);
+
+    // Rounded to the NEAREST power of ten, for two reasons. It stops the
+    // value drifting generation to generation on statistical noise, which
+    // would make each shadow pass depend on how the last one happened to come
+    // out; and it leaves a tree whose weight is already comparable to its
+    // reference -- a material perturbation, which carries a full population
+    // -- at exactly 1.0, so that kind of perturbation is bit-for-bit
+    // untouched by any of this. Rounding down instead would send a ratio of
+    // 0.98 to 0.1 and perturb every one of them, which is what the
+    // perturbations regression test caught.
+    double w = std::pow(10.0, std::floor(std::log10(target) + 0.5));
+    tree_site_weight[p.tree] = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
+  }
+}
+
 void accumulate_generation()
 {
   if (!simulation::bep_on)
@@ -511,6 +564,13 @@ void accumulate_generation()
     for (int i = 0; i < stride; ++i)
       tau[i] += thread_tau[static_cast<size_t>(t) * stride + i];
   }
+
+  // Set the next generation's site weights from this generation's tau, before
+  // the reduction below: every rank then measures from its own trees. The
+  // value is a weight window and not an estimator, so a rank choosing its own
+  // costs nothing in correctness, and rounding to a power of ten means ranks
+  // agree on it in practice anyway.
+  update_site_weights();
 
 #ifdef OPENMC_MPI
   if (mpi::n_procs > 1) {

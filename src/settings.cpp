@@ -141,6 +141,7 @@ int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
+double perturbation_population_ratio {1.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -597,6 +598,19 @@ void read_settings_xml(pugi::xml_node root)
       // reference trees at the same depths. Parsed here rather than from
       // perturbations.xml so that it is available before tallies.xml and
       // perturbations.xml are read.
+      // How many fission sites a perturbation's shadow tree carries relative
+      // to its reference tree, which is what decides the weight its sites are
+      // banked at. See bep::update_site_weights().
+      if (check_for_node(root, "perturbation_population_ratio")) {
+        perturbation_population_ratio =
+          std::stod(get_node_value(root, "perturbation_population_ratio"));
+        if (perturbation_population_ratio < 0.0) {
+          fatal_error("'perturbation_population_ratio' must not be negative; "
+                      "use 0 to bank unit-weight sites as an ordinary "
+                      "eigenvalue calculation does.");
+        }
+      }
+
       if (check_for_node(root, "perturbation_n_generation")) {
         bep_n_generation =
           std::stoi(get_node_value(root, "perturbation_n_generation"));

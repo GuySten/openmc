@@ -41,6 +41,7 @@ vector<double> tree_site_weight;
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
+vector<double> thread_root_weight;
 vector<double> tau;
 vector<double> tau_history;
 int64_t n_generations {0};
@@ -94,11 +95,17 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   init_particle_seeds(seed_id, p.seeds());
   p.stream() = STREAM_TRACKING;
 
+  // The scale everything inside this tree is measured against; see
+  // root_weight(). Set before transport and cleared after, so that nothing
+  // outside a shadow tree can read a stale value.
+  thread_root_weight[thread_num()] = site.wgt;
+
   score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
 
   transport_history_based_single_particle(p);
 
   p.local_secondary_bank().clear();
+  thread_root_weight[thread_num()] = 0.0;
 }
 
 } // namespace
@@ -271,6 +278,7 @@ void init()
   // exactly what an eigenvalue calculation does anyway.
   tree_site_weight.assign(tree_pert.size(), 1.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
+  thread_root_weight.assign(num_threads(), 0.0);
   thread_branch_sites.assign(num_threads(), {});
   tau_history.clear();
   branch_sites.clear();
@@ -430,6 +438,11 @@ void maybe_branch(Particle& p, int32_t cell_index)
   // independent sample of the same slope, so extra branches add (correlated)
   // statistics without bias. Only an absolute-normalisation estimator would
   // need first-entry-only bookkeeping.
+}
+
+double root_weight()
+{
+  return thread_root_weight.empty() ? 0.0 : thread_root_weight[thread_num()];
 }
 
 void score_site(int tree, int super_gen, double wgt)

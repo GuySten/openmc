@@ -191,6 +191,10 @@ extern int bep_n_generation;      //!< Shadow tree depth for local
 extern double
   perturbation_population_ratio; //!< shadow fission sites a perturbation tree
                                  //!< carries, relative to its reference tree
+extern double
+  perturbation_weight_cutoff; //!< fraction of a shadow tree's root weight
+                              //!< below which a secondary born inside a
+                              //!< perturbation's tree is rouletted
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

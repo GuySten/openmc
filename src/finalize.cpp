@@ -116,7 +116,8 @@ int openmc_finalize()
   settings::path_sourcepoint.clear();
   settings::path_statepoint.clear();
   settings::photon_transport = false;
-  settings::perturbation_population_ratio = 1.0;
+  settings::perturbation_population_ratio = 0.1;
+  settings::perturbation_weight_cutoff = 0.0;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;

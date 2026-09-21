@@ -1185,6 +1185,95 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
         assert worth.std_dev > 0.0
 
 
+def test_weight_cutoff_is_confined_to_perturbation_trees(run_in_tmpdir,
+                                                        model):
+    """The roulette may touch a perturbation's tree and nothing else.
+
+    perturbation_weight_cutoff rouletters a low-weight secondary born inside a
+    perturbation's own tree. Two things must stay exactly as they were: the
+    driver, which has to remain a stock run whatever a shadow tree does, and
+    the REFERENCE trees, which carry the same full-weight population an
+    ordinary eigenvalue calculation would and are the baseline the worth is
+    measured against. Each tree is transported by its own run_one_tree() call,
+    seeded from the branch site, so disturbing one must leave the others
+    bit-identical.
+
+    The perturbed tree's own tau is asserted to CHANGE, so the test cannot
+    pass vacuously by the cutoff never engaging. The cutoff used is far larger
+    than anything one would set in anger: on this branch a shadow tree creates
+    no secondary photons at all (see the super_gen() gate in
+    sample_neutron_reaction), so almost every secondary it banks is a full
+    weight one and a realistic cutoff would never fire. What is being pinned
+    here is that the path is confined when it DOES fire; the cutoff earning
+    its keep is a photonuclear-cascade question.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 2000
+    model.settings.photon_transport = True
+    model.settings.perturbation_n_generation = 6
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+
+    def run(cutoff):
+        model.settings.perturbation_weight_cutoff = cutoff
+        sp_path = model.run()
+        with h5py.File(sp_path, 'r') as f:
+            g = f['local_perturbation']
+            # tau is written as the per-generation history, laid out
+            # [generation][tree][depth] -- not [tree][depth].
+            n_depth = int(g['n_generation'][()]) + 1
+            n_trees = int(g['n_trees'][()])
+            n_rec = int(g['n_generations_recorded'][()])
+            tau = np.array(g['tau'][()]).reshape(n_rec, n_trees, n_depth)
+            tree = int(g['perturbation 1']['tree'][()])
+        with openmc.StatePoint(sp_path) as sp:
+            return tau, tree, n_trees, sp.keff.nominal_value
+
+    off_tau, tree, n_trees, off_k = run(0.0)
+    on_tau, tree_on, _, on_k = run(2.0)
+    assert tree == tree_on
+
+    others = [t for t in range(n_trees) if t != tree]
+    assert others, 'no reference tree to compare against'
+    assert np.array_equal(off_tau[:, others, :], on_tau[:, others, :]), (
+        'perturbation_weight_cutoff moved a reference tree, which it has no '
+        'business touching -- the worth is measured against that baseline')
+    assert not np.array_equal(off_tau[:, tree, :], on_tau[:, tree, :]), (
+        'the cutoff never engaged, so this test proves nothing')
+    # A tolerance, not bit-identity: the global k accumulators are summed with
+    # omp atomic, so k moves in its last ulp between two runs of the SAME
+    # settings at more than one thread. tau has no such freedom -- the
+    # per-thread slabs are summed in thread order -- so it carries the exact
+    # assertions above.
+    assert on_k == pytest.approx(off_k, rel=1.0e-12), (
+        'perturbation_weight_cutoff reached the driver, which must stay a '
+        'stock run whatever a shadow tree does')
+
+
+def test_weight_cutoff_xml_roundtrip():
+    s = openmc.Settings()
+    assert s.perturbation_weight_cutoff is None
+
+    s.perturbation_weight_cutoff = 1.0e-6
+    elem = s.to_xml_element()
+    assert elem.find('perturbation_weight_cutoff').text == '1e-06'
+    assert openmc.Settings.from_xml_element(
+        elem).perturbation_weight_cutoff == 1.0e-6
+
+    # 0 is the documented way to transport every shadow tree analog, so it has
+    # to survive the round trip rather than read back as "unset".
+    s.perturbation_weight_cutoff = 0.0
+    assert openmc.Settings.from_xml_element(
+        s.to_xml_element()).perturbation_weight_cutoff == 0.0
+
+    with pytest.raises(ValueError):
+        s.perturbation_weight_cutoff = -1.0
+    with pytest.raises(TypeError):
+        s.perturbation_weight_cutoff = 'small'
+
+
 def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
                                                         model):
     """The adaptive site weight must not disturb an ordinary shadow tree.

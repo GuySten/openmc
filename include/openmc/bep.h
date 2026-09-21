@@ -198,6 +198,33 @@ inline double site_weight(int tree)
            : 1.0;
 }
 
+//! Weight the shadow tree currently being transported on this thread was
+//! rooted at, i.e. the weight of the branch site it grew from, or 0 outside a
+//! shadow tree.
+//!
+//! This is the natural scale for anything inside a shadow tree: every weight
+//! in the tree is some fraction of it. Expressing a cutoff against it makes
+//! that cutoff invariant to how the driver happens to normalise its weights
+//! and to `perturbation_population_ratio`, which an absolute cutoff would not
+//! be. Per thread because run_one_tree() transports one tree at a time on
+//! each thread, and 0 outside one so that a driver particle can never be
+//! affected by a setting meant for a shadow tree.
+double root_weight();
+
+//! Does `tree` belong to a perturbation, as opposed to being a reference tree
+//! or the trunk?
+//!
+//! What separates a tree whose population is the perturbation's own from one
+//! that is merely the reference it is scored against. A reference tree
+//! carries the same full-weight population an ordinary eigenvalue calculation
+//! would, so variance reduction aimed at a perturbation's thin, low-weight
+//! population has no business touching it.
+inline bool in_perturbation_tree(int tree)
+{
+  return tree >= 0 && tree < static_cast<int>(tree_pert.size()) &&
+         tree_pert[tree] >= 0;
+}
+
 //! Choose each tree's site weight from the weight it actually carried this
 //! generation, so that every tree transports a comparable number of sites
 //! whatever weight its particles happen to have. Called once per generation.

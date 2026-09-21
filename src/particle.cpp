@@ -22,6 +22,7 @@
 #include "openmc/nuclide.h"
 #include "openmc/particle_data.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/physics.h"
 #include "openmc/physics_mg.h"
 #include "openmc/random_lcg.h"
@@ -92,6 +93,27 @@ bool Particle::create_secondary(
     return false;
   }
   if (E < settings::energy_cutoff[idx]) {
+    return false;
+  }
+
+  // A BEP shadow tree carries photons for one reason only: so that they can
+  // make photoneutrons. Below data::photoneutron_energy_min no photonuclear
+  // channel emits a neutron at all, and nothing a photon does raises its
+  // energy -- Compton scattering, fluorescence, annihilation and
+  // bremsstrahlung all go downward, as does every photon those in turn
+  // produce. So a photon born under that threshold can never reach it, and
+  // neither can its descendants: it cannot change either tree's neutron
+  // population, and it is the bulk of what a fission source emits. Refusing
+  // it here rather than at each production site covers every source of a
+  // photon at once, in the same shape as the energy-cutoff rejection above.
+  //
+  // Shadow trees only. A driver photon carries heating and pulse-height
+  // scores, and the driver has to stay bit-identical to a stock run. Within
+  // the shadow pass the reference and perturbed trees apply this identically,
+  // and after the outgoing energy has been sampled, so the two go on drawing
+  // the same random numbers.
+  if (bep_tree() != BEP_TRUNK && type.is_photon() &&
+      bep::photonuclear_needed() && E < data::photoneutron_energy_min) {
     return false;
   }
 
@@ -291,13 +313,17 @@ void Particle::event_calculate_xs()
       // perturbation: it is local in space, not a property of the tree.
       bool pn = settings::photonuclear_physics;
       int i_pert = bep::tree_pert[bep_tree()];
-      if (i_pert >= 0 && bep::ref_tree_of_cell(i_cell) >= 0) {
+      if (bep::ref_tree_of_cell(i_cell) >= 0) {
         // find_cell() has already set material_last(), so the cross-section
         // cache invalidates on entry.
         int32_t m;
-        if (bep::substitute(i_pert, i_cell, m))
+        if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m))
           material() = m;
-        pn = pn || bep::photonuclear_in_cell(i_pert, i_cell);
+        // Keyed off the TREE rather than off i_pert: a photoneutron born in
+        // a reference tree is what a photonuclear perturbation is made of,
+        // so reference trees have to see photonuclear physics too. Which
+        // perturbations a tree feeds is what tree_pn_perts records.
+        pn = pn || bep::photonuclear_active(bep_tree(), i_cell);
       }
       if (pn != photonuclear_physics()) {
         photonuclear_physics() = pn;

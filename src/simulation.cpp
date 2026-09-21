@@ -893,6 +893,7 @@ void initialize_data()
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
   data::photonuclear_energy_min = INFTY;
+  data::photoneutron_energy_min = INFTY;
 
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
@@ -967,6 +968,14 @@ void initialize_data()
 
       write_message(7, "Minimum photonuclear physics energy: {} eV for {}",
         data::photonuclear_energy_min, min_nuc->name_);
+
+      // Where photoneutron production actually starts, which is higher: it is
+      // the energy below which a photon cannot change a neutron population,
+      // and so the energy below which a <photonuclear_perturbation> has no
+      // use for one. See Particle::create_secondary().
+      data::photoneutron_energy_min = min_photoneutron_energy();
+      write_message(7, "Minimum photoneutron production energy: {} eV",
+        data::photoneutron_energy_min);
 
       // Highest energy covered by the photonuclear library
       data::photonuclear_energy_max = 0.0;

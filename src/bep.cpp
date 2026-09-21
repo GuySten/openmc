@@ -39,6 +39,7 @@ bool photonuclear_any {false};
 vector<int> tree_pert;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
+vector<vector<int>> tree_pn_perts;
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
@@ -322,10 +323,32 @@ void init()
     }
   }
 
-  // Pass 2: one tree per perturbation, after all reference trees exist.
+  // Pass 2: one tree per perturbation, after all reference trees exist. For a
+  // material perturbation that tree holds the perturbed population; for a
+  // photonuclear one it holds only the ADDED, photoneutron-descended part,
+  // which Python adds to the reference trees. See the estimator note in
+  // bep.h.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     perturbations[ip].tree = static_cast<int>(tree_pert.size());
     tree_pert.push_back(static_cast<int>(ip));
+  }
+
+  // Pass 3: which photonuclear perturbations each tree feeds, so that a
+  // photon collision can find them in one indexed load rather than scanning
+  // every perturbation.
+  tree_pn_perts.assign(tree_pert.size(), {});
+  for (size_t ip = 0; ip < perturbations.size(); ++ip) {
+    const Perturbation& p = perturbations[ip];
+    if (p.kind != PerturbationKind::photonuclear)
+      continue;
+    // The reference trees of its own cells: their progenitors are exactly
+    // the ones its denominator sums over.
+    for (int32_t ci : p.cells)
+      tree_pn_perts[cell_ref_tree[ci]].push_back(static_cast<int>(ip));
+    // And its own tree, so that a photoneutron's descendants go on producing
+    // photoneutrons -- the perturbed state has them at every generation, not
+    // just the first.
+    tree_pn_perts[p.tree].push_back(static_cast<int>(ip));
   }
 
   // NOTE: settings::super_n_generation is deliberately NOT touched here.
@@ -567,6 +590,13 @@ void run_shadow_pass()
     // perturbation whose other cells the history later reaches is picked up
     // by a separate branch there, since the driver stays untagged.
     for (int ip : cell_perts[site.cell]) {
+      // A photonuclear perturbation does not get a tree of its own here: its
+      // perturbed population IS the reference tree just run, plus whatever
+      // photoneutrons that tree gives birth to, which are tagged into its
+      // tree as they are created. Running one would be running the reference
+      // tree a second time. See bep.h.
+      if (perturbations[ip].kind == PerturbationKind::photonuclear)
+        continue;
       run_one_tree(site, perturbations[ip].tree, seed_id);
     }
   }
@@ -706,6 +736,7 @@ void free_memory_bep()
   bep::tree_pert.clear();
   bep::cell_ref_tree.clear();
   bep::cell_perts.clear();
+  bep::tree_pn_perts.clear();
   bep::thread_branch_sites.clear();
   bep::branch_sites.clear();
   bep::thread_tau.clear();

@@ -152,16 +152,16 @@ void sample_neutron_reaction(Particle& p)
   // with photonuclear physics off they affect no eigenvalue and score no
   // tally, so making them is pure cost.
   //
-  // Unless a <photonuclear_perturbation> is configured, when they are the
-  // whole point: photons are what carry that perturbation, so its shadow
-  // trees need them. BOTH the perturbed and the reference tree make them, so
-  // that the two stay on the same random numbers until the perturbation
-  // itself makes them diverge -- the correlation that lets a worth this small
-  // be measured at all. Driver particles are unaffected either way: they run
-  // at super_gen <= 0.
+  // Unless this tree feeds a <photonuclear_perturbation>, when they are the
+  // whole point: photons are what give birth to the photoneutrons that
+  // perturbation is made of. Reference trees included -- they are where the
+  // photoneutrons come from (see bep.h) -- but not the shadow trees of a
+  // material perturbation, which have no use for a photon either. Driver
+  // particles are unaffected: they run at super_gen <= 0.
   if (settings::photon_transport &&
       (p.super_gen() <= 0 ||
-        (bep::photonuclear_needed() && p.bep_tree() != BEP_TRUNK))) {
+        (p.bep_tree() != BEP_TRUNK &&
+          !bep::tree_pn_perts[p.bep_tree()].empty()))) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -433,9 +433,17 @@ void sample_photon_reaction(Particle& p)
     return;
   }
 
-  // Per particle, not per run -- see Material::calculate_photon_xs(), which
-  // leaves macro_xs().photonuclear at zero for a particle this is false for.
-  if (p.photonuclear_physics() && p.macro_xs().photonuclear > 0.0) {
+  // Inside a BEP shadow tree the photonuclear channel is a source term and
+  // nothing else: the photoneutron is emitted at expected weight into the
+  // perturbation's own tree and the photon carries on unabsorbed, because
+  // the tree it is in also has to remain a valid sample of the REFERENCE
+  // population. See the estimator note in bep.h.
+  if (p.bep_tree() != BEP_TRUNK && bep::photonuclear_needed()) {
+    if (p.photonuclear_physics() && p.macro_xs().neutron_prod > 0.0)
+      emit_perturbation_photoneutrons(p);
+    // Fall through to the ordinary photon physics below: no absorption, no
+    // early return.
+  } else if (p.photonuclear_physics() && p.macro_xs().photonuclear > 0.0) {
     // With biasing on, every photon collision emits one photoneutron carrying
     // the expected weight, whether or not the photon is actually absorbed
     // photonuclearly. This is a production bias only.
@@ -1515,6 +1523,29 @@ void sample_photoneutron_product(
   // If we made it here, no product was sampled
   p.write_restart();
   fatal_error("Did not sample any photoneutron product.");
+}
+
+void emit_perturbation_photoneutrons(Particle& p)
+{
+  const int32_t i_cell = p.lowest_coord().cell();
+
+  for (int ip : bep::tree_pn_perts[p.bep_tree()]) {
+    if (!bep::photonuclear_in_cell(ip, i_cell))
+      continue;
+
+    // emit_forced_photoneutron() banks through create_secondary(), which
+    // copies the EMITTING particle's tree -- the reference tree this photon
+    // belongs to. Retag whatever it banked so the photoneutron, and through
+    // inheritance its whole descent, accumulates into the perturbation's own
+    // tree instead. Recorded by index rather than by taking back(): the call
+    // may bank nothing (roulette, energy cutoff) or, if a reaction ever gains
+    // more than one neutron product, more than one.
+    const size_t n_before = p.local_secondary_bank().size();
+    emit_forced_photoneutron(p);
+    const int tree = bep::perturbations[ip].tree;
+    for (size_t i = n_before; i < p.local_secondary_bank().size(); ++i)
+      p.local_secondary_bank()[i].bep_tree = tree;
+  }
 }
 
 void photonuclear_collision(Particle& p)

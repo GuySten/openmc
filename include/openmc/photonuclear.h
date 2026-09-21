@@ -153,6 +153,21 @@ void free_memory_photonuclear();
 //! with is_fission().
 bool photofission_excluded();
 
+//! Lowest incident photon energy at which any loaded nuclide can produce a
+//! photoneutron, or INFTY when none can.
+//!
+//! Distinct from data::photonuclear_energy_min, which is where photonuclear
+//! DATA starts and is lower on two counts: a nuclide's grid begins below its
+//! first reaction threshold, and several channels emit no neutrons at all. It
+//! is a neutron population that a <photonuclear_perturbation> weighs, so this
+//! is the energy below which a photon cannot affect the answer -- see
+//! Particle::create_secondary(), which is where shadow trees use it to stop
+//! making photons that can do nothing.
+//!
+//! Photofission is left out when photofission_excluded() says so, on the same
+//! grounds: the channel emits nothing, so it sets no threshold.
+double min_photoneutron_energy();
+
 //! Determine the highest incident photon energy for which every photoneutron
 //! this library can produce still falls within the neutron transport data
 //! range, and report the nuclide and reaction that set the limit.
@@ -175,6 +190,7 @@ extern std::unordered_map<std::string, int> photonuclear_map;
 extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 extern double photonuclear_energy_min;
 extern double photonuclear_energy_max;
+extern double photoneutron_energy_min;
 
 } // namespace data
 

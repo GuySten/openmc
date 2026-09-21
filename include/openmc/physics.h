@@ -116,6 +116,13 @@ void photonuclear_collision(Particle& p);
 //! photon collision when settings::photoneutron_biasing is on.
 void emit_forced_photoneutron(Particle& p);
 
+//! Emit, at expected weight, the photoneutrons this photon produces for each
+//! <photonuclear_perturbation> whose region it is in, tagging each into that
+//! perturbation's own shadow tree. The photon is left alone. Called instead
+//! of the analog photonuclear treatment for a BEP shadow particle; see bep.h
+//! for why the photon must survive.
+void emit_perturbation_photoneutrons(Particle& p);
+
 //! Emit a single photofission neutron, choosing prompt or delayed emission and
 //! advancing the emission time for delayed precursors.
 double emit_photofission_neutron(Particle& p,

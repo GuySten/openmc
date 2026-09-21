@@ -273,10 +273,22 @@ class PhotonuclearPerturbation(PerturbationBase):
     :math:`(\gamma, n)` photoneutron production alone, and OpenMC says so
     once at the start of a run whose data includes photofission.
 
-    Photoneutron worths are small -- tens of pcm is typical -- so expect to
-    need many histories. :attr:`openmc.Settings.fission_photons_only` cuts
-    the cost per history by not transporting the photons that were never
-    going to reach a photonuclear threshold.
+    Photoneutron worths are small -- single-digit to tens of pcm is typical
+    -- but they are cheap to resolve, because photonuclear physics adds a
+    neutron source and changes no neutron cross section. The perturbed
+    population is then exactly the reference population plus the one
+    descended from photoneutrons, so only that added part has to be sampled
+    and the reference part cancels exactly rather than statistically. No
+    second, perturbed tree is run: the shadow tree a photonuclear
+    perturbation makes is rooted at a photoneutron and exists only where one
+    is born.
+
+    :attr:`openmc.Settings.fission_photons_only` cuts the cost further by not
+    transporting photons that were never going to matter.
+    :attr:`openmc.Settings.photoneutron_biasing` has no effect here: a shadow
+    tree always emits the photoneutron at its expected weight and leaves the
+    photon unabsorbed, since the tree it is in must go on being a valid
+    sample of the reference population.
 
     .. versionadded:: 0.16.0
 

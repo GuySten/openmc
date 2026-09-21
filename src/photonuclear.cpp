@@ -33,6 +33,7 @@ std::unordered_map<std::string, int> photonuclear_map;
 vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 double photonuclear_energy_min;
 double photonuclear_energy_max;
+double photoneutron_energy_min {INFTY};
 
 } // namespace data
 
@@ -461,6 +462,44 @@ static double max_photoneutron_energy_lab(const PhotonuclearReaction& rx,
   double A = awr;
   return E_out + (E_in / A) * std::sqrt(2.0 * E_out / MASS_NEUTRON_EV) +
          (E_in * E_in) / (2.0 * MASS_NEUTRON_EV * A * A);
+}
+
+double min_photoneutron_energy()
+{
+  double E_min = INFTY;
+  const bool exclude_fission = photofission_excluded();
+
+  for (const auto& nuc : data::photonuclears) {
+    if (nuc->energy_.size() < 1)
+      continue;
+
+    for (const auto& rx : nuc->reactions_) {
+      if (rx->redundant_)
+        continue;
+      if (exclude_fission && is_fission(rx->mt_))
+        continue;
+
+      bool emits_neutrons = false;
+      for (const auto& product : rx->products_) {
+        if (product.particle_ == ParticleType::neutron()) {
+          emits_neutrons = true;
+          break;
+        }
+      }
+      if (!emits_neutrons)
+        continue;
+
+      // xs_.threshold indexes the nuclide's own energy grid, and the cross
+      // section is identically zero below it. Taking the grid point itself
+      // rather than interpolating for where the yield first turns positive
+      // errs low, which is the safe direction for a cut.
+      int i = rx->xs_.threshold;
+      if (i >= 0 && i < static_cast<int>(nuc->energy_.size()))
+        E_min = std::min(E_min, nuc->energy_[i]);
+    }
+  }
+
+  return E_min;
 }
 
 double max_safe_photon_energy(

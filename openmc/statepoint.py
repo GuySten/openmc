@@ -544,9 +544,19 @@ class StatePoint:
                             dict(zip(cells, map(
                                 int, np.asarray(pgroup['materials'][()])))),
                             perturbation_id=pid)
-                    numerators.append(tau[:, int(pgroup['tree'][()]), :])
-                    denominators.append(
-                        tau[:, np.asarray(pgroup['ref_trees'][()]), :].sum(1))
+                    reference = tau[
+                        :, np.asarray(pgroup['ref_trees'][()]), :].sum(1)
+                    own = tau[:, int(pgroup['tree'][()]), :]
+                    # A photonuclear perturbation adds a neutron source and
+                    # changes no neutron cross section, so its perturbed
+                    # population IS the reference population plus the one
+                    # descended from photoneutrons -- and its own tree holds
+                    # only that added part. A material perturbation's tree
+                    # holds the whole perturbed population, having been run
+                    # as a tree in its own right. See bep.h.
+                    numerators.append(
+                        reference + own if kind == 'photonuclear' else own)
+                    denominators.append(reference)
                     perturbations.append(p)
 
             # The fitted slope is ln(k_p / k_ref); k_ref converts it to a

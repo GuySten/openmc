@@ -762,14 +762,21 @@ sites and random numbers, so their difference is far better determined than
 either eigenvalue; see :class:`openmc.LocalPerturbation` for the rest of the
 machinery, which both kinds of perturbation share.
 
-Photoneutron worths are small, often tens of pcm, so expect to need many
-histories. :attr:`Settings.fission_photons_only` cuts the cost per history by
-not transporting the photons that were never going to reach a photonuclear
-threshold. :attr:`Settings.photoneutron_biasing` does not obviously help the
-worth itself: the noise in a worth comes from the perturbed tree diverging
-from the reference one at the analog photonuclear absorption, which biasing
-leaves in place, rather than from the rarity of photoneutron births, which is
-what biasing addresses.
+Photoneutron worths are small, often single-digit pcm, but they are cheap to
+resolve. Photonuclear physics adds a neutron source and changes no neutron
+cross section, so the perturbed population is exactly the reference
+population plus the one descended from photoneutrons. OpenMC therefore runs
+no second, perturbed tree at all: it grows the reference tree, tags the
+photoneutrons born in it into the perturbation's own tree, and adds the two.
+The reference part then cancels exactly rather than statistically, and what
+noise remains is the noise on the added part alone.
+
+:attr:`Settings.fission_photons_only` cuts the cost further by not
+transporting photons that were never going to matter.
+:attr:`Settings.photoneutron_biasing` has no effect on a perturbation: its
+shadow trees always emit the photoneutron at its expected weight and leave
+the photon unabsorbed, since the tree must go on being a valid sample of the
+reference population.
 
 --------------------------
 Generation of Output Files

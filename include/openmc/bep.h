@@ -15,9 +15,42 @@
 //! material: <photonuclear_perturbation> names cells in which the perturbed
 //! state has photonuclear physics enabled and the reference state does not,
 //! so its worth is the reactivity these cells owe to photoneutron production.
-//! It is local in exactly the same sense -- it is confined to the cells it
-//! names, branches at their boundary and is scored against the same reference
-//! trees -- so everything below applies to both kinds unchanged.
+//! It is local in exactly the same sense -- confined to the cells it names,
+//! branching at their boundary, scored against the same reference trees.
+//!
+//! It is scored differently, though, and much more cheaply. Photonuclear
+//! physics adds a neutron SOURCE and changes no neutron cross section: a
+//! neutron in the perturbed state is transported exactly as in the reference
+//! state. The perturbed population is therefore the reference population
+//! plus the population descended from photoneutrons, with nothing subtracted
+//! and no history behaving differently --
+//!
+//!     tau_p(d) = tau_ref(d) + tau_added(d)
+//!
+//! -- so running a second, perturbed tree beside the reference one would be
+//! running the reference tree twice. Instead ONE tree is run per branch
+//! site, and a photoneutron born in it is tagged into the perturbation's own
+//! tree, where it and its whole descent accumulate tau_added. The two
+//! populations are added in Python (StatePoint.perturbations). The shadow
+//! tree a photonuclear perturbation makes is thus rooted at a photoneutron
+//! and exists only where one is born -- at a photon collision with
+//! macro_xs().neutron_prod > 0 inside its cells -- rather than at every
+//! neutron that enters them.
+//!
+//! Two things follow. The cost is one tree per branch site rather than two,
+//! plus the rare photoneutron subtrees. And tau_ref cancels EXACTLY in
+//! l_p(d) = ln(1 + tau_added/tau_ref) rather than only statistically, so the
+//! noise that remains is the noise on tau_added alone -- the whole reason a
+//! worth of tens of pcm is measurable at all. Paired trees could only
+//! cancel tau_ref to the extent that common random numbers held them
+//! together, and a photonuclear absorption separated them at once.
+//!
+//! The photon itself is never absorbed photonuclearly inside a shadow tree:
+//! the photoneutron is emitted at its expected weight and the photon carries
+//! on. Analog absorption would remove a photon that the reference state
+//! still has, which is the one difference this decomposition may not have.
+//! What it costs is the second-order term in the photonuclear absorption
+//! probability, of order 1e-3 of an effect that is itself of order 1e-3.
 //!
 //! LINEAGE
 //! -------
@@ -197,6 +230,17 @@ extern vector<int> cell_ref_tree;
 //! cell index -> perturbations touching that cell.
 extern vector<vector<int>> cell_perts;
 
+//! Shadow tree index -> the photonuclear perturbations that tree feeds.
+//!
+//! A photoneutron counts towards perturbation p only if the tree it was born
+//! in is one whose progenitors make up p's denominator -- one of p's own
+//! reference trees, or p's own tree, where a photoneutron's descendants go
+//! on producing more. A photon in some other perturbation's reference tree
+//! is outside p's progenitor population, and adding its photoneutrons to
+//! tau_p would put weight in the numerator that the denominator never
+//! counted.
+extern vector<vector<int>> tree_pn_perts;
+
 struct BranchSite {
   Position r;
   Direction u;
@@ -297,6 +341,20 @@ inline bool photonuclear_in_cell(int pert, int32_t cell_index)
     return false;
   for (int32_t ci : p.cells) {
     if (ci == cell_index)
+      return true;
+  }
+  return false;
+}
+
+//! Whether a shadow particle in `tree` sees photonuclear physics where it is,
+//! i.e. whether some photonuclear perturbation that tree feeds names
+//! `cell_index`. This is what raises ParticleData::photonuclear_physics_, so
+//! it governs both the cross sections the particle sees and whether a photon
+//! collision here emits anything.
+inline bool photonuclear_active(int tree, int32_t cell_index)
+{
+  for (int ip : tree_pn_perts[tree]) {
+    if (photonuclear_in_cell(ip, cell_index))
       return true;
   }
   return false;

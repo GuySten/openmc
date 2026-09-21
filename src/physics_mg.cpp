@@ -112,8 +112,22 @@ void create_fission_sites(Particle& p)
                 p.macro_xs().total;
 
   // Sample the number of neutrons produced
-  int nu = static_cast<int>(nu_t);
-  if (prn(p.current_seed()) <= (nu_t - int(nu_t))) {
+
+  // Weight the sites of a BEP shadow tree are banked at. Unit weight -- what
+  // an eigenvalue calculation always does -- puts the parent's weight into
+  // the PROBABILITY of banking a site, which for a low-weight neutron is a
+  // lottery: at weight 1e-3, one collision in a thousand yields a weight-1
+  // site and the rest yield nothing. Banking lighter sites and proportionally
+  // more of them leaves the expected banked weight identical and its variance
+  // far lower. See bep::tree_site_weight.
+  //
+  // Driver particles are bep::BEP_TRUNK and so always get 1.0, which makes
+  // this exactly the arithmetic that was here before for them.
+  const double w_site = bep::site_weight(p.bep_tree());
+
+  double nu_scaled = nu_t / w_site;
+  int nu = static_cast<int>(nu_scaled);
+  if (prn(p.current_seed()) <= (nu_scaled - int(nu_scaled))) {
     nu++;
   }
 
@@ -161,7 +175,7 @@ void create_fission_sites(Particle& p)
     site.r = p.r();
     site.particle = ParticleType::neutron();
     site.time = p.time();
-    site.wgt = 1. / weight;
+    site.wgt = w_site / weight;
     site.bep_tree = p.bep_tree();
 
     // Sample the cosine of the angle, assuming fission neutrons are emitted

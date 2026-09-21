@@ -1507,6 +1507,44 @@ def test_photonuclear_rejects_repeated_cell(run_in_tmpdir, photon_model):
     with pytest.raises(RuntimeError, match='appears twice'):
         openmc.run()
 
+def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
+                                                        model):
+    """The adaptive site weight must not disturb an ordinary shadow tree.
+
+    Shadow fission sites are normally banked at unit weight, with the
+    parent's weight turned into the probability of banking one. That is only
+    a problem for a tree whose particles weigh far less than one; a material
+    perturbation's tree carries a full-weight population, the same as its
+    reference, so the measured ratio rounds to exactly 1.0 and the arithmetic
+    is the one an eigenvalue calculation has always done.
+
+    Turning the adjustment off entirely must therefore give BIT-IDENTICAL
+    shadow weights -- not merely consistent ones. That pins two things at
+    once: that reference trees are never given a weight of their own, and
+    that no extra random number is drawn on the way, either of which would
+    move the random walk of every tree in the run.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 2000
+    model.settings.perturbation_n_generation = 6
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+
+    def tau_of(ratio):
+        model.settings.perturbation_population_ratio = ratio
+        with h5py.File(model.run(), 'r') as f:
+            return np.array(f['local_perturbation']['tau'][()])
+
+    automatic = tau_of(1.0)   # the default: adjust to match the reference
+    disabled = tau_of(0.0)    # unit-weight sites, as without this feature
+
+    assert automatic.shape == disabled.shape
+    assert np.array_equal(automatic, disabled), (
+        'the adaptive site weight changed a full-weight shadow tree, so it '
+        'is perturbing the random walk of trees it has no business touching')
+
 
 def test_rejects_non_material_cell(run_in_tmpdir, model):
     """The swap replaces a material, so a lattice fill must fail.

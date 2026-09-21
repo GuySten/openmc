@@ -117,6 +117,22 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
+    perturbation_population_ratio : float
+        How many shadow fission sites a perturbation's tree carries relative
+        to the reference trees it is scored against. Shadow fission sites are
+        banked at whatever weight gives that population, instead of at unit
+        weight with the parent's weight turned into the probability of
+        banking one -- which for a low-weight source, such as the
+        photoneutrons of an :class:`openmc.PhotonuclearPerturbation`, is a
+        lottery that undoes the sampling it was given. Raising it buys
+        statistics with runtime; 0 disables the adjustment and banks
+        unit-weight sites as an ordinary eigenvalue calculation does.
+        Defaults to 1, meaning a perturbation tree carries about as many
+        sites as its reference. Perturbations whose trees already carry a
+        full-weight population, such as :class:`openmc.LocalPerturbation`,
+        are unaffected either way.
+
+        .. versionadded:: 0.16.0
     perturbation_n_generation : int
         Shadow tree depth for local perturbation worths. One scalar for the
         whole run: every shadow tree is compared against the same reference
@@ -515,6 +531,7 @@ class Settings:
         # Iterated Fission Probability
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
+        self._perturbation_population_ratio = None
 
         # Collision track feature
         self._collision_track = {}
@@ -1164,6 +1181,17 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
+
+    @property
+    def perturbation_population_ratio(self) -> float:
+        return self._perturbation_population_ratio
+
+    @perturbation_population_ratio.setter
+    def perturbation_population_ratio(self, ratio: float):
+        cv.check_type('perturbation population ratio', ratio, Real)
+        cv.check_greater_than(
+            'perturbation population ratio', ratio, 0.0, equality=True)
+        self._perturbation_population_ratio = ratio
 
     @property
     def perturbation_n_generation(self) -> int:
@@ -1968,6 +1996,11 @@ class Settings:
             element = ET.SubElement(root, "ifp_n_generation")
             element.text = str(self._ifp_n_generation)
 
+    def _create_perturbation_population_ratio_subelement(self, root):
+        if self._perturbation_population_ratio is not None:
+            element = ET.SubElement(root, "perturbation_population_ratio")
+            element.text = str(self._perturbation_population_ratio)
+
     def _create_perturbation_n_generation_subelement(self, root):
         if self._perturbation_n_generation is not None:
             element = ET.SubElement(root, "perturbation_n_generation")
@@ -2528,6 +2561,11 @@ class Settings:
         if text is not None:
             self.verbosity = int(text)
 
+    def _perturbation_population_ratio_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_population_ratio')
+        if text is not None:
+            self.perturbation_population_ratio = float(text)
+
     def _perturbation_n_generation_from_xml_element(self, root):
         text = get_text(root, 'perturbation_n_generation')
         if text is not None:
@@ -2824,6 +2862,7 @@ class Settings:
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
+        self._create_perturbation_population_ratio_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2950,6 +2989,7 @@ class Settings:
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
+        settings._perturbation_population_ratio_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

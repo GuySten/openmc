@@ -125,8 +125,18 @@ class Settings:
         -- which for a low-weight source such as the photoneutrons of an
         :class:`openmc.PhotonuclearPerturbation` is a lottery that undoes the
         sampling it was given. Measured on a photoneutron worth, turning it
-        off cost a factor of 35 in figure of merit, the perturbed tree falling
+        off cost a factor of 16 in figure of merit, the perturbed tree falling
         to about twenty sites per generation.
+
+        It also removes a BIAS, not only variance. The worth is a slope of
+        ``ln(tau_p / R_p)``, and a logarithm is concave, so a noisy tau is
+        reported low by roughly half its relative variance. Measured on the
+        same worth, the mean rises monotonically as the population grows --
+        2.86, 3.38, 3.39, 3.43 pcm at 21, 2062, 20620 and 206200 sites per
+        generation -- saturating once the noise is small, exactly as a
+        Jensen-type bias should. An unsplit calculation is therefore not
+        merely a noisier estimate of the same number, and should not be used
+        as a reference answer.
 
         The population is not a user parameter. Writing ``N`` for the sites a
         tree banks per generation and ``M`` for the number of independent

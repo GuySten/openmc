@@ -47,7 +47,6 @@ vector<double> tree_weight_scale;
 // site weight moves, since the spread is only meaningful at one weight.
 vector<int64_t> stat_n;
 vector<char> stat_primed;
-vector<double> stat_ref;
 vector<double> stat_sum;
 vector<double> stat_sumsq;
 vector<vector<BranchSite>> thread_branch_sites;
@@ -413,7 +412,6 @@ void init()
   tree_weight_scale.assign(tree_pert.size(), 1.0);
   stat_n.assign(tree_pert.size(), 0);
   stat_primed.assign(tree_pert.size(), 0);
-  stat_ref.assign(tree_pert.size(), 0.0);
   stat_sum.assign(tree_pert.size(), 0.0);
   stat_sumsq.assign(tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
@@ -712,29 +710,49 @@ void update_site_weights()
     // under-targets by the square root of the generation count, which on a
     // 30-generation run is a factor of five -- a decade below the measured
     // plateau once rounded.
-    // Every site the run transports EXCEPT this tree's own: its reference
-    // trees, and the trees of every other perturbation sharing the run. The
-    // optimum weighs this tree's marginal cost against the fixed cost of
-    // everything else, so with several perturbations each one can afford a
-    // larger population than it could alone -- the fixed cost it is measured
-    // against is larger. Summing only this perturbation's own reference trees
-    // understates it by about 1.1x at two perturbations, which the rounding
-    // below hides, and 1.6x at ten, which it does not. Identical to summing
-    // the reference trees when there is only one perturbation.
-    double n_all = 0.0;
+    // Every site the run transports THIS GENERATION except this tree's own:
+    // its reference trees, and the trees of every other perturbation sharing
+    // the run. The optimum weighs this tree's marginal cost against the fixed
+    // cost of everything else, so with several perturbations each one can
+    // afford a larger population than it could alone.
+    //
+    // PER GENERATION, not cumulative. The number of generations enters the
+    // cost as an overall factor and the variance as its reciprocal, and both
+    // are independent of the population, so it cancels from the stationarity
+    // condition entirely: the optimal per-generation population is the same
+    // whether the run is ten generations or ten thousand. Accumulating over
+    // the run instead multiplies the target by the square root of the
+    // generation count, which is simply wrong however well it happened to
+    // compensate for an unrelated error elsewhere.
+    //
+    // The driver's own cost belongs in here too and is not counted: it cannot
+    // be expressed in sites without timing the run, which would cost
+    // reproducibility. Omitting it understates the total by of order ten per
+    // cent, moving the target by five -- far inside the rounding below.
+    double n_rest = 0.0;
     for (size_t t2 = 0; t2 < tree_pert.size(); ++t2)
-      n_all += total[t2] / site_weight(static_cast<int>(t2));
-    stat_ref[p.tree] += n_all - total[p.tree] / site_weight(p.tree);
-    const double n_ref = stat_ref[p.tree];
+      if (t2 != static_cast<size_t>(p.tree))
+        n_rest += total[t2] / site_weight(static_cast<int>(t2));
 
     // Accumulate this generation's carried weight, so the spread of tau can
     // be measured across generations. Reset whenever the site weight moves,
     // because the spread has to be measured at ONE weight to be meaningful.
     double& w_site = tree_site_weight[p.tree];
     size_t t = p.tree;
+    // Accumulate the RATIO of this tree's weight to its reference trees',
+    // not the weight itself. b is the sampling floor, and consecutive
+    // generations share a fission source that drifts for reasons that have
+    // nothing to do with banking; that common mode inflates the raw spread of
+    // tau by a large factor -- measured sixty here -- and an inflated b
+    // deflates the target by its square root. The drift is common to
+    // numerator and denominator and cancels to first order in the ratio,
+    // which is in any case the quantity the worth is actually built from. The
+    // reference tree's own sampling noise, of order 1/n_ref, is four decades
+    // below this tree's and is left in.
+    double ratio = w_pert / w_ref;
     stat_n[t] += 1;
-    stat_sum[t] += w_pert;
-    stat_sumsq[t] += w_pert * w_pert;
+    stat_sum[t] += ratio;
+    stat_sumsq[t] += ratio * ratio;
 
     // The rule. Writing N for the sites the tree banks per generation and M
     // for the number of INDEPENDENT source events feeding it, the banking is
@@ -798,10 +816,16 @@ void update_site_weights()
       if (mean <= 0.0 || var <= 0.0)
         continue;
       double rel_var = var / (mean * mean);
-      double b = rel_var - w_site / w_pert; // 1/N, with N = w_pert / w_site
+      double b = rel_var - w_site / w_pert; // 1/n, with n = w_pert / w_site
       if (b <= 0.0)
         continue; // the floor is not resolved yet; leave the weight alone
-      target_n = std::sqrt(n_ref / b);
+      // Stationarity of sigma^2 * T gives b n^2 + n - C = 0, whose positive
+      // root is this. C is the whole generation's cost in sites, this tree
+      // included, since growing this tree also grows what it is weighed
+      // against. Reduces to sqrt(C/b) once b*C is large, which it is here,
+      // but the root costs nothing and is right in both limits.
+      double C = n_rest + w_pert / w_site;
+      target_n = (-1.0 + std::sqrt(1.0 + 4.0 * b * C)) / (2.0 * b);
       stat_primed[t] = true;
     }
 

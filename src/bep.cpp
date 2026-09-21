@@ -39,6 +39,7 @@ vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
 vector<double> tree_site_weight;
 vector<double> tree_weight_scale;
+vector<int64_t> tree_sources;
 // Running per-generation statistics of each tree's carried weight, used by
 // update_site_weights() to measure the spread of tau. Reset whenever a tree's
 // site weight moves, since the spread is only meaningful at one weight.
@@ -123,6 +124,12 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   // root_weight(). Set before transport and cleared after, so that nothing
   // outside a shadow tree can read a stale value.
   thread_root_weight[thread_num()] = site.wgt;
+
+  // One independent source event for this tree. A photonuclear
+  // perturbation's tree is not run here and counts its own, at the
+  // photoneutron births that seed it.
+#pragma omp atomic
+  tree_sources[tree] += 1;
 
   score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
 
@@ -314,6 +321,7 @@ void init()
   // exactly what an eigenvalue calculation does anyway.
   tree_site_weight.assign(tree_pert.size(), 1.0);
   tree_weight_scale.assign(tree_pert.size(), 1.0);
+  tree_sources.assign(tree_pert.size(), 0);
   stat_n.assign(tree_pert.size(), 0);
   stat_primed.assign(tree_pert.size(), 0);
   stat_sum.assign(tree_pert.size(), 0.0);
@@ -361,6 +369,7 @@ void reset_generation()
     return;
   std::fill(tau.begin(), tau.end(), 0.0);
   std::fill(thread_tau.begin(), thread_tau.end(), 0.0);
+  std::fill(tree_sources.begin(), tree_sources.end(), 0);
   for (auto& sites : thread_branch_sites)
     sites.clear();
   branch_sites.clear();
@@ -690,22 +699,25 @@ void update_site_weights()
       // current weight while the statistics rebuild.
       if (stat_primed[t])
         continue;
-      // Nothing to measure a variance from yet, so this is an initial
-      // condition rather than a derived value, and it has to be both CLOSE
-      // and STABLE. Close because shadow trees do not run during inactive
-      // batches -- every warm-up generation is an active one whose statistics
-      // land in the answer -- and stable because any drift across the
-      // rounding boundary resets the statistics and postpones the estimate
-      // that would replace it.
+      // No spread measured yet, so b cannot be inverted from it -- but it
+      // need not be guessed either. b = c/M, and M is COUNTED: the source
+      // events that seeded this tree this generation. c is the relative
+      // variance of one source's depth-summed contribution, which for a
+      // near-critical chain followed over L generations is of order L. So
       //
-      // A tenth of the reference tree's per-generation population, which is
-      // where the figure of merit was measured to plateau, and which scales
-      // with the run as everything here must. Deliberately NOT sqrt(n_ref):
-      // that is two decades low, and the ten generations it then took to
-      // prime cost more than the whole adjustment was worth. Deliberately not
-      // keyed to the cumulative count either, which grows every generation
-      // and so cannot settle.
-      target_n = 0.1 * w_ref;
+      //     b ~ L / M   and   n ~ sqrt(C * M / L)
+      //
+      // needing no tuned constant. Being only an initial condition it does
+      // not have to be exact -- the update below is a fixed-point iteration
+      // and converges from any start -- but it does have to be CLOSE, because
+      // shadow trees do not run during inactive batches, so every generation
+      // spent converging is an active one whose noise lands in the answer.
+      int64_t m = tree_sources[p.tree];
+      if (m <= 0)
+        continue; // nothing seeded this tree yet; leave it at unit weight
+      double b0 = static_cast<double>(settings::bep_n_generation) /
+                  static_cast<double>(m);
+      target_n = std::sqrt((n_rest + w_pert / w_site) / b0);
     } else {
       double n = static_cast<double>(stat_n[t]);
       double mean = stat_sum[t] / n;
@@ -721,7 +733,24 @@ void update_site_weights()
       // included, since growing this tree also grows what it is weighed
       // against. Reduces to sqrt(C/b) once b*C is large, which it is here,
       // but the root costs nothing and is right in both limits.
+      //
+      // Solving it per generation against the PREVIOUS generation's
+      // populations is precisely the fixed-point iteration for
+      //
+      //     C = r + sum_q max(W_q, phi_q(C)),   phi_q(C) the root above,
+      //
+      // whose solution is the joint optimum over every perturbation sharing
+      // the run. The iteration converges when the map contracts, that is when
+      // sum_q phi_q'(C) < 1 with phi'(C) = 1/sqrt(1 + 4 b C). Each tree can
+      // only check its own term, so require that K of them would still
+      // contract; if not, hold the weight rather than iterate a map that may
+      // not settle. The condition only bites when a perturbation is cheap
+      // relative to the run, where b*C is small and the optimum is flat
+      // anyway.
       double C = n_rest + w_pert / w_site;
+      double slope = 1.0 / std::sqrt(1.0 + 4.0 * b * C);
+      if (slope * static_cast<double>(perturbations.size()) >= 1.0)
+        continue;
       target_n = (-1.0 + std::sqrt(1.0 + 4.0 * b * C)) / (2.0 * b);
       stat_primed[t] = true;
     }

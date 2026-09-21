@@ -46,6 +46,8 @@ vector<double> tree_weight_scale;
 // update_site_weights() to measure the spread of tau. Reset whenever a tree's
 // site weight moves, since the spread is only meaningful at one weight.
 vector<int64_t> stat_n;
+vector<char> stat_primed;
+vector<double> stat_ref;
 vector<double> stat_sum;
 vector<double> stat_sumsq;
 vector<vector<BranchSite>> thread_branch_sites;
@@ -410,6 +412,8 @@ void init()
   tree_site_weight.assign(tree_pert.size(), 1.0);
   tree_weight_scale.assign(tree_pert.size(), 1.0);
   stat_n.assign(tree_pert.size(), 0);
+  stat_primed.assign(tree_pert.size(), 0);
+  stat_ref.assign(tree_pert.size(), 0.0);
   stat_sum.assign(tree_pert.size(), 0.0);
   stat_sumsq.assign(tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
@@ -697,11 +701,31 @@ void update_site_weights()
     if (w_ref <= 0.0 || w_pert <= 0.0)
       continue; // nothing measured yet; leave it at unit weight
 
-    // Reference sites are banked at unit weight, so their summed weight IS
-    // their count. No separate counter is needed, and none of this reads a
-    // clock -- a sampling rule that did would give two runs of the same seed
-    // different answers.
-    const double n_ref = w_ref;
+    // A tree's site count is its carried weight divided by the weight it
+    // banks at -- reference trees bank at 1, so for them weight IS count. No
+    // separate counter is needed, and none of this reads a clock: a sampling
+    // rule that did would give two runs of the same seed different answers.
+    //
+    // CUMULATIVE over the run, not this generation's: T0/kappa is how much
+    // non-perturbation work the whole calculation does, against which the
+    // perturbation's total cost is weighed. Using one generation's count
+    // under-targets by the square root of the generation count, which on a
+    // 30-generation run is a factor of five -- a decade below the measured
+    // plateau once rounded.
+    // Every site the run transports EXCEPT this tree's own: its reference
+    // trees, and the trees of every other perturbation sharing the run. The
+    // optimum weighs this tree's marginal cost against the fixed cost of
+    // everything else, so with several perturbations each one can afford a
+    // larger population than it could alone -- the fixed cost it is measured
+    // against is larger. Summing only this perturbation's own reference trees
+    // understates it by about 1.1x at two perturbations, which the rounding
+    // below hides, and 1.6x at ten, which it does not. Identical to summing
+    // the reference trees when there is only one perturbation.
+    double n_all = 0.0;
+    for (size_t t2 = 0; t2 < tree_pert.size(); ++t2)
+      n_all += total[t2] / site_weight(static_cast<int>(t2));
+    stat_ref[p.tree] += n_all - total[p.tree] / site_weight(p.tree);
+    const double n_ref = stat_ref[p.tree];
 
     // Accumulate this generation's carried weight, so the spread of tau can
     // be measured across generations. Reset whenever the site weight moves,
@@ -743,11 +767,30 @@ void update_site_weights()
     // would stop the tree benefiting from a longer run.
     double target_n;
     if (stat_n[t] < MIN_STAT_GENERATIONS) {
-      // Nothing to measure a variance from yet. sqrt(n_ref) is the
-      // scale-invariant, cheap starting population -- N* with M_eff of 1,
-      // i.e. the most pessimistic source count -- and it is some two decades
-      // above what an unsplit tree would carry.
-      target_n = std::sqrt(n_ref);
+      // Only ever bootstrap ONCE. Changing the weight resets the statistics,
+      // so a tree that has already measured one would otherwise fall back to
+      // the bootstrap on the very next generation and revert the change it
+      // had just made -- a limit cycle that parks the tree near the bootstrap
+      // population however good its estimate was. Once primed, hold the
+      // current weight while the statistics rebuild.
+      if (stat_primed[t])
+        continue;
+      // Nothing to measure a variance from yet, so this is an initial
+      // condition rather than a derived value, and it has to be both CLOSE
+      // and STABLE. Close because shadow trees do not run during inactive
+      // batches -- every warm-up generation is an active one whose statistics
+      // land in the answer -- and stable because any drift across the
+      // rounding boundary resets the statistics and postpones the estimate
+      // that would replace it.
+      //
+      // A tenth of the reference tree's per-generation population, which is
+      // where the figure of merit was measured to plateau, and which scales
+      // with the run as everything here must. Deliberately NOT sqrt(n_ref):
+      // that is two decades low, and the ten generations it then took to
+      // prime cost more than the whole adjustment was worth. Deliberately not
+      // keyed to the cumulative count either, which grows every generation
+      // and so cannot settle.
+      target_n = 0.1 * w_ref;
     } else {
       double n = static_cast<double>(stat_n[t]);
       double mean = stat_sum[t] / n;
@@ -759,6 +802,7 @@ void update_site_weights()
       if (b <= 0.0)
         continue; // the floor is not resolved yet; leave the weight alone
       target_n = std::sqrt(n_ref / b);
+      stat_primed[t] = true;
     }
 
     // Rounded to the NEAREST power of ten, for three reasons. It stops the

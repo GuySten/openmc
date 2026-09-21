@@ -38,6 +38,7 @@ vector<int> tree_pert;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
 vector<double> tree_site_weight;
+vector<double> tree_weight_scale;
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
@@ -93,16 +94,19 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   // wgt_born is the scale apply_russian_roulette() measures against, and for
   // a shadow tree that must be the weight a typical particle in the tree is
   // born at, not the weight of the branch site it grew from. Those differ by
-  // whatever perturbation_population_ratio thinned the tree to: judged
-  // against the root weight, a thinned tree's entire population sits below
+  // how far below its reference the perturbation's population actually sits:
+  // judged against the root weight, such a tree's entire population is below
   // the cutoff and survival biasing would roulette all of it up to
-  // weight_survive. site_weight() is 1.0 for a reference tree and for a
-  // material perturbation's tree, so this is p.wgt() exactly for them and
-  // they are bit-identical to before it existed.
+  // weight_survive. weight_scale(), NOT site_weight() -- the latter carries a
+  // 1/perturbation_population_ratio, so using it here would move the roulette
+  // threshold every time the population knob was tuned. weight_scale() is 1.0
+  // for a reference tree and for a material perturbation's tree, so this is
+  // p.wgt() exactly for them and they are bit-identical to before it
+  // existed.
   //
   // Read only by apply_russian_roulette(), which returns immediately unless
   // survival_biasing is on, so with it off this changes nothing anywhere.
-  p.wgt_born() = p.wgt() * site_weight(tree);
+  p.wgt_born() = p.wgt() * weight_scale(tree);
   p.id() = seed_id;
   init_particle_seeds(seed_id, p.seeds());
   p.stream() = STREAM_TRACKING;
@@ -289,6 +293,7 @@ void init()
   // Unit weight until a generation has been run to measure from, which is
   // exactly what an eigenvalue calculation does anyway.
   tree_site_weight.assign(tree_pert.size(), 1.0);
+  tree_weight_scale.assign(tree_pert.size(), 1.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_root_weight.assign(num_threads(), 0.0);
   thread_branch_sites.assign(num_threads(), {});
@@ -530,11 +535,6 @@ void run_shadow_pass()
 
 void update_site_weights()
 {
-  // Zero turns the whole thing off: every tree banks unit-weight sites, as an
-  // ordinary eigenvalue calculation does.
-  if (settings::perturbation_population_ratio <= 0.0)
-    return;
-
   int nd = settings::bep_n_generation + 1;
 
   // Total weight each tree carried this generation, summed over depth.
@@ -543,6 +543,31 @@ void update_site_weights()
     for (int d = 0; d < nd; ++d)
       total[t] += tau[tau_index(static_cast<int>(t), d)];
   }
+
+  // weight_scale is measured whatever the population ratio is set to -- it
+  // describes the tree, not a choice about the tree, and
+  // perturbation_population_ratio == 0 only disables the SITE WEIGHT.
+  for (size_t ip = 0; ip < perturbations.size(); ++ip) {
+    const Perturbation& p = perturbations[ip];
+    double w_ref = 0.0;
+    for (int32_t ci : p.cells)
+      w_ref += total[cell_ref_tree[ci]];
+    double w_pert = total[p.tree];
+    if (w_ref <= 0.0 || w_pert <= 0.0)
+      continue;
+    // Quantized exactly as the site weight is, and for the same two reasons:
+    // it stops the scale drifting generation to generation on statistical
+    // noise, and it pins a tree whose population already matches its
+    // reference at exactly 1.0, so a material perturbation is untouched.
+    double q = std::pow(10.0, std::floor(std::log10(w_pert / w_ref) + 0.5));
+    tree_weight_scale[p.tree] =
+      std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
+  }
+
+  // Zero turns the site weight off: every tree banks unit-weight sites, as an
+  // ordinary eigenvalue calculation does.
+  if (settings::perturbation_population_ratio <= 0.0)
+    return;
 
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     const Perturbation& p = perturbations[ip];

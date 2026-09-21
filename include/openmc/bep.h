@@ -225,23 +225,45 @@ inline bool in_perturbation_tree(int tree)
          tree_pert[tree] >= 0;
 }
 
+//! Weight a typical particle in `tree` carries, relative to the reference
+//! tree it is scored against. Measured, and independent of every
+//! variance-reduction knob.
+//!
+//! Distinct from site_weight() on purpose. That one is
+//! w_pert / (perturbation_population_ratio * w_ref) -- it carries a 1/ratio
+//! in it, because its job is to hit a requested POPULATION. This one is
+//! w_pert / w_ref with no such factor: it is what the perturbation's
+//! population actually weighs, which for a photonuclear perturbation is the
+//! photonuclear production ratio aggregated over the problem (measured
+//! 2.3e-4, against a per-collision neutron_prod/total * yield of 1.4e-4 --
+//! the difference being the photoneutrons' own fission progeny).
+//!
+//! Keeping them apart matters: anything that scales a cutoff by site_weight()
+//! moves that cutoff whenever the population ratio is tuned, silently
+//! coupling two controls that have to stay independent.
+extern vector<double> tree_weight_scale;
+
+inline double weight_scale(int tree)
+{
+  return (tree >= 0 && tree < static_cast<int>(tree_weight_scale.size()))
+           ? tree_weight_scale[tree]
+           : 1.0;
+}
+
 //! The weight a typical particle in `tree` is born at.
 //!
 //! This is the scale a shadow tree's variance reduction has to measure
-//! against, and it is NOT the tree's root weight. A tree thinned by
-//! perturbation_population_ratio banks its fission sites at site_weight(tree)
-//! (see create_fission_sites, where site.wgt is exactly that), so its
-//! particles are born decades below the branch site the tree grew from --
-//! measured at 2.3e-4 of the reference population for a photoneutron worth.
-//! Judging such a particle against the root weight declares the whole tree
-//! negligible; judging it against this says what was meant.
+//! against, and it is NOT the tree's root weight: a perturbation's population
+//! can sit decades below the branch site its tree grew from. Judging such a
+//! particle against the root weight declares the whole tree negligible;
+//! judging it against this says what was meant.
 //!
 //! Exactly the root weight for a reference tree and for a material
 //! perturbation's tree, both of which carry a full-weight population and have
-//! site_weight 1.0, so neither is disturbed by anything keyed off this.
+//! weight_scale 1.0, so neither is disturbed by anything keyed off this.
 inline double characteristic_weight(int tree)
 {
-  return root_weight() * site_weight(tree);
+  return root_weight() * weight_scale(tree);
 }
 
 //! Choose each tree's site weight from the weight it actually carried this

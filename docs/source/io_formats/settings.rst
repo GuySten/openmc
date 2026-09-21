@@ -568,6 +568,39 @@ either "false" or "true".
 
   *Default*: false
 
+---------------------------
+``<photon_splits>`` Element
+---------------------------
+
+The ``<photon_splits>`` element gives the factor by which each photon
+produced by a neutron reaction is split. The natural yield is emitted as this
+many times as many photons, each of a fraction of the weight and each sampled
+independently -- its own reaction, its own outgoing energy, its own direction
+-- so the expected photon weight per collision is unchanged and any score
+linear in it is unbiased. It is a multiplier and not a count: fission emits
+of order ten prompt photons per collision, so a fixed count would combine
+rather than split wherever the yield exceeded it, raising the variance it was
+meant to lower. Must be a positive integer.
+
+Photon transport must be enabled when this element is greater than one,
+and it cannot be combined with pulse-height tallies, which are not linear
+in the particle weight.
+
+  *Default*: 1
+
+---------------------------------
+``<photoneutron_splits>`` Element
+---------------------------------
+
+The ``<photoneutron_splits>`` element is the same for the photoneutrons
+emitted at a photon collision: the expected yield is emitted as this many
+neutrons of a fraction of the weight, each sampled independently, which
+samples the photoneutron spectrum far better per collision. Must be a
+positive integer, and carries the same restrictions as
+``<photon_splits>``.
+
+  *Default*: 1
+
 ----------------------------------
 ``<photoneutron_biasing>`` Element
 ----------------------------------

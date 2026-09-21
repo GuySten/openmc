@@ -33,7 +33,6 @@ std::unordered_map<std::string, int> photonuclear_map;
 vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 double photonuclear_energy_min;
 double photonuclear_energy_max;
-double photoneutron_energy_min {INFTY};
 
 } // namespace data
 

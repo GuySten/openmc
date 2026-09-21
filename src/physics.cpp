@@ -1423,6 +1423,20 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
       ++y;
   }
 
+  // Split each of those photons settings::photon_splits ways: the same total
+  // weight over that many more photons, each sampled independently in the
+  // loop below -- its own reaction, its own outgoing energy, its own
+  // direction. The expected photon weight per collision is untouched, so
+  // anything linear in it is unbiased, and the rare hard photons that drive
+  // photoneutron production get sampled proportionately more often.
+  //
+  // A MULTIPLIER on the natural yield, not a count replacing it. Fission
+  // emits of order ten prompt photons per collision, so a fixed count would
+  // be combining rather than splitting wherever the yield exceeded it -- and
+  // combining raises the variance it was meant to lower.
+  y *= settings::photon_splits;
+  photon_wgt /= settings::photon_splits;
+
   // Sample each secondary photon
   for (int i = 0; i < y; ++i) {
     // Sample the reaction and product
@@ -1670,50 +1684,63 @@ void emit_forced_photoneutron(Particle& p)
 {
   const double wgt = p.wgt();
 
-  int i_nuclide = sample_photonuclear_nuclide(p, true);
+  // Emit the expected photoneutron yield as `n_split` neutrons of 1/n_split
+  // the weight rather than one of the whole, each sampled independently --
+  // its own nuclide, its own reaction and product, its own outgoing energy
+  // and direction. The expected emitted weight is unchanged, so anything
+  // linear in it is unbiased; what improves is how well one photon collision
+  // samples the photoneutron spectrum, which is what a reactivity worth is
+  // an integral over. settings::photoneutron_splits is 1 unless asked for,
+  // and the loop then runs exactly once.
+  const int n_split = settings::photoneutron_splits;
 
-  int i_rx;
-  int i_product;
-  sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
+  for (int i_split = 0; i_split < n_split; ++i_split) {
+    int i_nuclide = sample_photonuclear_nuclide(p, true);
 
-  const auto& nuc {data::photonuclears[i_nuclide]};
-  const auto& rx {nuc->reactions_[i_rx]};
-  const auto& product {rx->products_[i_product]};
+    int i_rx;
+    int i_product;
+    sample_photoneutron_product(i_nuclide, p, &i_rx, &i_product);
 
-  // Expected number of photoneutrons produced per photon collision
-  double factor =
-    (p.macro_xs().neutron_prod / p.macro_xs().total) * (*product.yield_)(p.E());
-  double w = wgt * factor;
+    const auto& nuc {data::photonuclears[i_nuclide]};
+    const auto& rx {nuc->reactions_[i_rx]};
+    const auto& product {rx->products_[i_product]};
 
-  // Play russian roulette if survival biasing is turned on
-  // and survival normalization is turned off
-  if (settings::survival_biasing && !settings::survival_normalization &&
-      w < settings::weight_cutoff) {
-    if (settings::weight_survive * prn(p.current_seed()) < w) {
-      // Rouletting changes the emitted weight, so the energy bookkeeping below
-      // would no longer correspond to the expected energy removal.
-      factor = settings::weight_survive / wgt;
-      w = settings::weight_survive;
-    } else {
-      return;
+    // Expected number of photoneutrons produced per photon collision, shared
+    // out over the splits
+    double factor = (p.macro_xs().neutron_prod / p.macro_xs().total) *
+                    (*product.yield_)(p.E()) / n_split;
+    double w = wgt * factor;
+
+    // Play russian roulette if survival biasing is turned on
+    // and survival normalization is turned off
+    if (settings::survival_biasing && !settings::survival_normalization &&
+        w < settings::weight_cutoff) {
+      if (settings::weight_survive * prn(p.current_seed()) < w) {
+        // Rouletting changes the emitted weight, so the energy bookkeeping
+        // below would no longer correspond to the expected energy removal.
+        factor = settings::weight_survive / wgt;
+        w = settings::weight_survive;
+      } else {
+        continue;
+      }
     }
-  }
 
-  // Photofission neutrons must go through the prompt/delayed split, which also
-  // sets the emission time for delayed precursors.
-  double E;
-  if (nuc->fissionable_ && rx.get() == nuc->fission_rx_) {
-    E = emit_photofission_neutron(p, *nuc, *rx, w);
-  } else {
-    E = emit_photonuclear_product(p, *nuc, *rx, product, w);
-  }
+    // Photofission neutrons must go through the prompt/delayed split, which
+    // also sets the emission time for delayed precursors.
+    double E;
+    if (nuc->fissionable_ && rx.get() == nuc->fission_rx_) {
+      E = emit_photofission_neutron(p, *nuc, *rx, w);
+    } else {
+      E = emit_photonuclear_product(p, *nuc, *rx, product, w);
+    }
 
-  // create_secondary() banked the full outgoing energy, but only a fraction
-  // "factor" of a neutron is actually emitted per collision. The heating
-  // estimator scores against the pre-collision weight, so scale the banked
-  // energy to the expected energy carried away. Without this, heating tallies
-  // would be wrong whenever biasing is enabled.
-  p.bank_second_E() += (factor - 1.0) * E;
+    // create_secondary() banked the full outgoing energy, but only a fraction
+    // "factor" of a neutron is actually emitted. The heating estimator scores
+    // against the pre-collision weight, so scale the banked energy to the
+    // expected energy carried away. Without this, heating tallies would be
+    // wrong whenever biasing is enabled.
+    p.bank_second_E() += (factor - 1.0) * E;
+  }
 }
 
 double emit_photofission_neutron(Particle& p,

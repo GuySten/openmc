@@ -207,6 +207,26 @@ class Settings:
         thresholds. Requires `photon_transport` to be True.
 
         .. versionadded:: 0.16.0
+    photon_splits : int
+        Factor by which each photon produced by a neutron reaction is split.
+        The natural yield is emitted as this many times as many photons, each
+        of a fraction of the weight and each sampled independently -- its own
+        reaction, outgoing energy and direction -- so the expected weight per
+        collision is unchanged and anything linear in it is unbiased. It is a
+        multiplier and not a count: fission emits of order ten prompt photons
+        per collision, so a fixed count would combine rather than split
+        wherever the yield exceeded it. Requires `photon_transport`, and
+        cannot be combined with pulse-height tallies, which are not linear in
+        the weight. Defaults to 1, meaning no splitting.
+
+        .. versionadded:: 0.16.0
+    photoneutron_splits : int
+        The same for the photoneutrons emitted at a photon collision: the
+        expected yield is emitted as this many neutrons of a fraction of the
+        weight, each sampled independently, which samples the photoneutron
+        spectrum far better per collision. Defaults to 1.
+
+        .. versionadded:: 0.16.0
     photonuclear_physics : bool
         Whether to use photonuclear physics. Requires `photon_transport` to be
         True. Enabling this may lower the maximum photon energy of the problem,
@@ -456,6 +476,8 @@ class Settings:
         self._photonuclear_physics = None
         self._photoneutron_biasing = None
         self._fission_photons_only = None
+        self._photon_splits = None
+        self._photoneutron_splits = None
         self._atomic_relaxation = None
         self._plot_seed = None
         self._ptables = None
@@ -756,6 +778,26 @@ class Settings:
     def fission_photons_only(self, fission_photons_only: bool):
         cv.check_type('fission photons only', fission_photons_only, bool)
         self._fission_photons_only = fission_photons_only
+
+    @property
+    def photon_splits(self) -> int:
+        return self._photon_splits
+
+    @photon_splits.setter
+    def photon_splits(self, photon_splits: int):
+        cv.check_type('photon splits', photon_splits, Integral)
+        cv.check_greater_than('photon splits', photon_splits, 0)
+        self._photon_splits = photon_splits
+
+    @property
+    def photoneutron_splits(self) -> int:
+        return self._photoneutron_splits
+
+    @photoneutron_splits.setter
+    def photoneutron_splits(self, photoneutron_splits: int):
+        cv.check_type('photoneutron splits', photoneutron_splits, Integral)
+        cv.check_greater_than('photoneutron splits', photoneutron_splits, 0)
+        self._photoneutron_splits = photoneutron_splits
 
     @property
     def photonuclear_physics(self) -> bool:
@@ -1788,6 +1830,16 @@ class Settings:
             element = ET.SubElement(root, "fission_photons_only")
             element.text = str(self._fission_photons_only).lower()
 
+    def _create_photon_splits_subelement(self, root):
+        if self._photon_splits is not None:
+            element = ET.SubElement(root, "photon_splits")
+            element.text = str(self._photon_splits)
+
+    def _create_photoneutron_splits_subelement(self, root):
+        if self._photoneutron_splits is not None:
+            element = ET.SubElement(root, "photoneutron_splits")
+            element.text = str(self._photoneutron_splits)
+
     def _create_photoneutron_biasing_subelement(self, root):
         if self._photoneutron_biasing is not None:
             element = ET.SubElement(root, "photoneutron_biasing")
@@ -2340,6 +2392,16 @@ class Settings:
         if text is not None:
             self.fission_photons_only = text in ('true', '1')
 
+    def _photon_splits_from_xml_element(self, root):
+        text = get_text(root, 'photon_splits')
+        if text is not None:
+            self.photon_splits = int(text)
+
+    def _photoneutron_splits_from_xml_element(self, root):
+        text = get_text(root, 'photoneutron_splits')
+        if text is not None:
+            self.photoneutron_splits = int(text)
+
     def _photoneutron_biasing_from_xml_element(self, root):
         text = get_text(root, 'photoneutron_biasing')
         if text is not None:
@@ -2713,6 +2775,8 @@ class Settings:
         self._create_photonuclear_physics_subelement(element)
         self._create_photoneutron_biasing_subelement(element)
         self._create_fission_photons_only_subelement(element)
+        self._create_photon_splits_subelement(element)
+        self._create_photoneutron_splits_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2836,6 +2900,8 @@ class Settings:
         settings._photonuclear_physics_from_xml_element(elem)
         settings._photoneutron_biasing_from_xml_element(elem)
         settings._fission_photons_only_from_xml_element(elem)
+        settings._photon_splits_from_xml_element(elem)
+        settings._photoneutron_splits_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)

@@ -80,6 +80,8 @@ extern "C" bool photon_transport;     //!< photon transport turned on?
 extern "C" bool photonuclear_physics; //!< photonuclear physics turned on?
 extern "C" bool
   fission_photons_only; //!< only fission produces secondary photons?
+extern "C" int photon_splits;      //!< photons emitted per neutron reaction
+extern "C" int photoneutron_splits; //!< photoneutrons emitted per collision
 extern "C" bool
   photoneutron_biasing; //!< bias photoneutron production (expected value)?
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?

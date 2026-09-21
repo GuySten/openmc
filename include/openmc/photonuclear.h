@@ -160,9 +160,10 @@ bool photofission_excluded();
 //! DATA starts and is lower on two counts: a nuclide's grid begins below its
 //! first reaction threshold, and several channels emit no neutrons at all. It
 //! is a neutron population that a <photonuclear_perturbation> weighs, so this
-//! is the energy below which a photon cannot affect the answer -- see
-//! Particle::create_secondary(), which is where shadow trees use it to stop
-//! making photons that can do nothing.
+//! is the energy below which a photon cannot affect the answer, and so the
+//! natural place to put the photon energy cutoff for such a run. Reported at
+//! startup and not acted on: the cutoff applies to the whole calculation, so
+//! it is the user's to set through Settings.cutoff.
 //!
 //! Photofission is left out when photofission_excluded() says so, on the same
 //! grounds: the channel emits nothing, so it sets no threshold.
@@ -190,7 +191,6 @@ extern std::unordered_map<std::string, int> photonuclear_map;
 extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 extern double photonuclear_energy_min;
 extern double photonuclear_energy_max;
-extern double photoneutron_energy_min;
 
 } // namespace data
 

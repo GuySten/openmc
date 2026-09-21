@@ -283,8 +283,17 @@ class PhotonuclearPerturbation(PerturbationBase):
     perturbation makes is rooted at a photoneutron and exists only where one
     is born.
 
-    :attr:`openmc.Settings.fission_photons_only` cuts the cost further by not
-    transporting photons that were never going to matter.
+    Photons that cannot reach a photonuclear threshold can only cost time, so
+    set the photon energy cutoff to that threshold -- OpenMC reports it at
+    startup as the minimum photoneutron production energy. It is worth a
+    great deal, 8.5x the whole calculation on a beryllium-reflected sphere::
+
+        model.settings.cutoff = {'energy_photon': 1.573e6}
+
+    It is left to you rather than applied automatically because a cutoff
+    applies to the whole run, photon heating and all, not just to the shadow
+    trees. :attr:`openmc.Settings.fission_photons_only` cuts the cost further
+    by not transporting photons that were never going to matter.
     :attr:`openmc.Settings.photoneutron_biasing` has no effect here: a shadow
     tree always emits the photoneutron at its expected weight and leaves the
     photon unabsorbed, since the tree it is in must go on being a valid

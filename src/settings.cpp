@@ -64,6 +64,8 @@ bool particle_restart_run {false};
 bool photon_transport {false};
 bool photonuclear_physics {false};
 bool fission_photons_only {false};
+int photon_splits {1};
+int photoneutron_splits {1};
 bool photoneutron_biasing {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
@@ -670,6 +672,33 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Photon transport must be enabled when "
                   "'fission_photons_only' is set; without it no secondary "
                   "photons are produced at all.");
+    }
+  }
+
+  // Number of photons to emit in place of each one a neutron reaction makes
+  if (check_for_node(root, "photon_splits")) {
+    photon_splits = std::stoi(get_node_value(root, "photon_splits"));
+
+    if (photon_splits < 1)
+      fatal_error("'photon_splits' must be at least 1.");
+    if (photon_splits > 1 && !photon_transport) {
+      fatal_error("Photon transport must be enabled when 'photon_splits' is "
+                  "greater than 1; without it no secondary photons are "
+                  "produced to split.");
+    }
+  }
+
+  // The same for the photoneutrons a photon collision makes
+  if (check_for_node(root, "photoneutron_splits")) {
+    photoneutron_splits =
+      std::stoi(get_node_value(root, "photoneutron_splits"));
+
+    if (photoneutron_splits < 1)
+      fatal_error("'photoneutron_splits' must be at least 1.");
+    if (photoneutron_splits > 1 && !photon_transport) {
+      fatal_error("Photon transport must be enabled when "
+                  "'photoneutron_splits' is greater than 1; without photons "
+                  "there are no photoneutrons to split.");
     }
   }
 

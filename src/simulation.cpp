@@ -893,7 +893,6 @@ void initialize_data()
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
   data::photonuclear_energy_min = INFTY;
-  data::photoneutron_energy_min = INFTY;
 
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
@@ -969,13 +968,18 @@ void initialize_data()
       write_message(7, "Minimum photonuclear physics energy: {} eV for {}",
         data::photonuclear_energy_min, min_nuc->name_);
 
-      // Where photoneutron production actually starts, which is higher: it is
-      // the energy below which a photon cannot change a neutron population,
-      // and so the energy below which a <photonuclear_perturbation> has no
-      // use for one. See Particle::create_secondary().
-      data::photoneutron_energy_min = min_photoneutron_energy();
-      write_message(7, "Minimum photoneutron production energy: {} eV",
-        data::photoneutron_energy_min);
+      // Where photoneutron production actually starts, which is higher --
+      // a nuclide's grid begins below its first reaction threshold, and
+      // several channels emit no neutrons at all. Reported and not acted on:
+      // below it a photon cannot change any neutron population, so it is the
+      // natural photon energy cutoff for a <photonuclear_perturbation>, but
+      // the cutoff is the user's to set (Settings.cutoff) since it applies to
+      // the whole run and not just to the shadow trees.
+      write_message(7,
+        "Minimum photoneutron production energy: {} eV. Photons below this "
+        "cannot produce a photoneutron; consider setting 'energy_photon' in "
+        "Settings.cutoff to it.",
+        min_photoneutron_energy());
 
       // Highest energy covered by the photonuclear library
       data::photonuclear_energy_max = 0.0;

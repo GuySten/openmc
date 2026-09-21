@@ -715,6 +715,20 @@ exactly the fission photon yield and needs no reweighting. Photon heating and
 pulse-height results are of course no longer complete, since the discarded
 photons carried energy.
 
+Photoneutron production is driven by the small, hard tail of the photon
+spectrum, which an analog calculation samples rarely. Both stages of that
+chain can be split, emitting several particles of a fraction of the weight in
+place of one of the whole, each sampled independently::
+
+  settings.photon_splits = 8        # photons per neutron reaction
+  settings.photoneutron_splits = 8  # photoneutrons per photon collision
+
+The expected weight emitted at each stage is unchanged, so every score that
+is linear in it stays unbiased; what improves is how well one collision
+samples the spectrum. Pulse-height tallies are the exception and are refused,
+a pulse height being the energy one history deposits and so not linear in the
+weight.
+
 .. note::
    Photofission is supported in fixed source calculations only. Photofission
    neutrons do not contribute to the k-eigenvalue estimators, so OpenMC reports
@@ -770,6 +784,18 @@ no second, perturbed tree at all: it grows the reference tree, tags the
 photoneutrons born in it into the perturbation's own tree, and adds the two.
 The reference part then cancels exactly rather than statistically, and what
 noise remains is the noise on the added part alone.
+
+Photons that cannot reach a photonuclear threshold can only cost time, so
+set the photon energy cutoff to that threshold. OpenMC reports it at startup
+as the minimum photoneutron production energy, and it is worth a great deal
+-- on a beryllium-reflected sphere, cutting there rather than transporting
+everything is 8.5x the whole calculation::
+
+  settings.cutoff = {'energy_photon': 1.573e6}
+
+It is left to you rather than applied automatically because the cutoff
+applies to the whole run, photon heating and all, and not just to the
+perturbation's shadow trees.
 
 :attr:`Settings.fission_photons_only` cuts the cost further by not
 transporting photons that were never going to matter.

@@ -22,7 +22,6 @@
 #include "openmc/nuclide.h"
 #include "openmc/particle_data.h"
 #include "openmc/photon.h"
-#include "openmc/photonuclear.h"
 #include "openmc/physics.h"
 #include "openmc/physics_mg.h"
 #include "openmc/random_lcg.h"
@@ -93,27 +92,6 @@ bool Particle::create_secondary(
     return false;
   }
   if (E < settings::energy_cutoff[idx]) {
-    return false;
-  }
-
-  // A BEP shadow tree carries photons for one reason only: so that they can
-  // make photoneutrons. Below data::photoneutron_energy_min no photonuclear
-  // channel emits a neutron at all, and nothing a photon does raises its
-  // energy -- Compton scattering, fluorescence, annihilation and
-  // bremsstrahlung all go downward, as does every photon those in turn
-  // produce. So a photon born under that threshold can never reach it, and
-  // neither can its descendants: it cannot change either tree's neutron
-  // population, and it is the bulk of what a fission source emits. Refusing
-  // it here rather than at each production site covers every source of a
-  // photon at once, in the same shape as the energy-cutoff rejection above.
-  //
-  // Shadow trees only. A driver photon carries heating and pulse-height
-  // scores, and the driver has to stay bit-identical to a stock run. Within
-  // the shadow pass the reference and perturbed trees apply this identically,
-  // and after the outgoing energy has been sampled, so the two go on drawing
-  // the same random numbers.
-  if (bep_tree() != BEP_TRUNK && type.is_photon() &&
-      bep::photonuclear_needed() && E < data::photoneutron_energy_min) {
     return false;
   }
 

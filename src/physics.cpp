@@ -1600,8 +1600,21 @@ void emit_perturbation_photoneutrons(Particle& p)
     const size_t n_before = p.local_secondary_bank().size();
     emit_forced_photoneutron(p);
     const int tree = bep::perturbations[ip].tree;
-    for (size_t i = n_before; i < p.local_secondary_bank().size(); ++i)
-      p.local_secondary_bank()[i].bep_tree = tree;
+    for (size_t i = n_before; i < p.local_secondary_bank().size(); ++i) {
+      auto& site = p.local_secondary_bank()[i];
+      site.bep_tree = tree;
+      // And reset its born weight to its OWN. wgt_born propagates from parent
+      // to child, so without this the photoneutron would inherit the
+      // REFERENCE tree's scale -- the branch-site weight, three decades above
+      // anything in the perturbation's population -- and
+      // apply_russian_roulette() would find the perturbation's own source
+      // below weight_cutoff * wgt_born at its first collision and roulette
+      // it away. A photoneutron is a genuine new source particle, and for a
+      // source particle wgt_born already means the right thing: the weight it
+      // was born with. It is then not rouletted until it has actually lost
+      // weight, which is the whole premise of the roulette.
+      site.wgt_born = site.wgt;
+    }
   }
 }
 

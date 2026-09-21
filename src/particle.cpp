@@ -109,41 +109,6 @@ bool Particle::create_secondary(
     return false;
   }
 
-  // Roulette a secondary born inside a PERTURBATION's shadow tree whose weight
-  // has fallen to a negligible fraction of that tree's root weight. Such a
-  // particle costs a full transport history -- and the secondaries it goes on
-  // to make cost more -- for a contribution far below the statistical
-  // uncertainty on the worth the tree exists to measure.
-  //
-  // The threshold is a fraction of the tree's ROOT weight, not an absolute
-  // weight: every weight in a tree is some fraction of its root, so this is
-  // the one scale that does not move when the driver's weight normalisation
-  // or perturbation_population_ratio does. root_weight() is 0 outside a
-  // shadow tree, so the driver stays a stock run whatever the setting.
-  //
-  // Keyed off the EMITTING particle's tree, so a reference tree is never
-  // touched -- it carries the same full-weight population an ordinary
-  // eigenvalue calculation would. That also exempts a perturbation's own
-  // SOURCE for free wherever the source is born in a reference tree, as a
-  // first-level photoneutron is: only its descendants, born from particles
-  // already inside the perturbation's tree, are rouletted. Rouletting the
-  // source would add variance to exactly the quantity being measured.
-  //
-  // Roulette rather than cut: the survivor is carried at the cutoff weight
-  // with probability |wgt|/w_survive, so the expected banked weight is
-  // unchanged and the estimator stays exact. copysign keeps a negative weight
-  // negative should a variance-reduction scheme ever produce one.
-  if (settings::perturbation_weight_cutoff > 0.0 &&
-      bep::in_perturbation_tree(bep_tree())) {
-    const double w_survive =
-      settings::perturbation_weight_cutoff * std::abs(bep::root_weight());
-    if (w_survive > 0.0 && std::abs(wgt) < w_survive) {
-      if (w_survive * prn(current_seed()) >= std::abs(wgt))
-        return false;
-      wgt = std::copysign(w_survive, wgt);
-    }
-  }
-
   // Increment number of secondaries created (for ParticleProductionFilter)
   n_secondaries()++;
 

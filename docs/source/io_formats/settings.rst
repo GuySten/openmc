@@ -616,24 +616,6 @@ in the particle weight.
 
   *Default*: 1
 
----------------------------------
-``<photoneutron_splits>`` Element
----------------------------------
-
-The ``<photoneutron_splits>`` element is the same for the photoneutrons
-emitted at a photon collision: the expected yield is emitted as this many
-neutrons of a fraction of the weight, each sampled independently, which
-samples the photoneutron spectrum far better per collision. Must be a
-positive integer, and carries the same restrictions as
-``<photon_splits>``.
-
-It applies only at the first level of the photon -> photoneutron -> photon
-cascade. Splitting a later level would multiply the particle count by this
-factor at every level, for a contribution already reduced by the
-photonuclear production ratio once per level.
-
-  *Default*: 1
-
 ----------------------------------
 ``<photoneutron_biasing>`` Element
 ----------------------------------

@@ -1,4 +1,4 @@
-"""Tests for Settings.photon_splits and Settings.photoneutron_splits.
+"""Tests for Settings.photon_splits.
 
 Both emit several particles of a fraction of the weight in place of one of
 the whole, each sampled independently. The expected weight emitted is
@@ -172,16 +172,7 @@ def test_splitting_requires_photon_transport(run_in_tmpdir, model):
         model.run()
 
 
-def test_photoneutron_splitting_requires_photon_transport(run_in_tmpdir,
-                                                          model):
-    model.settings.photon_transport = False
-    model.settings.photoneutron_splits = 4
-
-    with pytest.raises(RuntimeError, match='photoneutron_splits'):
-        model.run()
-
-
-@pytest.mark.parametrize('attr', ['photon_splits', 'photoneutron_splits'])
+@pytest.mark.parametrize('attr', ['photon_splits'])
 def test_splits_xml_roundtrip(attr):
     s = openmc.Settings()
     assert getattr(s, attr) is None

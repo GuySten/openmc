@@ -716,39 +716,17 @@ pulse-height results are of course no longer complete, since the discarded
 photons carried energy.
 
 Photoneutron production is driven by the small, hard tail of the photon
-spectrum, which an analog calculation samples rarely. Both stages of that
-chain can be split, emitting several particles of a fraction of the weight in
-place of one of the whole, each sampled independently::
+spectrum, which an analog calculation samples rarely. Photon production can be
+split, emitting several photons of a fraction of the weight in place of one of
+the whole, each sampled independently::
 
   settings.photon_splits = 8        # photons per neutron reaction
-  settings.photoneutron_splits = 8  # photoneutrons per photon collision
 
 The expected weight emitted at each stage is unchanged, so every score that
 is linear in it stays unbiased; what improves is how well one collision
 samples the spectrum. Pulse-height tallies are the exception and are refused,
 a pulse height being the energy one history deposits and so not linear in the
 weight.
-
-Inside a :class:`openmc.PhotonuclearPerturbation` the photoneutron split is
-applied only at the first level of the photon -> photoneutron -> photon
-cascade. The perturbed tree runs with photonuclear physics on, so its own
-photoneutrons make photons which make photoneutrons again, to all orders --
-that recursion is what makes the perturbation exact rather than first-order,
-and it stays. Splitting it does not pay: each further level already carries
-the photonuclear production ratio, while splitting would multiply the
-particle count by the split factor at every level. The same reasoning says
-the deep levels need not be transported in full at all, and they can be
-rouletted::
-
-  settings.perturbation_weight_cutoff = 1e-8
-
-Any secondary born inside a perturbation's own tree whose weight falls below
-this fraction of the shadow tree's root weight is carried at the cutoff weight
-with probability ``|w| / cutoff`` and dropped otherwise, so the expected banked
-weight is exactly what it was. It catches the cascade's photons as well as its
-photoneutrons, which is where most of the cost is. Reference trees are never
-touched, so the perturbation's source -- a first-level photoneutron, born from
-a photon in a reference tree -- is never rouletted.
 
 Where a photon energy cutoff is set -- at a photonuclear threshold, say --
 most of what is drawn is below it and thrown away at birth. That waste can be

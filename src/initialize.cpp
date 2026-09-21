@@ -408,14 +408,14 @@ static void check_pulse_height_compatibility()
   // the particle weight. Splitting replaces a photon with fractional-weight
   // copies sampled independently, which leaves every linear score unchanged
   // and this one meaningless -- so refuse rather than quietly corrupt it.
-  if (settings::photon_splits > 1 || settings::photoneutron_splits > 1) {
+  if (settings::photon_splits > 1) {
     for (const auto& t : model::tallies) {
       if (t->type_ == TallyType::PULSE_HEIGHT) {
-        fatal_error("'photon_splits' and 'photoneutron_splits' are not "
-                    "compatible with pulse-height tallies: a pulse height is "
-                    "not linear in the particle weight, so emitting several "
-                    "independent fractional-weight particles in place of one "
-                    "does not leave it unchanged.");
+        fatal_error("'photon_splits' is not compatible with pulse-height "
+                    "tallies: a pulse height is not linear in the particle "
+                    "weight, so emitting several independent "
+                    "fractional-weight particles in place of one does not "
+                    "leave it unchanged.");
       }
     }
   }

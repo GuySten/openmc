@@ -66,7 +66,6 @@ bool photonuclear_physics {false};
 bool fission_photons_only {false};
 bool sample_photons_above_cutoff {false};
 int photon_splits {1};
-int photoneutron_splits {1};
 bool photoneutron_biasing {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
@@ -148,7 +147,6 @@ SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
 double perturbation_population_ratio {0.1};
-double perturbation_weight_cutoff {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -612,18 +610,6 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
-      // Fraction of a shadow tree's root weight below which a secondary
-      // born inside a perturbation's tree is rouletted. See
-      // Particle::create_secondary().
-      if (check_for_node(root, "perturbation_weight_cutoff")) {
-        perturbation_weight_cutoff =
-          std::stod(get_node_value(root, "perturbation_weight_cutoff"));
-        if (perturbation_weight_cutoff < 0.0) {
-          fatal_error("'perturbation_weight_cutoff' must not be negative; "
-                      "use 0 to transport every shadow tree analog.");
-        }
-      }
-
       // Shadow tree depth for local perturbations. A single scalar for the
       // whole run, like the others above -- it is not a property of any one
       // perturbation, since every tree is compared against the same
@@ -725,20 +711,6 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Photon transport must be enabled when 'photon_splits' is "
                   "greater than 1; without it no secondary photons are "
                   "produced to split.");
-    }
-  }
-
-  // The same for the photoneutrons a photon collision makes
-  if (check_for_node(root, "photoneutron_splits")) {
-    photoneutron_splits =
-      std::stoi(get_node_value(root, "photoneutron_splits"));
-
-    if (photoneutron_splits < 1)
-      fatal_error("'photoneutron_splits' must be at least 1.");
-    if (photoneutron_splits > 1 && !photon_transport) {
-      fatal_error("Photon transport must be enabled when "
-                  "'photoneutron_splits' is greater than 1; without photons "
-                  "there are no photoneutrons to split.");
     }
   }
 

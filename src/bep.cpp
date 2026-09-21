@@ -638,6 +638,22 @@ void update_site_weights()
 
     // Site weight that would give this tree
     // perturbation_population_ratio times the reference population.
+    //
+    // A tenth of it by default, which is where the figure of merit peaked on
+    // a photoneutron worth: the smoothing of tau saturates well before the
+    // tree needs a population as large as its reference, so asking for one
+    // buys nothing and costs the transport. Measured across the knob, with
+    // the perturbed tree carrying 2.3e-4 of the reference weight --
+    //
+    //   ratio     sigma (pcm)   runtime   figure of merit
+    //   0         2.343          41.7 s   0.0044
+    //   0.01      0.326          40.5 s   0.2319
+    //   0.1       0.299          47.8 s   0.2343
+    //   1         0.288         107.0 s   0.1124
+    //
+    // -- flat from 0.01 to 0.1 and halved at 1. 0.1 is the peak and the
+    // cheapest value that reaches the plateau, which leaves some margin for
+    // a problem whose perturbed tree is fed more sparsely than this one.
     double target =
       w_pert / (settings::perturbation_population_ratio * w_ref);
 

@@ -147,7 +147,7 @@ int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
-double perturbation_population_ratio {1.0};
+double perturbation_population_ratio {0.1};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};

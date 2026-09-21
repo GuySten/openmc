@@ -142,7 +142,6 @@ SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
 double perturbation_population_ratio {0.1};
-double perturbation_weight_cutoff {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -603,18 +602,6 @@ void read_settings_xml(pugi::xml_node root)
           fatal_error("'perturbation_population_ratio' must not be negative; "
                       "use 0 to bank unit-weight sites as an ordinary "
                       "eigenvalue calculation does.");
-        }
-      }
-
-      // Fraction of a shadow tree's root weight below which a secondary
-      // born inside a perturbation's tree is rouletted. See
-      // Particle::create_secondary().
-      if (check_for_node(root, "perturbation_weight_cutoff")) {
-        perturbation_weight_cutoff =
-          std::stod(get_node_value(root, "perturbation_weight_cutoff"));
-        if (perturbation_weight_cutoff < 0.0) {
-          fatal_error("'perturbation_weight_cutoff' must not be negative; "
-                      "use 0 to transport every shadow tree analog.");
         }
       }
 

@@ -138,6 +138,18 @@ void init()
 
   if (settings::run_mode != RunMode::EIGENVALUE)
     fatal_error("<local_perturbation> requires an eigenvalue calculation.");
+
+  if (settings::survival_biasing && !settings::survival_normalization) {
+    // Not an error, and not silently ignored either: the user asked for the
+    // absolute form and will not get it inside a shadow tree, because there
+    // it would roulette the perturbation's entire population away (see
+    // apply_russian_roulette). The driver still gets exactly what was asked
+    // for.
+    warning("<survival_normalization> is off, but a perturbation's shadow "
+            "trees will use the normalized weight cutoff regardless: their "
+            "population can sit decades below unit weight, where an absolute "
+            "cutoff rouletters all of it. The driver is unaffected.");
+  }
   if (settings::event_based)
     fatal_error("<local_perturbation> requires history-based transport.");
 

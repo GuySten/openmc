@@ -117,34 +117,6 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
-    perturbation_weight_cutoff : float
-        Fraction of the weight a typical particle in a shadow tree is born at,
-        below which a secondary born inside a perturbation's own tree is
-        rouletted. Such a particle costs a
-        full transport history -- and the secondaries it goes on to make cost
-        more -- for a contribution far below the statistical uncertainty on
-        the worth the tree exists to measure.
-
-        Measured against the tree rather than against an absolute weight, or
-        against the branch site the tree grew from: a perturbation's
-        population can sit decades below its root -- 2.3e-4 of the reference
-        population in a measured photoneutron worth -- so a cutoff scaled to
-        the root would need a value of 1e-8 to mean "a tenth of a typical
-        particle", and would mean something different in every problem. The
-        scale is measured each generation and quantized to a power of ten, and
-        it excludes :attr:`perturbation_population_ratio`, so tuning the
-        population does not move this threshold. The survivor is carried at
-        the cutoff weight with probability ``|w| / cutoff``, so the expected
-        banked weight, and with it the worth, is unchanged.
-
-        Reference trees are never touched, which also exempts a
-        perturbation's own source wherever that source is born in a reference
-        tree -- as the first-level photoneutrons of an
-        :class:`openmc.PhotonuclearPerturbation` are. The driver is never
-        touched at all. Defaults to 0, meaning every shadow tree is
-        transported analog.
-
-        .. versionadded:: 0.16.0
     perturbation_population_ratio : float
         How many shadow fission sites a perturbation's tree carries relative
         to the reference trees it is scored against. Shadow fission sites are
@@ -505,7 +477,6 @@ class Settings:
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
         self._perturbation_population_ratio = None
-        self._perturbation_weight_cutoff = None
 
         # Collision track feature
         self._collision_track = {}
@@ -1099,17 +1070,6 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
-
-    @property
-    def perturbation_weight_cutoff(self) -> float:
-        return self._perturbation_weight_cutoff
-
-    @perturbation_weight_cutoff.setter
-    def perturbation_weight_cutoff(self, cutoff: float):
-        cv.check_type('perturbation weight cutoff', cutoff, Real)
-        cv.check_greater_than(
-            'perturbation weight cutoff', cutoff, 0.0, equality=True)
-        self._perturbation_weight_cutoff = cutoff
 
     @property
     def perturbation_population_ratio(self) -> float:
@@ -1900,11 +1860,6 @@ class Settings:
             element = ET.SubElement(root, "perturbation_population_ratio")
             element.text = str(self._perturbation_population_ratio)
 
-    def _create_perturbation_weight_cutoff_subelement(self, root):
-        if self._perturbation_weight_cutoff is not None:
-            element = ET.SubElement(root, "perturbation_weight_cutoff")
-            element.text = str(self._perturbation_weight_cutoff)
-
     def _create_perturbation_n_generation_subelement(self, root):
         if self._perturbation_n_generation is not None:
             element = ET.SubElement(root, "perturbation_n_generation")
@@ -2440,11 +2395,6 @@ class Settings:
         if text is not None:
             self.perturbation_population_ratio = float(text)
 
-    def _perturbation_weight_cutoff_from_xml_element(self, root):
-        text = get_text(root, 'perturbation_weight_cutoff')
-        if text is not None:
-            self.perturbation_weight_cutoff = float(text)
-
     def _perturbation_n_generation_from_xml_element(self, root):
         text = get_text(root, 'perturbation_n_generation')
         if text is not None:
@@ -2736,7 +2686,6 @@ class Settings:
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
         self._create_perturbation_population_ratio_subelement(element)
-        self._create_perturbation_weight_cutoff_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2858,7 +2807,6 @@ class Settings:
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
         settings._perturbation_population_ratio_from_xml_element(elem)
-        settings._perturbation_weight_cutoff_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

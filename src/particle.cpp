@@ -109,51 +109,6 @@ bool Particle::create_secondary(
     return false;
   }
 
-  // Roulette a secondary born inside a PERTURBATION's shadow tree whose weight
-  // has fallen to a negligible fraction of that tree's root weight. Such a
-  // particle costs a full transport history -- and the secondaries it goes on
-  // to make cost more -- for a contribution far below the statistical
-  // uncertainty on the worth the tree exists to measure.
-  //
-  // The threshold is a fraction of the weight a TYPICAL PARTICLE IN THIS TREE
-  // is born at, not of the tree's root weight and not an absolute weight.
-  // A perturbation's population can sit decades below the branch site its
-  // tree grew from -- measured at 2.3e-4 of the reference for a photoneutron
-  // worth -- so a cutoff scaled to the root weight would need a value of
-  // 1e-8 to mean "a tenth of a typical particle", and would mean something
-  // different in every problem. characteristic_weight() is
-  // root_weight() * weight_scale(tree), it is measured and quantized rather
-  // than guessed, and it is free of perturbation_population_ratio so tuning
-  // the population does not move this threshold. It is 0 outside a shadow
-  // tree, so the driver stays a stock run whatever the setting.
-  //
-  // It is also the same scale apply_russian_roulette() measures against, via
-  // the wgt_born that run_one_tree() sets -- one roulette at creation and one
-  // in transport, agreeing on what "too light" means.
-  //
-  // Keyed off the EMITTING particle's tree, so a reference tree is never
-  // touched -- it carries the same full-weight population an ordinary
-  // eigenvalue calculation would. That also exempts a perturbation's own
-  // SOURCE for free wherever the source is born in a reference tree, as a
-  // first-level photoneutron is: only its descendants, born from particles
-  // already inside the perturbation's tree, are rouletted. Rouletting the
-  // source would add variance to exactly the quantity being measured.
-  //
-  // Roulette rather than cut: the survivor is carried at the cutoff weight
-  // with probability |wgt|/w_survive, so the expected banked weight is
-  // unchanged and the estimator stays exact. copysign keeps a negative weight
-  // negative should a variance-reduction scheme ever produce one.
-  if (settings::perturbation_weight_cutoff > 0.0 &&
-      bep::in_perturbation_tree(bep_tree())) {
-    const double w_survive = settings::perturbation_weight_cutoff *
-                             std::abs(bep::characteristic_weight(bep_tree()));
-    if (w_survive > 0.0 && std::abs(wgt) < w_survive) {
-      if (w_survive * prn(current_seed()) >= std::abs(wgt))
-        return false;
-      wgt = std::copysign(w_survive, wgt);
-    }
-  }
-
   // Increment number of secondaries created (for ParticleProductionFilter)
   n_secondaries()++;
 

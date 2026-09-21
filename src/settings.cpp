@@ -598,12 +598,6 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
-      // Shadow tree depth for local perturbations. A single scalar for the
-      // whole run, like the two above -- it is not a property of any one
-      // perturbation, since every tree is compared against the same
-      // reference trees at the same depths. Parsed here rather than from
-      // perturbations.xml so that it is available before tallies.xml and
-      // perturbations.xml are read.
       // How many fission sites a perturbation's shadow tree carries relative
       // to its reference tree, which is what decides the weight its sites are
       // banked at. See bep::update_site_weights().
@@ -617,6 +611,12 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
+      // Shadow tree depth for local perturbations. A single scalar for the
+      // whole run, like the others above -- it is not a property of any one
+      // perturbation, since every tree is compared against the same
+      // reference trees at the same depths. Parsed here rather than from
+      // perturbations.xml so that it is available before tallies.xml and
+      // perturbations.xml are read.
       if (check_for_node(root, "perturbation_n_generation")) {
         bep_n_generation =
           std::stoi(get_node_value(root, "perturbation_n_generation"));

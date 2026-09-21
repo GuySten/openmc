@@ -23,6 +23,24 @@ class EnergyDistribution {
 public:
   virtual double sample(double E, uint64_t* seed) const = 0;
 
+  //! Sample an outgoing energy restricted to values at or above a threshold,
+  //! and report how much of the distribution that restriction kept. See
+  //! AngleEnergy::sample_above(), which this serves, for what the mass means
+  //! and why truncating at the nearest tabulated point below the threshold
+  //! is enough.
+  //!
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_min Lowest outgoing energy worth sampling in [eV]
+  //! \param[inout] seed Pseudorandom number seed pointer
+  //! \param[out] E_out Sampled energy in [eV]
+  //! \return Probability mass of the restricted range, in (0, 1]
+  virtual double sample_above(
+    double E, double E_min, uint64_t* seed, double& E_out) const
+  {
+    E_out = this->sample(E, seed);
+    return 1.0;
+  }
+
   //! Upper bound on the energy that sample() can return, in the frame the
   //! distribution is tabulated in.
   //! \param[in] E Incident particle energy in [eV]
@@ -96,10 +114,30 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Sample an outgoing energy at or above a threshold
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_min Lowest outgoing energy worth sampling in [eV]
+  //! \param[inout] seed Pseudorandom number seed pointer
+  //! \param[out] E_out Sampled energy in [eV]
+  //! \return Probability mass at or above the tabulated point below E_min
+  double sample_above(double E, double E_min, uint64_t* seed,
+    double& E_out) const override;
+
   //! Maximum outgoing energy for this distribution
   double max_energy(double E) const override;
 
 private:
+  //! Choose the incident-energy bin, its interpolation factor, and which of
+  //! the two tabulated distributions to draw the outgoing energy from.
+  //! Shared by sample() and sample_above() so that the two consume the same
+  //! random numbers for the same decision.
+  void select_table(
+    double E, uint64_t* seed, int& i, double& r, int& l, bool& hist) const;
+
+  //! Invert table `l`'s outgoing-energy CDF at `r1`, and map the result onto
+  //! the energy range interpolated between tables `i` and `i + 1`.
+  double invert_cdf(int i, double r, int l, double r1, bool hist) const;
+
   //! Outgoing energy for a single incoming energy
   struct CTTable {
     Interpolation interpolation;  //!< Interpolation law

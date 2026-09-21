@@ -64,6 +64,7 @@ bool particle_restart_run {false};
 bool photon_transport {false};
 bool photonuclear_physics {false};
 bool fission_photons_only {false};
+bool sample_photons_above_cutoff {false};
 int photon_splits {1};
 int photoneutron_splits {1};
 bool photoneutron_biasing {false};
@@ -672,6 +673,18 @@ void read_settings_xml(pugi::xml_node root)
       fatal_error("Photon transport must be enabled when "
                   "'fission_photons_only' is set; without it no secondary "
                   "photons are produced at all.");
+    }
+  }
+
+  // Draw secondary photons only from the part of the spectrum above the cutoff
+  if (check_for_node(root, "sample_photons_above_cutoff")) {
+    sample_photons_above_cutoff =
+      get_node_value_bool(root, "sample_photons_above_cutoff");
+
+    if (sample_photons_above_cutoff && !photon_transport) {
+      fatal_error("Photon transport must be enabled when "
+                  "'sample_photons_above_cutoff' is set; without it no "
+                  "secondary photons are produced to sample.");
     }
   }
 

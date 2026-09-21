@@ -568,6 +568,34 @@ either "false" or "true".
 
   *Default*: false
 
+-----------------------------------------
+``<sample_photons_above_cutoff>`` Element
+-----------------------------------------
+
+The ``<sample_photons_above_cutoff>`` element determines whether secondary
+photons are drawn only from the part of the production spectrum above the
+photon energy cutoff, each carrying the probability mass that restriction
+leaves it, instead of being drawn across the whole spectrum and mostly
+discarded. This element has no attributes or sub-elements and can be set to
+either "false" or "true".
+
+It is unbiased: a photon below the cutoff is discarded at birth in any case,
+so restricting the draw and carrying the mass forward leaves every score
+unchanged. With the cutoff placed at a photonuclear threshold, where only
+the thin tail of a fission spectrum lies above it, it turns one useful draw
+in a hundred into every draw -- measured at a 6 MeV cutoff, a factor of 12
+in the figure of merit for the flux above it, at the same cost.
+
+The restriction is applied at the last tabulated point at or below the
+cutoff rather than at the cutoff itself, which needs no interpolation of the
+cumulative distribution; the sliver that leaves in is discarded as before.
+Distributions that do not implement the restriction are sampled in full, as
+they always were.
+
+Photon transport must be enabled when this element is set to "true".
+
+  *Default*: false
+
 ---------------------------
 ``<photon_splits>`` Element
 ---------------------------

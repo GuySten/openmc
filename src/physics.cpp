@@ -1437,6 +1437,29 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
   y *= settings::photon_splits;
   photon_wgt /= settings::photon_splits;
 
+  const double E_cut =
+    settings::energy_cutoff[ParticleType::photon().transport_index()];
+
+  // Draw only photons that will actually be transported, and give them the
+  // weight that restriction leaves them, rather than drawing across the whole
+  // spectrum and discarding most of it. With the cutoff placed at a
+  // photonuclear threshold, where only the thin tail of a fission spectrum
+  // lies above it, every draw becomes a photon that can do something instead
+  // of one in a hundred.
+  //
+  // Unbiased for any score that ignores photons below the cutoff -- which is
+  // every score, since create_secondary() discards them -- because the weight
+  // carries exactly the probability mass that was sampled from. The
+  // restriction is to the last tabulated point at or below the cutoff rather
+  // than to the cutoff itself, so what it leaves in is a sliver just short of
+  // it, discarded as it always was.
+  //
+  // Independent of photon_splits on purpose. Tying the two together would
+  // force the cost of transporting 1/P times as many photons on anyone who
+  // only wanted the draws not to be wasted, and measured at a 6 MeV cutoff
+  // that cost more than the variance it saved.
+  const bool truncate = settings::sample_photons_above_cutoff;
+
   // Sample each secondary photon
   for (int i = 0; i < y; ++i) {
     // Sample the reaction and product
@@ -1458,7 +1481,13 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     // Sample the outgoing energy and angle
     double E;
     double mu;
-    rx->products_[i_product].sample(p.E(), E, mu, p.current_seed());
+    double mass = 1.0;
+    if (truncate) {
+      mass = rx->products_[i_product].sample_above(p.E(), E_cut, E, mu,
+        p.current_seed());
+    } else {
+      rx->products_[i_product].sample(p.E(), E, mu, p.current_seed());
+    }
 
     // Sample the new direction
     Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
@@ -1468,7 +1497,7 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     // release and deposition. See D. P. Griesheimer, S. J. Douglass, and M. H.
     // Stedry, "Self-consistent energy normalization for quasistatic reactor
     // calculations", Proc. PHYSOR, Cambridge, UK, Mar 29-Apr 2, 2020.
-    double wgt = photon_wgt;
+    double wgt = photon_wgt * mass;
     if (settings::run_mode == RunMode::EIGENVALUE && !is_fission(rx->mt_)) {
       wgt *= simulation::keff;
     }

@@ -31,6 +31,37 @@ public:
   virtual double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const = 0;
 
+  //! Sample an outgoing energy and cosine, restricted to outgoing energies
+  //! at or above a threshold, and report how much of the distribution that
+  //! restriction kept.
+  //!
+  //! Used where only the high-energy tail of a spectrum can affect the
+  //! answer -- photon production feeding photonuclear reactions -- so that
+  //! sampling the rest of it, only to discard it, can be avoided. A caller
+  //! emits the sampled particle at its weight times the returned mass, which
+  //! is unbiased for any score that ignores outgoing energies below the
+  //! threshold.
+  //!
+  //! The default samples the whole distribution and returns 1, which is the
+  //! plain unrestricted draw: correct for every subclass, and what a caller
+  //! gets wherever restricting is not implemented. An override need not honour
+  //! the threshold exactly -- truncating at the nearest tabulated point below
+  //! it is enough, since the caller discards what falls short anyway -- but
+  //! the mass it returns must be the mass of what it actually sampled from.
+  //!
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \param[in] E_min Lowest outgoing energy worth sampling in [eV]
+  //! \param[out] E_out Outgoing energy in [eV]
+  //! \param[out] mu Outgoing cosine with respect to current direction
+  //! \param[inout] seed Pseudorandom seed pointer
+  //! \return Probability mass of the restricted range, in (0, 1]
+  virtual double sample_above(double E_in, double E_min, double& E_out,
+    double& mu, uint64_t* seed) const
+  {
+    this->sample(E_in, E_out, mu, seed);
+    return 1.0;
+  }
+
   //! Upper bound on the outgoing energy that sample() can return
   //!
   //! Returned in the frame the distribution is tabulated in, so a

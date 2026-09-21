@@ -65,6 +65,23 @@ void UncorrelatedAngleEnergy::sample(
   E_out = energy_->sample(E_in, seed);
 }
 
+double UncorrelatedAngleEnergy::sample_above(
+  double E_in, double E_min, double& E_out, double& mu, uint64_t* seed) const
+{
+  // Only the energy is restricted. The angle is uncorrelated with it, which
+  // is what this class means, so it is sampled exactly as sample() does it
+  // and in the same order, leaving the two drawing the same numbers for the
+  // same thing.
+  if (!angle_.empty()) {
+    mu = angle_.sample(E_in, seed);
+  } else {
+    // no angle distribution given => assume isotropic for all energies
+    mu = uniform_distribution(-1., 1., seed);
+  }
+
+  return energy_->sample_above(E_in, E_min, seed, E_out);
+}
+
 double UncorrelatedAngleEnergy::sample_energy_and_pdf(
   double E_in, double mu, double& E_out, uint64_t* seed) const
 {

@@ -49,6 +49,18 @@ public:
   //! \param[inout] seed Pseudorandom seed pointer
   void sample(double E_in, double& E_out, double& mu, uint64_t* seed) const;
 
+  //! Sample an outgoing energy at or above a threshold, and the cosine,
+  //! reporting how much of the distribution the restriction kept. See
+  //! AngleEnergy::sample_above().
+  //! \param[in] E_in Incident particle energy in [eV]
+  //! \param[in] E_min Lowest outgoing energy worth sampling in [eV]
+  //! \param[out] E_out Sampled outgoing energy in [eV]
+  //! \param[out] mu Sampled outgoing cosine
+  //! \param[inout] seed Pseudorandom number seed pointer
+  //! \return Probability mass of the restricted range, in (0, 1]
+  double sample_above(double E_in, double E_min, double& E_out, double& mu,
+    uint64_t* seed) const;
+
   //! Select which angle-energy distribution to sample
   //! \param[in] E_in Incoming energy in [eV]
   //! \param[inout] seed Pseudorandom seed pointer

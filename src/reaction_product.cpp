@@ -135,6 +135,12 @@ void ReactionProduct::sample(
   sample_dist(E_in, seed).sample(E_in, E_out, mu, seed);
 }
 
+double ReactionProduct::sample_above(
+  double E_in, double E_min, double& E_out, double& mu, uint64_t* seed) const
+{
+  return sample_dist(E_in, seed).sample_above(E_in, E_min, E_out, mu, seed);
+}
+
 double ReactionProduct::sample_energy_and_pdf(
   double E_in, double mu, double& E_out, uint64_t* seed) const
 {

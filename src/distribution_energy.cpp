@@ -172,21 +172,19 @@ ContinuousTabular::ContinuousTabular(hid_t group)
   } // incoming energies
 }
 
-double ContinuousTabular::sample(double E, uint64_t* seed) const
+void ContinuousTabular::select_table(
+  double E, uint64_t* seed, int& i, double& r, int& l, bool& hist) const
 {
   // Read number of interpolation regions and incoming energies
-  bool histogram_interp;
   if (n_region_ == 1) {
-    histogram_interp = (interpolation_[0] == Interpolation::histogram);
+    hist = (interpolation_[0] == Interpolation::histogram);
   } else {
-    histogram_interp = false;
+    hist = false;
   }
 
   // Find energy bin and calculate interpolation factor -- if the energy is
   // outside the range of the tabulated energies, choose the first or last bins
   auto n_energy_in = energy_.size();
-  int i;
-  double r;
   if (E < energy_[0]) {
     i = 0;
     r = 0.0;
@@ -199,17 +197,19 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   }
 
   // Sample between the ith and [i+1]th bin
-  int l;
-  if (histogram_interp) {
+  if (hist) {
     l = i;
   } else {
     l = r > prn(seed) ? i + 1 : i;
   }
+}
 
+double ContinuousTabular::invert_cdf(
+  int i, double r, int l, double r1, bool hist) const
+{
   // Determine outgoing energy bin
   int n_energy_out = distribution_[l].e_out.size();
   int n_discrete = distribution_[l].n_discrete;
-  double r1 = prn(seed);
   double c_k = distribution_[l].c[0];
   int k = 0;
   int end = n_energy_out - 2;
@@ -277,7 +277,7 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
     }
 
     // Now interpolate between incident energy bins i and i + 1
-    if (!histogram_interp && n_energy_out > 1) {
+    if (!hist && n_energy_out > 1) {
       // Interpolation for energy E1 and EK
       n_energy_out = distribution_[i].e_out.size();
       n_discrete = distribution_[i].n_discrete;
@@ -301,6 +301,95 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
       return E_out;
     }
   }
+}
+
+double ContinuousTabular::sample(double E, uint64_t* seed) const
+{
+  int i;
+  int l;
+  double r;
+  bool hist;
+  select_table(E, seed, i, r, l, hist);
+  return invert_cdf(i, r, l, prn(seed), hist);
+}
+
+double ContinuousTabular::sample_above(
+  double E, double E_min, uint64_t* seed, double& E_out) const
+{
+  int i;
+  int l;
+  double r;
+  bool hist;
+  select_table(E, seed, i, r, l, hist);
+
+  const auto& dist = distribution_[l];
+  const int n_out = dist.e_out.size();
+  const int n_disc = dist.n_discrete;
+
+  // Express the threshold in this table's own outgoing-energy coordinates.
+  // invert_cdf() maps the continuous part of table l onto a range
+  // interpolated between tables i and i + 1, so the threshold has to be
+  // mapped back through that same straight line before it can be compared
+  // against e_out.
+  double E_min_l = E_min;
+  if (!hist && n_out > 1) {
+    const int nd_i = distribution_[i].n_discrete;
+    const double E_i_1 = distribution_[i].e_out[nd_i];
+    const double E_i_K =
+      distribution_[i].e_out[distribution_[i].e_out.size() - 1];
+
+    const int nd_i1 = distribution_[i + 1].n_discrete;
+    const double E_i1_1 = distribution_[i + 1].e_out[nd_i1];
+    const double E_i1_K =
+      distribution_[i + 1].e_out[distribution_[i + 1].e_out.size() - 1];
+
+    const double E_1 = E_i_1 + r * (E_i1_1 - E_i_1);
+    const double E_K = E_i_K + r * (E_i1_K - E_i_K);
+
+    if (E_K <= E_1) {
+      // Degenerate range; nothing to map onto, so do not restrict.
+      E_out = invert_cdf(i, r, l, prn(seed), hist);
+      return 1.0;
+    }
+
+    const double E_l_1 = (l == i) ? E_i_1 : E_i1_1;
+    const double E_l_K = (l == i) ? E_i_K : E_i1_K;
+    E_min_l = E_l_1 + (E_min - E_1) * (E_l_K - E_l_1) / (E_K - E_1);
+  }
+
+  // The last tabulated point at or below the threshold. Cutting there rather
+  // than at the threshold itself keeps this to a grid lookup with no CDF
+  // interpolation; the sliver it leaves in, between that point and the
+  // threshold, is discarded by the caller and so costs nothing but a few
+  // wasted draws.
+  int k_lo = n_disc;
+  while (k_lo + 1 < n_out && dist.e_out[k_lo + 1] <= E_min_l)
+    ++k_lo;
+
+  // Every discrete line is kept whatever its energy. They come first in the
+  // array whatever their energies are, so they are not a contiguous range of
+  // the CDF alongside the continuous tail, and dropping the ones below the
+  // threshold by a single cut would drop the ones above it too. Keeping them
+  // all is what makes this a restriction that can only ever include extra,
+  // never exclude what belongs.
+  const double c_disc = (n_disc > 0) ? dist.c[n_disc - 1] : 0.0;
+  const double c_lo = std::max(dist.c[k_lo], c_disc);
+  const double mass = c_disc + (1.0 - c_lo);
+
+  if (mass <= 0.0) {
+    // Nothing at all at or above the threshold.
+    E_out = 0.0;
+    return 0.0;
+  }
+
+  // One random number, exactly as sample() draws, mapped onto the retained
+  // part of the CDF: the discrete lines below c_disc, then the tail from
+  // c_lo up.
+  const double u = mass * prn(seed);
+  const double r1 = (u < c_disc) ? u : (u - c_disc + c_lo);
+
+  E_out = invert_cdf(i, r, l, r1, hist);
+  return mass;
 }
 
 //==============================================================================

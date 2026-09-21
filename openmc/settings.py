@@ -207,6 +207,17 @@ class Settings:
         thresholds. Requires `photon_transport` to be True.
 
         .. versionadded:: 0.16.0
+    sample_photons_above_cutoff : bool
+        Whether secondary photons are drawn only from the part of the
+        production spectrum above the photon energy cutoff, each carrying the
+        probability mass that restriction leaves it. Unbiased, since a photon
+        below the cutoff is discarded at birth in any case, and with the
+        cutoff placed at a photonuclear threshold it turns one draw in a
+        hundred into every draw. Requires `photon_transport`. Independent of
+        `photon_splits`, which multiplies the count rather than redirecting
+        it.
+
+        .. versionadded:: 0.16.0
     photon_splits : int
         Factor by which each photon produced by a neutron reaction is split.
         The natural yield is emitted as this many times as many photons, each
@@ -476,6 +487,7 @@ class Settings:
         self._photonuclear_physics = None
         self._photoneutron_biasing = None
         self._fission_photons_only = None
+        self._sample_photons_above_cutoff = None
         self._photon_splits = None
         self._photoneutron_splits = None
         self._atomic_relaxation = None
@@ -778,6 +790,15 @@ class Settings:
     def fission_photons_only(self, fission_photons_only: bool):
         cv.check_type('fission photons only', fission_photons_only, bool)
         self._fission_photons_only = fission_photons_only
+
+    @property
+    def sample_photons_above_cutoff(self) -> bool:
+        return self._sample_photons_above_cutoff
+
+    @sample_photons_above_cutoff.setter
+    def sample_photons_above_cutoff(self, value: bool):
+        cv.check_type('sample photons above cutoff', value, bool)
+        self._sample_photons_above_cutoff = value
 
     @property
     def photon_splits(self) -> int:
@@ -1830,6 +1851,11 @@ class Settings:
             element = ET.SubElement(root, "fission_photons_only")
             element.text = str(self._fission_photons_only).lower()
 
+    def _create_sample_photons_above_cutoff_subelement(self, root):
+        if self._sample_photons_above_cutoff is not None:
+            element = ET.SubElement(root, "sample_photons_above_cutoff")
+            element.text = str(self._sample_photons_above_cutoff).lower()
+
     def _create_photon_splits_subelement(self, root):
         if self._photon_splits is not None:
             element = ET.SubElement(root, "photon_splits")
@@ -2392,6 +2418,11 @@ class Settings:
         if text is not None:
             self.fission_photons_only = text in ('true', '1')
 
+    def _sample_photons_above_cutoff_from_xml_element(self, root):
+        text = get_text(root, 'sample_photons_above_cutoff')
+        if text is not None:
+            self.sample_photons_above_cutoff = text in ('true', '1')
+
     def _photon_splits_from_xml_element(self, root):
         text = get_text(root, 'photon_splits')
         if text is not None:
@@ -2775,6 +2806,7 @@ class Settings:
         self._create_photonuclear_physics_subelement(element)
         self._create_photoneutron_biasing_subelement(element)
         self._create_fission_photons_only_subelement(element)
+        self._create_sample_photons_above_cutoff_subelement(element)
         self._create_photon_splits_subelement(element)
         self._create_photoneutron_splits_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
@@ -2900,6 +2932,7 @@ class Settings:
         settings._photonuclear_physics_from_xml_element(elem)
         settings._photoneutron_biasing_from_xml_element(elem)
         settings._fission_photons_only_from_xml_element(elem)
+        settings._sample_photons_above_cutoff_from_xml_element(elem)
         settings._photon_splits_from_xml_element(elem)
         settings._photoneutron_splits_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)

@@ -120,6 +120,7 @@ int openmc_finalize()
   settings::photon_transport = false;
   settings::photonuclear_physics = false;
   settings::fission_photons_only = false;
+  settings::sample_photons_above_cutoff = false;
   settings::photon_splits = 1;
   settings::photoneutron_splits = 1;
   settings::photoneutron_biasing = false;

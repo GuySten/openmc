@@ -41,6 +41,16 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
+  //! Sample an outgoing energy at or above a threshold, and the cosine
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \param[in] E_min Lowest outgoing energy worth sampling in [eV]
+  //! \param[out] E_out Outgoing energy in [eV]
+  //! \param[out] mu Outgoing cosine with respect to current direction
+  //! \param[inout] seed Pseudorandom seed pointer
+  //! \return Probability mass of the restricted range
+  double sample_above(double E_in, double E_min, double& E_out, double& mu,
+    uint64_t* seed) const override;
+
   //! Maximum outgoing energy, in the frame the distribution is tabulated in
   //! \param[in] E_in Incoming energy in [eV]
   //! \return Maximum outgoing energy in [eV]

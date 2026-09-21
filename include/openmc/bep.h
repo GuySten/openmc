@@ -149,6 +149,8 @@
 
 #include "openmc/hdf5_interface.h"
 #include "openmc/position.h"
+// For STREAM_BEP_OFFSET, used by stream_offset() below.
+#include "openmc/random_lcg.h"
 // For settings::bep_n_generation and settings::super_n_generation, both used
 // by the inline functions below. Re-declaring them here instead would be two
 // declarations of one variable to keep in sync by hand, and a type that
@@ -322,6 +324,30 @@ inline double weight_scale(int tree)
   return (tree >= 0 && tree < static_cast<int>(tree_weight_scale.size()))
            ? tree_weight_scale[tree]
            : 1.0;
+}
+
+//! Does `tree` belong to a PHOTONUCLEAR perturbation?
+//!
+//! Only those trees get a private RNG stream. A material perturbation's tree
+//! is run by its own run_one_tree() call, seeded from the branch id it shares
+//! with its reference tree -- that common random number pairing is what makes
+//! a null perturbation come back exactly zero, and giving it a separate
+//! stream would destroy it. A photonuclear perturbation's tree has no such
+//! partner: it is an added population living inside the reference tree's
+//! history, which is exactly why it needs isolating.
+inline bool photonuclear_tree(int tree)
+{
+  if (tree < 0 || tree >= static_cast<int>(tree_pert.size()))
+    return false;
+  int ip = tree_pert[tree];
+  return ip >= 0 && ip < static_cast<int>(perturbations.size()) &&
+         perturbations[ip].kind == PerturbationKind::photonuclear;
+}
+
+//! 0, or STREAM_BEP_OFFSET for a tree that needs its own streams.
+inline int stream_offset(int tree)
+{
+  return photonuclear_tree(tree) ? STREAM_BEP_OFFSET : 0;
 }
 
 //! The weight a typical particle in `tree` is born at.

@@ -238,8 +238,15 @@ void Particle::from_source(const SourceSite* src)
 
 void Particle::event_calculate_xs()
 {
-  // Set the random number stream
-  stream() = STREAM_TRACKING;
+  // Set the random number stream. A particle inside a photonuclear
+  // perturbation's tree gets its own copy: it is transported within the
+  // REFERENCE tree's history and shares this Particle, so drawing from the
+  // reference tree's stream would make the reference population -- the
+  // baseline the worth is measured against -- depend on how the perturbation
+  // was sampled. bep::stream_offset() is 0 everywhere else, including the
+  // driver and every material perturbation, whose trees must keep the shared
+  // stream for their common random numbers to hold.
+  stream() = STREAM_TRACKING + bep::stream_offset(bep_tree());
 
   // Anchor every adjoint score arising from this iteration to the id this
   // collision's fission event will take. Set here, before anything is

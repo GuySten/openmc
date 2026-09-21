@@ -1520,6 +1520,58 @@ def test_photonuclear_reaches_the_shadow_trees(run_in_tmpdir, photon_model):
         assert np.any(p.depth_curve[1:] != 0.0)
 
 
+def test_photoneutron_stream_does_not_disturb_the_reference_tree(
+        run_in_tmpdir, photon_model):
+    """A photonuclear perturbation must not move its own baseline.
+
+    Unlike a material perturbation, whose two trees are separate
+    run_one_tree() calls, a photonuclear perturbation's population is
+    transported INSIDE the reference tree's history and shares that
+    Particle's seeds. Every draw it makes -- sampling the photoneutron
+    source, then transporting the photoneutrons and their progeny -- would
+    otherwise advance the reference tree's streams, so the reference
+    population would depend on how the perturbation happened to be sampled.
+    That is the baseline the worth is measured against; it has to be inert.
+
+    perturbation_population_ratio is the lever: it changes how many sites the
+    perturbation's tree banks, and therefore how many of its particles are
+    transported, without touching the reference tree's own physics at all.
+    With the perturbation on its own streams (STREAM_BEP_OFFSET) the
+    reference tree's tau must come out BIT-IDENTICAL across ratios. Without
+    it, the interleaved draws shift and it does not.
+
+    Only the reference row is asserted -- the perturbed row is expected to
+    change, since changing the ratio is the whole point of the lever.
+    """
+    blanket = photon_model.geometry.get_all_cells()[22]
+    photon_model.settings.photoneutron_biasing = True
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([blanket], perturbation_id=1),
+    ])
+
+    def tau_of(ratio):
+        photon_model.settings.perturbation_population_ratio = ratio
+        with h5py.File(photon_model.run(), 'r') as f:
+            g = f['local_perturbation']
+            nd = int(g['n_generation'][()]) + 1
+            nt = int(g['n_trees'][()])
+            nrec = int(g['n_generations_recorded'][()])
+            tau = np.array(g['tau'][()]).reshape(nrec, nt, nd)
+            pert = int(g['perturbation 1']['tree'][()])
+            refs = [int(t) for t in g['perturbation 1']['ref_trees'][()]]
+        return tau, pert, refs
+
+    tau_a, pert, refs = tau_of(0.1)
+    tau_b, pert_b, refs_b = tau_of(0.001)
+    assert pert == pert_b and refs == refs_b
+    assert refs, 'no reference tree to check'
+
+    assert np.array_equal(tau_a[:, refs, :], tau_b[:, refs, :]), (
+        "the perturbation's sampling moved its own reference tree: its "
+        'draws are still advancing the reference streams, so the baseline '
+        'the worth is measured against depends on the perturbation')
+
+
 def test_photonuclear_null_without_photonuclear_data(run_in_tmpdir,
                                                      photon_model):
     """A cell whose nuclides have no photonuclear data is worth exactly zero.

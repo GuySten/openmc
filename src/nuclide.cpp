@@ -883,7 +883,8 @@ void Nuclide::calculate_urr_xs(int i_temp, Particle& p) const
   // reuse random numbers for the same nuclide at different temperatures,
   // therefore preserving correlation of temperature in probability tables.
   double r =
-    future_prn(static_cast<int64_t>(index_), p.seeds(STREAM_URR_PTABLE));
+    future_prn(static_cast<int64_t>(index_),
+      p.seeds(STREAM_URR_PTABLE + bep::stream_offset(p.bep_tree())));
 
   // Warning: this assumes row-major order of cdf_values_
   int i_low = upper_bound_index(&urr.cdf_values_(i_energy, 0),

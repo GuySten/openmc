@@ -185,7 +185,8 @@ void sample_neutron_reaction(Particle& p)
 
   // Advance URR seed stream 'N' times after energy changes
   if (p.E() != p.E_last()) {
-    advance_prn_seed(data::nuclides.size(), &p.seeds(STREAM_URR_PTABLE));
+    advance_prn_seed(data::nuclides.size(),
+      &p.seeds(STREAM_URR_PTABLE + bep::stream_offset(p.bep_tree())));
   }
 
   // Play russian roulette if there are no weight windows
@@ -1597,9 +1598,15 @@ void emit_perturbation_photoneutrons(Particle& p)
     // tree instead. Recorded by index rather than by taking back(): the call
     // may bank nothing (roulette, energy cutoff) or, if a reaction ever gains
     // more than one neutron product, more than one.
+    // The emitting photon belongs to a REFERENCE tree, so its stream must
+    // not be advanced by sampling the perturbation's source. Draw on the
+    // perturbation's own stream and put the photon's back.
+    const int tree = bep::perturbations[ip].tree;
+    const int saved_stream = p.stream();
+    p.stream() = STREAM_TRACKING + bep::stream_offset(tree);
     const size_t n_before = p.local_secondary_bank().size();
     emit_forced_photoneutron(p);
-    const int tree = bep::perturbations[ip].tree;
+    p.stream() = saved_stream;
     for (size_t i = n_before; i < p.local_secondary_bank().size(); ++i) {
       auto& site = p.local_secondary_bank()[i];
       site.bep_tree = tree;

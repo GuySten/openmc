@@ -10,11 +10,21 @@ namespace openmc {
 // Module constants.
 //==============================================================================
 
-constexpr int N_STREAMS {4};
+constexpr int N_STREAMS {8};
 constexpr int STREAM_TRACKING {0};
 constexpr int STREAM_SOURCE {1};
 constexpr int STREAM_URR_PTABLE {2};
 constexpr int STREAM_VOLUME {3};
+//! Added to any of the above for a particle inside a photonuclear
+//! perturbation's tree, giving it a private copy of every stream.
+//!
+//! Those particles are transported INSIDE the reference tree's history and
+//! share its Particle, so without this every draw they make advances the
+//! reference tree's seeds -- and the reference population, which the worth is
+//! measured against, would then depend on how the perturbation happened to be
+//! sampled. init_particle_seeds() seeds all N_STREAMS, and seeds 0..3 are
+//! unchanged by the wider array, so nothing outside such a tree moves.
+constexpr int STREAM_BEP_OFFSET {4};
 constexpr int64_t DEFAULT_SEED {1};
 constexpr uint64_t DEFAULT_STRIDE {152917ULL};
 

@@ -72,11 +72,14 @@ extern "C" bool
   event_based;      //!< use event-based mode (instead of history-based)
 extern bool ifp_on; //!< Use IFP for kinetics parameters?
 extern bool legendre_to_tabular; //!< convert Legendre distributions to tabular?
-extern bool material_cell_offsets;   //!< create material cells offsets?
-extern "C" bool output_summary;      //!< write summary.h5?
-extern bool output_tallies;          //!< write tallies.out?
-extern bool particle_restart_run;    //!< particle restart run?
-extern "C" bool photon_transport;    //!< photon transport turned on?
+extern bool material_cell_offsets;    //!< create material cells offsets?
+extern "C" bool output_summary;       //!< write summary.h5?
+extern bool output_tallies;           //!< write tallies.out?
+extern bool particle_restart_run;     //!< particle restart run?
+extern "C" bool photon_transport;     //!< photon transport turned on?
+extern "C" bool photonuclear_physics; //!< photonuclear physics turned on?
+extern "C" bool
+  photoneutron_biasing; //!< bias photoneutron production (expected value)?
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?
 extern "C" bool reduce_tallies;      //!< reduce tallies at end of batch?
 extern bool res_scat_on;             //!< use resonance upscattering method?

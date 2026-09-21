@@ -118,16 +118,22 @@ class Settings:
         Number of generations to consider for the Iterated Fission Probability
         method.
     perturbation_weight_cutoff : float
-        Fraction of a shadow tree's root weight below which a secondary born
-        inside a perturbation's own tree is rouletted. Such a particle costs a
+        Fraction of the weight a typical particle in a shadow tree is born at,
+        below which a secondary born inside a perturbation's own tree is
+        rouletted. Such a particle costs a
         full transport history -- and the secondaries it goes on to make cost
         more -- for a contribution far below the statistical uncertainty on
         the worth the tree exists to measure.
 
-        A fraction rather than an absolute weight because every weight in a
-        tree is some fraction of its root, so this is the one scale that does
-        not move when the driver's weight normalisation or
-        :attr:`perturbation_population_ratio` does. The survivor is carried at
+        Measured against the tree rather than against an absolute weight, or
+        against the branch site the tree grew from: a perturbation's
+        population can sit decades below its root -- 2.3e-4 of the reference
+        population in a measured photoneutron worth -- so a cutoff scaled to
+        the root would need a value of 1e-8 to mean "a tenth of a typical
+        particle", and would mean something different in every problem. The
+        scale is measured each generation and quantized to a power of ten, and
+        it excludes :attr:`perturbation_population_ratio`, so tuning the
+        population does not move this threshold. The survivor is carried at
         the cutoff weight with probability ``|w| / cutoff``, so the expected
         banked weight, and with it the worth, is unchanged.
 

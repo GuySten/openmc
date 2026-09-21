@@ -115,11 +115,21 @@ bool Particle::create_secondary(
   // to make cost more -- for a contribution far below the statistical
   // uncertainty on the worth the tree exists to measure.
   //
-  // The threshold is a fraction of the tree's ROOT weight, not an absolute
-  // weight: every weight in a tree is some fraction of its root, so this is
-  // the one scale that does not move when the driver's weight normalisation
-  // or perturbation_population_ratio does. root_weight() is 0 outside a
-  // shadow tree, so the driver stays a stock run whatever the setting.
+  // The threshold is a fraction of the weight a TYPICAL PARTICLE IN THIS TREE
+  // is born at, not of the tree's root weight and not an absolute weight.
+  // A perturbation's population can sit decades below the branch site its
+  // tree grew from -- measured at 2.3e-4 of the reference for a photoneutron
+  // worth -- so a cutoff scaled to the root weight would need a value of
+  // 1e-8 to mean "a tenth of a typical particle", and would mean something
+  // different in every problem. characteristic_weight() is
+  // root_weight() * weight_scale(tree), it is measured and quantized rather
+  // than guessed, and it is free of perturbation_population_ratio so tuning
+  // the population does not move this threshold. It is 0 outside a shadow
+  // tree, so the driver stays a stock run whatever the setting.
+  //
+  // It is also the same scale apply_russian_roulette() measures against, via
+  // the wgt_born that run_one_tree() sets -- one roulette at creation and one
+  // in transport, agreeing on what "too light" means.
   //
   // Keyed off the EMITTING particle's tree, so a reference tree is never
   // touched -- it carries the same full-weight population an ordinary
@@ -135,8 +145,8 @@ bool Particle::create_secondary(
   // negative should a variance-reduction scheme ever produce one.
   if (settings::perturbation_weight_cutoff > 0.0 &&
       bep::in_perturbation_tree(bep_tree())) {
-    const double w_survive =
-      settings::perturbation_weight_cutoff * std::abs(bep::root_weight());
+    const double w_survive = settings::perturbation_weight_cutoff *
+                             std::abs(bep::characteristic_weight(bep_tree()));
     if (w_survive > 0.0 && std::abs(wgt) < w_survive) {
       if (w_survive * prn(current_seed()) >= std::abs(wgt))
         return false;

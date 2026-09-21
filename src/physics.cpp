@@ -1607,6 +1607,14 @@ void emit_perturbation_photoneutrons(Particle& p)
     const size_t n_before = p.local_secondary_bank().size();
     emit_forced_photoneutron(p);
     p.stream() = saved_stream;
+
+    // One independent source event for the perturbation's tree. A
+    // photonuclear perturbation's tree is never run by run_one_tree() -- it
+    // has no root of its own, being an added population inside the reference
+    // tree's history -- so this is the only place its sources are counted,
+    // and bep::update_site_weights() needs the count to size it.
+#pragma omp atomic
+    bep::tree_sources[tree] += 1;
     for (size_t i = n_before; i < p.local_secondary_bank().size(); ++i) {
       auto& site = p.local_secondary_bank()[i];
       site.bep_tree = tree;

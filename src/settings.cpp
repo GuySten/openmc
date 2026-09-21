@@ -146,7 +146,7 @@ int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
-double perturbation_population_ratio {0.1};
+bool perturbation_site_splitting {true};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -597,17 +597,15 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
-      // How many fission sites a perturbation's shadow tree carries relative
-      // to its reference tree, which is what decides the weight its sites are
-      // banked at. See bep::update_site_weights().
-      if (check_for_node(root, "perturbation_population_ratio")) {
-        perturbation_population_ratio =
-          std::stod(get_node_value(root, "perturbation_population_ratio"));
-        if (perturbation_population_ratio < 0.0) {
-          fatal_error("'perturbation_population_ratio' must not be negative; "
-                      "use 0 to bank unit-weight sites as an ordinary "
-                      "eigenvalue calculation does.");
-        }
+      // Whether a perturbation's shadow tree banks its fission sites split,
+      // at the weight bep::update_site_weights() chooses for it. On by
+      // default; off banks unit-weight sites as an ordinary eigenvalue
+      // calculation does, which for a low-weight source such as the
+      // photoneutrons of a <photonuclear_perturbation> is a lottery that
+      // undoes the sampling it was given.
+      if (check_for_node(root, "perturbation_site_splitting")) {
+        perturbation_site_splitting =
+          get_node_value_bool(root, "perturbation_site_splitting");
       }
 
       // Shadow tree depth for local perturbations. A single scalar for the

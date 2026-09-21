@@ -117,28 +117,31 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
-    perturbation_population_ratio : float
-        How many shadow fission sites a perturbation's tree carries relative
-        to the reference trees it is scored against. Shadow fission sites are
-        banked at whatever weight gives that population, instead of at unit
-        weight with the parent's weight turned into the probability of
-        banking one -- which for a low-weight source, such as the
-        photoneutrons of an :class:`openmc.PhotonuclearPerturbation`, is a
-        lottery that undoes the sampling it was given. Raising it buys
-        statistics with runtime; 0 disables the adjustment and banks
-        unit-weight sites as an ordinary eigenvalue calculation does.
+    perturbation_site_splitting : bool
+        Whether a perturbation's shadow tree banks its fission sites split, at
+        a weight chosen for it each generation. The alternative, and what an
+        ordinary eigenvalue calculation does, is to bank unit-weight sites
+        with the parent's weight turned into the *probability* of banking one
+        -- which for a low-weight source such as the photoneutrons of an
+        :class:`openmc.PhotonuclearPerturbation` is a lottery that undoes the
+        sampling it was given. Measured on a photoneutron worth, turning it
+        off cost a factor of 35 in figure of merit, the perturbed tree falling
+        to about twenty sites per generation.
 
-        Defaults to 0.1, which is where the figure of merit peaked on a
-        photoneutron worth: the smoothing saturates well before a perturbed
-        tree needs a population as large as its reference, so asking for one
-        costs the transport and buys nothing. Measured on that problem, this
-        default took sigma from 2.34 to 0.30 pcm for 15% more runtime, a
-        factor of 54 in figure of merit, while a ratio of 1 gave the same
-        sigma for 2.6 times the runtime.
+        The population is not a user parameter. Writing ``N`` for the sites a
+        tree banks per generation and ``M`` for the number of independent
+        source events feeding it, the relative variance of its tau is
+        ``1/N + c/M`` -- a discreteness term splitting removes, over a floor
+        set by the source count that it cannot touch. With cost linear in
+        ``N`` this is minimised at ``N* = sqrt(gamma * N_ref * M/c)``, and
+        every term is measured from the tau already recorded. ``N*`` grows
+        with the run, so a longer calculation keeps improving the
+        perturbation as well as its reference.
 
-        Perturbations whose trees already carry a full-weight population,
-        such as :class:`openmc.LocalPerturbation`, land on unit-weight sites
-        whatever this is set to, and are bit-for-bit unaffected.
+        Leave it on unless comparing against an unsplit calculation. It has no
+        effect on a perturbation whose tree already carries a population
+        comparable to its reference, such as a material substitution, which is
+        left bit-for-bit unchanged.
 
         .. versionadded:: 0.16.0
     perturbation_n_generation : int
@@ -531,7 +534,7 @@ class Settings:
         # Iterated Fission Probability
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
-        self._perturbation_population_ratio = None
+        self._perturbation_site_splitting = None
 
         # Collision track feature
         self._collision_track = {}
@@ -1173,15 +1176,13 @@ class Settings:
         self._ifp_n_generation = ifp_n_generation
 
     @property
-    def perturbation_population_ratio(self) -> float:
-        return self._perturbation_population_ratio
+    def perturbation_site_splitting(self) -> bool:
+        return self._perturbation_site_splitting
 
-    @perturbation_population_ratio.setter
-    def perturbation_population_ratio(self, ratio: float):
-        cv.check_type('perturbation population ratio', ratio, Real)
-        cv.check_greater_than(
-            'perturbation population ratio', ratio, 0.0, equality=True)
-        self._perturbation_population_ratio = ratio
+    @perturbation_site_splitting.setter
+    def perturbation_site_splitting(self, value: bool):
+        cv.check_type('perturbation site splitting', value, bool)
+        self._perturbation_site_splitting = value
 
     @property
     def perturbation_n_generation(self) -> int:
@@ -1981,10 +1982,10 @@ class Settings:
             element = ET.SubElement(root, "ifp_n_generation")
             element.text = str(self._ifp_n_generation)
 
-    def _create_perturbation_population_ratio_subelement(self, root):
-        if self._perturbation_population_ratio is not None:
-            element = ET.SubElement(root, "perturbation_population_ratio")
-            element.text = str(self._perturbation_population_ratio)
+    def _create_perturbation_site_splitting_subelement(self, root):
+        if self._perturbation_site_splitting is not None:
+            element = ET.SubElement(root, "perturbation_site_splitting")
+            element.text = str(self._perturbation_site_splitting).lower()
 
     def _create_perturbation_n_generation_subelement(self, root):
         if self._perturbation_n_generation is not None:
@@ -2541,10 +2542,10 @@ class Settings:
         if text is not None:
             self.verbosity = int(text)
 
-    def _perturbation_population_ratio_from_xml_element(self, root):
-        text = get_text(root, 'perturbation_population_ratio')
+    def _perturbation_site_splitting_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_site_splitting')
         if text is not None:
-            self.perturbation_population_ratio = float(text)
+            self.perturbation_site_splitting = text in ('true', '1')
 
     def _perturbation_n_generation_from_xml_element(self, root):
         text = get_text(root, 'perturbation_n_generation')
@@ -2841,7 +2842,7 @@ class Settings:
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
-        self._create_perturbation_population_ratio_subelement(element)
+        self._create_perturbation_site_splitting_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2967,7 +2968,7 @@ class Settings:
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
-        settings._perturbation_population_ratio_from_xml_element(elem)
+        settings._perturbation_site_splitting_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

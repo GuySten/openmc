@@ -123,7 +123,7 @@ int openmc_finalize()
   settings::sample_photons_above_cutoff = false;
   settings::photon_splits = 1;
   settings::photoneutron_biasing = false;
-  settings::perturbation_population_ratio = 0.1;
+  settings::perturbation_site_splitting = true;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;

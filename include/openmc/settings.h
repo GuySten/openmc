@@ -196,9 +196,9 @@ extern SSWCellType ssw_cell_type; //!< Type of option for the cell
 extern int super_n_generation;    //!< Number of superhistory generations
 extern int bep_n_generation;      //!< Shadow tree depth for local
                                   //!< perturbations, shared by all of them
-extern double
-  perturbation_population_ratio; //!< shadow fission sites a perturbation tree
-                                 //!< carries, relative to its reference tree
+extern bool
+  perturbation_site_splitting; //!< bank a perturbation tree's fission sites
+                               //!< split, at the adaptively chosen weight
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

@@ -94,6 +94,20 @@ bool Particle::create_secondary(
   if (E < settings::energy_cutoff[idx]) {
     return false;
   }
+  // A zero-weight secondary transports nothing and scores nothing, but it is
+  // not merely wasteful: event_check_limit_and_revive() would revive it, the
+  // revived particle would be dead on arrival (alive() is wgt != 0), and
+  // transport_history_based_single_particle()'s `while (p.alive())` would
+  // then END THE HISTORY -- silently discarding every site still in the
+  // local secondary bank. In a super-history or a BEP shadow tree that
+  // truncates the whole chain of generations below the abandoned sites, so
+  // the loss is a bias, not just lost work. Nothing in a stock run banks a
+  // zero weight, so this guard only ever fires on a weight that has
+  // underflowed -- which a long chain of weight-reducing secondary
+  // productions inside one history can reach.
+  if (wgt == 0.0) {
+    return false;
+  }
 
   // Increment number of secondaries created (for ParticleProductionFilter)
   n_secondaries()++;
@@ -618,8 +632,13 @@ void Particle::event_check_limit_and_revive()
     const int gen_limit = bep::generation_limit(bep_tree());
     // Iterate from the back (top of stack) to the front
     for (auto it = bank.rbegin(); it != bank.rend(); ++it) {
-      // If the site's super_gen is smaller than the threshold, revive from it
-      if (it->super_gen < gen_limit) {
+      // If the site's super_gen is smaller than the threshold, revive from it.
+      // A zero-weight site is skipped rather than revived: reviving one leaves
+      // the particle dead, which ends the transport loop and abandons every
+      // site still banked below it (see create_secondary(), which also refuses
+      // to bank one). Belt and braces -- but the failure mode is a silent
+      // truncation of the super-history, so it is worth both.
+      if (it->super_gen < gen_limit && it->wgt != 0.0) {
         SourceSite& site = *it;
         event_revive_from_secondary(site);
 

@@ -128,15 +128,15 @@ class Settings:
         off cost a factor of 16 in figure of merit, the perturbed tree falling
         to about twenty sites per generation.
 
-        It also removes a BIAS, not only variance. The worth is a slope of
-        ``ln(tau_p / R_p)``, and a logarithm is concave, so a noisy tau is
-        reported low by roughly half its relative variance. Measured on the
-        same worth, the mean rises monotonically as the population grows --
-        2.86, 3.38, 3.39, 3.43 pcm at 21, 2062, 20620 and 206200 sites per
-        generation -- saturating once the noise is small, exactly as a
-        Jensen-type bias should. An unsplit calculation is therefore not
-        merely a noisier estimate of the same number, and should not be used
-        as a reference answer.
+        The gain is variance, not bias. An unsplit calculation is unbiased;
+        it is merely uninformative. Measured over 40 replicas at about twenty
+        sites per generation, the unsplit worth is 3.41 +/- 0.34 pcm against
+        3.58 +/- 0.11 split -- half a sigma apart -- but with a standard
+        deviation of 2.12 rather than 0.35, individual runs spanning 0.48 to
+        9.61 pcm on one problem. A single unsplit run therefore carries almost
+        no information about the worth, which is why it should not be used as
+        a reference answer, and why what moves is the figure of merit and not
+        the mean.
 
         The population is not a user parameter. Writing ``N`` for the sites a
         tree banks per generation and ``M`` for the number of independent

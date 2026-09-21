@@ -281,17 +281,18 @@ inline double site_weight(int tree)
 //! that cutoff invariant to how the driver happens to normalise its weights
 //! and to `perturbation_population_ratio`, which an absolute cutoff would not
 //! be. Per thread because run_one_tree() transports one tree at a time on
-//! each thread.
+//! each thread, and 0 outside one so that a driver particle can never be
+//! affected by a setting meant for a shadow tree.
 double root_weight();
 
-//! Does `tree` belong to a perturbation, as opposed to being a reference
-//! tree or the trunk?
+//! Does `tree` belong to a perturbation, as opposed to being a reference tree
+//! or the trunk?
 //!
-//! For a photonuclear perturbation this is what distinguishes the levels of
-//! the photon -> photoneutron -> photon cascade: a photon in a REFERENCE tree
-//! that makes a photoneutron is the first level, the one that injects the
-//! perturbation's source; a photon already inside the perturbation's OWN tree
-//! descends from a photoneutron, so anything it makes is a later level.
+//! What separates a tree whose population is the perturbation's own from one
+//! that is merely the reference it is scored against. A reference tree
+//! carries the same full-weight population an ordinary eigenvalue calculation
+//! would, so variance reduction aimed at a perturbation's thin, low-weight
+//! population has no business touching it.
 inline bool in_perturbation_tree(int tree)
 {
   return tree >= 0 && tree < static_cast<int>(tree_pert.size()) &&

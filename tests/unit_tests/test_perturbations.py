@@ -1507,6 +1507,95 @@ def test_photonuclear_rejects_repeated_cell(run_in_tmpdir, photon_model):
     with pytest.raises(RuntimeError, match='appears twice'):
         openmc.run()
 
+def test_weight_cutoff_is_confined_to_perturbation_trees(run_in_tmpdir,
+                                                        model):
+    """The roulette may touch a perturbation's tree and nothing else.
+
+    perturbation_weight_cutoff rouletters a low-weight secondary born inside a
+    perturbation's own tree. Two things must stay exactly as they were: the
+    driver, which has to remain a stock run whatever a shadow tree does, and
+    the REFERENCE trees, which carry the same full-weight population an
+    ordinary eigenvalue calculation would and are the baseline the worth is
+    measured against. Each tree is transported by its own run_one_tree() call,
+    seeded from the branch site, so disturbing one must leave the others
+    bit-identical.
+
+    The perturbed tree's own tau is asserted to CHANGE, so the test cannot
+    pass vacuously by the cutoff never engaging. The cutoff used is far larger
+    than anything one would set in anger: on this branch a shadow tree creates
+    no secondary photons at all (see the super_gen() gate in
+    sample_neutron_reaction), so almost every secondary it banks is a full
+    weight one and a realistic cutoff would never fire. What is being pinned
+    here is that the path is confined when it DOES fire; the cutoff earning
+    its keep is a photonuclear-cascade question.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 2000
+    model.settings.photon_transport = True
+    model.settings.perturbation_n_generation = 6
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+
+    def run(cutoff):
+        model.settings.perturbation_weight_cutoff = cutoff
+        sp_path = model.run()
+        with h5py.File(sp_path, 'r') as f:
+            g = f['local_perturbation']
+            # tau is written as the per-generation history, laid out
+            # [generation][tree][depth] -- not [tree][depth].
+            n_depth = int(g['n_generation'][()]) + 1
+            n_trees = int(g['n_trees'][()])
+            n_rec = int(g['n_generations_recorded'][()])
+            tau = np.array(g['tau'][()]).reshape(n_rec, n_trees, n_depth)
+            tree = int(g['perturbation 1']['tree'][()])
+        with openmc.StatePoint(sp_path) as sp:
+            return tau, tree, n_trees, sp.keff.nominal_value
+
+    off_tau, tree, n_trees, off_k = run(0.0)
+    on_tau, tree_on, _, on_k = run(2.0)
+    assert tree == tree_on
+
+    others = [t for t in range(n_trees) if t != tree]
+    assert others, 'no reference tree to compare against'
+    assert np.array_equal(off_tau[:, others, :], on_tau[:, others, :]), (
+        'perturbation_weight_cutoff moved a reference tree, which it has no '
+        'business touching -- the worth is measured against that baseline')
+    assert not np.array_equal(off_tau[:, tree, :], on_tau[:, tree, :]), (
+        'the cutoff never engaged, so this test proves nothing')
+    # A tolerance, not bit-identity: the global k accumulators are summed with
+    # omp atomic, so k moves in its last ulp between two runs of the SAME
+    # settings at more than one thread. tau has no such freedom -- the
+    # per-thread slabs are summed in thread order -- so it carries the exact
+    # assertions above.
+    assert on_k == pytest.approx(off_k, rel=1.0e-12), (
+        'perturbation_weight_cutoff reached the driver, which must stay a '
+        'stock run whatever a shadow tree does')
+
+
+def test_weight_cutoff_xml_roundtrip():
+    s = openmc.Settings()
+    assert s.perturbation_weight_cutoff is None
+
+    s.perturbation_weight_cutoff = 1.0e-6
+    elem = s.to_xml_element()
+    assert elem.find('perturbation_weight_cutoff').text == '1e-06'
+    assert openmc.Settings.from_xml_element(
+        elem).perturbation_weight_cutoff == 1.0e-6
+
+    # 0 is the documented way to transport every shadow tree analog, so it has
+    # to survive the round trip rather than read back as "unset".
+    s.perturbation_weight_cutoff = 0.0
+    assert openmc.Settings.from_xml_element(
+        s.to_xml_element()).perturbation_weight_cutoff == 0.0
+
+    with pytest.raises(ValueError):
+        s.perturbation_weight_cutoff = -1.0
+    with pytest.raises(TypeError):
+        s.perturbation_weight_cutoff = 'small'
+
+
 def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
                                                         model):
     """The adaptive site weight must not disturb an ordinary shadow tree.
@@ -1546,15 +1635,20 @@ def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
         'is perturbing the random walk of trees it has no business touching')
 
 
-def test_cascade_controls_leave_other_trees_alone(run_in_tmpdir, model):
-    """Neither cascade control may touch a tree that has no cascade.
+def test_photoneutron_splits_leave_other_trees_alone(run_in_tmpdir, model):
+    """photoneutron_splits may not touch a tree that has no photoneutrons.
 
-    `photoneutron_splits` and `photoneutron_cascade_cutoff` both act inside
-    emit_forced_photoneutron(), which only ever runs for a
-    <photonuclear_perturbation>. A material perturbation has no photoneutrons
-    at all, so both settings must leave its trees BIT-IDENTICAL -- not merely
-    consistent. Anything less means a random number is being drawn somewhere
-    it should not be, which moves the random walk of every tree in the run.
+    It acts inside emit_forced_photoneutron(), which only ever runs for a
+    <photonuclear_perturbation>. A material perturbation has none at all, so
+    the setting must leave its trees BIT-IDENTICAL -- not merely consistent.
+    Anything less means a random number is being drawn somewhere it should not
+    be, which moves the random walk of every tree in the run.
+
+    The companion control, perturbation_weight_cutoff, is a general BEP
+    feature and is pinned separately by
+    test_weight_cutoff_is_confined_to_perturbation_trees -- it is ALLOWED to
+    move a material perturbation's own tree, and is checked there for leaving
+    the reference trees and the driver alone.
     """
     _, absorber = _water_and_absorber(model)
     model.settings.particles = 2000
@@ -1565,38 +1659,28 @@ def test_cascade_controls_leave_other_trees_alone(run_in_tmpdir, model):
                                  perturbation_id=1),
     ])
 
-    def tau_and_keff(**settings):
-        for name, value in settings.items():
-            setattr(model.settings, name, value)
+    def tau_and_keff(splits):
+        model.settings.photoneutron_splits = splits
         sp_path = model.run()
         with h5py.File(sp_path, 'r') as f:
             tau = np.array(f['local_perturbation']['tau'][()])
         with openmc.StatePoint(sp_path) as sp:
             return tau, sp.keff.nominal_value
 
-    base_tau, base_k = tau_and_keff()
-    split_tau, split_k = tau_and_keff(photoneutron_splits=8)
-    cut_tau, cut_k = tau_and_keff(photoneutron_splits=1,
-                                  photoneutron_cascade_cutoff=1.0e-3)
+    base_tau, base_k = tau_and_keff(1)
+    split_tau, split_k = tau_and_keff(8)
 
     assert np.array_equal(base_tau, split_tau), (
-        'photoneutron_splits moved a material perturbation\'s shadow tree, '
+        "photoneutron_splits moved a material perturbation's shadow tree, "
         'which has no photoneutrons to split')
-    assert np.array_equal(base_tau, cut_tau), (
-        'photoneutron_cascade_cutoff moved a material perturbation\'s shadow '
-        'tree, which has no cascade to roulette')
-    # Not bit-identity here, unlike tau above: the global k accumulators are
-    # summed with omp atomic, so their order varies run to run and k moves in
-    # its last ulp between two runs of the SAME settings (measured: identical
-    # at one thread, differing at four). tau has no such freedom -- the
+    # A tolerance, not bit-identity: the global k accumulators are summed with
+    # omp atomic, so k moves in its last ulp between two runs of the SAME
+    # settings at more than one thread. tau has no such freedom -- the
     # per-thread slabs are summed in thread order -- so it carries the exact
-    # assertion and k is held to a tolerance far below any physical effect
-    # and far above summation noise.
-    for name, k in (('photoneutron_splits', split_k),
-                    ('photoneutron_cascade_cutoff', cut_k)):
-        assert k == pytest.approx(base_k, rel=1.0e-12), (
-            f'{name} reached the driver, which must stay a stock run '
-            'whatever a shadow tree does')
+    # assertion above.
+    assert split_k == pytest.approx(base_k, rel=1.0e-12), (
+        'photoneutron_splits reached the driver, which must stay a stock run '
+        'whatever a shadow tree does')
 
 
 def test_rejects_non_material_cell(run_in_tmpdir, model):

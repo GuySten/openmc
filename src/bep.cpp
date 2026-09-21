@@ -99,7 +99,7 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   p.stream() = STREAM_TRACKING;
 
   // The scale everything inside this tree is measured against; see
-  // root_weight(). Set before transport, cleared after, so that nothing
+  // root_weight(). Set before transport and cleared after, so that nothing
   // outside a shadow tree can read a stale value.
   thread_root_weight[thread_num()] = site.wgt;
 

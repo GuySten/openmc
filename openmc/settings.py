@@ -117,6 +117,28 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
+    perturbation_weight_cutoff : float
+        Fraction of a shadow tree's root weight below which a secondary born
+        inside a perturbation's own tree is rouletted. Such a particle costs a
+        full transport history -- and the secondaries it goes on to make cost
+        more -- for a contribution far below the statistical uncertainty on
+        the worth the tree exists to measure.
+
+        A fraction rather than an absolute weight because every weight in a
+        tree is some fraction of its root, so this is the one scale that does
+        not move when the driver's weight normalisation or
+        :attr:`perturbation_population_ratio` does. The survivor is carried at
+        the cutoff weight with probability ``|w| / cutoff``, so the expected
+        banked weight, and with it the worth, is unchanged.
+
+        Reference trees are never touched, which also exempts a
+        perturbation's own source wherever that source is born in a reference
+        tree -- as the first-level photoneutrons of an
+        :class:`openmc.PhotonuclearPerturbation` are. The driver is never
+        touched at all. Defaults to 0, meaning every shadow tree is
+        transported analog.
+
+        .. versionadded:: 0.16.0
     perturbation_population_ratio : float
         How many shadow fission sites a perturbation's tree carries relative
         to the reference trees it is scored against. Shadow fission sites are
@@ -253,26 +275,6 @@ class Settings:
         wherever the yield exceeded it. Requires `photon_transport`, and
         cannot be combined with pulse-height tallies, which are not linear in
         the weight. Defaults to 1, meaning no splitting.
-
-        .. versionadded:: 0.16.0
-    photoneutron_cascade_cutoff : float
-        Fraction of the shadow tree's root weight below which a photoneutron
-        emitted past the *first* level of the photon -> photoneutron -> photon
-        cascade inside an :class:`openmc.PhotonuclearPerturbation` is
-        rouletted. A fraction rather than an absolute weight because every
-        weight in a shadow tree is some fraction of its root, so this is the
-        one scale that does not move when the driver's weight normalisation or
-        :attr:`perturbation_population_ratio` does. That cascade
-        is physics -- the perturbed system has photoneutrons at every order,
-        which is what makes the perturbation exact rather than first-order --
-        but each level carries the photonuclear production ratio once more,
-        so it costs a full transport history for a contribution that falls
-        orders of magnitude below the statistical uncertainty on the worth.
-        The survivor is carried at the cutoff weight and survives with
-        probability ``|w| / cutoff``, so the expected emitted weight, and with
-        it the worth, is unchanged. The first level is never rouletted, whatever its weight:
-        it is the perturbation's source. Defaults to 0, meaning the whole
-        cascade is transported analog.
 
         .. versionadded:: 0.16.0
     photoneutron_splits : int
@@ -537,7 +539,6 @@ class Settings:
         self._fission_photons_only = None
         self._sample_photons_above_cutoff = None
         self._photon_splits = None
-        self._photoneutron_cascade_cutoff = None
         self._photoneutron_splits = None
         self._atomic_relaxation = None
         self._plot_seed = None
@@ -565,6 +566,7 @@ class Settings:
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
         self._perturbation_population_ratio = None
+        self._perturbation_weight_cutoff = None
 
         # Collision track feature
         self._collision_track = {}
@@ -859,17 +861,6 @@ class Settings:
         cv.check_type('photon splits', photon_splits, Integral)
         cv.check_greater_than('photon splits', photon_splits, 0)
         self._photon_splits = photon_splits
-
-    @property
-    def photoneutron_cascade_cutoff(self) -> float:
-        return self._photoneutron_cascade_cutoff
-
-    @photoneutron_cascade_cutoff.setter
-    def photoneutron_cascade_cutoff(self, cutoff: float):
-        cv.check_type('photoneutron cascade cutoff', cutoff, Real)
-        cv.check_greater_than(
-            'photoneutron cascade cutoff', cutoff, 0.0, equality=True)
-        self._photoneutron_cascade_cutoff = cutoff
 
     @property
     def photoneutron_splits(self) -> int:
@@ -1225,6 +1216,17 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
+
+    @property
+    def perturbation_weight_cutoff(self) -> float:
+        return self._perturbation_weight_cutoff
+
+    @perturbation_weight_cutoff.setter
+    def perturbation_weight_cutoff(self, cutoff: float):
+        cv.check_type('perturbation weight cutoff', cutoff, Real)
+        cv.check_greater_than(
+            'perturbation weight cutoff', cutoff, 0.0, equality=True)
+        self._perturbation_weight_cutoff = cutoff
 
     @property
     def perturbation_population_ratio(self) -> float:
@@ -1938,11 +1940,6 @@ class Settings:
             element = ET.SubElement(root, "photoneutron_splits")
             element.text = str(self._photoneutron_splits)
 
-    def _create_photoneutron_cascade_cutoff_subelement(self, root):
-        if self._photoneutron_cascade_cutoff is not None:
-            element = ET.SubElement(root, "photoneutron_cascade_cutoff")
-            element.text = str(self._photoneutron_cascade_cutoff)
-
     def _create_photoneutron_biasing_subelement(self, root):
         if self._photoneutron_biasing is not None:
             element = ET.SubElement(root, "photoneutron_biasing")
@@ -2049,6 +2046,11 @@ class Settings:
         if self._perturbation_population_ratio is not None:
             element = ET.SubElement(root, "perturbation_population_ratio")
             element.text = str(self._perturbation_population_ratio)
+
+    def _create_perturbation_weight_cutoff_subelement(self, root):
+        if self._perturbation_weight_cutoff is not None:
+            element = ET.SubElement(root, "perturbation_weight_cutoff")
+            element.text = str(self._perturbation_weight_cutoff)
 
     def _create_perturbation_n_generation_subelement(self, root):
         if self._perturbation_n_generation is not None:
@@ -2510,11 +2512,6 @@ class Settings:
         if text is not None:
             self.photon_splits = int(text)
 
-    def _photoneutron_cascade_cutoff_from_xml_element(self, root):
-        text = get_text(root, 'photoneutron_cascade_cutoff')
-        if text is not None:
-            self.photoneutron_cascade_cutoff = float(text)
-
     def _photoneutron_splits_from_xml_element(self, root):
         text = get_text(root, 'photoneutron_splits')
         if text is not None:
@@ -2619,6 +2616,11 @@ class Settings:
         text = get_text(root, 'perturbation_population_ratio')
         if text is not None:
             self.perturbation_population_ratio = float(text)
+
+    def _perturbation_weight_cutoff_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_weight_cutoff')
+        if text is not None:
+            self.perturbation_weight_cutoff = float(text)
 
     def _perturbation_n_generation_from_xml_element(self, root):
         text = get_text(root, 'perturbation_n_generation')
@@ -2901,7 +2903,6 @@ class Settings:
         self._create_sample_photons_above_cutoff_subelement(element)
         self._create_photon_splits_subelement(element)
         self._create_photoneutron_splits_subelement(element)
-        self._create_photoneutron_cascade_cutoff_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2918,6 +2919,7 @@ class Settings:
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
         self._create_perturbation_population_ratio_subelement(element)
+        self._create_perturbation_weight_cutoff_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -3029,7 +3031,6 @@ class Settings:
         settings._sample_photons_above_cutoff_from_xml_element(elem)
         settings._photon_splits_from_xml_element(elem)
         settings._photoneutron_splits_from_xml_element(elem)
-        settings._photoneutron_cascade_cutoff_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)
@@ -3046,6 +3047,7 @@ class Settings:
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
         settings._perturbation_population_ratio_from_xml_element(elem)
+        settings._perturbation_weight_cutoff_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

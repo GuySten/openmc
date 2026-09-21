@@ -740,13 +740,15 @@ particle count by the split factor at every level. The same reasoning says
 the deep levels need not be transported in full at all, and they can be
 rouletted::
 
-  settings.photoneutron_cascade_cutoff = 1e-8
+  settings.perturbation_weight_cutoff = 1e-8
 
-A photoneutron past the first level whose weight falls below this fraction of
-the shadow tree's root weight is carried at the cutoff weight with probability
-``|w| / cutoff`` and dropped otherwise, so the expected emitted weight is
-exactly what it was. The first level is never rouletted -- it is the
-perturbation's source.
+Any secondary born inside a perturbation's own tree whose weight falls below
+this fraction of the shadow tree's root weight is carried at the cutoff weight
+with probability ``|w| / cutoff`` and dropped otherwise, so the expected banked
+weight is exactly what it was. It catches the cascade's photons as well as its
+photoneutrons, which is where most of the cost is. Reference trees are never
+touched, so the perturbation's source -- a first-level photoneutron, born from
+a photon in a reference tree -- is never rouletted.
 
 Where a photon energy cutoff is set -- at a photonuclear threshold, say --
 most of what is drawn is below it and thrown away at birth. That waste can be

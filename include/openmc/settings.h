@@ -201,8 +201,9 @@ extern double
   perturbation_population_ratio; //!< shadow fission sites a perturbation tree
                                  //!< carries, relative to its reference tree
 extern double
-  photoneutron_cascade_cutoff; //!< weight below which a photoneutron emitted
-                               //!< past the first cascade level is rouletted
+  perturbation_weight_cutoff; //!< fraction of a shadow tree's root weight
+                              //!< below which a secondary born inside a
+                              //!< perturbation's tree is rouletted
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

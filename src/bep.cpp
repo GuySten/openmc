@@ -39,6 +39,12 @@ vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
 vector<double> tree_site_weight;
 vector<double> tree_weight_scale;
+// Running per-generation statistics of each tree's carried weight, used by
+// update_site_weights() to measure the spread of tau. Reset whenever a tree's
+// site weight moves, since the spread is only meaningful at one weight.
+vector<int64_t> stat_n;
+vector<double> stat_sum;
+vector<double> stat_sumsq;
 vector<vector<BranchSite>> thread_branch_sites;
 vector<BranchSite> branch_sites;
 vector<double> thread_tau;
@@ -98,7 +104,8 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   // judged against the root weight, such a tree's entire population is below
   // the cutoff and survival biasing would roulette all of it up to
   // weight_survive. weight_scale(), NOT site_weight() -- the latter carries a
-  // 1/perturbation_population_ratio, so using it here would move the roulette
+  // 1/perturbation_site_splitting's chosen population, so using it here would
+  // move the roulette
   // threshold every time the population knob was tuned. weight_scale() is 1.0
   // for a reference tree and for a material perturbation's tree, so this is
   // p.wgt() exactly for them and they are bit-identical to before it
@@ -306,6 +313,9 @@ void init()
   // exactly what an eigenvalue calculation does anyway.
   tree_site_weight.assign(tree_pert.size(), 1.0);
   tree_weight_scale.assign(tree_pert.size(), 1.0);
+  stat_n.assign(tree_pert.size(), 0);
+  stat_sum.assign(tree_pert.size(), 0.0);
+  stat_sumsq.assign(tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_root_weight.assign(num_threads(), 0.0);
   thread_branch_sites.assign(num_threads(), {});
@@ -556,9 +566,8 @@ void update_site_weights()
       total[t] += tau[tau_index(static_cast<int>(t), d)];
   }
 
-  // weight_scale is measured whatever the population ratio is set to -- it
-  // describes the tree, not a choice about the tree, and
-  // perturbation_population_ratio == 0 only disables the SITE WEIGHT.
+  // weight_scale describes the tree rather than a choice about it, so it is
+  // measured whatever the splitting flag says.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     const Perturbation& p = perturbations[ip];
     double w_ref = 0.0;
@@ -567,66 +576,104 @@ void update_site_weights()
     double w_pert = total[p.tree];
     if (w_ref <= 0.0 || w_pert <= 0.0)
       continue;
-    // Quantized exactly as the site weight is, and for the same two reasons:
-    // it stops the scale drifting generation to generation on statistical
-    // noise, and it pins a tree whose population already matches its
-    // reference at exactly 1.0, so a material perturbation is untouched.
     double q = std::pow(10.0, std::floor(std::log10(w_pert / w_ref) + 0.5));
-    tree_weight_scale[p.tree] =
-      std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
+    tree_weight_scale[p.tree] = std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
   }
 
-  // Zero turns the site weight off: every tree banks unit-weight sites, as an
-  // ordinary eigenvalue calculation does.
-  if (settings::perturbation_population_ratio <= 0.0)
-    return;
+  if (!settings::perturbation_site_splitting)
+    return; // every tree banks unit-weight sites, as an ordinary eigenvalue
+            // calculation does
 
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     const Perturbation& p = perturbations[ip];
 
-    // Measured against the reference trees this perturbation is scored
-    // against, since those are what set the scale of "a normal population"
-    // for it.
     double w_ref = 0.0;
     for (int32_t ci : p.cells)
       w_ref += total[cell_ref_tree[ci]];
-
     double w_pert = total[p.tree];
     if (w_ref <= 0.0 || w_pert <= 0.0)
       continue; // nothing measured yet; leave it at unit weight
 
-    // Site weight that would give this tree
-    // perturbation_population_ratio times the reference population.
-    //
-    // A tenth of it by default, which is where the figure of merit peaked on
-    // a photoneutron worth: the smoothing of tau saturates well before the
-    // tree needs a population as large as its reference, so asking for one
-    // buys nothing and costs the transport. Measured across the knob, with
-    // the perturbed tree carrying 2.3e-4 of the reference weight --
-    //
-    //   ratio     sigma (pcm)   runtime   figure of merit
-    //   0         2.343          41.7 s   0.0044
-    //   0.01      0.326          40.5 s   0.2319
-    //   0.1       0.299          47.8 s   0.2343
-    //   1         0.288         107.0 s   0.1124
-    //
-    // -- flat from 0.01 to 0.1 and halved at 1. 0.1 is the peak and the
-    // cheapest value that reaches the plateau, which leaves some margin for
-    // a problem whose perturbed tree is fed more sparsely than this one.
-    double target =
-      w_pert / (settings::perturbation_population_ratio * w_ref);
+    // Reference sites are banked at unit weight, so their summed weight IS
+    // their count. No separate counter is needed, and none of this reads a
+    // clock -- a sampling rule that did would give two runs of the same seed
+    // different answers.
+    const double n_ref = w_ref;
 
-    // Rounded to the NEAREST power of ten, for two reasons. It stops the
+    // Accumulate this generation's carried weight, so the spread of tau can
+    // be measured across generations. Reset whenever the site weight moves,
+    // because the spread has to be measured at ONE weight to be meaningful.
+    double& w_site = tree_site_weight[p.tree];
+    size_t t = p.tree;
+    stat_n[t] += 1;
+    stat_sum[t] += w_pert;
+    stat_sumsq[t] += w_pert * w_pert;
+
+    // The rule. Writing N for the sites the tree banks per generation and M
+    // for the number of INDEPENDENT source events feeding it, the banking is
+    // a counting process on top of the chain's own spread, so
+    //
+    //     relative variance of tau  =  1/N  +  c/M
+    //
+    // -- a discreteness term that splitting removes, and a floor that it
+    // cannot touch, set by how many independent sources there were. With the
+    // cost linear in N, T = T0 + kappa*N, minimising sigma^2*T gives
+    //
+    //     N* = sqrt( T0*M / (kappa*c) ) = sqrt( gamma * n_ref * M_eff )
+    //
+    // where M_eff = M/c and gamma = T0/(kappa*n_ref) is the cost of the rest
+    // of the run measured in shadow sites. A site costs what a site costs and
+    // the shadow pass dominates a BEP run, so gamma ~ 1 -- which is what lets
+    // this avoid the clock. The error that approximation can carry is bounded
+    // by how flat the optimum is: being a factor of three off costs under
+    // 10% of the figure of merit, and the rounding below is coarser than that
+    // anyway.
+    //
+    // M_eff never has to be split into M and c. Inverting the variance
+    // relation gives it directly from quantities already in hand:
+    //
+    //     M_eff = 1 / ( relative variance - 1/N )
+    //
+    // N* then scales linearly with the run size (T0 and M both grow with it,
+    // c and kappa do not), which is why this is expressed as a site weight
+    // derived per generation rather than as a fixed target: a fixed count
+    // would stop the tree benefiting from a longer run.
+    double target_n;
+    if (stat_n[t] < MIN_STAT_GENERATIONS) {
+      // Nothing to measure a variance from yet. sqrt(n_ref) is the
+      // scale-invariant, cheap starting population -- N* with M_eff of 1,
+      // i.e. the most pessimistic source count -- and it is some two decades
+      // above what an unsplit tree would carry.
+      target_n = std::sqrt(n_ref);
+    } else {
+      double n = static_cast<double>(stat_n[t]);
+      double mean = stat_sum[t] / n;
+      double var = (stat_sumsq[t] - n * mean * mean) / (n - 1.0);
+      if (mean <= 0.0 || var <= 0.0)
+        continue;
+      double rel_var = var / (mean * mean);
+      double b = rel_var - w_site / w_pert; // 1/N, with N = w_pert / w_site
+      if (b <= 0.0)
+        continue; // the floor is not resolved yet; leave the weight alone
+      target_n = std::sqrt(n_ref / b);
+    }
+
+    // Rounded to the NEAREST power of ten, for three reasons. It stops the
     // value drifting generation to generation on statistical noise, which
     // would make each shadow pass depend on how the last one happened to come
-    // out; and it leaves a tree whose weight is already comparable to its
-    // reference -- a material perturbation, which carries a full population
-    // -- at exactly 1.0, so that kind of perturbation is bit-for-bit
-    // untouched by any of this. Rounding down instead would send a ratio of
-    // 0.98 to 0.1 and perturb every one of them, which is what the
-    // perturbations regression test caught.
-    double w = std::pow(10.0, std::floor(std::log10(target) + 0.5));
-    tree_site_weight[p.tree] = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
+    // out. It is coarser than the optimum is sharp, so nothing is lost. And
+    // it leaves a tree whose population already matches its reference -- a
+    // material perturbation, which carries a full one -- at exactly 1.0, so
+    // that kind of perturbation is bit-for-bit untouched by any of this.
+    double w = std::pow(10.0, std::floor(std::log10(w_pert / target_n) + 0.5));
+    w = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
+
+    if (w != w_site) {
+      w_site = w;
+      stat_n[t] = 0;
+      stat_sum[t] = 0.0;
+      stat_sumsq[t] = 0.0;
+    }
   }
 }
 

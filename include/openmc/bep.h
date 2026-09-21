@@ -126,6 +126,10 @@ constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 //! the next.
 constexpr double MIN_SITE_WEIGHT {1.0e-8};
 
+//! Generations of tau a tree must carry at one site weight before its spread
+//! is trusted to set the next one. Below this the rule uses its bootstrap.
+constexpr int64_t MIN_STAT_GENERATIONS {5};
+
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in
 // step, and the vector is the one that carries the information.
@@ -205,7 +209,8 @@ inline double site_weight(int tree)
 //! This is the natural scale for anything inside a shadow tree: every weight
 //! in the tree is some fraction of it. Expressing a cutoff against it makes
 //! that cutoff invariant to how the driver happens to normalise its weights
-//! and to `perturbation_population_ratio`, which an absolute cutoff would not
+//! and to the population the site weight targets, which an absolute cutoff
+//! would not
 //! be. Per thread because run_one_tree() transports one tree at a time on
 //! each thread, and 0 outside one so that a driver particle can never be
 //! affected by a setting meant for a shadow tree.
@@ -229,10 +234,10 @@ inline bool in_perturbation_tree(int tree)
 //! tree it is scored against. Measured, and independent of every
 //! variance-reduction knob.
 //!
-//! Distinct from site_weight() on purpose. That one is
-//! w_pert / (perturbation_population_ratio * w_ref) -- it carries a 1/ratio
-//! in it, because its job is to hit a requested POPULATION. This one is
-//! w_pert / w_ref with no such factor: it is what the perturbation's
+//! Distinct from site_weight() on purpose. That one is chosen to hit a
+//! target POPULATION, so it moves with whatever the rule decides that
+//! population should be. This one is just w_pert / w_ref: what the
+//! perturbation's
 //! population actually weighs, which for a photonuclear perturbation is the
 //! photonuclear production ratio aggregated over the problem (measured
 //! 2.3e-4, against a per-collision neutron_prod/total * yield of 1.4e-4 --

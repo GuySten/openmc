@@ -1269,22 +1269,22 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
         assert worth.std_dev > 0.0
 
 
-def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
-                                                        model):
-    """The adaptive site weight must not disturb an ordinary shadow tree.
+def test_site_splitting_leaves_full_weight_trees_alone(run_in_tmpdir, model):
+    """Site splitting must not disturb an ordinary shadow tree.
 
     Shadow fission sites are normally banked at unit weight, with the
     parent's weight turned into the probability of banking one. That is only
     a problem for a tree whose particles weigh far less than one; a material
     perturbation's tree carries a full-weight population, the same as its
-    reference, so the measured ratio rounds to exactly 1.0 and the arithmetic
-    is the one an eigenvalue calculation has always done.
+    reference, so the site weight the rule chooses rounds to exactly 1.0 and
+    the arithmetic is the one an eigenvalue calculation has always done.
 
-    Turning the adjustment off entirely must therefore give BIT-IDENTICAL
-    shadow weights -- not merely consistent ones. That pins two things at
-    once: that reference trees are never given a weight of their own, and
-    that no extra random number is drawn on the way, either of which would
-    move the random walk of every tree in the run.
+    Turning it off entirely must therefore give BIT-IDENTICAL shadow weights
+    -- not merely consistent ones. That pins three things at once: that
+    reference trees are never given a weight of their own, that the rule
+    really does leave a full-weight population alone rather than only
+    approximately so, and that no extra random number is drawn on the way,
+    any of which would move the random walk of every tree in the run.
     """
     _, absorber = _water_and_absorber(model)
     model.settings.particles = 2000
@@ -1294,18 +1294,36 @@ def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
                                  perturbation_id=1),
     ])
 
-    def tau_of(ratio):
-        model.settings.perturbation_population_ratio = ratio
+    def tau_of(splitting):
+        model.settings.perturbation_site_splitting = splitting
         with h5py.File(model.run(), 'r') as f:
             return np.array(f['local_perturbation']['tau'][()])
 
-    automatic = tau_of(1.0)   # the default: adjust to match the reference
-    disabled = tau_of(0.0)    # unit-weight sites, as without this feature
+    on = tau_of(True)    # the default
+    off = tau_of(False)  # unit-weight sites, as without this feature
 
-    assert automatic.shape == disabled.shape
-    assert np.array_equal(automatic, disabled), (
-        'the adaptive site weight changed a full-weight shadow tree, so it '
-        'is perturbing the random walk of trees it has no business touching')
+    assert on.shape == off.shape
+    assert np.array_equal(on, off), (
+        'site splitting changed a full-weight shadow tree, so it is '
+        'perturbing the random walk of trees it has no business touching')
+
+
+def test_site_splitting_xml_roundtrip():
+    s = openmc.Settings()
+    assert s.perturbation_site_splitting is None
+
+    s.perturbation_site_splitting = False
+    elem = s.to_xml_element()
+    assert elem.find('perturbation_site_splitting').text == 'false'
+    assert openmc.Settings.from_xml_element(
+        elem).perturbation_site_splitting is False
+
+    s.perturbation_site_splitting = True
+    assert openmc.Settings.from_xml_element(
+        s.to_xml_element()).perturbation_site_splitting is True
+
+    with pytest.raises(TypeError):
+        s.perturbation_site_splitting = 0.1
 
 
 def test_rejects_non_material_cell(run_in_tmpdir, model):

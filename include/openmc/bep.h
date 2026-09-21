@@ -306,6 +306,16 @@ inline bool in_perturbation_tree(int tree)
          tree_pert[tree] >= 0;
 }
 
+//! Independent source events that seeded each tree this generation: the
+//! branch sites a material perturbation's tree grew from, the photoneutron
+//! births a photonuclear one's did. Counted, never estimated.
+//!
+//! This is the M of the variance law, relative variance = 1/n + c/M. Nothing
+//! splitting does can raise it -- it is how many genuinely independent
+//! samples the physics offered -- which is why it sets the floor the
+//! population is optimised against.
+extern vector<int64_t> tree_sources;
+
 //! Weight a typical particle in `tree` carries, relative to the reference
 //! tree it is scored against. Measured, and independent of every
 //! variance-reduction knob.

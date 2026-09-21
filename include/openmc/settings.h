@@ -85,6 +85,19 @@ extern "C" bool
 extern "C" int photon_splits;      //!< photons emitted per neutron reaction
 extern "C" bool
   photoneutron_biasing; //!< bias photoneutron production (expected value)?
+//! Emit neutrons from photonuclear absorption?
+//!
+//! Separates photonuclear ABSORPTION from photoneutron PRODUCTION, which the
+//! exact photonuclear perturbation needs held apart. With this off and
+//! photonuclear_physics on, a photon is removed by (gamma,n) exactly as it
+//! should be but no neutron is emitted -- so the neutron problem, its fission
+//! source and its eigenvalue are identical to a run with sigma(gamma,n) = 0,
+//! while the photon flux already carries (gamma,n) removal. That is the
+//! reference state a photonuclear perturbation is scored against, and the
+//! perturbation is then the production operator alone.
+//!
+//! Default true, so a stock photonuclear calculation is unchanged.
+extern "C" bool photoneutron_production;
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?
 extern "C" bool reduce_tallies;      //!< reduce tallies at end of batch?
 extern bool res_scat_on;             //!< use resonance upscattering method?

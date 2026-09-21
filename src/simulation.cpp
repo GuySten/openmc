@@ -1008,7 +1008,7 @@ void initialize_data()
           // region's photonuclear worth is smaller than they expected.
           warning(fmt::format(
             "Photonuclear data for {} includes photofission, which is left "
-            "out of <photonuclear_perturbation>: a photofission neutron "
+            "out of the photoneutron worth: a photofission neutron "
             "contributes to no k-eigenvalue estimator. The worth reported is "
             "that of (gamma, n) photoneutron production alone.",
             pn_nuc->name_));

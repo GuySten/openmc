@@ -67,6 +67,7 @@ bool fission_photons_only {false};
 bool sample_photons_above_cutoff {false};
 int photon_splits {1};
 bool photoneutron_biasing {false};
+bool photoneutron_production {true};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
 bool res_scat_on {false};
@@ -718,6 +719,14 @@ void read_settings_xml(pugi::xml_node root)
   // initialize_data() makes the check once both are known.
   if (check_for_node(root, "photoneutron_biasing")) {
     photoneutron_biasing = get_node_value_bool(root, "photoneutron_biasing");
+  }
+
+  // Photoneutron production, separately from photonuclear absorption. See
+  // the note on the declaration: turning this off while photonuclear physics
+  // is on is what makes an exact photonuclear perturbation possible.
+  if (check_for_node(root, "photoneutron_production")) {
+    photoneutron_production =
+      get_node_value_bool(root, "photoneutron_production");
   }
 
   // Check for atomic relaxation

@@ -120,6 +120,8 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
     write_attribute(
       file_id, "photoneutron_biasing", settings::photoneutron_biasing);
     write_attribute(
+      file_id, "photoneutron_production", settings::photoneutron_production);
+    write_attribute(
       file_id, "fission_photons_only", settings::fission_photons_only);
     write_dataset(file_id, "n_particles", settings::n_particles);
     write_dataset(file_id, "n_batches", settings::n_batches);
@@ -462,6 +464,10 @@ extern "C" int openmc_statepoint_load(const char* filename)
   if (attribute_exists(file_id, "photonuclear_physics")) {
     read_attribute(
       file_id, "photonuclear_physics", settings::photonuclear_physics);
+  }
+  if (attribute_exists(file_id, "photoneutron_production")) {
+    read_attribute(
+      file_id, "photoneutron_production", settings::photoneutron_production);
   }
   if (attribute_exists(file_id, "photoneutron_biasing")) {
     read_attribute(

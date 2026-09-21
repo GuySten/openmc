@@ -226,6 +226,19 @@ class Settings:
         Number of particles per generation
     photon_transport : bool
         Whether to use photon transport.
+    photoneutron_production : bool
+        Whether photonuclear absorption emits neutrons. Defaults to True, so a
+        stock photonuclear calculation is unchanged. Setting it False while
+        :attr:`photonuclear_physics` is True separates absorption from
+        production: a photon is removed by (gamma,n) exactly as it should be
+        but no neutron is emitted. Photons cannot affect neutrons without
+        emission, so the neutron problem, its fission source and its
+        eigenvalue are identical to a run with no photonuclear data at all,
+        while the photon flux already carries (gamma,n) removal. That is the
+        reference state an exact photonuclear perturbation is scored against.
+
+        .. versionadded:: 0.16.0
+
     photoneutron_biasing : bool
         Whether photoneutron production is biased. If False (default), neutrons
         are emitted only when a photonuclear absorption occurs, with an integer
@@ -516,6 +529,7 @@ class Settings:
         self._photon_transport = None
         self._photonuclear_physics = None
         self._photoneutron_biasing = None
+        self._photoneutron_production = None
         self._fission_photons_only = None
         self._sample_photons_above_cutoff = None
         self._photon_splits = None
@@ -848,6 +862,15 @@ class Settings:
     def photonuclear_physics(self, photonuclear_physics: bool):
         cv.check_type('photonuclear physics', photonuclear_physics, bool)
         self._photonuclear_physics = photonuclear_physics
+
+    @property
+    def photoneutron_production(self) -> bool:
+        return self._photoneutron_production
+
+    @photoneutron_production.setter
+    def photoneutron_production(self, photoneutron_production: bool):
+        cv.check_type('photoneutron production', photoneutron_production, bool)
+        self._photoneutron_production = photoneutron_production
 
     @property
     def photoneutron_biasing(self) -> bool:
@@ -1890,6 +1913,11 @@ class Settings:
             element = ET.SubElement(root, "photon_splits")
             element.text = str(self._photon_splits)
 
+    def _create_photoneutron_production_subelement(self, root):
+        if self._photoneutron_production is not None:
+            elem = ET.SubElement(root, "photoneutron_production")
+            elem.text = str(self._photoneutron_production).lower()
+
     def _create_photoneutron_biasing_subelement(self, root):
         if self._photoneutron_biasing is not None:
             element = ET.SubElement(root, "photoneutron_biasing")
@@ -2462,6 +2490,11 @@ class Settings:
         if text is not None:
             self.photoneutron_biasing = text in ('true', '1')
 
+    def _photoneutron_production_from_xml_element(self, root):
+        text = get_text(root, 'photoneutron_production')
+        if text is not None:
+            self.photoneutron_production = text in ('true', '1')
+
     def _photonuclear_physics_from_xml_element(self, root):
         text = get_text(root, 'photonuclear_physics')
         if text is not None:
@@ -2834,6 +2867,7 @@ class Settings:
         self._create_photon_transport_subelement(element)
         self._create_photonuclear_physics_subelement(element)
         self._create_photoneutron_biasing_subelement(element)
+        self._create_photoneutron_production_subelement(element)
         self._create_fission_photons_only_subelement(element)
         self._create_sample_photons_above_cutoff_subelement(element)
         self._create_photon_splits_subelement(element)
@@ -2960,6 +2994,7 @@ class Settings:
         settings._photon_transport_from_xml_element(elem)
         settings._photonuclear_physics_from_xml_element(elem)
         settings._photoneutron_biasing_from_xml_element(elem)
+        settings._photoneutron_production_from_xml_element(elem)
         settings._fission_photons_only_from_xml_element(elem)
         settings._sample_photons_above_cutoff_from_xml_element(elem)
         settings._photon_splits_from_xml_element(elem)

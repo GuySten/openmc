@@ -448,21 +448,41 @@ void sample_photon_reaction(Particle& p)
     return;
   }
 
-  // Inside a BEP shadow tree the photonuclear channel is a source term and
-  // nothing else: the photoneutron is emitted at expected weight into the
-  // perturbation's own tree and the photon carries on unabsorbed, because
-  // the tree it is in also has to remain a valid sample of the REFERENCE
-  // population. See the estimator note in bep.h.
+  // A photonuclear perturbation adds neutron EMISSION where the reference
+  // state has none. The emission goes into the perturbation's own tree; the
+  // photon's own fate is decided below, by the reference state, and is the
+  // same in both states -- which is exactly what makes the decomposition
+  // exact. See bep.h and docs/bep_algorithm.md section E.
+  //
+  // Drawn on the perturbation's own RNG stream inside
+  // emit_perturbation_photoneutrons(), which restores the photon's stream
+  // afterwards, so the reference tree's random walk is untouched.
   if (p.bep_tree() != BEP_TRUNK && bep::photonuclear_needed()) {
     if (p.photonuclear_physics() && p.macro_xs().neutron_prod > 0.0)
       emit_perturbation_photoneutrons(p);
-    // Fall through to the ordinary photon physics below: no absorption, no
-    // early return.
-  } else if (p.photonuclear_physics() && p.macro_xs().photonuclear > 0.0) {
-    // With biasing on, every photon collision emits one photoneutron carrying
-    // the expected weight, whether or not the photon is actually absorbed
-    // photonuclearly. This is a production bias only.
-    if (settings::photoneutron_biasing && p.macro_xs().neutron_prod > 0.0)
+  }
+
+  // The photon's own photonuclear fate, in BOTH states and for the driver
+  // alike. Under the reformulation the reference state runs with
+  // photonuclear_physics on and photoneutron_production OFF, so a photon is
+  // removed by (gamma,n) exactly as it physically should be while no neutron
+  // is emitted. Photons cannot affect neutrons without emission, so the
+  // neutron problem, its fission source and its eigenvalue are identical to a
+  // run with sigma(gamma,n) = 0 -- only the photon flux differs, by being
+  // right.
+  //
+  // This replaces the earlier arrangement, in which a photon inside a shadow
+  // tree emitted and then carried on UNABSORBED. That left the numerator
+  // counting a photon population the perturbed state does not have, an error
+  // first order in the photonuclear cross section (measured in
+  // tools/bep_toy, Test 14 -- not second order as was previously believed).
+  if (p.photonuclear_physics() && p.macro_xs().photonuclear > 0.0) {
+    // Forced emission for a GLOBAL photonuclear calculation. Skipped when
+    // production is off, which is the reference state of a photonuclear
+    // perturbation -- there the emission above is the whole perturbation and
+    // this would double count it.
+    if (settings::photoneutron_production && settings::photoneutron_biasing &&
+        p.macro_xs().neutron_prod > 0.0)
       emit_forced_photoneutron(p);
 
     // The absorption of the photon itself is always analog. Reducing the
@@ -1711,7 +1731,12 @@ void photonuclear_collision(Particle& p)
 
     // Neutrons are emitted here only in analog mode. With biasing on they were
     // already emitted, at expected weight, for this and every other collision.
-    if (is_neutron && settings::photoneutron_biasing)
+    // With photoneutron_production off they are not emitted at all: the photon
+    // is still absorbed by the channel, which is the point -- absorption
+    // without production is the reference state of an exact photonuclear
+    // perturbation.
+    if (is_neutron &&
+        (!settings::photoneutron_production || settings::photoneutron_biasing))
       continue;
 
     // For photofission the neutron multiplicity is handled as a whole, since
@@ -1737,7 +1762,8 @@ void photonuclear_collision(Particle& p)
       emit_photonuclear_product(p, *nuc, *rx, product, wgt);
   }
 
-  if (is_fission_rx && !settings::photoneutron_biasing) {
+  if (is_fission_rx && settings::photoneutron_production &&
+      !settings::photoneutron_biasing) {
     double nu_t = nuc->nu(p.E(), PhotonuclearInteraction::EmissionMode::total);
     int n_emit = static_cast<int>(nu_t);
     if (prn(p.current_seed()) < nu_t - n_emit)

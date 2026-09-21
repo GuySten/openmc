@@ -428,7 +428,29 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
 
 bool photofission_excluded()
 {
-  return !settings::photonuclear_physics;
+  // Excluded when photonuclear physics is off, which is how a
+  // <photonuclear_perturbation> supplies the channel in its own cells only.
+  //
+  // ALSO excluded when photoneutron production is off. That is the reference
+  // state of the reformulated perturbation (docs/bep_algorithm.md section E),
+  // which runs with photonuclear physics ON so that photons are removed by
+  // (gamma,n) as they physically are. Photofission is held out of it
+  // deliberately, for two reasons:
+  //
+  //  - it keeps the measured worth to (gamma, n) production alone, which is
+  //    what the previous arrangement measured and what every result so far
+  //    is; including it would silently change the quantity;
+  //  - it keeps the eigenvalue guard below from firing, since with no
+  //    photofission channel there are no photofission neutrons to bank
+  //    against a keff that never counted them.
+  //
+  // The cost is that in a FISSIONABLE region the photon is still not removed
+  // by photofission, so the error the reformulation removes survives there,
+  // confined to that channel. For a perturbation in a non-fissionable region
+  // -- the D2O driver of PROTEUS, deuterium having no fission channel -- there
+  // is no cost at all. Widening this to include photofission is a change to
+  // what the worth MEANS and is deliberately not made here.
+  return !settings::photonuclear_physics || !settings::photoneutron_production;
 }
 
 void free_memory_photonuclear()

@@ -826,6 +826,43 @@ def test_null_perturbation_is_exactly_zero(run_in_tmpdir, model):
         assert np.allclose(p.depth_curve, 0.0, atol=1.0e-12)
 
 
+def test_survival_biasing_preserves_the_null_perturbation(run_in_tmpdir,
+                                                         model):
+    """Survival biasing must not separate a tree from its reference.
+
+    Shadow trees are not exempt from survival biasing: neither absorption()
+    nor apply_russian_roulette() is gated on super_gen or bep_tree, so
+    whatever the driver does, they do. That makes the roulette's SCALE a
+    shadow-tree concern -- it measures a particle against weight_cutoff *
+    wgt_born, and run_one_tree() sets wgt_born to the weight a typical
+    particle in the tree is born at rather than the tree's root weight.
+
+    Whatever that scale is, it has to be the SAME for a perturbation's tree
+    and for the reference tree it is scored against, or the common random
+    numbers that make a null perturbation exactly zero stop holding and
+    every worth picks up the difference as noise. A null perturbation with
+    survival biasing on is the sharpest available check that they have not
+    drifted apart.
+    """
+    water, _ = _water_and_absorber(model)
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): water},
+                                 perturbation_id=1, name='null'),
+    ])
+    model.settings.perturbation_n_generation = 6
+    model.settings.survival_biasing = True
+
+    sp_path = model.run()
+    with openmc.StatePoint(sp_path) as sp:
+        p = sp.perturbations.by_id(1)
+        assert abs(p.rho.nominal_value) < 1.0e-6, (
+            f'null perturbation gave {p.rho} pcm under survival biasing; the '
+            'roulette is treating the perturbed tree differently from its '
+            'reference')
+        assert p.rho.std_dev < 1.0e-6
+        assert np.allclose(p.depth_curve, 0.0, atol=1.0e-12)
+
+
 def test_driver_is_unperturbed(run_in_tmpdir, model):
     """The driver must be an ordinary eigenvalue calculation.
 

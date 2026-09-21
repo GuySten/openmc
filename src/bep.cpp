@@ -90,7 +90,19 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   p.n_tracks() = 1;
   p.n_split() = 0;
   p.ww_factor() = 0.0;
-  p.wgt_born() = p.wgt();
+  // wgt_born is the scale apply_russian_roulette() measures against, and for
+  // a shadow tree that must be the weight a typical particle in the tree is
+  // born at, not the weight of the branch site it grew from. Those differ by
+  // whatever perturbation_population_ratio thinned the tree to: judged
+  // against the root weight, a thinned tree's entire population sits below
+  // the cutoff and survival biasing would roulette all of it up to
+  // weight_survive. site_weight() is 1.0 for a reference tree and for a
+  // material perturbation's tree, so this is p.wgt() exactly for them and
+  // they are bit-identical to before it existed.
+  //
+  // Read only by apply_russian_roulette(), which returns immediately unless
+  // survival_biasing is on, so with it off this changes nothing anywhere.
+  p.wgt_born() = p.wgt() * site_weight(tree);
   p.id() = seed_id;
   init_particle_seeds(seed_id, p.seeds());
   p.stream() = STREAM_TRACKING;

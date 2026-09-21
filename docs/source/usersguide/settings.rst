@@ -702,6 +702,19 @@ can be compared directly. Because biasing emits a single neutron in place of the
 true multiplicity, it should not be used for multiplicity or coincidence
 counting.
 
+Most of the photon yield above the photonuclear thresholds comes from prompt
+fission photons. Where they are the only ones that matter, the photons born
+from capture, inelastic scattering and every other neutron reaction can be
+discarded as they are created::
+
+  settings.fission_photons_only = True
+
+The reaction each secondary photon comes from is sampled in proportion to that
+reaction's own photon production, so discarding the non-fission draws leaves
+exactly the fission photon yield and needs no reweighting. Photon heating and
+pulse-height results are of course no longer complete, since the discarded
+photons carried energy.
+
 .. note::
    Photofission is supported in fixed source calculations only. Photofission
    neutrons do not contribute to the k-eigenvalue estimators, so OpenMC reports
@@ -709,6 +722,12 @@ counting.
    eigenvalue calculation. Note also that the photonuclear ACE format carries
    no delayed neutron data, so all photofission neutrons from such libraries
    are emitted promptly.
+
+   :class:`openmc.PhotonuclearPerturbation` is the exception. It is an
+   eigenvalue-only method, so rather than refuse every uranium model it leaves
+   MT=18 out of the photonuclear cross sections it sees, and reports the worth
+   of :math:`(\gamma, n)` photoneutron production alone. OpenMC says so once at
+   the start of the run when any loaded nuclide is photofissionable.
 
 .. warning::
    Photonuclear libraries frequently extend to 130 MeV or beyond, while
@@ -721,6 +740,36 @@ counting.
    calculation whose beam energy is too high for the available neutron data
    will fail immediately rather than under-report photoneutrons. Modelling such
    a case requires neutron data covering the photonuclear energy range.
+
+Photoneutron reactivity worth
+-----------------------------
+
+The reactivity a region owes to photoneutron production can be measured
+directly, rather than as the difference of two eigenvalue calculations, with
+:class:`openmc.PhotonuclearPerturbation`. The reference state has no
+photonuclear interactions anywhere; the perturbed state has them inside the
+listed cells::
+
+  settings.photon_transport = True
+  model.perturbations = openmc.Perturbations([
+      openmc.PhotonuclearPerturbation([reflector_cell]),
+  ])
+
+:attr:`Settings.photonuclear_physics` is left off -- it is the reference state
+the worth is measured against -- and the photonuclear data is read anyway,
+because the perturbation is what asks for it. The two states share branch
+sites and random numbers, so their difference is far better determined than
+either eigenvalue; see :class:`openmc.LocalPerturbation` for the rest of the
+machinery, which both kinds of perturbation share.
+
+Photoneutron worths are small, often tens of pcm, so expect to need many
+histories. :attr:`Settings.fission_photons_only` cuts the cost per history by
+not transporting the photons that were never going to reach a photonuclear
+threshold. :attr:`Settings.photoneutron_biasing` does not obviously help the
+worth itself: the noise in a worth comes from the perturbed tree diverging
+from the reference one at the analog photonuclear absorption, which biasing
+leaves in place, rather than from the rarity of photoneutron births, which is
+what biasing addresses.
 
 --------------------------
 Generation of Output Files

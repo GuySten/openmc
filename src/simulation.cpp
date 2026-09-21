@@ -878,6 +878,17 @@ void calculate_work(int64_t n_particles)
 
 void initialize_data()
 {
+  // Deferred from read_settings_xml(), which runs before perturbations.xml is
+  // read and so cannot tell whether a <photonuclear_perturbation> supplies the
+  // photonuclear physics that biasing needs.
+  if (settings::photoneutron_biasing && !settings::photonuclear_physics &&
+      !bep::photonuclear_needed()) {
+    fatal_error("Photonuclear physics must be enabled when photoneutron "
+                "biasing is enabled, either run-wide with "
+                "Settings.photonuclear_physics or in the cells of a "
+                "<photonuclear_perturbation>.");
+  }
+
   // Determine minimum/maximum energy for incident neutron/photon data
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
@@ -927,7 +938,13 @@ void initialize_data()
       }
     }
 
-    if (settings::photonuclear_physics) {
+    // Also when a <photonuclear_perturbation> is configured: the data is read
+    // for it (see openmc_load_nuclide), so every limit derived from that data
+    // has to be worked out for it too. Without this,
+    // data::photonuclear_energy_min stays at INFTY and the energy check in
+    // Material::calculate_photon_xs() silently disables photonuclear physics
+    // in the perturbed tree as well.
+    if (settings::photonuclear_physics || bep::photonuclear_needed()) {
       // Determine the lowest energy at which any photonuclear data exists, and
       // remember which nuclide it came from. If a nuclide is present in a
       // material that's not used in the model, its grid has not been allocated.
@@ -967,17 +984,30 @@ void initialize_data()
       // would therefore produce a fission source inconsistent with the keff
       // they are normalized against, and the fission heating would miss the
       // keff re-weighting applied to neutron-induced fission. Refuse the
-      // combination rather than return a subtly wrong eigenvalue.
-      if (settings::run_mode == RunMode::EIGENVALUE) {
-        for (const auto& pn_nuc : data::photonuclears) {
-          if (pn_nuc->fissionable_) {
-            fatal_error(fmt::format(
-              "Photonuclear data for {} includes photofission, which is not "
-              "supported in k-eigenvalue mode: photofission neutrons do not "
-              "contribute to any k-eigenvalue estimator. Use fixed source "
-              "mode, or use photonuclear data without fission channels.",
-              pn_nuc->name_));
-          }
+      // combination rather than return a subtly wrong eigenvalue -- except
+      // where photofission_excluded() has already removed the channel, which
+      // is how <photonuclear_perturbation> stays usable in eigenvalue mode.
+      for (const auto& pn_nuc : data::photonuclears) {
+        if (!pn_nuc->fissionable_)
+          continue;
+        if (photofission_excluded()) {
+          // Say so once, rather than leave a user to wonder why a fuel
+          // region's photonuclear worth is smaller than they expected.
+          warning(fmt::format(
+            "Photonuclear data for {} includes photofission, which is left "
+            "out of <photonuclear_perturbation>: a photofission neutron "
+            "contributes to no k-eigenvalue estimator. The worth reported is "
+            "that of (gamma, n) photoneutron production alone.",
+            pn_nuc->name_));
+          break;
+        }
+        if (settings::run_mode == RunMode::EIGENVALUE) {
+          fatal_error(fmt::format(
+            "Photonuclear data for {} includes photofission, which is not "
+            "supported in k-eigenvalue mode: photofission neutrons do not "
+            "contribute to any k-eigenvalue estimator. Use fixed source "
+            "mode, or use photonuclear data without fission channels.",
+            pn_nuc->name_));
         }
       }
 

@@ -15,10 +15,109 @@ from openmc.exceptions import DataError
 from ._xml import clean_indentation, get_text
 from .mixin import IDManagerMixin
 
-__all__ = ['LocalPerturbation', 'Perturbations']
+__all__ = ['PerturbationBase', 'LocalPerturbation',
+           'PhotonuclearPerturbation', 'Perturbations']
 
 
-class LocalPerturbation(IDManagerMixin):
+class PerturbationBase(IDManagerMixin):
+    """Base class for a perturbation whose reactivity worth is computed.
+
+    A perturbation is a change confined to a set of cells, applied all at once
+    and weighed against the unchanged geometry within a single eigenvalue run.
+    What the change *is* depends on the subclass:
+    :class:`LocalPerturbation` substitutes materials,
+    :class:`PhotonuclearPerturbation` switches photonuclear physics on.
+    Everything else -- where the calculation branches, how the shadow trees
+    are grown, the estimator, and the correlated results -- is shared, which
+    is why the two kinds share one ID space and one collection.
+
+    .. versionadded:: 0.16.0
+
+    Parameters
+    ----------
+    perturbation_id : int, optional
+        Unique identifier. Assigned automatically if not given. IDs are shared
+        by every kind of perturbation, since a statepoint keys results by ID
+        alone.
+    name : str, optional
+        Name of the perturbation.
+
+    Attributes
+    ----------
+    id : int
+        Unique identifier
+    name : str
+        Name of the perturbation
+    cells : list of int
+        IDs of the cells this perturbation touches
+    rho : uncertainties.UFloat
+        Reactivity worth in pcm, or None until read from a statepoint.
+
+        This is a correlated quantity, built with
+        :func:`uncertainties.correlated_values` from the full covariance of
+        the run, so arithmetic between perturbations propagates correctly with
+        no further bookkeeping::
+
+            a, b = sp.perturbations
+            b.rho - a.rho          # difference, correlation carried through
+            (b.rho - a.rho) / dz   # derivative, pcm per unit dz
+            0.5 * (a.rho + b.rho)  # any combination you like
+
+        Perturbations sharing branch sites are strongly correlated, so a
+        difference formed this way has a far smaller uncertainty than the
+        quadrature sum of the two individual ones.
+    depth_curve : numpy.ndarray
+        ``l(d)``, the log importance ratio against shadow-tree depth, whose
+        slope is :attr:`rho`. Only present when read from a statepoint.
+
+    """
+
+    # Held here and nowhere else, so that IDManagerMixin's walk up the MRO
+    # finds this one class for every kind of perturbation. A subclass that
+    # set its own would split the ID space, and the C++ side requires IDs to
+    # be unique across kinds.
+    next_id = 1
+    used_ids = set()
+
+    def __init__(self, perturbation_id=None, name=''):
+        self.id = perturbation_id
+        self.name = name
+
+        # Populated only when read from a statepoint
+        self.rho = None
+        self.depth_curve = None
+
+    def __repr__(self):
+        parts = [f'{type(self).__name__}\n{"":<12}ID={self.id}']
+        if self.name:
+            parts.append(f'{"":<12}Name={self.name}')
+        parts.extend(self._repr_details())
+        if self.rho is not None:
+            parts.append(f'{"":<12}Worth={self.rho:.4g} pcm')
+        return '\n'.join(parts) + '\n'
+
+    def _repr_details(self):
+        """Lines describing what this kind of perturbation changes."""
+        return []
+
+    @property
+    def name(self):
+        return self._name
+
+    @name.setter
+    def name(self, name):
+        if name is not None:
+            cv.check_type('perturbation name', name, str)
+            self._name = name
+        else:
+            self._name = ''
+
+    @property
+    def cells(self):
+        raise NotImplementedError
+
+
+class LocalPerturbation(PerturbationBase):
     """A set of cell-material substitutions whose reactivity worth is computed.
 
     Every substitution in a perturbation is applied together, so a single
@@ -45,66 +144,21 @@ class LocalPerturbation(IDManagerMixin):
 
     Attributes
     ----------
-    id : int
-        Unique identifier
-    name : str
-        Name of the perturbation
     substitutions : dict
         Mapping of cell ID to material ID
-    rho : uncertainties.UFloat
-        Reactivity worth in pcm, or None until read from a statepoint.
 
-        This is a correlated quantity, built with
-        :func:`uncertainties.correlated_values` from the full covariance of
-        the run, so arithmetic between perturbations propagates correctly with
-        no further bookkeeping::
-
-            a, b = sp.perturbations
-            b.rho - a.rho          # difference, correlation carried through
-            (b.rho - a.rho) / dz   # derivative, pcm per unit dz
-            0.5 * (a.rho + b.rho)  # any combination you like
-
-        Perturbations sharing branch sites are strongly correlated, so a
-        difference formed this way has a far smaller uncertainty than the
-        quadrature sum of the two individual ones.
-    depth_curve : numpy.ndarray
-        ``l(d)``, the log importance ratio against shadow-tree depth, whose
-        slope is :attr:`rho`. Only present when read from a statepoint.
+    See Also
+    --------
+    PerturbationBase : the shared attributes, including :attr:`rho`
 
     """
 
-    next_id = 1
-    used_ids = set()
-
     def __init__(self, substitutions=None, perturbation_id=None, name=''):
-        self.id = perturbation_id
-        self.name = name
+        super().__init__(perturbation_id, name)
         self.substitutions = {} if substitutions is None else substitutions
 
-        # Populated only when read from a statepoint
-        self.rho = None
-        self.depth_curve = None
-
-    def __repr__(self):
-        parts = [f'LocalPerturbation\n{"":<12}ID={self.id}']
-        if self.name:
-            parts.append(f'{"":<12}Name={self.name}')
-        parts.append(f'{"":<12}Substitutions={self.substitutions}')
-        if self.rho is not None:
-            parts.append(f'{"":<12}Worth={self.rho:.4g} pcm')
-        return '\n'.join(parts) + '\n'
-
-    @property
-    def name(self):
-        return self._name
-
-    @name.setter
-    def name(self, name):
-        if name is not None:
-            cv.check_type('perturbation name', name, str)
-            self._name = name
-        else:
-            self._name = ''
+    def _repr_details(self):
+        return [f'{"":<12}Substitutions={self.substitutions}']
 
     @property
     def substitutions(self):
@@ -177,17 +231,155 @@ class LocalPerturbation(IDManagerMixin):
                    name=elem.get('name', ''))
 
 
+class PhotonuclearPerturbation(PerturbationBase):
+    r"""Reactivity worth of photonuclear physics in a set of cells.
+
+    The reference state has no photonuclear interactions anywhere; the
+    perturbed state has them inside the listed cells and nowhere else. The
+    worth is therefore the reactivity those cells owe to photoneutron
+    production -- :math:`(\gamma, n)` on beryllium or deuterium in a
+    reflector, say -- obtained directly from one run rather than as the
+    difference of two, so that the two states share branch sites and random
+    numbers and the difference is far better determined than either
+    eigenvalue.
+
+    This is a local perturbation in exactly the sense
+    :class:`LocalPerturbation` is: it is confined to the cells it names, it
+    branches at their boundary, and it is scored against the same reference
+    trees. A photon that leaves the listed cells stops seeing it, so what is
+    being weighed is photoneutron production *in this region*, not everywhere
+    a photon born here might travel.
+
+    Photon transport must be on, since photons are what carry the
+    perturbation, and :attr:`openmc.Settings.photonuclear_physics` must be
+    left off, since that is the reference state being measured against::
+
+        model.settings.photon_transport = True
+        model.perturbations = openmc.Perturbations([
+            openmc.PhotonuclearPerturbation([beryllium_cell]),
+        ])
+
+    Photonuclear cross sections are read for every nuclide that has them
+    regardless: the perturbation asks for the data, not the setting. Photon
+    transport with photonuclear physics off changes no eigenvalue, so
+    enabling it leaves the driver calculation's k and fission source
+    untouched and only costs time.
+
+    Photofission is left out. A photofission neutron contributes to no
+    k-eigenvalue estimator, which is why OpenMC refuses photofissionable
+    photonuclear data in eigenvalue mode outright; since this method is
+    eigenvalue-only, the same refusal would rule it out for every uranium
+    model. What it reports is therefore the worth of
+    :math:`(\gamma, n)` photoneutron production alone, and OpenMC says so
+    once at the start of a run whose data includes photofission.
+
+    Photoneutron worths are small -- tens of pcm is typical -- so expect to
+    need many histories. :attr:`openmc.Settings.fission_photons_only` cuts
+    the cost per history by not transporting the photons that were never
+    going to reach a photonuclear threshold.
+
+    .. versionadded:: 0.16.0
+
+    Parameters
+    ----------
+    cells : iterable of int or openmc.Cell
+        Cells in which the perturbed state has photonuclear physics. A single
+        cell may be given on its own.
+    perturbation_id : int, optional
+        Unique identifier. Assigned automatically if not given.
+    name : str, optional
+        Name of the perturbation.
+
+    Attributes
+    ----------
+    cells : list of int
+        IDs of the cells the perturbation covers
+
+    See Also
+    --------
+    PerturbationBase : the shared attributes, including :attr:`rho`
+
+    """
+
+    def __init__(self, cells=None, perturbation_id=None, name=''):
+        super().__init__(perturbation_id, name)
+        self.cells = [] if cells is None else cells
+
+    def _repr_details(self):
+        return [f'{"":<12}Cells={self.cells}']
+
+    @property
+    def cells(self):
+        return self._cells
+
+    @cells.setter
+    def cells(self, cells):
+        # One cell is the common case, so accept it unwrapped.
+        if isinstance(cells, (openmc.Cell, Integral)):
+            cells = [cells]
+
+        cell_ids = []
+        for cell in cells:
+            cell_id = cell.id if isinstance(cell, openmc.Cell) else cell
+            cv.check_type('perturbation cell', cell_id, Integral)
+            # Naming a cell twice says nothing more than naming it once, and
+            # collapses here exactly as a repeated key would in
+            # LocalPerturbation.substitutions. The C++ reader rejects the
+            # repeat, so it must not reach the file.
+            if cell_id not in cell_ids:
+                cell_ids.append(cell_id)
+        self._cells = cell_ids
+
+    def to_xml_element(self):
+        """Return an XML representation of the perturbation.
+
+        Returns
+        -------
+        lxml.etree._Element
+            ``<photonuclear_perturbation>`` element
+
+        """
+        elem = ET.Element('photonuclear_perturbation')
+        elem.set('id', str(self.id))
+        if self.name:
+            elem.set('name', self.name)
+        # Only the cells: what changes in them is fixed by the element name,
+        # so there is nothing per-cell to say.
+        for cell_id in self._cells:
+            ET.SubElement(elem, 'cell').text = str(cell_id)
+        return elem
+
+    @classmethod
+    def from_xml_element(cls, elem):
+        """Generate a perturbation from an XML element.
+
+        Parameters
+        ----------
+        elem : lxml.etree._Element
+            ``<photonuclear_perturbation>`` element
+
+        Returns
+        -------
+        openmc.PhotonuclearPerturbation
+
+        """
+        cells = [int(c.text) for c in elem.findall('cell')]
+        return cls(cells, perturbation_id=int(elem.get('id')),
+                   name=elem.get('name', ''))
+
+
 class Perturbations(cv.CheckedList):
     """Collection of local perturbations used for an OpenMC simulation.
 
     This class corresponds directly to the perturbations.xml input file. It can
-    be thought of as a normal Python list where each member is a
-    :class:`LocalPerturbation`, and is assigned to
-    :attr:`openmc.Model.perturbations`:
+    be thought of as a normal Python list whose members are perturbations of
+    any kind -- :class:`LocalPerturbation`, :class:`PhotonuclearPerturbation`,
+    or a mixture -- and is assigned to :attr:`openmc.Model.perturbations`:
 
     >>> model.perturbations = openmc.Perturbations([
     ...     openmc.LocalPerturbation({sample_cell: steel}),
     ...     openmc.LocalPerturbation({sample_cell: zircaloy}),
+    ...     openmc.PhotonuclearPerturbation([reflector_cell]),
     ... ])
 
     All perturbations are computed in one eigenvalue run. Those sharing a cell
@@ -204,7 +396,7 @@ class Perturbations(cv.CheckedList):
 
     Parameters
     ----------
-    perturbations : Iterable of openmc.LocalPerturbation
+    perturbations : Iterable of openmc.PerturbationBase
         Perturbations to add to the collection
 
     Attributes
@@ -220,7 +412,7 @@ class Perturbations(cv.CheckedList):
     """
 
     def __init__(self, perturbations=None):
-        super().__init__(LocalPerturbation, 'collection of perturbations')
+        super().__init__(PerturbationBase, 'collection of perturbations')
         self._n_generation = None
         if perturbations is not None:
             self += perturbations
@@ -524,9 +716,16 @@ class Perturbations(cv.CheckedList):
     @classmethod
     def from_xml_element(cls, elem):
         """Generate perturbations from an XML element."""
+        kinds = {'local_perturbation': LocalPerturbation,
+                 'photonuclear_perturbation': PhotonuclearPerturbation}
         obj = cls()
-        for sub in elem.findall('local_perturbation'):
-            obj.append(LocalPerturbation.from_xml_element(sub))
+        # Walked in document order rather than one tag at a time, so a mixed
+        # file comes back in the order it was written -- the same order the
+        # C++ reader assigns to the results.
+        for sub in elem:
+            kind = kinds.get(sub.tag)
+            if kind is not None:
+                obj.append(kind.from_xml_element(sub))
         return obj
 
     @classmethod

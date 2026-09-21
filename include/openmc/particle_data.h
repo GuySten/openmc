@@ -698,6 +698,18 @@ private:
   // ordinary driver particle. See bep.h.
   int bep_tree_ {-1};
 
+  // Whether photonuclear physics applies to THIS particle where it currently
+  // is. settings::photonuclear_physics for everything the driver transports,
+  // and for a BEP shadow particle also true inside the cells its own
+  // <photonuclear_perturbation> names -- that perturbation's whole content.
+  //
+  // Per particle rather than per cell because it has to follow secondaries:
+  // the neutron enters the perturbed cell, but the photon it makes there is
+  // what actually interacts photonuclearly, and that photon may wander out
+  // of the cell before it collides. Recomputed in event_calculate_xs(), so
+  // it always describes the cell the particle is in now.
+  bool photonuclear_physics_ {false};
+
   // Counter assigning a fresh id to each of generation 0's OWN fission
   // events (incremented only when super_gen_==0 fissions).
   int next_fission_event_id_ {0};
@@ -866,6 +878,10 @@ public:
   // Which BEP shadow tree this particle belongs to (BEP_TRUNK if none)
   int& bep_tree() { return bep_tree_; }
   int bep_tree() const { return bep_tree_; }
+
+  // Whether photonuclear physics applies to this particle here and now
+  bool& photonuclear_physics() { return photonuclear_physics_; }
+  bool photonuclear_physics() const { return photonuclear_physics_; }
 
   // whether this track is to be written
   bool& write_track() { return write_track_; }

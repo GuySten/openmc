@@ -1,6 +1,7 @@
 #include "openmc/finalize.h"
 
 #include "openmc/bank.h"
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/chain.h"
 #include "openmc/cmfd_solver.h"
@@ -52,6 +53,7 @@ void free_memory()
   free_memory_mesh();
   free_memory_tally();
   free_memory_bank();
+  free_memory_bep();
   free_memory_plot();
   free_memory_weight_windows();
   if (mpi::master) {
@@ -117,6 +119,7 @@ int openmc_finalize()
   settings::path_statepoint.clear();
   settings::photon_transport = false;
   settings::photonuclear_physics = false;
+  settings::fission_photons_only = false;
   settings::photoneutron_biasing = false;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;

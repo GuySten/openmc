@@ -182,7 +182,7 @@ class Model:
     @perturbations.setter
     def perturbations(self, perturbations):
         check_type('perturbations', perturbations, Iterable,
-                   openmc.LocalPerturbation)
+                   openmc.PerturbationBase)
         if isinstance(perturbations, openmc.Perturbations):
             self._perturbations = perturbations
         else:

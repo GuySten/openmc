@@ -158,6 +158,19 @@ Constructing Tallies
    openmc.Tally
    openmc.Tallies
 
+Perturbations
+-------------
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+   :template: myclass.rst
+
+   openmc.PerturbationBase
+   openmc.LocalPerturbation
+   openmc.PhotonuclearPerturbation
+   openmc.Perturbations
+
 Meshes
 ------
 

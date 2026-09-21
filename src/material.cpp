@@ -936,8 +936,10 @@ void Material::calculate_photon_xs(Particle& p) const
     p.macro_xs().photoelectric += atom_density * micro.photoelectric;
     p.macro_xs().pair_production += atom_density * micro.pair_production;
   }
-  if (settings::photonuclear_physics &&
-      (p.E() >= data::photonuclear_energy_min)) {
+  // Per particle, not per run: a BEP shadow particle carries photonuclear
+  // physics only inside the cells its own <photonuclear_perturbation> names.
+  // See ParticleData::photonuclear_physics_.
+  if (p.photonuclear_physics() && (p.E() >= data::photonuclear_energy_min)) {
     for (int i = 0; i < nuclide_.size(); ++i) {
       // Get nuclide name
       auto& name = data::nuclides[nuclide_[i]]->name_;

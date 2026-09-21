@@ -147,8 +147,21 @@ void sample_neutron_reaction(Particle& p)
 
   // Create secondary photons. Generation 0 is now the real, tally-
   // contributing generation (unlike the old virtual/real split where -1
-  // alone meant "real"), so the gate is <= 0, not < 0.
-  if (settings::photon_transport && p.super_gen() <= 0) {
+  // alone meant "real"), so the gate is <= 0, not < 0. Deeper generations
+  // skip them because nothing in a super-history lookahead reads a photon --
+  // with photonuclear physics off they affect no eigenvalue and score no
+  // tally, so making them is pure cost.
+  //
+  // Unless a <photonuclear_perturbation> is configured, when they are the
+  // whole point: photons are what carry that perturbation, so its shadow
+  // trees need them. BOTH the perturbed and the reference tree make them, so
+  // that the two stay on the same random numbers until the perturbation
+  // itself makes them diverge -- the correlation that lets a worth this small
+  // be measured at all. Driver particles are unaffected either way: they run
+  // at super_gen <= 0.
+  if (settings::photon_transport &&
+      (p.super_gen() <= 0 ||
+        (bep::photonuclear_needed() && p.bep_tree() != BEP_TRUNK))) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -420,7 +433,9 @@ void sample_photon_reaction(Particle& p)
     return;
   }
 
-  if (settings::photonuclear_physics && p.macro_xs().photonuclear > 0.0) {
+  // Per particle, not per run -- see Material::calculate_photon_xs(), which
+  // leaves macro_xs().photonuclear at zero for a particle this is false for.
+  if (p.photonuclear_physics() && p.macro_xs().photonuclear > 0.0) {
     // With biasing on, every photon collision emits one photoneutron carrying
     // the expected weight, whether or not the photon is actually absorbed
     // photonuclearly. This is a production bias only.
@@ -1407,8 +1422,18 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     int i_product;
     sample_photon_product(i_nuclide, p, &i_rx, &i_product);
 
-    // Sample the outgoing energy and angle
     auto& rx = data::nuclides[i_nuclide]->reactions_[i_rx];
+
+    // Fission photons carry most of the energy above the photonuclear
+    // thresholds, so a study that only cares about those can drop the rest
+    // and stop paying to transport them. sample_photon_product() draws the
+    // reaction in proportion to its OWN photon production, so discarding the
+    // non-fission draws leaves exactly the fission photon yield on average --
+    // this is rejection, not truncation, and needs no reweighting.
+    if (settings::fission_photons_only && !is_fission(rx->mt_))
+      continue;
+
+    // Sample the outgoing energy and angle
     double E;
     double mu;
     rx->products_[i_product].sample(p.E(), E, mu, p.current_seed());
@@ -1457,10 +1482,15 @@ void sample_photoneutron_product(
   double prob = 0.0;
 
   // Loop through each reaction type
+  const bool exclude_fission = photofission_excluded();
   const auto& nuc {data::photonuclears[i_nuclide]};
   for (int i = 0; i < nuc->reactions_.size(); ++i) {
     // Evaluate photonuclear cross section
     const auto& rx = nuc->reactions_[i];
+    // micro.neutron_prod, which normalizes the cdf below, has the
+    // photofission yield subtracted out when the channel is excluded.
+    if (exclude_fission && is_fission(rx->mt_))
+      continue;
     double xs = rx->xs(micro);
 
     // if cross section is zero for this reaction, skip it
@@ -1499,11 +1529,17 @@ void photonuclear_collision(Particle& p)
   // Sample which reaction occurred, over all non-redundant channels. Channels
   // with no transported products are sampled too -- they simply absorb the
   // photon and deposit its energy locally.
+  const bool exclude_fission = photofission_excluded();
   double cutoff = prn(p.current_seed()) * micro.total;
   double prob = 0.0;
   const PhotonuclearReaction* rx = nullptr;
   for (const auto& r : nuc->reactions_) {
     if (r->redundant_)
+      continue;
+    // micro.total already has photofission subtracted out, so the channel
+    // has to be skipped here too or the cdf would overrun its own
+    // normalization.
+    if (exclude_fission && is_fission(r->mt_))
       continue;
     prob += r->xs(micro);
     if (prob >= cutoff) {

@@ -68,6 +68,7 @@ def test_export_to_xml(run_in_tmpdir):
     s.create_delayed_neutrons = False
     s.log_grid_bins = 2000
     s.photon_transport = False
+    s.fission_photons_only = False
     s.electron_treatment = 'led'
     s.atomic_relaxation = False
     s.write_initial_source = True
@@ -159,6 +160,7 @@ def test_export_to_xml(run_in_tmpdir):
     assert not s.create_delayed_neutrons
     assert s.log_grid_bins == 2000
     assert not s.photon_transport
+    assert not s.fission_photons_only
     assert s.electron_treatment == 'led'
     assert not s.atomic_relaxation
     assert s.write_initial_source

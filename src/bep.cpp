@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <unordered_set>
 
 #include <fmt/core.h>
@@ -34,6 +35,7 @@ void transport_history_based_single_particle(Particle& p);
 namespace bep {
 
 vector<Perturbation> perturbations;
+bool photonuclear_any {false};
 vector<int> tree_pert;
 vector<int> cell_ref_tree;
 vector<vector<int>> cell_perts;
@@ -137,11 +139,45 @@ void init()
 
   std::unordered_set<int32_t> seen_ids;
   for (const auto& p : perturbations) {
-    if (!seen_ids.insert(p.id).second)
-      fatal_error(fmt::format("Duplicate <local_perturbation> id {}.", p.id));
-    if (p.subs.empty()) {
+    // One id space across both kinds: the statepoint keys each perturbation's
+    // group by id, and Python looks results up by id alone.
+    if (!seen_ids.insert(p.id).second) {
+      fatal_error(fmt::format(
+        "Duplicate perturbation id {}; ids are shared by every kind of "
+        "perturbation.",
+        p.id));
+    }
+    if (p.kind == PerturbationKind::photonuclear) {
+      if (p.pn_cell_ids.empty()) {
+        fatal_error(fmt::format(
+          "<photonuclear_perturbation> {} names no cells.", p.id));
+      }
+    } else if (p.subs.empty()) {
       fatal_error(fmt::format(
         "<local_perturbation> {} has no substitutions.", p.id));
+    }
+  }
+
+  if (photonuclear_needed()) {
+    // Photons are what carry the perturbation, so without photon transport
+    // the perturbed tree is identical to the reference one and every worth
+    // comes out zero. Photon transport is a whole-run setting, not something
+    // a shadow tree can switch on for itself; with photonuclear physics off
+    // it changes no eigenvalue, so turning it on leaves the driver's k and
+    // fission source alone and only costs time.
+    if (!settings::photon_transport) {
+      fatal_error("<photonuclear_perturbation> requires photon transport. Set "
+                  "Settings.photon_transport = True; leave "
+                  "Settings.photonuclear_physics off, since that is the "
+                  "reference state the worth is measured against.");
+    }
+    if (settings::photonuclear_physics) {
+      // Not fatal: measuring zero is a legitimate check of the estimator,
+      // exactly like the null material perturbation warned about below.
+      warning("<photonuclear_perturbation> is used while "
+              "Settings.photonuclear_physics is already on, so the reference "
+              "state has photonuclear physics too. This is the null test; rho "
+              "must come out exactly zero.");
     }
   }
 
@@ -149,34 +185,78 @@ void init()
   cell_perts.assign(model::cells.size(), {});
   tree_pert.clear();
 
-  // Pass 1: resolve every substitution and create one reference tree per
-  // distinct touched cell.
+  // Pass 1: resolve every perturbation's cells and create one reference tree
+  // per distinct touched cell.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     Perturbation& p = perturbations[ip];
     std::unordered_set<int32_t> seen_cells;
+    const char* elem = element_name(p.kind);
+
+    // Shared by both kinds: resolve a cell id and hang the branch bookkeeping
+    // off it. Returns the cell index.
+    auto touch_cell = [&](int32_t cell_id) {
+      auto c = model::cell_map.find(cell_id);
+      if (c == model::cell_map.end()) {
+        fatal_error(
+          fmt::format("{} {}: cell {} not found.", elem, p.id, cell_id));
+      }
+      int32_t cell_index = c->second;
+
+      if (!seen_cells.insert(cell_index).second) {
+        fatal_error(fmt::format("{} {}: cell {} appears twice; a perturbation "
+                                "may name each cell at most once.",
+          elem, p.id, cell_id));
+      }
+
+      // Branch sites and shadow substitutions are both keyed off
+      // lowest_coord().cell(), which is always a material cell, so a cell
+      // filled by a universe or lattice would silently never match.
+      if (model::cells[cell_index]->type_ != Fill::MATERIAL) {
+        fatal_error(fmt::format(
+          "{} {}: cell {} must be filled with a material, not a universe or "
+          "lattice.",
+          elem, p.id, cell_id));
+      }
+
+      if (cell_ref_tree[cell_index] < 0) {
+        cell_ref_tree[cell_index] = static_cast<int>(tree_pert.size());
+        tree_pert.push_back(BEP_NO_PERT);
+      }
+      cell_perts[cell_index].push_back(static_cast<int>(ip));
+      p.cells.push_back(cell_index);
+      return cell_index;
+    };
+
+    if (p.kind == PerturbationKind::photonuclear) {
+      for (int32_t cell_id : p.pn_cell_ids) {
+        int32_t cell_index = touch_cell(cell_id);
+
+        // Nothing is substituted, so unlike a material perturbation this kind
+        // has no reason to insist on a single material: every instance of a
+        // distribcell gets photonuclear physics, which is well defined.
+        // A void cell has no nuclei to interact with, so naming one is a
+        // mistake worth reporting rather than a perturbation worth zero.
+        const Cell& cell {*model::cells[cell_index]};
+        bool all_void = true;
+        for (int32_t m : cell.material_) {
+          if (m != MATERIAL_VOID) {
+            all_void = false;
+            break;
+          }
+        }
+        if (all_void) {
+          fatal_error(fmt::format("{} {}: cell {} is void, so it has no "
+                                  "nuclides to interact photonuclearly.",
+            elem, p.id, cell_id));
+        }
+      }
+      continue;
+    }
 
     for (auto& s : p.subs) {
-      auto c = model::cell_map.find(s.cell_id);
-      if (c == model::cell_map.end()) {
-        fatal_error(fmt::format(
-          "<local_perturbation> {}: cell {} not found.", p.id, s.cell_id));
-      }
-      s.cell_index = c->second;
-
-      if (!seen_cells.insert(s.cell_index).second) {
-        fatal_error(fmt::format(
-          "<local_perturbation> {}: cell {} appears twice; a perturbation "
-          "may substitute each cell at most once.",
-          p.id, s.cell_id));
-      }
+      s.cell_index = touch_cell(s.cell_id);
 
       const Cell& cell {*model::cells[s.cell_index]};
-      if (cell.type_ != Fill::MATERIAL) {
-        fatal_error(fmt::format(
-          "<local_perturbation> {}: cell {} must be filled with a material; "
-          "the swap replaces a material, not a universe or lattice.",
-          p.id, s.cell_id));
-      }
       if (cell.material_.size() != 1) {
         fatal_error(fmt::format(
           "<local_perturbation> {}: cell {} must have exactly one material "
@@ -198,13 +278,6 @@ void init()
         }
         s.mat_index = m->second;
       }
-
-      if (cell_ref_tree[s.cell_index] < 0) {
-        cell_ref_tree[s.cell_index] = static_cast<int>(tree_pert.size());
-        tree_pert.push_back(BEP_NO_PERT);
-      }
-      cell_perts[s.cell_index].push_back(static_cast<int>(ip));
-      p.cells.push_back(s.cell_index);
     }
 
     // A perturbation that changes nothing is the null test: legal, and the
@@ -598,13 +671,22 @@ void write_results(hid_t file_id)
       ref_trees.push_back(cell_ref_tree[ci]);
     write_dataset(pg, "ref_trees", ref_trees);
 
-    vector<int32_t> cids, mids;
-    for (const auto& sub : p.subs) {
-      cids.push_back(sub.cell_id);
-      mids.push_back(sub.mat_id);
+    // The kind decides how Python rebuilds this perturbation, so write it
+    // explicitly rather than leaving it to be inferred from which datasets
+    // are present.
+    if (p.kind == PerturbationKind::photonuclear) {
+      write_dataset(pg, "kind", std::string("photonuclear"));
+      write_dataset(pg, "cells", p.pn_cell_ids);
+    } else {
+      write_dataset(pg, "kind", std::string("material"));
+      vector<int32_t> cids, mids;
+      for (const auto& sub : p.subs) {
+        cids.push_back(sub.cell_id);
+        mids.push_back(sub.mat_id);
+      }
+      write_dataset(pg, "cells", cids);
+      write_dataset(pg, "materials", mids);
     }
-    write_dataset(pg, "cells", cids);
-    write_dataset(pg, "materials", mids);
 
     close_group(pg);
   }
@@ -613,6 +695,26 @@ void write_results(hid_t file_id)
 }
 
 } // namespace bep
+
+// In namespace openmc, beside the other free_memory_*() that free_memory()
+// calls, and for the same reason read_perturbations_xml() is: the namespace
+// is for the data, not for the functions that manage it.
+void free_memory_bep()
+{
+  bep::perturbations.clear();
+  bep::photonuclear_any = false;
+  bep::tree_pert.clear();
+  bep::cell_ref_tree.clear();
+  bep::cell_perts.clear();
+  bep::thread_branch_sites.clear();
+  bep::branch_sites.clear();
+  bep::thread_tau.clear();
+  bep::tau.clear();
+  bep::tau_history.clear();
+  bep::n_generations = 0;
+  bep::n_branch_total = 0;
+  bep::w_branch_total = 0.0;
+}
 
 //==============================================================================
 // Input
@@ -635,16 +737,42 @@ void read_perturbations_xml()
 void read_perturbations_xml(pugi::xml_node root)
 {
   int32_t next_id = 1;
-  for (pugi::xml_node node : root.children("local_perturbation")) {
+
+  // Walked in document order rather than one element name at a time, so the
+  // two kinds keep the order the user wrote them in. That order is what the
+  // statepoint's `ids` dataset records, and hence the order the results come
+  // back in.
+  for (pugi::xml_node node : root.children()) {
+    std::string name = node.name();
+    bool photonuclear = (name == "photonuclear_perturbation");
+    if (!photonuclear && name != "local_perturbation")
+      continue;
+
     bep::Perturbation p;
+    p.kind = photonuclear ? bep::PerturbationKind::photonuclear
+                          : bep::PerturbationKind::material;
+    // Ids are shared by both kinds, so the fallback counter is too.
     p.id = check_for_node(node, "id") ? std::stoi(get_node_value(node, "id"))
                                       : next_id;
     next_id = p.id + 1;
 
-    // A perturbation is a SET of substitutions applied together, which is what
-    // lets a displacement be expressed as the trailing sliver reverting and
-    // the leading sliver taking the sample. The bare <cell>/<material> pair is
-    // kept as shorthand for the one-cell case.
+    if (photonuclear) {
+      // Just the cells: what changes in them is fixed by the kind, so there
+      // is nothing per-cell to say.
+      for (pugi::xml_node node_c : node.children("cell"))
+        p.pn_cell_ids.push_back(std::stoi(node_c.text().get()));
+      bep::perturbations.push_back(p);
+      // Set here rather than in init(), which does not run until the
+      // simulation starts -- long after the cross sections this decides the
+      // reading of are finalized.
+      bep::photonuclear_any = true;
+      continue;
+    }
+
+    // A material perturbation is a SET of substitutions applied together,
+    // which is what lets a displacement be expressed as the trailing sliver
+    // reverting and the leading sliver taking the sample. The bare
+    // <cell>/<material> pair is kept as shorthand for the one-cell case.
     for (pugi::xml_node node_s : node.children("substitution")) {
       bep::Substitution s;
       s.cell_id = std::stoi(get_node_value(node_s, "cell"));

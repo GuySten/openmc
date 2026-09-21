@@ -79,6 +79,8 @@ extern bool particle_restart_run;     //!< particle restart run?
 extern "C" bool photon_transport;     //!< photon transport turned on?
 extern "C" bool photonuclear_physics; //!< photonuclear physics turned on?
 extern "C" bool
+  fission_photons_only; //!< only fission produces secondary photons?
+extern "C" bool
   photoneutron_biasing; //!< bias photoneutron production (expected value)?
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?
 extern "C" bool reduce_tallies;      //!< reduce tallies at end of batch?

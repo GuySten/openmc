@@ -26,12 +26,18 @@ from uncertainties import UFloat, correlated_values
 
 @pytest.fixture(autouse=True)
 def reset_perturbation_ids():
-    """IDs are class-global, so keep tests from leaking into each other."""
-    openmc.LocalPerturbation.used_ids.clear()
-    openmc.LocalPerturbation.next_id = 1
+    """IDs are class-global, so keep tests from leaking into each other.
+
+    Reset on PerturbationBase, not on a subclass: it is the one class that
+    holds next_id and used_ids, which is what makes every kind of
+    perturbation share an ID space. Assigning next_id on a subclass would
+    create a shadowing class attribute there and silently split that space.
+    """
+    openmc.PerturbationBase.used_ids.clear()
+    openmc.PerturbationBase.next_id = 1
     yield
-    openmc.LocalPerturbation.used_ids.clear()
-    openmc.LocalPerturbation.next_id = 1
+    openmc.PerturbationBase.used_ids.clear()
+    openmc.PerturbationBase.next_id = 1
 
 
 @pytest.fixture
@@ -123,6 +129,61 @@ def test_repr_without_results_omits_worth():
 
 
 # ----------------------------------------------------------------------------
+# PhotonuclearPerturbation
+# ----------------------------------------------------------------------------
+
+def test_photonuclear_cells_from_ids():
+    p = openmc.PhotonuclearPerturbation([71, 72])
+    assert p.cells == [71, 72]
+
+
+def test_photonuclear_cells_from_objects(cells_and_materials):
+    sample, other, _, _ = cells_and_materials
+    p = openmc.PhotonuclearPerturbation([sample, other])
+    assert p.cells == [71, 72]
+
+
+def test_photonuclear_accepts_a_bare_cell(cells_and_materials):
+    sample, _, _, _ = cells_and_materials
+    assert openmc.PhotonuclearPerturbation(sample).cells == [71]
+    assert openmc.PhotonuclearPerturbation(71).cells == [71]
+
+
+def test_photonuclear_cells_are_deduplicated():
+    # Naming a cell twice says nothing more than naming it once. The C++
+    # reader rejects a repeat, so it must not reach the file.
+    assert openmc.PhotonuclearPerturbation([71, 72, 71]).cells == [71, 72]
+
+
+def test_photonuclear_rejects_bad_types():
+    with pytest.raises(TypeError):
+        openmc.PhotonuclearPerturbation(['71'])
+    with pytest.raises(TypeError):
+        openmc.PhotonuclearPerturbation([71], name=3)
+
+
+def test_perturbation_ids_are_shared_across_kinds():
+    """Both kinds draw from one ID space.
+
+    They must: the statepoint keys each perturbation's group by ID alone,
+    and bep::init() aborts on a duplicate.
+    """
+    a = openmc.LocalPerturbation({71: 92})
+    b = openmc.PhotonuclearPerturbation([72])
+    c = openmc.LocalPerturbation({71: 91})
+    assert [a.id, b.id, c.id] == [1, 2, 3]
+
+
+def test_photonuclear_repr_names_its_own_class():
+    p = openmc.PhotonuclearPerturbation([71], name='reflector')
+    assert 'PhotonuclearPerturbation' in repr(p)
+    assert 'reflector' in repr(p)
+    assert 'Worth' not in repr(p)
+    p.rho, = correlated_values([12.0], [[4.0]])
+    assert 'Worth' in repr(p)
+
+
+# ----------------------------------------------------------------------------
 # XML round trip
 # ----------------------------------------------------------------------------
 
@@ -150,6 +211,52 @@ def test_bare_cell_material_shorthand_is_accepted():
         b'</local_perturbation>')
     p = openmc.LocalPerturbation.from_xml_element(elem)
     assert p.substitutions == {71: 92}
+
+
+def test_photonuclear_xml_roundtrip():
+    p = openmc.PhotonuclearPerturbation([71, 72], perturbation_id=7,
+                                        name='reflector')
+    q = openmc.PhotonuclearPerturbation.from_xml_element(p.to_xml_element())
+    assert q.id == 7
+    assert q.name == 'reflector'
+    assert q.cells == [71, 72]
+
+
+def test_mixed_collection_keeps_document_order():
+    """The C++ reader walks children in document order, so Python must too.
+
+    The order decides the statepoint's `ids` dataset, and hence the order
+    results come back in.
+    """
+    ps = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([72], perturbation_id=1, name='be'),
+        openmc.LocalPerturbation({71: 92}, perturbation_id=2),
+        openmc.PhotonuclearPerturbation([71], perturbation_id=3),
+    ])
+    qs = openmc.Perturbations.from_xml_element(ps.to_xml_element())
+    assert qs.ids == [1, 2, 3]
+    assert [type(q).__name__ for q in qs] == [
+        'PhotonuclearPerturbation', 'LocalPerturbation',
+        'PhotonuclearPerturbation']
+    assert qs.by_id(1).cells == [72]
+    assert qs.by_id(1).name == 'be'
+    assert qs.by_id(2).substitutions == {71: 92}
+
+
+def test_photonuclear_xml_element_name_matches_cpp_reader():
+    """Tag names bep::read_perturbations_xml() depends on.
+
+    It dispatches on the element name and reads bare <cell> children. If
+    these drift the C++ silently reads nothing and every worth comes out
+    zero, so pin them down.
+    """
+    elem = openmc.Perturbations(
+        [openmc.PhotonuclearPerturbation([71, 72])]).to_xml_element()
+    pn = elem.findall('photonuclear_perturbation')
+    assert len(pn) == 1
+    assert [c.text for c in pn[0].findall('cell')] == ['71', '72']
+    # No <material>: what changes in the cells is fixed by the element name.
+    assert pn[0].find('material') is None
 
 
 def test_collection_xml_roundtrip():
@@ -403,6 +510,24 @@ def test_model_accepts_list_and_collection():
         model.perturbations = ['not a perturbation']
 
 
+def test_model_accepts_mixed_kinds(run_in_tmpdir, cells_and_materials):
+    """Both kinds go into one collection and survive a file round trip."""
+    sample, other, water, steel = cells_and_materials
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([sample, other])
+    model.materials = openmc.Materials([water, steel])
+    model.perturbations = [
+        openmc.LocalPerturbation({sample: steel}, perturbation_id=1),
+        openmc.PhotonuclearPerturbation([other], perturbation_id=2),
+    ]
+    model.export_to_xml()
+
+    reloaded = openmc.Model.from_xml()
+    assert reloaded.perturbations.ids == [1, 2]
+    assert reloaded.perturbations.by_id(1).substitutions == {sample.id: steel.id}
+    assert reloaded.perturbations.by_id(2).cells == [other.id]
+
+
 def test_model_export_and_reimport(run_in_tmpdir, cells_and_materials):
     sample, other, water, steel = cells_and_materials
 
@@ -475,11 +600,12 @@ def test_no_perturbations_writes_no_file(run_in_tmpdir, cells_and_materials):
 # StatePoint parsing
 # ----------------------------------------------------------------------------
 
-def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
+def _write_statepoint(path, tau, ids, n_generation, keff=1.0, kinds=None):
     """Minimal statepoint carrying only a local_perturbation group.
 
     ``tau`` is [generation][tree][depth]. Tree 0 is the shared reference; tree
-    ``i + 1`` belongs to perturbation ``ids[i]``.
+    ``i + 1`` belongs to perturbation ``ids[i]``. ``kinds`` gives each
+    perturbation's kind, defaulting to material throughout.
 
     ``run_mode`` and ``k_combined`` are written because the reader needs
     k-effective to turn the fitted slope (dk/k) into a reactivity. The default
@@ -504,14 +630,17 @@ def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
         g.create_dataset('ids', data=np.asarray(ids, dtype=np.int32))
         g.create_dataset('tau', data=tau.ravel())
         for i, pid in enumerate(ids):
+            kind = 'material' if kinds is None else kinds[i]
             pg = g.create_group(f'perturbation {pid}')
             pg.create_dataset('index', data=i)
             pg.create_dataset('tree', data=i + 1)
             pg.create_dataset('ref_trees',
                               data=np.array([0], dtype=np.int32))
+            pg.create_dataset('kind', data=np.bytes_(kind))
             pg.create_dataset('cells', data=np.array([71], dtype=np.int32))
-            pg.create_dataset('materials',
-                              data=np.array([92 + i], dtype=np.int32))
+            if kind == 'material':
+                pg.create_dataset('materials',
+                                  data=np.array([92 + i], dtype=np.int32))
 
 
 def _branching_tau(rng, k, rho, n_branch, n_gen, L):
@@ -701,6 +830,31 @@ def test_statepoint_covariance_is_symmetric(run_in_tmpdir):
         assert np.all(np.abs(ps.correlation()) <= 1.0 + 1e-9)
         diff = ps.by_id(2).rho - ps.by_id(1).rho
         assert np.isfinite([diff.nominal_value, diff.std_dev]).all()
+
+
+def test_statepoint_reads_back_each_kind(run_in_tmpdir):
+    """`kind` decides which class the reader rebuilds.
+
+    Getting this wrong would hand back a LocalPerturbation with a
+    substitution dict invented from whatever `materials` happened to hold,
+    which for a photonuclear perturbation is not written at all.
+    """
+    L, n_gen = 8, 40
+    rng = np.random.default_rng(3)
+    ref, pert = _branching_tau(rng, 1.2, -0.01, 400, n_gen, L)
+    tau = np.stack([ref, pert, pert], axis=1)
+    _write_statepoint('sp.h5', tau, [4, 9], L,
+                      kinds=['material', 'photonuclear'])
+
+    with openmc.StatePoint('sp.h5', autolink=False) as sp:
+        ps = sp.perturbations
+        assert ps.ids == [4, 9]
+        assert isinstance(ps.by_id(4), openmc.LocalPerturbation)
+        assert ps.by_id(4).substitutions == {71: 92}
+        pn = ps.by_id(9)
+        assert isinstance(pn, openmc.PhotonuclearPerturbation)
+        assert pn.cells == [71]
+        assert isinstance(pn.rho, UFloat)
 
 
 def test_statepoint_absent_group_returns_none(run_in_tmpdir):
@@ -1183,6 +1337,175 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
         worth = ps.by_id(1).rho
         assert np.isfinite(worth.nominal_value)
         assert worth.std_dev > 0.0
+
+
+# ----------------------------------------------------------------------------
+# PhotonuclearPerturbation, running OpenMC
+# ----------------------------------------------------------------------------
+
+@pytest.fixture
+def photon_model():
+    """Fuel sphere inside a heavy-water blanket, with an inert plug.
+
+    Deuterium is about the strongest photoneutron source that can be built:
+    a 2.22 MeV threshold, well inside the prompt fission photon spectrum,
+    on a nucleus with only one electron to compete for the photon. The plug
+    is ordinary hydrogen, which has no photonuclear data in any standard
+    library, so a perturbation on it is the null case -- applied, and
+    changing nothing.
+
+    Photon transport makes every history drag a photon cascade behind it,
+    and a photonuclear perturbation makes the shadow trees do it too, so
+    this fixture is deliberately small.
+    """
+    fuel = openmc.Material(material_id=1)
+    fuel.add_nuclide('U235', 1.0)
+    fuel.set_density('g/cm3', 18.7)
+
+    heavy_water = openmc.Material(material_id=2)
+    heavy_water.add_nuclide('H2', 2.0)
+    heavy_water.add_nuclide('O16', 1.0)
+    heavy_water.set_density('g/cm3', 1.1)
+
+    hydrogen = openmc.Material(material_id=3)
+    hydrogen.add_nuclide('H1', 1.0)
+    hydrogen.set_density('g/cm3', 1.0)
+
+    plug_surf = openmc.Sphere(x0=9.0, r=2.0)
+    core_surf = openmc.Sphere(r=6.0)
+    outer = openmc.Sphere(r=20.0, boundary_type='vacuum')
+
+    plug = openmc.Cell(cell_id=20, fill=hydrogen, region=-plug_surf)
+    core = openmc.Cell(cell_id=21, fill=fuel, region=-core_surf)
+    blanket = openmc.Cell(cell_id=22, fill=heavy_water,
+                          region=+core_surf & -outer & +plug_surf)
+
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([plug, core, blanket])
+    model.materials = openmc.Materials([fuel, heavy_water, hydrogen])
+    model.settings.run_mode = 'eigenvalue'
+    model.settings.particles = 1000
+    model.settings.batches = 25
+    model.settings.inactive = 5
+    model.settings.photon_transport = True
+    # Left off on purpose: it is the reference state the worth is measured
+    # against. The data is read anyway, because the perturbation asks for it.
+    model.settings.photonuclear_physics = False
+    model.settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point())
+    model.settings.seed = 1
+    model.settings.perturbation_n_generation = 6
+    return model
+
+
+def test_photonuclear_reaches_the_shadow_trees(run_in_tmpdir, photon_model):
+    """The perturbed tree must actually see photonuclear physics.
+
+    This is the assertion that catches the whole feature failing silently.
+    Three separate gates have to be open for a photoneutron ever to be born
+    in a shadow tree: the photonuclear data has to be read although
+    settings.photonuclear_physics is off, the shadow tree has to create
+    secondary photons although super-history generations normally skip them,
+    and the per-particle flag has to be raised inside the perturbed cells.
+    Close any one and every worth comes back exactly zero with no error --
+    which is why the assertion here is that the depth curve is NOT flat,
+    rather than anything about its value.
+
+    No assertion on the sign: a photoneutron worth is tens of pcm, and at
+    the statistics this fixture can afford in seconds the error bar is
+    hundreds. Resolving the sign takes of order a million histories.
+    """
+    blanket = photon_model.geometry.get_all_cells()[22]
+    photon_model.settings.photoneutron_biasing = True
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([blanket], perturbation_id=1,
+                                        name='D2O blanket'),
+    ])
+
+    sp_path = photon_model.run()
+    with openmc.StatePoint(sp_path) as sp:
+        p = sp.perturbations.by_id(1)
+        assert isinstance(p, openmc.PhotonuclearPerturbation)
+        assert p.cells == [22]
+        assert np.isfinite(p.rho.nominal_value)
+        assert np.isfinite(p.rho.std_dev)
+        assert p.rho.std_dev > 0.0, (
+            'a zero error bar means the perturbed and reference trees were '
+            'identical history for history, i.e. photonuclear physics never '
+            'reached the shadow trees')
+        assert np.any(p.depth_curve[1:] != 0.0)
+
+
+def test_photonuclear_null_without_photonuclear_data(run_in_tmpdir,
+                                                     photon_model):
+    """A cell whose nuclides have no photonuclear data is worth exactly zero.
+
+    H1 has none, so the perturbation is applied in full and still changes no
+    cross section. Both trees then draw the same random numbers for the same
+    events and stay the same tree, so the answer is zero to the last bit --
+    not zero within statistics. Anything else means the flag is perturbing
+    something it should not, or is decorrelating the trees by consuming a
+    random number on its own account.
+    """
+    plug = photon_model.geometry.get_all_cells()[20]
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([plug], perturbation_id=1),
+    ])
+
+    sp_path = photon_model.run()
+    with openmc.StatePoint(sp_path) as sp:
+        p = sp.perturbations.by_id(1)
+        assert p.rho.nominal_value == 0.0
+        assert p.rho.std_dev == 0.0
+        assert np.all(p.depth_curve == 0.0)
+
+
+def test_photonuclear_requires_photon_transport(run_in_tmpdir, photon_model):
+    """Without photons there is nothing to carry the perturbation.
+
+    It would run, and report exactly zero, which is the one failure mode
+    worth refusing outright.
+    """
+    blanket = photon_model.geometry.get_all_cells()[22]
+    photon_model.settings.photon_transport = False
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([blanket], perturbation_id=1),
+    ])
+
+    with pytest.raises(RuntimeError, match='requires photon transport'):
+        photon_model.run()
+
+
+def test_photonuclear_rejects_void_cell(run_in_tmpdir, photon_model):
+    """A void cell has no nuclei to interact with, so naming one is a typo."""
+    plug = photon_model.geometry.get_all_cells()[20]
+    plug.fill = None
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([plug], perturbation_id=1),
+    ])
+
+    with pytest.raises(RuntimeError, match='is void'):
+        photon_model.run()
+
+
+def test_photonuclear_rejects_repeated_cell(run_in_tmpdir, photon_model):
+    """bep::init() rejects a cell named twice; the file must not contain one.
+
+    Python deduplicates, so this writes the XML by hand to check that the
+    C++ guard is the one the deduplication is protecting against.
+    """
+    photon_model.perturbations = openmc.Perturbations([
+        openmc.PhotonuclearPerturbation([22], perturbation_id=1),
+    ])
+    photon_model.export_to_xml()
+
+    tree = ET.parse('perturbations.xml')
+    elem = tree.getroot().find('photonuclear_perturbation')
+    ET.SubElement(elem, 'cell').text = '22'
+    tree.write('perturbations.xml')
+
+    with pytest.raises(RuntimeError, match='appears twice'):
+        openmc.run()
 
 
 def test_rejects_non_material_cell(run_in_tmpdir, model):

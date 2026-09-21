@@ -9,7 +9,15 @@
 //! applied together, so it covers a sample swap (one cell), a sample
 //! DISPLACEMENT (two thin slivers, one losing the sample and one gaining it),
 //! and multi-region changes such as a voided plenum. Exposed to users as
-//! repeated <local_perturbation> elements in settings.xml.
+//! repeated <local_perturbation> elements in perturbations.xml.
+//!
+//! A second KIND of local perturbation changes the physics rather than the
+//! material: <photonuclear_perturbation> names cells in which the perturbed
+//! state has photonuclear physics enabled and the reference state does not,
+//! so its worth is the reactivity these cells owe to photoneutron production.
+//! It is local in exactly the same sense -- it is confined to the cells it
+//! names, branches at their boundary and is scored against the same reference
+//! trees -- so everything below applies to both kinds unchanged.
 //!
 //! LINEAGE
 //! -------
@@ -138,12 +146,34 @@ struct Substitution {
   int32_t mat_index {-1};
 };
 
-//! A set of substitutions applied together. For a displacement this is the
-//! trailing sliver reverting to the displaced material and the leading sliver
-//! taking the sample.
+//! What a perturbation changes inside the cells it names.
+//!
+//! Both kinds are LOCAL and share every piece of machinery below -- the same
+//! branch sites, the same reference trees, the same estimator. They differ
+//! only in what a shadow particle does on entering one of the cells: a
+//! `material` perturbation swaps the material there, a `photonuclear` one
+//! switches photonuclear physics on there.
+enum class PerturbationKind {
+  material,    //!< cell -> material substitutions
+  photonuclear //!< photonuclear physics enabled in the listed cells
+};
+
+//! Name of the XML element a kind is written as, for error messages.
+inline const char* element_name(PerturbationKind kind)
+{
+  return kind == PerturbationKind::photonuclear ? "<photonuclear_perturbation>"
+                                                : "<local_perturbation>";
+}
+
+//! A set of changes applied together. For a displacement this is the trailing
+//! sliver reverting to the displaced material and the leading sliver taking
+//! the sample; for a photonuclear perturbation it is every cell whose
+//! photoneutron production is being weighed.
 struct Perturbation {
   int32_t id;
-  vector<Substitution> subs;
+  PerturbationKind kind {PerturbationKind::material};
+  vector<Substitution> subs;   //!< material kind: what to swap, and where
+  vector<int32_t> pn_cell_ids; //!< photonuclear kind: cell IDs as given
   vector<int32_t> cells; //!< cell indices touched, for the matched reference
   int tree {-1};
 };
@@ -252,6 +282,49 @@ inline bool substitute(int pert, int32_t cell_index, int32_t& mat_index)
   return false;
 }
 
+//! Photonuclear perturbation `pert` switches photonuclear physics on inside
+//! `cell_index`. False for a material perturbation, and for a photonuclear
+//! one that does not name this cell.
+//!
+//! Note this asks about the cell the particle is IN, not the cell it was born
+//! in: the perturbed state has photoneutron production in these cells and
+//! nowhere else, so a photon that leaves them stops seeing it. Cell lists are
+//! tiny, so a linear scan beats any map, exactly as in substitute() above.
+inline bool photonuclear_in_cell(int pert, int32_t cell_index)
+{
+  const Perturbation& p = perturbations[pert];
+  if (p.kind != PerturbationKind::photonuclear)
+    return false;
+  for (int32_t ci : p.cells) {
+    if (ci == cell_index)
+      return true;
+  }
+  return false;
+}
+
+//! Set when a <photonuclear_perturbation> is read. Read through
+//! photonuclear_needed() below rather than directly.
+extern bool photonuclear_any;
+
+//! Whether any configured perturbation needs photonuclear physics.
+//!
+//! Two things hang off this. Photonuclear DATA is read only when
+//! settings::photonuclear_physics is on, which is exactly what the REFERENCE
+//! state of a photonuclear perturbation has switched off, so without this the
+//! perturbed tree would find no data at all. And a shadow tree has to create
+//! SECONDARY PHOTONS, which super-history generations otherwise skip as
+//! pointless cost (see sample_neutron_reaction) -- without them a photonuclear
+//! perturbation has nothing to act on. Both failures are silent: every worth
+//! comes out identically zero.
+//!
+//! A cached flag rather than a scan of `perturbations`, because the transport
+//! loop reads it once per neutron collision, and valid before init() because
+//! the data is read before init() runs.
+inline bool photonuclear_needed()
+{
+  return photonuclear_any;
+}
+
 //! How deep this particle's super-history chain runs.
 //!
 //! Keyed off the particle's tree so that BEP never has to overwrite
@@ -312,6 +385,10 @@ void write_results(hid_t file_id);
 // read_settings_xml, whose data lives in namespace settings exactly as this
 // reader's data lives in namespace bep. The namespace is for the data, not
 // for the function that fills it.
+
+//! Free the perturbation data, so that a second openmc_init() in the same
+//! process starts from an empty set rather than appending to the first run's.
+void free_memory_bep();
 
 //! Read perturbations.xml if present. Optional, like tallies.xml.
 void read_perturbations_xml();

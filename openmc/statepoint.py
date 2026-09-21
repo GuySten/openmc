@@ -98,6 +98,10 @@ class StatePoint:
         Working directory for simulation
     photon_transport : bool
         Indicate whether photon transport is active
+    fission_photons_only : bool
+        Indicate whether only fission produced secondary photons
+
+        .. versionadded:: 0.16.0
     photonuclear_physics : bool
         Indicate whether photo-nuclear physics is active    
     run_mode : str
@@ -356,7 +360,11 @@ class StatePoint:
         
     @property
     def photonuclear_physics(self):
-        return self._f.attrs['photonuclear_physics'] > 0        
+        return self._f.attrs['photonuclear_physics'] > 0
+
+    @property
+    def fission_photons_only(self):
+        return self._f.attrs['fission_photons_only'] > 0
 
     @property
     def run_mode(self):
@@ -491,7 +499,7 @@ class StatePoint:
         """Local perturbation worths, or None if none were computed.
 
         Returns a :class:`openmc.Perturbations` collection whose members carry
-        their reactivity worth in :attr:`~openmc.LocalPerturbation.rho`, a
+        their reactivity worth in :attr:`~openmc.PerturbationBase.rho`, a
         ufloat in pcm carrying its own uncertainty. Subtract worths directly
         rather than combining uncertainties by hand: they are built from the
         full covariance of the run, so ``b.rho - a.rho`` propagates the
@@ -522,11 +530,20 @@ class StatePoint:
                 warnings.simplefilter('ignore', openmc.IDWarning)
                 for pid in ids:
                     pgroup = group[f'perturbation {pid}']
-                    p = openmc.LocalPerturbation(
-                        dict(zip(
-                            map(int, np.asarray(pgroup['cells'][()])),
-                            map(int, np.asarray(pgroup['materials'][()])))),
-                        perturbation_id=pid)
+                    cells = [int(c) for c in np.asarray(pgroup['cells'][()])]
+                    # 'kind' says which sort of local perturbation this was;
+                    # statepoints written before the photonuclear kind existed
+                    # hold material substitutions only.
+                    kind = (pgroup['kind'][()].decode()
+                            if 'kind' in pgroup else 'material')
+                    if kind == 'photonuclear':
+                        p = openmc.PhotonuclearPerturbation(
+                            cells, perturbation_id=pid)
+                    else:
+                        p = openmc.LocalPerturbation(
+                            dict(zip(cells, map(
+                                int, np.asarray(pgroup['materials'][()])))),
+                            perturbation_id=pid)
                     numerators.append(tau[:, int(pgroup['tree'][()]), :])
                     denominators.append(
                         tau[:, np.asarray(pgroup['ref_trees'][()]), :].sum(1))

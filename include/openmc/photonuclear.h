@@ -131,6 +131,28 @@ private:
 
 void free_memory_photonuclear();
 
+//! Whether the photofission channel is left out of photonuclear physics.
+//!
+//! Photofission neutrons are banked as secondaries and contribute to no
+//! k-eigenvalue estimator, which is why settings::photonuclear_physics
+//! refuses eigenvalue mode outright as soon as any loaded nuclide is
+//! photofissionable (see initialize_data). A <photonuclear_perturbation> is
+//! eigenvalue-only by construction, so the same refusal would rule the
+//! feature out for every uranium model. It leaves the fission channels out
+//! instead: what it weighs is the reactivity worth of (gamma, n) photoneutron
+//! production, on beryllium or deuterium say, and not of photofission.
+//!
+//! True exactly when photonuclear physics is not on run-wide, i.e. when the
+//! only thing that can have asked for photonuclear data is a perturbation.
+//! Applied once in PhotonuclearInteraction::calculate_xs(), which subtracts
+//! the fission channels from the cached microscopic total and neutron
+//! production so that every cross section derived from those is consistent;
+//! the three places that walk reaction lists directly -- the reaction
+//! sampling in photonuclear_collision(), the product sampling in
+//! sample_photoneutron_product(), and max_safe_photon_energy() -- skip them
+//! with is_fission().
+bool photofission_excluded();
+
 //! Determine the highest incident photon energy for which every photoneutron
 //! this library can produce still falls within the neutron transport data
 //! range, and report the nuclide and reaction that set the limit.

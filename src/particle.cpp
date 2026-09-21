@@ -208,6 +208,11 @@ void Particle::from_source(const SourceSite* src)
   }
   super_gen() = src->super_gen;
   bep_tree() = src->bep_tree;
+  // The whole-run state; event_calculate_xs() raises it for a shadow particle
+  // inside the cells its own photonuclear perturbation names. Not carried on
+  // SourceSite, because it depends on where the particle is rather than where
+  // it came from, and is recomputed before anything can read it.
+  photonuclear_physics() = settings::photonuclear_physics;
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
@@ -272,20 +277,36 @@ void Particle::event_calculate_xs()
 
   if (simulation::bep_on) {
     int32_t i_cell = lowest_coord().cell();
-    if (bep::ref_tree_of_cell(i_cell) >= 0) {
-      if (bep_tree() == BEP_TRUNK) {
+    if (bep_tree() == BEP_TRUNK) {
+      if (bep::ref_tree_of_cell(i_cell) >= 0)
         bep::maybe_branch(*this, i_cell);
-      } else {
-        // The geometry holds the REFERENCE material. A shadow applies only
-        // ITS OWN perturbation's substitutions, so a tree owned by A passing
-        // through a cell only B touches correctly sees the reference
-        // material there. find_cell() has already set material_last(), so
-        // the cross-section cache invalidates on entry.
-        int i_pert = bep::tree_pert[bep_tree()];
+    } else {
+      // The geometry holds the REFERENCE state. A shadow applies only ITS OWN
+      // perturbation, so a tree owned by A passing through a cell only B
+      // touches correctly sees the reference state there. A reference tree
+      // (i_pert < 0) applies nothing anywhere, by construction.
+      //
+      // Recomputed on every call rather than only on entry, because a shadow
+      // particle that LEAVES the perturbed region has to stop seeing the
+      // perturbation: it is local in space, not a property of the tree.
+      bool pn = settings::photonuclear_physics;
+      int i_pert = bep::tree_pert[bep_tree()];
+      if (i_pert >= 0 && bep::ref_tree_of_cell(i_cell) >= 0) {
+        // find_cell() has already set material_last(), so the cross-section
+        // cache invalidates on entry.
         int32_t m;
-        if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m)) {
+        if (bep::substitute(i_pert, i_cell, m))
           material() = m;
-        }
+        pn = pn || bep::photonuclear_in_cell(i_pert, i_cell);
+      }
+      if (pn != photonuclear_physics()) {
+        photonuclear_physics() = pn;
+        // The photon cross sections below are reused whenever the material
+        // index has not changed, and it has not when a perturbed cell is
+        // carved out of a larger region of the same material. Switching the
+        // photonuclear channel on or off changes the total, so the cache has
+        // to be dropped by hand here.
+        material_last() = C_NONE;
       }
     }
   }

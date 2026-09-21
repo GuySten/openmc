@@ -63,6 +63,7 @@ bool output_tallies {true};
 bool particle_restart_run {false};
 bool photon_transport {false};
 bool photonuclear_physics {false};
+bool fission_photons_only {false};
 bool photoneutron_biasing {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
@@ -661,14 +662,23 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
-  // Check for photoneutron biasing
+  // Check whether only fission may produce secondary photons
+  if (check_for_node(root, "fission_photons_only")) {
+    fission_photons_only = get_node_value_bool(root, "fission_photons_only");
+
+    if (fission_photons_only && !photon_transport) {
+      fatal_error("Photon transport must be enabled when "
+                  "'fission_photons_only' is set; without it no secondary "
+                  "photons are produced at all.");
+    }
+  }
+
+  // Check for photoneutron biasing. Whether photonuclear physics is actually
+  // present cannot be decided here: a <photonuclear_perturbation> supplies it
+  // in its own cells, and perturbations.xml is not read until after this file.
+  // initialize_data() makes the check once both are known.
   if (check_for_node(root, "photoneutron_biasing")) {
     photoneutron_biasing = get_node_value_bool(root, "photoneutron_biasing");
-
-    if (photoneutron_biasing && !photonuclear_physics) {
-      fatal_error("Photonuclear physics must be enabled when photoneutron "
-                  "biasing is enabled");
-    }
   }
 
   // Check for atomic relaxation

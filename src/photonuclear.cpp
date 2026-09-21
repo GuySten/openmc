@@ -15,6 +15,7 @@
 #include "openmc/settings.h"
 #include "openmc/string_utils.h"
 
+#include <algorithm> // for max
 #include <cmath>
 #include <fmt/core.h>
 #include <tuple> // for tie
@@ -393,12 +394,42 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
   xs.neutron_prod = (1 - f) * xs_(i_grid, XS_NEUTRON_PROD) +
                     f * xs_(i_grid + 1, XS_NEUTRON_PROD);
 
+  // Take photofission out of both, so that the channel is neither sampled
+  // nor biased for and nothing downstream has to know it was removed. Both are
+  // tabulated totals, so the fission part has to be subtracted rather than
+  // simply not added; clamped because that leaves a difference of two
+  // interpolated tabulations, which can go slightly negative where they
+  // disagree. See photofission_excluded().
+  if (fissionable_ && photofission_excluded()) {
+    // Every photofission channel, not just fission_rx_: that names one of
+    // them, MT=18 by preference, while an evaluation given as partials has
+    // several, and leaving those in would take the channel out of the total
+    // without taking it out of what can be sampled. is_fission() is the same
+    // MT set create_derived() used to decide fissionable_.
+    double xs_fission = 0.0;
+    for (const auto& rx : reactions_) {
+      if (rx->redundant_ || !is_fission(rx->mt_))
+        continue;
+      xs_fission += rx->xs(xs);
+    }
+    xs.total = std::max(0.0, xs.total - xs_fission);
+    // nu is the yield of photofission as a whole, so it multiplies the summed
+    // fission cross section.
+    xs.neutron_prod = std::max(0.0,
+      xs.neutron_prod - this->nu(E, EmissionMode::total) * xs_fission);
+  }
+
   xs.last_E = p.E();
 }
 
 //==============================================================================
 // Non-member functions
 //==============================================================================
+
+bool photofission_excluded()
+{
+  return !settings::photonuclear_physics;
+}
 
 void free_memory_photonuclear()
 {
@@ -438,6 +469,7 @@ double max_safe_photon_energy(
   double E_safe = INFTY;
   limiting_nuclide.clear();
   limiting_mt = 0;
+  const bool exclude_fission = photofission_excluded();
 
   for (const auto& nuc : data::photonuclears) {
     if (nuc->energy_.size() < 2)
@@ -445,6 +477,13 @@ double max_safe_photon_energy(
 
     for (const auto& rx : nuc->reactions_) {
       if (rx->redundant_)
+        continue;
+      // A fission spectrum is tabulated well beyond the top of the neutron
+      // data whatever the incident photon energy, so leaving photofission in
+      // makes every photon energy unsafe and the ceiling collapses to zero.
+      // When the channel is excluded it emits nothing, so it constrains
+      // nothing.
+      if (exclude_fission && is_fission(rx->mt_))
         continue;
 
       for (const auto& product : rx->products_) {

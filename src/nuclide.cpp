@@ -1,5 +1,6 @@
 #include "openmc/nuclide.h"
 
+#include "openmc/bep.h"
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
@@ -1169,7 +1170,11 @@ extern "C" int openmc_load_nuclide(const char* name, const double* temps, int n)
         close_group(group);
         file_close(file_id);
       }
-      if (settings::photonuclear_physics) {
+      // Also when a <photonuclear_perturbation> is configured: its REFERENCE
+      // state is photonuclear physics switched off, so the run-wide setting
+      // is exactly what such a study leaves false, and without the data its
+      // perturbed tree would have nothing to interact with.
+      if (settings::photonuclear_physics || bep::photonuclear_needed()) {
         if (data::photonuclear_map.find(name) == data::photonuclear_map.end() ||
             data::photonuclear_map.at(name) >= data::photonuclears.size()) {
           LibraryKey key {Library::Type::photonuclear, name};

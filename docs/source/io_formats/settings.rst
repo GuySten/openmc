@@ -275,6 +275,23 @@ history-based parallelism.
 
   *Default*: false
 
+----------------------------------
+``<fission_photons_only>`` Element
+----------------------------------
+
+The ``<fission_photons_only>`` element determines whether fission is the only
+neutron reaction allowed to produce secondary photons. When "true", photons
+from capture, inelastic scattering and every other reaction are discarded as
+they are born, leaving only the prompt fission photons. Those carry most of
+the photon yield above the photonuclear thresholds, so this is a way of
+cutting the cost of a photonuclear calculation whose answer they dominate.
+This element has no attributes or sub-elements and can be set to either
+"false" or "true".
+
+Photon transport must be enabled when this element is set to "true".
+
+  *Default*: false
+
 --------------------------------
 ``<free_gas_threshold>`` Element
 --------------------------------

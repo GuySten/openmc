@@ -1735,7 +1735,21 @@ void emit_forced_photoneutron(Particle& p)
   // samples the photoneutron spectrum, which is what a reactivity worth is
   // an integral over. settings::photoneutron_splits is 1 unless asked for,
   // and the loop then runs exactly once.
-  const int n_split = settings::photoneutron_splits;
+  //
+  // Split only at the FIRST level of the cascade. Inside a BEP photonuclear
+  // perturbation the perturbed tree runs with photonuclear physics on, so its
+  // own photoneutrons make photons which make photoneutrons again, to all
+  // orders -- that recursion is physics and is what makes the estimator exact,
+  // not a first-order one. Splitting it, however, buys nothing: each further
+  // level already carries the photonuclear production ratio (of order 1e-3),
+  // so the level-k term is negligible against the statistical uncertainty on
+  // the worth, while splitting it multiplies the particle count by n at EVERY
+  // level -- n^k particles for a contribution of 1e-3k. A photon that is
+  // itself inside the perturbation's tree descends from a photoneutron and is
+  // therefore past the first level; one in a reference tree, or in an ordinary
+  // non-BEP run with photoneutron_biasing, is at the first.
+  const bool first_level = !bep::in_perturbation_tree(p.bep_tree());
+  const int n_split = first_level ? settings::photoneutron_splits : 1;
 
   for (int i_split = 0; i_split < n_split; ++i_split) {
     int i_nuclide = sample_photonuclear_nuclide(p, true);
@@ -1753,6 +1767,42 @@ void emit_forced_photoneutron(Particle& p)
     double factor = (p.macro_xs().neutron_prod / p.macro_xs().total) *
                     (*product.yield_)(p.E()) / n_split;
     double w = wgt * factor;
+
+    // Roulette the cascade. Past the first level every photoneutron carries
+    // the photonuclear production ratio (of order 1e-3) once more, so its
+    // contribution to the worth falls orders of magnitude below the
+    // statistical uncertainty on that worth long before the weight stops
+    // being representable -- while each one still costs a full transport
+    // history, and makes photons that cost more. Measured over 40 decades of
+    // cascade in one Be-reflected case, and the deepest of them are subnormal
+    // doubles, which most CPUs handle by microcode assist: the cost of that
+    // tail is worse than its particle count suggests.
+    //
+    // Roulette rather than cut: the survivor is carried at the cutoff weight
+    // and survives with probability |w|/w_survive, so the expected emitted
+    // weight is exactly what it was and the estimator stays exact.  `factor`
+    // is updated with it, because the energy bookkeeping at the end of the
+    // loop is written against the weight actually emitted, and copysign keeps
+    // a negative weight negative should a variance-reduction scheme ever
+    // produce one.
+    //
+    // The threshold is a FRACTION OF THE TREE'S ROOT WEIGHT, not an absolute
+    // weight: every weight in a shadow tree is some fraction of its root, so
+    // this is the one scale that does not move when the driver's weight
+    // normalisation or perturbation_population_ratio does.
+    //
+    // The first level is never rouletted, whatever its weight: it IS the
+    // perturbation's source.
+    if (!first_level && settings::photoneutron_cascade_cutoff > 0.0) {
+      const double w_survive =
+        settings::photoneutron_cascade_cutoff * std::abs(bep::root_weight());
+      if (w_survive > 0.0 && std::abs(w) < w_survive) {
+        if (w_survive * prn(p.current_seed()) >= std::abs(w))
+          continue;
+        factor *= w_survive / std::abs(w);
+        w = std::copysign(w_survive, w);
+      }
+    }
 
     // Play russian roulette if survival biasing is turned on
     // and survival normalization is turned off

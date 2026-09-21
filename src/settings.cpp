@@ -148,6 +148,7 @@ SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
 double perturbation_population_ratio {0.1};
+double photoneutron_cascade_cutoff {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -608,6 +609,18 @@ void read_settings_xml(pugi::xml_node root)
           fatal_error("'perturbation_population_ratio' must not be negative; "
                       "use 0 to bank unit-weight sites as an ordinary "
                       "eigenvalue calculation does.");
+        }
+      }
+
+      // Weight below which a photoneutron emitted past the first level of
+      // the photon -> photoneutron -> photon cascade is rouletted. See
+      // emit_forced_photoneutron().
+      if (check_for_node(root, "photoneutron_cascade_cutoff")) {
+        photoneutron_cascade_cutoff =
+          std::stod(get_node_value(root, "photoneutron_cascade_cutoff"));
+        if (photoneutron_cascade_cutoff < 0.0) {
+          fatal_error("'photoneutron_cascade_cutoff' must not be negative; "
+                      "use 0 to transport the whole cascade analog.");
         }
       }
 

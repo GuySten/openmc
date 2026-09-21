@@ -255,11 +255,35 @@ class Settings:
         the weight. Defaults to 1, meaning no splitting.
 
         .. versionadded:: 0.16.0
+    photoneutron_cascade_cutoff : float
+        Fraction of the shadow tree's root weight below which a photoneutron
+        emitted past the *first* level of the photon -> photoneutron -> photon
+        cascade inside an :class:`openmc.PhotonuclearPerturbation` is
+        rouletted. A fraction rather than an absolute weight because every
+        weight in a shadow tree is some fraction of its root, so this is the
+        one scale that does not move when the driver's weight normalisation or
+        :attr:`perturbation_population_ratio` does. That cascade
+        is physics -- the perturbed system has photoneutrons at every order,
+        which is what makes the perturbation exact rather than first-order --
+        but each level carries the photonuclear production ratio once more,
+        so it costs a full transport history for a contribution that falls
+        orders of magnitude below the statistical uncertainty on the worth.
+        The survivor is carried at the cutoff weight and survives with
+        probability ``|w| / cutoff``, so the expected emitted weight, and with
+        it the worth, is unchanged. The first level is never rouletted, whatever its weight:
+        it is the perturbation's source. Defaults to 0, meaning the whole
+        cascade is transported analog.
+
+        .. versionadded:: 0.16.0
     photoneutron_splits : int
         The same for the photoneutrons emitted at a photon collision: the
         expected yield is emitted as this many neutrons of a fraction of the
         weight, each sampled independently, which samples the photoneutron
-        spectrum far better per collision. Defaults to 1.
+        spectrum far better per collision. Applied only at the first level of
+        the photon -> photoneutron -> photon cascade: splitting a later level
+        would multiply the particle count by this factor at every level, for a
+        contribution already down by the photonuclear production ratio per
+        level. Defaults to 1.
 
         .. versionadded:: 0.16.0
     photonuclear_physics : bool
@@ -513,6 +537,7 @@ class Settings:
         self._fission_photons_only = None
         self._sample_photons_above_cutoff = None
         self._photon_splits = None
+        self._photoneutron_cascade_cutoff = None
         self._photoneutron_splits = None
         self._atomic_relaxation = None
         self._plot_seed = None
@@ -834,6 +859,17 @@ class Settings:
         cv.check_type('photon splits', photon_splits, Integral)
         cv.check_greater_than('photon splits', photon_splits, 0)
         self._photon_splits = photon_splits
+
+    @property
+    def photoneutron_cascade_cutoff(self) -> float:
+        return self._photoneutron_cascade_cutoff
+
+    @photoneutron_cascade_cutoff.setter
+    def photoneutron_cascade_cutoff(self, cutoff: float):
+        cv.check_type('photoneutron cascade cutoff', cutoff, Real)
+        cv.check_greater_than(
+            'photoneutron cascade cutoff', cutoff, 0.0, equality=True)
+        self._photoneutron_cascade_cutoff = cutoff
 
     @property
     def photoneutron_splits(self) -> int:
@@ -1902,6 +1938,11 @@ class Settings:
             element = ET.SubElement(root, "photoneutron_splits")
             element.text = str(self._photoneutron_splits)
 
+    def _create_photoneutron_cascade_cutoff_subelement(self, root):
+        if self._photoneutron_cascade_cutoff is not None:
+            element = ET.SubElement(root, "photoneutron_cascade_cutoff")
+            element.text = str(self._photoneutron_cascade_cutoff)
+
     def _create_photoneutron_biasing_subelement(self, root):
         if self._photoneutron_biasing is not None:
             element = ET.SubElement(root, "photoneutron_biasing")
@@ -2469,6 +2510,11 @@ class Settings:
         if text is not None:
             self.photon_splits = int(text)
 
+    def _photoneutron_cascade_cutoff_from_xml_element(self, root):
+        text = get_text(root, 'photoneutron_cascade_cutoff')
+        if text is not None:
+            self.photoneutron_cascade_cutoff = float(text)
+
     def _photoneutron_splits_from_xml_element(self, root):
         text = get_text(root, 'photoneutron_splits')
         if text is not None:
@@ -2855,6 +2901,7 @@ class Settings:
         self._create_sample_photons_above_cutoff_subelement(element)
         self._create_photon_splits_subelement(element)
         self._create_photoneutron_splits_subelement(element)
+        self._create_photoneutron_cascade_cutoff_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2982,6 +3029,7 @@ class Settings:
         settings._sample_photons_above_cutoff_from_xml_element(elem)
         settings._photon_splits_from_xml_element(elem)
         settings._photoneutron_splits_from_xml_element(elem)
+        settings._photoneutron_cascade_cutoff_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)

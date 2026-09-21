@@ -1546,6 +1546,59 @@ def test_population_ratio_leaves_full_weight_trees_alone(run_in_tmpdir,
         'is perturbing the random walk of trees it has no business touching')
 
 
+def test_cascade_controls_leave_other_trees_alone(run_in_tmpdir, model):
+    """Neither cascade control may touch a tree that has no cascade.
+
+    `photoneutron_splits` and `photoneutron_cascade_cutoff` both act inside
+    emit_forced_photoneutron(), which only ever runs for a
+    <photonuclear_perturbation>. A material perturbation has no photoneutrons
+    at all, so both settings must leave its trees BIT-IDENTICAL -- not merely
+    consistent. Anything less means a random number is being drawn somewhere
+    it should not be, which moves the random walk of every tree in the run.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 2000
+    model.settings.photon_transport = True
+    model.settings.perturbation_n_generation = 6
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+
+    def tau_and_keff(**settings):
+        for name, value in settings.items():
+            setattr(model.settings, name, value)
+        sp_path = model.run()
+        with h5py.File(sp_path, 'r') as f:
+            tau = np.array(f['local_perturbation']['tau'][()])
+        with openmc.StatePoint(sp_path) as sp:
+            return tau, sp.keff.nominal_value
+
+    base_tau, base_k = tau_and_keff()
+    split_tau, split_k = tau_and_keff(photoneutron_splits=8)
+    cut_tau, cut_k = tau_and_keff(photoneutron_splits=1,
+                                  photoneutron_cascade_cutoff=1.0e-3)
+
+    assert np.array_equal(base_tau, split_tau), (
+        'photoneutron_splits moved a material perturbation\'s shadow tree, '
+        'which has no photoneutrons to split')
+    assert np.array_equal(base_tau, cut_tau), (
+        'photoneutron_cascade_cutoff moved a material perturbation\'s shadow '
+        'tree, which has no cascade to roulette')
+    # Not bit-identity here, unlike tau above: the global k accumulators are
+    # summed with omp atomic, so their order varies run to run and k moves in
+    # its last ulp between two runs of the SAME settings (measured: identical
+    # at one thread, differing at four). tau has no such freedom -- the
+    # per-thread slabs are summed in thread order -- so it carries the exact
+    # assertion and k is held to a tolerance far below any physical effect
+    # and far above summation noise.
+    for name, k in (('photoneutron_splits', split_k),
+                    ('photoneutron_cascade_cutoff', cut_k)):
+        assert k == pytest.approx(base_k, rel=1.0e-12), (
+            f'{name} reached the driver, which must stay a stock run '
+            'whatever a shadow tree does')
+
+
 def test_rejects_non_material_cell(run_in_tmpdir, model):
     """The swap replaces a material, so a lattice fill must fail.
 

@@ -627,7 +627,37 @@ samples the photoneutron spectrum far better per collision. Must be a
 positive integer, and carries the same restrictions as
 ``<photon_splits>``.
 
+It applies only at the first level of the photon -> photoneutron -> photon
+cascade. Splitting a later level would multiply the particle count by this
+factor at every level, for a contribution already reduced by the
+photonuclear production ratio once per level.
+
   *Default*: 1
+
+-----------------------------------------
+``<photoneutron_cascade_cutoff>`` Element
+-----------------------------------------
+
+The ``<photoneutron_cascade_cutoff>`` element gives the fraction of the
+shadow tree's root weight below which a photoneutron emitted past the *first*
+level of the photon -> photoneutron -> photon cascade inside a
+``<photonuclear_perturbation>`` is rouletted. A fraction rather than an
+absolute weight because every weight in a shadow tree is some fraction of its
+root, so this is the one scale that does not move when the driver's weight
+normalisation or ``<perturbation_population_ratio>`` does. That
+cascade is physics -- the perturbed system has photoneutrons at every order,
+which is what makes the perturbation exact rather than first-order -- but
+each level carries the photonuclear production ratio once more, so it costs a
+full transport history for a contribution that falls far below the
+statistical uncertainty on the worth.
+
+The survivor is carried at the cutoff weight and survives with probability
+``|w| / cutoff``, so the expected emitted weight, and with it the worth, is
+unchanged. The first level is never rouletted, whatever its weight: it is the
+perturbation's source. Must not be negative; 0 transports the whole cascade
+analog.
+
+  *Default*: 0
 
 ----------------------------------
 ``<photoneutron_biasing>`` Element

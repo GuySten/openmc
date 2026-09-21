@@ -181,6 +181,28 @@ def test_photoneutron_splitting_requires_photon_transport(run_in_tmpdir,
         model.run()
 
 
+def test_photoneutron_cascade_cutoff_xml_roundtrip():
+    s = openmc.Settings()
+    assert s.photoneutron_cascade_cutoff is None
+
+    s.photoneutron_cascade_cutoff = 1.0e-8
+    elem = s.to_xml_element()
+    assert elem.find('photoneutron_cascade_cutoff').text == '1e-08'
+    read = openmc.Settings.from_xml_element(elem)
+    assert read.photoneutron_cascade_cutoff == 1.0e-8
+
+    # Zero is the documented way to transport the whole cascade analog, so it
+    # has to be accepted rather than treated as "unset".
+    s.photoneutron_cascade_cutoff = 0.0
+    assert openmc.Settings.from_xml_element(
+        s.to_xml_element()).photoneutron_cascade_cutoff == 0.0
+
+    with pytest.raises(ValueError):
+        s.photoneutron_cascade_cutoff = -1.0
+    with pytest.raises(TypeError):
+        s.photoneutron_cascade_cutoff = 'small'
+
+
 @pytest.mark.parametrize('attr', ['photon_splits', 'photoneutron_splits'])
 def test_splits_xml_roundtrip(attr):
     s = openmc.Settings()

@@ -729,6 +729,25 @@ samples the spectrum. Pulse-height tallies are the exception and are refused,
 a pulse height being the energy one history deposits and so not linear in the
 weight.
 
+Inside a :class:`openmc.PhotonuclearPerturbation` the photoneutron split is
+applied only at the first level of the photon -> photoneutron -> photon
+cascade. The perturbed tree runs with photonuclear physics on, so its own
+photoneutrons make photons which make photoneutrons again, to all orders --
+that recursion is what makes the perturbation exact rather than first-order,
+and it stays. Splitting it does not pay: each further level already carries
+the photonuclear production ratio, while splitting would multiply the
+particle count by the split factor at every level. The same reasoning says
+the deep levels need not be transported in full at all, and they can be
+rouletted::
+
+  settings.photoneutron_cascade_cutoff = 1e-8
+
+A photoneutron past the first level whose weight falls below this fraction of
+the shadow tree's root weight is carried at the cutoff weight with probability
+``|w| / cutoff`` and dropped otherwise, so the expected emitted weight is
+exactly what it was. The first level is never rouletted -- it is the
+perturbation's source.
+
 Where a photon energy cutoff is set -- at a photonuclear threshold, say --
 most of what is drawn is below it and thrown away at birth. That waste can be
 removed outright by drawing only from the part of the spectrum above the

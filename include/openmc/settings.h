@@ -198,10 +198,7 @@ extern bool
                                //!< and the whole fission bank -- which is
                                //!< unbiased and merely noisier, so it is a
                                //!< figure-of-merit switch and never a
-                               //!< correctness one. Checked before
-                               //!< bep_site_weight, so off means off.
-extern double bep_site_weight; //!< override for the numerator populations'
-                               //!< site weight; 0 means use the rule
+                               //!< correctness one.
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

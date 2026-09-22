@@ -134,10 +134,6 @@ class Settings:
         speed, never for correctness, and the honest reason to turn it off is
         to compare against an untuned calculation.
 
-        The switch is authoritative: :attr:`perturbation_site_weight` is
-        ignored when it is off, so turning the auto-tune off cannot be
-        silently undone by another setting.
-
         What the tuning is for: an untuned calculation banks unit-weight
         sites with the parent's weight turned into the *probability* of
         banking one -- which for a population carrying the perturbation
@@ -192,18 +188,6 @@ class Settings:
         level read at depth ``L`` and the whole curve ``d = 0..L`` is the
         diagnostic. If it is still drifting at ``L``, raise it. See
         :meth:`openmc.Perturbations.depth_convergence`.
-    perturbation_site_weight : float
-        Force the numerator populations' site weight instead of letting the
-        auto-tune choose it. Diagnostic only: it exists so a figure-of-merit
-        curve can be swept against the site weight, which is the only thing
-        that can confirm the rule's optimum is where
-        ``docs/bep_autotune.md`` derives it. Leave unset in production.
-
-        Ignored when :attr:`perturbation_site_splitting` is ``False`` -- the
-        off switch wins, so a run with the auto-tune off has unit site
-        weights whatever this says.
-
-        .. versionadded:: 0.16.0
     max_lost_particles : int
         Maximum number of lost particles
 
@@ -533,7 +517,6 @@ class Settings:
         # Iterated Fission Probability
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
-        self._perturbation_site_weight = None
         self._perturbation_site_splitting = None
 
         # Collision track feature
@@ -1151,17 +1134,6 @@ class Settings:
             cv.check_greater_than("number of generations", n, 2,
                                   equality=True)
         self._perturbation_n_generation = n
-
-    @property
-    def perturbation_site_weight(self) -> float:
-        return self._perturbation_site_weight
-
-    @perturbation_site_weight.setter
-    def perturbation_site_weight(self, w: float):
-        if w is not None:
-            cv.check_type("perturbation site weight", w, Real)
-            cv.check_greater_than("perturbation site weight", w, 0.0)
-        self._perturbation_site_weight = w
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1932,11 +1904,6 @@ class Settings:
             element = ET.SubElement(root, "perturbation_n_generation")
             element.text = str(self._perturbation_n_generation)
 
-    def _create_perturbation_site_weight_subelement(self, root):
-        if self._perturbation_site_weight is not None:
-            element = ET.SubElement(root, "perturbation_site_weight")
-            element.text = str(self._perturbation_site_weight)
-
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
             element = ET.SubElement(root, "tabular_legendre")
@@ -2472,11 +2439,6 @@ class Settings:
         if text is not None:
             self.perturbation_n_generation = int(text)
 
-    def _perturbation_site_weight_from_xml_element(self, root):
-        text = get_text(root, 'perturbation_site_weight')
-        if text is not None:
-            self.perturbation_site_weight = float(text)
-
     def _ifp_n_generation_from_xml_element(self, root):
         text = get_text(root, 'ifp_n_generation')
         if text is not None:
@@ -2762,7 +2724,6 @@ class Settings:
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
-        self._create_perturbation_site_weight_subelement(element)
         self._create_perturbation_site_splitting_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
@@ -2884,7 +2845,6 @@ class Settings:
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
-        settings._perturbation_site_weight_from_xml_element(elem)
         settings._perturbation_site_splitting_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)

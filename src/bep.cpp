@@ -1320,29 +1320,15 @@ namespace {
 
 void choose_site_weights()
 {
-  // The off switch, and it is checked FIRST -- before the diagnostic
-  // override, not after it.
+  // The off switch.
   //
-  // It used to be the other way round, so a run with
-  // perturbation_site_splitting = false and a perturbation_site_weight set
-  // still had its numerator weights moved off 1. A switch a second setting
-  // can quietly overrule is not an off switch. Off now means off: every site
+  // Off means off: every site
   // weight stays at 1, and sample_denominator_roots() then keeps the whole
   // fission bank -- i.e. exactly what an ordinary eigenvalue calculation
   // banks, and the state this feature had before any tuning existed.
   if (!settings::perturbation_site_splitting)
     return;
 
-  if (settings::bep_site_weight > 0.0) {
-    // An explicit override short-circuits the rule. Used to sweep the site
-    // weight and measure the figure of merit against it, which is the only
-    // way to confirm the optimum is where the derivation says it is.
-    for (const auto& p : perturbations) {
-      for (int tree : {p.tree_fp, p.tree_fn, p.tree_lp, p.tree_ln})
-        tree_site_weight[tree] = settings::bep_site_weight;
-    }
-    return;
-  }
 
 
   // Five active batches before anything measured here is trusted at all.

@@ -1557,16 +1557,15 @@ def test_site_splitting_tunes_the_denominator_without_moving_the_worth(
         f'enough to bias the reported worth')
 
 
-def test_the_off_switch_beats_the_site_weight_override(run_in_tmpdir, model):
-    """Off means off, even with an explicit site weight set.
+def test_the_off_switch_leaves_every_weight_at_one(run_in_tmpdir, model):
+    """Off means off: no population is split, rouletted or re-rooted.
 
-    The two settings used to be checked in the other order, so a run with
-    ``perturbation_site_splitting = False`` and a ``perturbation_site_weight``
-    still had its numerator weights moved off 1. A switch that a second
-    setting can quietly overrule is not an off switch, and a user who turns
-    the auto-tune off to get an untuned reference would have got a tuned one.
-
-    The override is a diagnostic; the switch is the contract.
+    This began as a precedence test, back when a perturbation_site_weight
+    override was checked before the switch and could quietly re-tune a run
+    the user had turned tuning off for. That setting is gone, so what is left
+    to protect is the contract itself -- the switch is the only thing
+    standing between a user and the rule, and a user who turns it off to get
+    an untuned reference must actually get one.
     """
     _, absorber = _water_and_absorber(model)
     model.settings.particles = 500
@@ -1576,7 +1575,6 @@ def test_the_off_switch_beats_the_site_weight_override(run_in_tmpdir, model):
                                  perturbation_id=1),
     ])
     model.settings.perturbation_site_splitting = False
-    model.settings.perturbation_site_weight = 0.1
 
     path = model.run()
     with h5py.File(path, 'r') as f:
@@ -1584,7 +1582,7 @@ def test_the_off_switch_beats_the_site_weight_override(run_in_tmpdir, model):
 
     assert np.array_equal(w, np.ones_like(w)), (
         f'the auto-tune is off and every site weight should be 1, but the '
-        f'run used {w}; the site-weight override is overruling the switch')
+        f'run used {w}')
 
 
 def test_site_splitting_xml_roundtrip():

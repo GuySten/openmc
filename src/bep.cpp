@@ -1273,11 +1273,52 @@ void choose_site_weights()
   struct PertPlan {
     double g_d, g_l, g_f;     // (9) and section 2
     double p_d, p_l, p_f;     // carried weights
+    double w_d, w_l, w_f;     // largest weight the delta method still allows
     double b;                 // this perturbation's floor
   };
   vector<PertPlan> plan(np);
   double b_tot = 0.0;
   double c_d_tot = 0.0;
+
+  // The ROOT half of relvar(X_t) = 1/N_t + c_t/M_t, measured per tree rather
+  // than assumed away.
+  //
+  // This is the term assumption A4 pretended did not exist (the audit,
+  // section 9). Leaving it out does not merely lose accuracy: because the
+  // floor B is obtained by SUBTRACTING the modelled part from the measured
+  // relative variance, every bit of variance the model fails to name is
+  // credited to B instead -- and a larger B tells the rule to coarsen, which
+  // raises the measured variance again. That is the feedback loop the audit
+  // found, and naming this term is what breaks it.
+  //
+  // c_t = M_t * sum(x^2) / (sum x)^2 - 1 over the tree's own roots, so
+  // c_t/M_t = sum(x^2)/(sum x)^2 - 1/M_t is the relative variance of their
+  // sum. It depends on the physics of the roots and not on the site weights,
+  // which is what makes it usable on the side of the equation B was being
+  // read off.
+  auto root_relvar = [&](int tree) -> double {
+    double m = static_cast<double>(batch_sources[tree]);
+    double sx = batch_tau[tau_index(tree, L)];
+    double sxx = batch_root_sq[tree];
+    if (m <= 1.0 || sx <= 0.0 || sxx <= 0.0)
+      return 0.0;
+    double rv = sxx / (sx * sx) - 1.0 / m;
+    return rv > 0.0 ? rv : 0.0;
+  };
+
+  // The site floor, in the expansion's own terms: sqrt(1/N + c/M) <= EPS.
+  //
+  // Returns the largest site WEIGHT that still satisfies it, given the
+  // population weight the tree carries. When the root noise alone already
+  // breaches EPS no site count can rescue the expansion, and the honest
+  // answer is to stop coarsening entirely -- w = 1 leaves the sites as the
+  // physics hands them, neither split nor rouletted.
+  const double eps2 = DELTA_METHOD_EPS * DELTA_METHOD_EPS;
+  auto weight_cap = [&](double pop, double rv) -> double {
+    if (rv >= eps2)
+      return 1.0;
+    return pop * (eps2 - rv);
+  };
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1353,26 +1394,32 @@ void choose_site_weights()
     double n_d = d_w / site_weight(p.tree_d);
     double n_l_sites = (lp + ln) / site_weight(p.tree_lp);
     double n_f_sites = (fp + fn) / site_weight(p.tree_fp);
-    double discrete = (n_d > 0.0 ? g_d / n_d : 0.0) +
-                      (n_l_sites > 0.0 ? g_l / n_l_sites : 0.0) +
-                      (n_f_sites > 0.0 ? g_f / n_f_sites : 0.0);
+
+    // relvar_t = 1/N_t + c_t/M_t, both halves. A4, corrected.
+    double rv_d = root_relvar(p.tree_d);
+    double rv_l = 0.5 * (root_relvar(p.tree_lp) + root_relvar(p.tree_ln));
+    double rv_f = 0.5 * (root_relvar(p.tree_fp) + root_relvar(p.tree_fn));
+
+    double discrete = g_d * ((n_d > 0.0 ? 1.0 / n_d : 0.0) + rv_d) +
+                      g_l * ((n_l_sites > 0.0 ? 1.0 / n_l_sites : 0.0) + rv_l) +
+                      g_f * ((n_f_sites > 0.0 ? 1.0 / n_f_sites : 0.0) + rv_f);
     double b = v_meas - discrete;
     if (b <= 0.0)
       return; // a floor is not resolved yet; leave every weight alone
 
-    plan[ip] = {g_d, g_l, g_f, d_w, lp + ln, fp + fn, b};
+    plan[ip] = {g_d, g_l, g_f, d_w, lp + ln, fp + fn,
+      weight_cap(d_w, rv_d), weight_cap(lp + ln, rv_l),
+      weight_cap(fp + fn, rv_f), b};
     b_tot += b;
 
-    // c_D for this perturbation's denominator, measured across its roots
-    // rather than inferred: c = M*sum(x^2)/(sum x)^2 - 1, where x is one
-    // root's depth-L descendant weight. Summed over perturbations because a
-    // single kept bank site is rooted once in EACH of them, so they share
+    // c_D for this perturbation's denominator. Same measurement as
+    // root_relvar() but carried as c rather than c/M, because (11) divides
+    // it by the root count it is choosing. Summed over perturbations because
+    // a single kept bank site is rooted once in EACH of them, so they share
     // the knob and their floors add.
     double m_d = static_cast<double>(batch_sources[p.tree_d]);
-    double sx = batch_tau[tau_index(p.tree_d, L)];
-    double sxx = batch_root_sq[p.tree_d];
-    if (m_d > 1.0 && sx > 0.0 && sxx > 0.0) {
-      double c = m_d * sxx / (sx * sx) - 1.0;
+    if (m_d > 1.0) {
+      double c = rv_d * m_d;
       if (c > 0.0)
         c_d_tot += c;
     }
@@ -1395,7 +1442,7 @@ void choose_site_weights()
     // Never below a floor that could not resolve anything, and never above
     // the bank, which is every site used once and is where the roots stop
     // being independent of each other anyway.
-    target = std::max(target, MIN_TREE_SITES);
+    target = std::max(target, MIN_TREE_ROOTS);
     n_roots_auto = static_cast<int64_t>(target + 0.5);
   }
 
@@ -1411,20 +1458,15 @@ void choose_site_weights()
 
     const struct {
       int a, b2;
-      double g, weight;
-    } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d},
-      {p.tree_lp, p.tree_ln, q.g_l, q.p_l},
-      {p.tree_fp, p.tree_fn, q.g_f, q.p_f}};
+      double g, weight, cap;
+    } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d, q.w_d},
+      {p.tree_lp, p.tree_ln, q.g_l, q.p_l, q.w_l},
+      {p.tree_fp, p.tree_fn, q.g_f, q.p_f, q.w_f}};
 
     for (const auto& grp : groups) {
       if (grp.weight <= 0.0 || grp.g <= 0.0)
         continue;
       double target = std::sqrt(grp.g) * scale;
-
-      // A population thinner than this estimates nothing, and the variance
-      // model behind the optimum stops meaning anything. Bounding the SITE
-      // COUNT rather than the weight says what is actually required.
-      target = std::max(target, MIN_TREE_SITES);
 
       // Rounded to the nearest HALF DECADE. Coarse enough that the value
       // does not chase sampling noise from batch to batch, fine enough to
@@ -1433,11 +1475,45 @@ void choose_site_weights()
       double w = std::pow(
         10.0, 0.5 * std::floor(2.0 * std::log10(grp.weight / target) + 0.5));
 
-      // No upper clamp. w > 1 is Russian roulette on the sites -- fewer and
-      // heavier -- and it is what the denominator needs: N_D* is typically
-      // well below the population the bank hands it. Banking stays unbiased
-      // at any weight, since E[N] = nu exactly however w is chosen.
+      // At most one half decade per batch.
+      //
+      // The rule reads its own past output: the weights it chooses this
+      // batch change the variance it measures next batch. Corrected or not,
+      // that is a loop, and a loop with an unbounded step can run away from
+      // a single noisy batch before the next one can pull it back. Bounding
+      // the step does not change where the rule settles -- the fixed point
+      // is wherever (7") puts it -- only how fast it may travel, and the
+      // grid is half decades so the bound keeps w on it.
+      double w_prev = tree_site_weight[grp.a];
+      if (w_prev > 0.0) {
+        const double step = std::sqrt(10.0);
+        w = std::min(std::max(w, w_prev / step), w_prev * step);
+      }
+
+      // The delta method's domain of validity, enforced on the REALISED site
+      // count and not on the target -- and applied last, because it is a
+      // hard bound and the damper above is only a damper. It may move w by
+      // more than a half decade in one batch; that direction is the safe
+      // one, and a damper that could hold the rule outside the domain its
+      // own optimum was derived in would be worse than no damper.
+      //
+      // This used to clamp `target` before the rounding, which does not
+      // preserve the clamp at all: rounding moves w UP as readily as down,
+      // and N = weight/w then lands BELOW the bound that was just applied.
+      // It was measured doing exactly that -- a target clamped to 100 sites
+      // came out at 77.6. So the cap is applied to w, and with floor()
+      // rather than the nearest half decade, since rounding to nearest is
+      // the very step that broke it.
+      if (grp.cap > 0.0 && w > grp.cap)
+        w = std::pow(10.0, 0.5 * std::floor(2.0 * std::log10(grp.cap)));
+
+      // No upper clamp beyond that one. w > 1 is Russian roulette on the
+      // sites -- fewer and heavier -- and it is what the denominator needs:
+      // N_D* is typically well below the population the bank hands it.
+      // Banking stays unbiased at any weight, since E[N] = nu exactly
+      // however w is chosen.
       w = std::max(MIN_SITE_WEIGHT, w);
+
       tree_site_weight[grp.a] = w;
       tree_site_weight[grp.b2] = w;
     }
@@ -1527,7 +1603,7 @@ void write_results(hid_t file_id)
   write_dataset(group, "site_weight", tree_site_weight);
   write_dataset(group, "n_sources", tree_sources);
 
-  // The site weights, and the histories the shadow pass actually transported.
+  // The histories the shadow pass actually transported.
   //
   // WORK, not wall clock. A figure of merit needs a cost, and the cost has to
   // be reproducible or the comparison is not either: two runs of one seed on
@@ -1537,7 +1613,6 @@ void write_results(hid_t file_id)
   //
   // A shadow tree transports one history per root plus one per banked site,
   // since every banked site is revived exactly once.
-  write_dataset(group, "site_weight", tree_site_weight);
   write_dataset(group, "n_histories", n_history_total);
 
   vector<int32_t> ids;

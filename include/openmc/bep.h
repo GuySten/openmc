@@ -116,15 +116,36 @@ constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 //! sites the next.
 constexpr double MIN_SITE_WEIGHT {1.0e-8};
 
-//! Fewest banked sites a tuned population may be driven to.
+//! Largest per-batch relative fluctuation a tuned population may be driven to.
 //!
 //! The optimum (docs/bep_autotune.md 7') can ask for a very small N when a
 //! population carries little of the answer -- the denominator above all, now
-//! that it is tunable. Below a few dozen sites per batch the population
-//! estimates nothing and the variance model behind the optimum stops meaning
-//! anything, so the site COUNT is bounded rather than the weight: that is
-//! what is actually required, and it leaves the weight free to exceed one.
-constexpr double MIN_TREE_SITES {100.0};
+//! that it is tunable. But the optimum comes out of a delta-method expansion
+//! of rho in those fluctuations, and nothing in that expansion resists being
+//! pushed outside its own domain of validity: the rule will happily choose a
+//! population so thin that the expansion which recommended it no longer
+//! holds.
+//!
+//! So the floor is stated in the expansion's own terms. A population's
+//! per-batch relative fluctuation is sqrt(relvar) = sqrt(1/N + c/M), and the
+//! second-order term the expansion drops is O(relvar) relative to the first.
+//! Holding sqrt(relvar) <= EPS bounds that neglected term at EPS^2 -- 1% of
+//! the variance model at EPS = 0.1.
+//!
+//! Note what this does NOT reduce to: a fixed site count. Solving for the
+//! site count gives N >= 1/(EPS^2 - c/M), which is 100 only when the ROOT
+//! noise c/M is negligible, and tightens without bound as the roots get
+//! noisy -- which is exactly the regime where a fixed count would have been
+//! most wrong. A count of 100 was the old constant; it is now the value this
+//! criterion takes in the easy case, not an assumption.
+constexpr double DELTA_METHOD_EPS {0.1};
+
+//! Fewest denominator roots the rule may ask for.
+//!
+//! Unlike the site floor above this one really is a resolution bound and not
+//! a validity bound: c_D itself is measured ACROSS those roots, so a handful
+//! of them cannot estimate the spread that sets their own optimal number.
+constexpr double MIN_TREE_ROOTS {100.0};
 
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in

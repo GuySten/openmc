@@ -773,6 +773,53 @@ def test_convergence_recovers_a_planted_transient(run_in_tmpdir):
             is False
 
 
+def test_convergence_reports_a_railed_fit_instead_of_inventing_a_rate(
+        run_in_tmpdir):
+    """A flat curve has no decay in it, and the fit must say so.
+
+    Fitting ``A + B r**d`` to a curve that never turns over drives ``r`` to
+    the slowest decay on the grid, and the fit then reports a rate near one
+    and a required depth in the thousands. Both are artifacts of the grid
+    edge. Read literally they say 'run deeper', which is exactly the wrong
+    advice for a level that is barely moving because it is wrong.
+
+    The curve here is the measured water->B10 one idealised: -285 pcm
+    creeping by a quarter of a pcm per generation, with no turnover
+    anywhere. An exactly flat curve is a different case and not this one --
+    it is fitted by ``B = 0`` at any rate, and it is genuinely converged.
+    """
+    L, n_batch, k = 20, 40, 2.2
+    rng = np.random.default_rng(5)
+    D, zero, *_ = _branching_tau(rng, k, 0.0, 400, n_batch, L)
+
+    d = np.arange(L + 1, dtype=float)
+    creep = -285e-5 - 0.25e-5 * d
+    tau = np.stack([D, zero, zero, np.zeros_like(D), -creep * k * D], axis=1)
+    _write_statepoint('creep.h5', tau, [1], L, keff=k)
+
+    with openmc.StatePoint('creep.h5', autolink=False) as sp:
+        c = sp.perturbations.convergence(1, target=0.05)
+
+    assert c['railed'] is True
+    assert np.isnan(c['rate']), 'a railed fit has no rate to report'
+    assert np.isnan(c['remaining'])
+    assert c['required_depth'] == np.inf
+    assert c['converged'] is False
+    assert c['asymptote'] == pytest.approx(-290.0, rel=1e-9), \
+        'with no decay visible the best statement is the level at L itself'
+
+    # The exactly flat curve, for contrast: nothing left to go, and the fit
+    # must not call that a rail.
+    flat = np.full(L + 1, -285e-5)
+    tau = np.stack([D, zero, zero, np.zeros_like(D), -flat * k * D], axis=1)
+    _write_statepoint('flat.h5', tau, [1], L, keff=k)
+    with openmc.StatePoint('flat.h5', autolink=False) as sp:
+        c = sp.perturbations.convergence(1, target=0.05)
+    assert c['railed'] is False
+    assert c['remaining'] == pytest.approx(0.0, abs=1e-9)
+    assert c['asymptote'] == pytest.approx(-285.0, rel=1e-9)
+
+
 def test_convergence_needs_the_populations(run_in_tmpdir):
     """Without tau_pooled the amplification is unknowable -- say so."""
     L, n_batch = 8, 40

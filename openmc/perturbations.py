@@ -500,6 +500,16 @@ class Perturbations(cv.CheckedList):
             ``asymptote`` (pcm), ``remaining`` (pcm still to go at ``L``),
             ``rate`` (the fitted ``r``), ``amplification`` at ``L``,
             ``required_depth`` for ``target``, and ``converged``.
+
+            ``railed`` is the one to read first. It means the fit ran to the
+            slowest decay on offer without the curve turning over, so there
+            is no decay visible in the window at all: ``rate`` and
+            ``remaining`` come back NaN rather than as invented numbers, and
+            ``asymptote`` is just the level at ``L``. A railed fit is never
+            ``converged``, but it does not say the depth is too small --
+            a level that is flat and simply wrong rails too, and the two are
+            told apart by comparing against a direct calculation, not by
+            going deeper.
         """
         if getattr(self, '_mean', None) is None:
             raise ValueError('No results present; read from a statepoint.')
@@ -511,8 +521,10 @@ class Perturbations(cv.CheckedList):
         sel = d >= (1 if d_min is None else d_min)
         x, y = d[sel], curve[sel]
 
+        R_MAX = 0.999
+        grid = np.linspace(0.05, R_MAX, 2000)
         best = None
-        for r in np.linspace(0.05, 0.999, 2000):
+        for r in grid:
             M = np.vstack([np.ones_like(x), r ** x]).T
             try:
                 coef, *_ = np.linalg.lstsq(M, y, rcond=None)
@@ -522,23 +534,38 @@ class Perturbations(cv.CheckedList):
             if best is None or chi2 < best[0]:
                 best = (chi2, r, coef[0], coef[1])
         _, r, A, B = best
-        remaining = B * r ** L
+
+        # A curve that has not turned over inside the window is fitted best
+        # by the slowest decay on offer, and the fit then rails: r comes back
+        # at the grid edge and A is an extrapolation to a depth the data say
+        # nothing about. That is not a measured rate and must not be reported
+        # as one -- it is the statement "no decay is visible here", which can
+        # mean the transient is far slower than L or that the curve is flat
+        # and the level is simply wrong. Either way the depth is unjudgeable.
+        railed = bool(r >= grid[-2])
+        if railed:
+            A = float(y[-1])
+            B = np.nan
 
         amp = np.inf
         try:
             amp = float(self.amplification(perturbation_id)[L])
         except ValueError:
             pass
+        remaining = np.nan if railed else B * r ** L
         with np.errstate(divide='ignore', invalid='ignore'):
             need = (np.log(amp / target) / np.log(1.0 / r)
-                    if 0.0 < r < 1.0 and np.isfinite(amp) else np.inf)
+                    if not railed and 0.0 < r < 1.0 and np.isfinite(amp)
+                    else np.inf)
         return {
             'asymptote': float(A),
             'remaining': float(remaining),
-            'rate': float(r),
+            'rate': np.nan if railed else float(r),
+            'railed': railed,
             'amplification': amp,
             'required_depth': float(need),
-            'converged': bool(abs(remaining) <= target * abs(A) and L >= need),
+            'converged': bool(not railed and abs(remaining) <= target * abs(A)
+                              and L >= need),
         }
 
     def depth_convergence(self, perturbation_id):

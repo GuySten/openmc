@@ -1478,30 +1478,60 @@ def test_site_splitting_tunes_the_denominator_without_moving_the_worth(
         with h5py.File(path, 'r') as f:
             g = f['local_perturbation']
             nd = int(g['n_generation'][()]) + 1
-            tau = np.array(g['tau_pooled'][()]).reshape(
-                int(g['n_trees'][()]), nd)
+            n_trees = int(g['n_trees'][()])
+            tau = np.array(g['tau_pooled'][()]).reshape(n_trees, nd)
             trees = np.array(g['perturbation 1']['trees'][()])
             d = tau[trees[0]]
+            nb = int(g['n_batches'][()])
+            L = nd - 1
+            bias = (np.array(g['level_sum'][()]).reshape(-1, nd)[0, L] / nb
+                    - np.array(g['level_pooled'][()]).reshape(-1, nd)[0, L])
         with openmc.StatePoint(path) as sp:
             rho = sp.perturbations.by_id(1).rho
-        return d, rho
+        return d, rho, tau, bias * 1e5, trees
 
-    d_on, rho_on = run_once(True)     # the default: every population tuned
-    d_on2, rho_on2 = run_once(True)   # same configuration, again
-    d_off, rho_off = run_once(False)  # unit-weight sites throughout
+    d_on, rho_on, tau_on, bias_on, trees_on = run_once(True)
+    d_on2, rho_on2, tau_on2, _, _ = run_once(True)  # same config, again
+    d_off, rho_off, tau_off, bias_off, _ = run_once(False)  # unit weights
 
-    # Reproducibility, bit for bit.
-    assert np.array_equal(d_on, d_on2), \
+    # Reproducibility of the SHADOW PASS, bit for bit, over every tree -- not
+    # just the denominator, which is what this used to check.
+    assert np.array_equal(tau_on, tau_on2), \
         'two runs of one configuration disagree; the shadow pass is not ' \
         'reproducible'
-    assert rho_on.nominal_value == rho_on2.nominal_value
 
-    # With splitting off every site weight is 1, so the denominator is the
-    # raw banked population and the tuned run must differ from it -- that is
-    # the whole point of making it a tunable.
-    assert not np.array_equal(d_on, d_off), \
-        'the denominator population is identical with splitting on and ' \
-        'off, so the rule is still refusing to tune it'
+    # rho is deliberately NOT compared bit for bit. It divides by the
+    # DRIVER's keff, and keff is thread-order dependent in stock OpenMC:
+    # measured, two identical runs differ by ~4e-16 at OMP_NUM_THREADS=4 and
+    # agree exactly at 1, with the feature on and off alike. That is the
+    # driver's floating-point associativity, not BEP's reproducibility, and
+    # an exact assertion on rho tests the wrong component -- it passed here
+    # for a while by luck. The bit-exact claim belongs on tau above, which is
+    # what BEP actually controls and what caught the real bug: denominator
+    # roots keyed on their index in a bank that threads fill in race order.
+    assert rho_on.nominal_value == pytest.approx(
+        rho_on2.nominal_value, rel=1e-12)
+
+    # The tuning must actually act, and the population it must act on is the
+    # NUMERATOR: that is where the variance is, and where the figure of merit
+    # is won.
+    #
+    # This used to assert the same of the DENOMINATOR, which was wrong as a
+    # universal claim. The denominator is eligible for tuning, but how far it
+    # may be coarsened is bounded by the delta method's validity -- rho is a
+    # ratio in D, so a thin D biases the reported worth -- and that bound is
+    # problem-dependent. On a problem whose fission bank is small, as here,
+    # the bound permits nothing and w_D = 1 is the correct answer, not a rule
+    # refusing to act. On the larger problem the figure of merit is measured
+    # on, the same rule chooses w_D = 3.16. A test cannot assert a
+    # problem-dependent outcome as an invariant; what it can assert is that
+    # the denominator is never driven past the bound, which is what the
+    # mean-of-ratios guard below does.
+    n_on = tau_on[trees_on[3]]
+    n_off = tau_off[trees_on[3]]
+    assert not np.array_equal(n_on, n_off), \
+        'the numerator population is identical with tuning on and off, so ' \
+        'the rule is not acting at all'
 
     # ...but the answer must not move. Unbiased at any site weight.
     sigma = float(np.hypot(rho_on.std_dev, rho_off.std_dev))
@@ -1509,6 +1539,24 @@ def test_site_splitting_tunes_the_denominator_without_moving_the_worth(
     assert abs(rho_on.nominal_value - rho_off.nominal_value) < 4.0 * sigma, (
         f'site splitting moved the worth: {rho_on} with splitting against '
         f'{rho_off} without, which is more than 4 sigma apart')
+
+    # The guard that would have caught the regression this rule was rewritten
+    # for. Every statepoint carries two estimators of one worth: the mean of
+    # the per-batch ratios, which carries the mean-of-ratios bias because
+    # E[1/D] > 1/E[D], and the ratio of the pooled totals, which does not.
+    # They differ only by that bias, so their gap measures it directly, on a
+    # single run, with every shared source of noise cancelled.
+    #
+    # An earlier rule drove the denominator to 78 sites per batch and opened a
+    # gap of -29.7 pcm [-45.7, -12.4] on a -259 pcm worth, while the untuned
+    # arm showed -0.09 +/- 0.60. The tuned arm's gap must stay comparable to
+    # the untuned one: tuning is allowed to cost variance, never to introduce
+    # bias.
+    assert abs(bias_on) < max(4.0 * abs(bias_off), 0.02 * abs(
+        rho_off.nominal_value)), (
+        f'tuning opened a mean-of-ratios gap of {bias_on:.2f} pcm against '
+        f'{bias_off:.2f} pcm untuned; the denominator has been driven thin '
+        f'enough to bias the reported worth')
 
 
 def test_the_off_switch_beats_the_site_weight_override(run_in_tmpdir, model):

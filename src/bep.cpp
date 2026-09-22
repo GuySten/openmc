@@ -46,6 +46,9 @@ vector<int64_t> tree_sources;
 vector<int64_t> batch_sources;
 vector<double> batch_root_sq;
 vector<double> thread_root_sq;
+vector<double> root_x;
+vector<double> batch_pair_sq;
+vector<int64_t> batch_pair_n;
 int64_t n_history_total {0};
 int64_t batch_histories {0};
 vector<vector<TrackSite>> thread_tracks;
@@ -86,7 +89,7 @@ namespace {
 //! sample_neutron_reaction(), so leaving it unseeded silently decorrelates
 //! the trees wherever a nuclide has unresolved resonances -- and a null
 //! perturbation then returns noise instead of zero.
-void run_one_tree(const SourceRoot& site)
+void run_one_tree(const SourceRoot& site, double* x_out)
 {
   const int tree = site.tree;
   Particle p;
@@ -162,6 +165,14 @@ void run_one_tree(const SourceRoot& site)
   batch_histories += p.n_tracks();
   thread_root_sq[static_cast<size_t>(thread_num()) * tree_pert.size() +
                  static_cast<size_t>(tree)] += x * x;
+
+  // This root's own depth-L contribution, kept so that the SIGNED combination
+  // over a common-random-number group can be formed after the parallel loop.
+  // Writing it per root and grouping serially afterwards keeps the grouping
+  // out of the parallel region: a pair is adjacent in the sorted root list but
+  // a static schedule can still split it across two threads.
+  if (x_out)
+    *x_out = x;
 
   p.local_secondary_bank().clear();
   thread_root_weight[thread_num()] = 0.0;
@@ -706,6 +717,8 @@ void init()
   tree_sources.assign(tree_pert.size(), 0);
   batch_sources.assign(tree_pert.size(), 0);
   batch_root_sq.assign(tree_pert.size(), 0.0);
+  batch_pair_sq.assign(perturbations.size() * 2, 0.0);
+  batch_pair_n.assign(perturbations.size() * 2, 0);
   thread_root_sq.assign(
     static_cast<size_t>(num_threads()) * tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
@@ -1086,9 +1099,83 @@ void run_shadow_pass()
   // thread that averages out. Switch to dynamic if load imbalance ever shows
   // up, at the cost of bit-reproducibility.
   auto n = static_cast<int64_t>(source_roots.size());
+  root_x.assign(source_roots.size(), 0.0);
 #pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < n; ++i) {
-    run_one_tree(source_roots[i]);
+    run_one_tree(source_roots[i], &root_x[i]);
+  }
+
+  // ---- 4. the SIGNED within-batch spread of each numerator channel --------
+  //
+  // This is what retires `r`.
+  //
+  // The tuning rule needs the variance of the signed numerator, N_L = L+ - L-
+  // and N_F = F+ - F-, not the variance of L+ and L- separately. Those two are
+  // strongly correlated -- they are grown from the same source event on common
+  // random numbers, which is the whole point of sharing a seed -- so the
+  // variance of the difference is smaller than the sum of the variances by a
+  // factor (1 - r), and r is neither known nor safely estimable from batch
+  // statistics (section 6).
+  //
+  // The derivation's answer was to set r = 0 and call it conservative. It is
+  // not conservative here: it makes the modelled splittable variance EXCEED
+  // the measured total, so the floor comes out negative and the rule refuses
+  // to act at all. Measured at unit weights on the test problem, v_meas = 1.32
+  // against a modelled G_L*rv_L = 1.40.
+  //
+  // Forming the signed combination per common-random-number group and squaring
+  // THAT puts (1 - r) inside the measurement, where it needs no coefficient
+  // and no assumption. A group is a maximal run of roots sharing a seed_id,
+  // which the stable sort above has already made adjacent; each group belongs
+  // to exactly one channel, since the F root, the absorption root and the
+  // scattered pair are drawn on different keys.
+  if (mpi::master) {
+    size_t i = 0;
+    while (i < source_roots.size()) {
+      const int64_t sid = source_roots[i].seed_id;
+      size_t j = i;
+      double acc[2] {0.0, 0.0}; // 0 = L channel, 1 = F channel
+      bool seen[2] {false, false};
+      while (j < source_roots.size() && source_roots[j].seed_id == sid) {
+        const int tr = source_roots[j].tree;
+        const int cls = tree_class[tr];
+        int ch = -1;
+        double sign = 0.0;
+        switch (cls) {
+        case TREE_LP: ch = 0; sign = +1.0; break;
+        case TREE_LN: ch = 0; sign = -1.0; break;
+        case TREE_FP: ch = 1; sign = +1.0; break;
+        case TREE_FN: ch = 1; sign = -1.0; break;
+        default: break; // TREE_D is the denominator, measured separately
+        }
+        if (ch >= 0) {
+          acc[ch] += sign * root_x[j];
+          seen[ch] = true;
+        }
+        ++j;
+      }
+      for (int ch = 0; ch < 2; ++ch) {
+        if (!seen[ch])
+          continue;
+        // Which perturbation this group belongs to: every root in a group
+        // feeds one perturbation's trees.
+        int ip = -1;
+        for (size_t q = i; q < j; ++q) {
+          const int cls = tree_class[source_roots[q].tree];
+          if ((ch == 0 && (cls == TREE_LP || cls == TREE_LN)) ||
+              (ch == 1 && (cls == TREE_FP || cls == TREE_FN))) {
+            ip = tree_pert[source_roots[q].tree];
+            break;
+          }
+        }
+        if (ip < 0)
+          continue;
+        const size_t slot = static_cast<size_t>(ip) * 2 + ch;
+        batch_pair_sq[slot] += acc[ch] * acc[ch];
+        batch_pair_n[slot] += 1;
+      }
+      i = j;
+    }
   }
 }
 
@@ -1294,19 +1381,33 @@ void choose_site_weights()
   // history budget from tau_pooled and n_sources in a finished statepoint
   // matches the measured n_histories to 1.5% with L-1 and misses by 12-14%
   // with L, on two independently tuned arms (see docs/bep_autotune.md 11).
-  const double kappa = static_cast<double>(L - 1);
-  if (kappa <= 0.0)
+  // Per-knob unit cost. A tree costs M_t + sum_{d=1..L-1} N_t(d): the
+  // depth-L sites are banked and scored but never revived (the gate is
+  // super_gen < L+1 and they carry L+1), which the history counter confirms
+  // to 1.5% against 12-14% for L. So a numerator knob costs L-1 per site.
+  //
+  // The DENOMINATOR costs L, not L-1, because its root count is tied to its
+  // site weight: sample_denominator_roots() keeps a bank site with
+  // probability 1/w_D, so splitting the denominator finer buys more roots as
+  // well as more sites, and pays for both.
+  const double kappa_num = static_cast<double>(L - 1);
+  const double kappa_den = static_cast<double>(L);
+  if (kappa_num <= 0.0)
     return;
 
-  // The total cost of the batch just closed, COUNTED rather than modelled:
-  // the driver's histories plus every history the shadow pass transported.
-  // No part of it is assumed fixed, which matters because the denominator's
-  // root count is itself tunable -- putting it in a "fixed" cost, as the
-  // closed form below used to, double-counts the one knob it is choosing.
+  // The UNTUNABLE cost: the driver, plus the numerator roots. The numerator
+  // roots are emitted one per driver track segment per changed nuclide, so
+  // they are set by the driver and are not a knob. The denominator's roots
+  // are deliberately NOT in here any more -- they are tied to w_D, so they
+  // are part of what the denominator knob pays for, and putting a tuned cost
+  // into a fixed one double-counts the knob being chosen.
   const double gpb = static_cast<double>(settings::gen_per_batch);
-  const double c_tot = static_cast<double>(settings::n_particles) * gpb +
-                       static_cast<double>(batch_histories);
-  if (c_tot <= 0.0)
+  double c_untuned = static_cast<double>(settings::n_particles) * gpb;
+  for (size_t t = 0; t < tree_sources.size(); ++t) {
+    if (tree_class[t] != TREE_D)
+      c_untuned += static_cast<double>(tree_sources[t]) * gpb;
+  }
+  if (c_untuned <= 0.0)
     return;
 
   // The per-batch relative variance of tree t's depth-L weight, measured
@@ -1336,15 +1437,36 @@ void choose_site_weights()
     return rv > 0.0 ? rv : 0.0;
   };
 
-  // ---- pass 1: the measured slope of each group ----------------------------
+  // ---- pass 1: the measured slope of each knob, and the measured floor ----
+  //
+  // The closed form is back, because eq (4) on measured V and counted C does
+  // NOT avoid needing the floor. With N_t = sqrt(g_t)*s and Gamma = sum
+  // sqrt(g_t), C(s) = C_0 + kappa*Gamma*s and V(s) = B + Gamma/s, so the fixed
+  // point of s <- sqrt(C/(kappa V)) is
+  //
+  //     kappa*B*s^2 + kappa*Gamma*s = C_0 + kappa*Gamma*s   ->   kappa*B*s^2 = C_0
+  //
+  // Gamma cancels identically and s* = sqrt(C_0/(kappa*B)) either way. The
+  // iterated form merely finds B implicitly, by splitting until V has fallen
+  // to the floor -- which, where the floor is small, means splitting until
+  // cost dominates. Measured: it drove w_L to 1e-3 and the work to 14x the
+  // feature switched off.
+  //
+  // So B is faced directly, and it is SUBTRACTED FROM A MEASUREMENT RATHER
+  // THAN FROM A MODEL:
+  //
+  //     B = v_meas - [ relvar_within(S) + relvar_within(D) ]
+  //
+  // with both bracketed terms measured within the batch, across independent
+  // source events. Nothing in it is a coefficient.
   struct PertPlan {
-    double g_d, g_l, g_f;   // G_t * a_t: the MEASURED gain of each knob
+    double g_d, g_l, g_f;   // measured gain of each knob
     double p_d, p_l, p_f;   // carried weights
     double w_d;             // largest denominator weight the expansion allows
     bool ok {false};
   };
   vector<PertPlan> plan(np);
-  double v_tot = 0.0;
+  double b_tot = 0.0;
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1357,36 +1479,21 @@ void choose_site_weights()
     if (d_w <= 0.0)
       continue;
 
-    // S from the POOLED totals, never from the batch just closed.
-    //
-    // G_L is (P_L/S)^2, and a single batch's S is a difference of two nearly
-    // equal populations: sign-indefinite, with a standard deviation of order
-    // its own mean. Dividing by its square is dividing by a variable whose
-    // reciprocal has no finite expectation, which put a heavy tail straight
-    // into the gain. The pooled S is the same quantity with the batch noise
-    // averaged out, and the gain is a property of the problem rather than of
-    // one batch.
+    // S from the POOLED totals, never from the batch just closed: one batch's
+    // S is a difference of nearly equal populations, sign-indefinite with a
+    // standard deviation of order its own mean, and dividing by it is
+    // dividing by a variable whose reciprocal has no finite expectation.
     double n_b = static_cast<double>(n_active_batches);
-    double pd = pooled_tau[tau_index(p.tree_d, L)];
     double pfp = pooled_tau[tau_index(p.tree_fp, L)];
     double pfn = pooled_tau[tau_index(p.tree_fn, L)];
     double plp = pooled_tau[tau_index(p.tree_lp, L)];
     double pln = pooled_tau[tau_index(p.tree_ln, L)];
+    double pd = pooled_tau[tau_index(p.tree_d, L)];
     double s_num = (pfp - pfn) / keff_norm + (plp - pln);
     if (pd <= 0.0 || s_num == 0.0)
       continue;
 
-    // G_t, the sensitivity of the worth to each population, as in section 2.
-    // G_D = 1 exactly: rho is proportional to 1/D, so a 1% fluctuation in D
-    // is a 1% fluctuation in rho. The numerator G's carry the cancellation
-    // between the + and - halves of a signed source, which is what can
-    // amplify a population's noise a hundredfold.
-    double g_d = 1.0;
-    double g_l = std::pow((plp + pln) / s_num, 2);
-    double g_f = std::pow((pfp + pfn) / (keff_norm * s_num), 2);
-
-    // The measured relative variance of the worth. Used DIRECTLY -- nothing
-    // is subtracted from it.
+    // The measured relative variance of the worth over active batches.
     double mean = ell_sum[ip * nd + L] / n_b;
     if (mean == 0.0)
       continue;
@@ -1394,58 +1501,77 @@ void choose_site_weights()
     double var = (sq - n_b * mean * mean) / (n_b - 1.0);
     if (var <= 0.0)
       continue;
-    v_tot += var / (mean * mean);
+    double v_meas = var / (mean * mean);
 
-    // The gain of each knob, MEASURED: relvar_t = a_t/N_t with
-    // a_t = rv_t * N_t, so the knob's gain is G_t * a_t = G_t * rv_t * N_t.
-    // Nothing here is a modelled coefficient.
+    // The SIGNED within-batch spread of each numerator channel, measured over
+    // common-random-number groups, so that (1 - r) is inside the measurement.
+    // Scaled to the worth: the L channel enters S directly, the F channel
+    // divided by k.
+    auto chan_var = [&](int ch) -> double {
+      const size_t slot = static_cast<size_t>(ip) * 2 + static_cast<size_t>(ch);
+      double m = static_cast<double>(batch_pair_n[slot]);
+      double sxx = batch_pair_sq[slot];
+      if (m <= 1.0 || sxx <= 0.0)
+        return 0.0;
+      double sx = (ch == 0) ? (lp - ln) : (fp - fn);
+      // Var of the channel sum, estimated from its own groups, then made
+      // relative to the POOLED S (the scale the worth is actually read at).
+      double v = sxx - sx * sx / m;
+      if (v <= 0.0)
+        return 0.0;
+      // s_num is the POOLED numerator, summed over n_b batches, while v is
+      // ONE batch's variance. Both sides must be per batch or the ratio is
+      // wrong by n_b^2.
+      double s_batch = s_num / n_b;
+      double scale_to_s = (ch == 0) ? 1.0 : 1.0 / keff_norm;
+      return v * scale_to_s * scale_to_s / (s_batch * s_batch);
+    };
+    double rvs_l = chan_var(0);
+    double rvs_f = chan_var(1);
+    double rv_d = root_relvar(p.tree_d);
+
+    // The floor: what is left of the measured variance once every splittable
+    // part that was MEASURED is taken out.
+    double b = v_meas - (rvs_l + rvs_f + rv_d);
+    if (!(b > 0.0)) {
+      // Hold the last usable floor rather than freeze. A batch where the
+      // subtraction overshoots says nothing about the floor; it says this
+      // batch was lucky. Leaving the weights alone until it recovers is the
+      // conservative reading, and unlike the r = 0 form this is an occasional
+      // event rather than the usual one.
+      continue;
+    }
+
+    // The gain of each knob, measured: relvar ~ g/N, so g = relvar * N.
     double n_d = d_w / site_weight(p.tree_d);
     double n_l = (lp + ln) / site_weight(p.tree_lp);
     double n_f = (fp + fn) / site_weight(p.tree_fp);
-    double rv_d = root_relvar(p.tree_d);
-    double rv_l = 0.5 * (root_relvar(p.tree_lp) + root_relvar(p.tree_ln));
-    double rv_f = 0.5 * (root_relvar(p.tree_fp) + root_relvar(p.tree_fn));
 
-    // The delta method's domain of validity, and it binds on the DENOMINATOR
-    // alone. rho = S/(kD + N_F) is linear in S -- a noisy S is noisy, not
-    // biased -- but it is a ratio in D, and E[1/D] exceeds 1/E[D] by
-    // relvar(D) and by more when D is skewed. At N_D = 78 the depth-L
-    // denominator is a sum of a handful of surviving lineages of a critical
-    // branching process, and that bias was measured at -68 pcm on a -259 pcm
-    // worth.
-    //
-    // rv_D is proportional to w_D, so the largest weight that still satisfies
-    // rv_D <= EPS^2 extrapolates linearly from where the run is now. Taking
-    // rv_D at the CURRENT weight as if it would not move -- which the
-    // previous form did -- understates the constraint by the same factor the
-    // weight has to change by.
+    // The delta method's domain of validity, binding on the DENOMINATOR
+    // alone: rho is linear in S -- a noisy S is noisy, not biased -- but a
+    // ratio in D. rv_D is proportional to w_D, so the largest weight still
+    // satisfying rv_D <= EPS^2 extrapolates linearly from where the run is.
     const double eps2 = DELTA_METHOD_EPS * DELTA_METHOD_EPS;
     double w_now = site_weight(p.tree_d);
     double w_cap = (rv_d > 0.0) ? w_now * eps2 / rv_d : 0.0;
 
-    plan[ip] = {g_d * rv_d * n_d, g_l * rv_l * n_l, g_f * rv_f * n_f,
+    plan[ip] = {rv_d * n_d, rvs_l * n_l, rvs_f * n_f,
       d_w, lp + ln, fp + fn, w_cap, true};
+    b_tot += b;
   }
 
-  if (v_tot <= 0.0)
+  if (b_tot <= 0.0)
     return;
 
-  // ---- pass 2: N_t* = sqrt( g_t * C / (kappa * V) ), eq (4) ---------------
+  // ---- pass 2: N_t* = sqrt( g_t/kappa_t * C_0/B ), the closed form --------
   //
-  // The pre-closure optimum, used directly. The closed form it replaces,
-  // N_t* = sqrt(g_t * C_fixed / (kappa * B)), needs a floor B that is not
-  // measurable: it was obtained by subtracting the modelled part of the
-  // variance from the measured total, which credits to the floor every bit of
-  // variance the model fails to name -- and a larger floor tells the rule to
-  // coarsen, which raises the measured variance. That loop is stable, but it
-  // settles at a point set by the size of the modelling error rather than by
-  // anything physical, and it settled at N_D = 78.
-  //
-  // This form trades one unmeasurable quantity for two measured ones: V is
-  // the batch statistics of the estimator and C is a history count. Perturbed
-  // about a fixed point it contracts by (f_C + f_V)/2 with both fractions in
-  // (0,1), so it needs no guard of its own.
-  const double scale = std::sqrt(c_tot / (kappa * v_tot));
+  // C_0 is the UNTUNABLE cost: the driver, plus the numerator roots, which
+  // are set by the driver's tracks and are not a knob. The denominator's
+  // roots are no longer in it, because they are no longer independent of the
+  // denominator's site weight -- sample_denominator_roots() keeps a bank site
+  // with probability 1/w_D, which is also why kappa_D is L and not L-1: the
+  // denominator pays for its roots as it splits, the numerators do not.
+  const double scale = std::sqrt(c_untuned / b_tot);
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1455,15 +1581,15 @@ void choose_site_weights()
 
     const struct {
       int a, b2;
-      double g, weight, cap;
-    } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d, q.w_d},
-      {p.tree_lp, p.tree_ln, q.g_l, q.p_l, 0.0},
-      {p.tree_fp, p.tree_fn, q.g_f, q.p_f, 0.0}};
+      double g, weight, cap, kap;
+    } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d, q.w_d, kappa_den},
+      {p.tree_lp, p.tree_ln, q.g_l, q.p_l, 0.0, kappa_num},
+      {p.tree_fp, p.tree_fn, q.g_f, q.p_f, 0.0, kappa_num}};
 
     for (const auto& grp : groups) {
       if (grp.weight <= 0.0 || grp.g <= 0.0)
         continue;
-      double target = std::sqrt(grp.g) * scale;
+      double target = std::sqrt(grp.g / grp.kap) * scale;
       if (!(target > 0.0))
         continue;
 
@@ -1564,6 +1690,8 @@ void finalize_batch()
   std::fill(batch_tau.begin(), batch_tau.end(), 0.0);
   std::fill(batch_sources.begin(), batch_sources.end(), 0);
   std::fill(batch_root_sq.begin(), batch_root_sq.end(), 0.0);
+  std::fill(batch_pair_sq.begin(), batch_pair_sq.end(), 0.0);
+  std::fill(batch_pair_n.begin(), batch_pair_n.end(), 0);
   batch_histories = 0;
 }
 

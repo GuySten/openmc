@@ -913,8 +913,22 @@ void sample_denominator_roots()
     // the site is created and identifies it uniquely within the generation.
     int64_t sid =
       combine_ids({simulation::total_gen, s.parent_id, s.progeny_id});
+
+    // The keep/reject draw comes from a DIFFERENT stream than the one the
+    // kept site's tree is grown on, for the same reason the sampled source
+    // roots do (see the note in emit_nuclide_source): a walk must not replay
+    // the numbers that decided its own existence.
+    //
+    // This one was the worse of the two. The test keeps a site when its first
+    // tracking number is below p_keep, and the tree was then started from
+    // that same number -- so every surviving root began with a uniform
+    // conditioned to [0, p_keep), and its first flight, -ln(xi)/Sigma_t, was
+    // never shorter than ln(1/p_keep) mean free paths. At the usual
+    // n_roots/bank ratio of about a tenth that is 2.3 mfp, on EVERY
+    // denominator root, in every case -- biasing D, which sits under every
+    // level this estimator reports.
     if (p_keep < 1.0) {
-      uint64_t rs = init_seed(sid, STREAM_TRACKING);
+      uint64_t rs = init_seed(combine_ids({sid, 1}), STREAM_TRACKING);
       if (prn(&rs) >= p_keep)
         continue;
     }

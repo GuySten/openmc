@@ -1267,7 +1267,23 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
         diff = ps.by_id(3).rho - ps.by_id(2).rho
         independent = np.hypot(ps.by_id(2).rho.std_dev,
                                ps.by_id(3).rho.std_dev)
-        assert diff.std_dev < 0.5 * independent, (
+        # The bound is 0.85, and it is measured rather than chosen. If the
+        # two perturbations shared nothing this ratio would be 1.0 by
+        # construction, so the test still catches a broken common source --
+        # but the ratio is itself a noisy statistic and 0.5 was far tighter
+        # than the quantity supports. Over eight seeds
+        # (tools/bep_checks/sharecheck.py) it measures
+        #
+        #     0.600 +/- 0.049, range 0.354 to 0.750
+        #
+        # so a 0.5 bar fails about seven times in eight. It had been passing
+        # on this fixture's particular seed by luck, and the seed-reuse fix
+        # -- which changes every random stream in the feature -- moved it to
+        # a different draw. That the fix was NOT the cause is the point of
+        # the measurement: the same eight seeds on the pre-fix code give
+        # 0.600 +/- 0.049 and on the fixed code 0.582 +/- 0.045, identical
+        # within error.
+        assert diff.std_dev < 0.85 * independent, (
             f'two absorbers 4% apart in density gave a difference of '
             f'{diff:.1f} pcm against {independent:.1f} for independent '
             'worths; their shared source is not being sampled in common')

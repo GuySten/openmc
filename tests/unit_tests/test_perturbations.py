@@ -773,6 +773,61 @@ def test_convergence_recovers_a_planted_transient(run_in_tmpdir):
             is False
 
 
+def test_convergence_weights_the_fit_by_the_depth_errors(run_in_tmpdir):
+    """The deep end of a depth curve is the noisy end, and must not lead.
+
+    A depth-d population is a d-long branching chain, so its error grows with
+    depth -- measured 3.17 pcm at d=1 against 10.02 at d=30 on one run, and
+    16 against 234 on another. An unweighted fit lets exactly the least
+    trustworthy points set the asymptote.
+
+    Here the curve is exact and precise out to d=10 and then wanders 60 pcm
+    away with a hundredfold larger error. The weighted fit must stay with the
+    precise points; an unweighted one is dragged most of the way to the
+    wandering ones.
+    """
+    L, n_batch, k = 20, 60, 2.2
+    A, B, r = -300e-5, -900e-5, 0.75
+    rng = np.random.default_rng(31)
+    D, zero, *_ = _branching_tau(rng, k, 0.0, 400, n_batch, L)
+
+    d = np.arange(L + 1, dtype=float)
+    ell = A + B * r ** d
+    ell[11:] += 60e-5                       # the deep end wanders off
+    # Per-batch scatter: tiny up to d=10, large past it, so depth_sigma
+    # carries the difference the fit is supposed to respect.
+    scale = np.where(d <= 10, 0.02e-5, 20e-5)
+    eps = rng.normal(0.0, 1.0, size=(n_batch, L + 1)) * scale
+    eps -= eps.mean(axis=0)                 # keep the planted mean exact
+    ln = -(ell + eps) * k * D
+    tau = np.stack([D, zero, zero, np.zeros_like(D), ln], axis=1)
+    _write_statepoint('w.h5', tau, [1], L, keff=k)
+
+    with openmc.StatePoint('w.h5', autolink=False) as sp:
+        P = sp.perturbations
+        sig = np.asarray(P.by_id(1).depth_sigma)
+        assert sig[20] > 100 * sig[5], 'the deep end must really be noisier'
+        c = P.convergence(1, target=0.05)
+
+    # The weighted fit stays with the precise points.
+    assert c['asymptote'] == pytest.approx(1.0e5 * A, abs=3.0)
+    assert c['rate'] == pytest.approx(r, abs=0.05)
+
+    # An unweighted fit of the same curve is dragged far off, which is what
+    # this weighting exists to prevent.
+    y = np.asarray(P.by_id(1).depth_curve)[1:]
+    x = np.arange(1, L + 1, dtype=float)
+    best = min(
+        (float(((y - np.vstack([np.ones_like(x), rr ** x]).T @ np.linalg.lstsq(
+            np.vstack([np.ones_like(x), rr ** x]).T, y, rcond=None)[0]) ** 2
+            ).sum()),
+         np.linalg.lstsq(np.vstack([np.ones_like(x), rr ** x]).T, y,
+                         rcond=None)[0][0])
+        for rr in np.linspace(0.05, 0.999, 400))
+    assert abs(best[1] - 1.0e5 * A) > 20.0, \
+        'if the unweighted fit were fine here the test proves nothing'
+
+
 def test_convergence_reports_a_railed_fit_instead_of_inventing_a_rate(
         run_in_tmpdir):
     """A flat curve has no decay in it, and the fit must say so.

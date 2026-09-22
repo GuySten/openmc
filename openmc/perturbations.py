@@ -521,18 +521,34 @@ class Perturbations(cv.CheckedList):
         sel = d >= (1 if d_min is None else d_min)
         x, y = d[sel], curve[sel]
 
+        # WEIGHTED by 1/sigma^2. The depth curve's errors are not uniform --
+        # they grow with depth, because a deeper population is a longer
+        # branching chain: measured 3.17 pcm at d=1 against 10.02 at d=30 on
+        # one run, and 16 against 234 on another. An unweighted fit lets the
+        # noisiest points at the far end set the asymptote, which is exactly
+        # backwards. The points are also positively correlated (one run,
+        # nested populations), so the chi2 below is not an absolute
+        # goodness-of-fit -- it is only used to choose r.
+        sigma = np.asarray(p.depth_sigma, dtype=float)[sel]
+        w = np.where(sigma > 0.0, 1.0 / np.maximum(sigma, 1e-300) ** 2, 0.0)
+        if not np.any(w > 0.0):
+            w = np.ones_like(y)
+
         R_MAX = 0.999
         grid = np.linspace(0.05, R_MAX, 2000)
         best = None
         for r in grid:
             M = np.vstack([np.ones_like(x), r ** x]).T
+            mtw = M.T * w
             try:
-                coef, *_ = np.linalg.lstsq(M, y, rcond=None)
+                coef = np.linalg.solve(mtw @ M, mtw @ y)
             except np.linalg.LinAlgError:
                 continue
-            chi2 = float(((y - M @ coef) ** 2).sum())
+            chi2 = float((w * (y - M @ coef) ** 2).sum())
             if best is None or chi2 < best[0]:
                 best = (chi2, r, coef[0], coef[1])
+        if best is None:
+            raise ValueError('the depth curve could not be fitted at all')
         _, r, A, B = best
 
         # A curve that has not turned over inside the window is fitted best

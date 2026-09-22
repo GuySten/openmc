@@ -1146,6 +1146,23 @@ class Settings:
 
     @property
     def perturbation_n_roots(self) -> int:
+        """Denominator roots taken from the fission bank each generation.
+
+        0, the default, keeps the whole bank, and that is very nearly always
+        what you want: **sub-sampling it saves no transport.** The roots that
+        are kept carry the weight of the ones that are not, so the total root
+        weight is the bank's weight either way, and so is the depth-``L``
+        population and the banked-site count that measures the cost. What
+        sub-sampling does cost is independent source events, which is the
+        only thing that lowers the denominator's irreducible floor.
+
+        So this is not a cost/accuracy knob in the way it looks. Setting it
+        below the bank size raises the floor for nothing. It is kept as a
+        setting for diagnostics, and because a very large bank may be worth
+        thinning for memory rather than for time.
+
+        See ``docs/bep_autotune.md`` section 4b.
+        """
         return self._perturbation_n_roots
 
     @perturbation_n_roots.setter

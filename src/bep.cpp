@@ -1196,14 +1196,27 @@ void choose_site_weights()
   size_t np = perturbations.size();
 
   // The fixed cost per batch, in banked-site equivalents: the driver's own
-  // histories plus the denominator populations, which this rule does not
-  // tune (perturbation_n_roots does). A history costs what a history costs,
-  // which is what lets this avoid the clock -- a rule that timed itself would
-  // give two runs of the same seed different answers.
-  double c0 = static_cast<double>(settings::n_particles) *
-              static_cast<double>(settings::gen_per_batch);
-  for (const auto& p : perturbations)
-    c0 += batch_tau[tau_index(p.tree_d, L)] / site_weight(p.tree_d);
+  // histories, and NOTHING ELSE. Every tree population is tunable now, the
+  // denominators included (docs/bep_autotune.md 4b), so they belong in the
+  // sum being optimised and not in C0 -- leaving them here would count them
+  // twice. A history costs what a history costs, which is what lets this
+  // avoid the clock: a rule that timed itself would give two runs of the
+  // same seed different answers.
+  const double c_drv = static_cast<double>(settings::n_particles) *
+                       static_cast<double>(settings::gen_per_batch);
+
+  // ---- pass 1: every perturbation's G's and its floor ---------------------
+  //
+  // Two passes, because the scale in (7') is sqrt(C_drv/B_tot) with
+  // B_tot = sum_q B_q over ALL perturbations. One perturbation's weights
+  // cannot be chosen from its own floor alone.
+  struct PertPlan {
+    double g_d, g_l, g_f;     // (9) and section 2
+    double p_d, p_l, p_f;     // carried weights
+    double b;                 // this perturbation's floor
+  };
+  vector<PertPlan> plan(np);
+  double b_tot = 0.0;
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1253,7 +1266,13 @@ void choose_site_weights()
     // signal. The pairs that carry the worth are the ones whose scattered
     // state lands far from its partner, hydrogen above all, and those
     // desynchronise at once: for them r = 0 is exact, not conservative.
-    double g_d = 1.0 / (keff_norm * keff_norm);
+    // G_D = 1, not 1/k^2. rho = S/(kD + N_F) with kD >> N_F, so
+    // d(rho)/dD = -rho/D and the RELATIVE sensitivity is exactly -1: a 1%
+    // fluctuation in D is a 1% fluctuation in rho, as it must be for a
+    // quantity proportional to 1/D. The 1/k^2 this used to carry came from
+    // a slip in section 2 of the derivation (d(rho)/dD written as
+    // -rho/(kD)) and made N_D* too small by k.
+    double g_d = 1.0;
     double g_l = std::pow((lp + ln) / s_num, 2);
     double g_f = std::pow((fp + fn) / (keff_norm * s_num), 2);
 
@@ -1278,30 +1297,55 @@ void choose_site_weights()
                       (n_f_sites > 0.0 ? g_f / n_f_sites : 0.0);
     double b = v_meas - discrete;
     if (b <= 0.0)
-      continue; // the floor is not resolved yet; leave the weights alone
+      return; // a floor is not resolved yet; leave every weight alone
+
+    plan[ip] = {g_d, g_l, g_f, d_w, lp + ln, fp + fn, b};
+    b_tot += b;
+  }
+
+  if (b_tot <= 0.0)
+    return;
+
+  // ---- pass 2: N* = sqrt(G C_drv / B_tot), one scale for the whole run ---
+  const double scale = std::sqrt(c_drv / b_tot);
+
+  for (size_t ip = 0; ip < np; ++ip) {
+    const Perturbation& p = perturbations[ip];
+    const PertPlan& q = plan[ip];
+    if (q.p_d <= 0.0)
+      continue;
 
     const struct {
-      int plus, minus;
+      int a, b2;
       double g, weight;
-    } pairs[2] {{p.tree_lp, p.tree_ln, g_l, lp + ln},
-      {p.tree_fp, p.tree_fn, g_f, fp + fn}};
+    } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d},
+      {p.tree_lp, p.tree_ln, q.g_l, q.p_l},
+      {p.tree_fp, p.tree_fn, q.g_f, q.p_f}};
 
-    for (const auto& pair : pairs) {
-      if (pair.weight <= 0.0 || pair.g <= 0.0)
+    for (const auto& grp : groups) {
+      if (grp.weight <= 0.0 || grp.g <= 0.0)
         continue;
-      double target = std::sqrt(pair.g * c0 / b);
-      if (!(target > 0.0))
-        continue;
+      double target = std::sqrt(grp.g) * scale;
+
+      // A population thinner than this estimates nothing, and the variance
+      // model behind the optimum stops meaning anything. Bounding the SITE
+      // COUNT rather than the weight says what is actually required.
+      target = std::max(target, MIN_TREE_SITES);
 
       // Rounded to the nearest HALF DECADE. Coarse enough that the value
       // does not chase sampling noise from batch to batch, fine enough to
       // cost at most 9% of the figure of merit at the worst rounding --
       // where whole decades, which this used to use, can cost 37%.
       double w = std::pow(
-        10.0, 0.5 * std::floor(2.0 * std::log10(pair.weight / target) + 0.5));
-      w = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
-      tree_site_weight[pair.plus] = w;
-      tree_site_weight[pair.minus] = w;
+        10.0, 0.5 * std::floor(2.0 * std::log10(grp.weight / target) + 0.5));
+
+      // No upper clamp. w > 1 is Russian roulette on the sites -- fewer and
+      // heavier -- and it is what the denominator needs: N_D* is typically
+      // well below the population the bank hands it. Banking stays unbiased
+      // at any weight, since E[N] = nu exactly however w is chosen.
+      w = std::max(MIN_SITE_WEIGHT, w);
+      tree_site_weight[grp.a] = w;
+      tree_site_weight[grp.b2] = w;
     }
   }
 }

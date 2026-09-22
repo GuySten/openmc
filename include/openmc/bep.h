@@ -116,6 +116,16 @@ constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 //! sites the next.
 constexpr double MIN_SITE_WEIGHT {1.0e-8};
 
+//! Fewest banked sites a tuned population may be driven to.
+//!
+//! The optimum (docs/bep_autotune.md 7') can ask for a very small N when a
+//! population carries little of the answer -- the denominator above all, now
+//! that it is tunable. Below a few dozen sites per batch the population
+//! estimates nothing and the variance model behind the optimum stops meaning
+//! anything, so the site COUNT is bounded rather than the weight: that is
+//! what is actually required, and it leaves the weight free to exceed one.
+constexpr double MIN_TREE_SITES {100.0};
+
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in
 // step, and the vector is the one that carries the information.

@@ -1438,31 +1438,31 @@ def test_multigroup_is_refused_clearly(run_in_tmpdir):
         model.run()
 
 
-def test_site_splitting_leaves_the_denominator_alone(run_in_tmpdir, model):
-    """Site splitting must not touch the denominator population.
+def test_site_splitting_tunes_the_denominator_without_moving_the_worth(
+        run_in_tmpdir, model):
+    """The denominator is a tunable now, and it must still be unbiased.
 
-    Shadow fission sites are normally banked at unit weight, with the
-    parent's weight turned into the probability of banking one. That is a
-    lottery for a population whose particles weigh far less than one, which
-    is exactly what the four NUMERATOR populations are -- they carry the
-    perturbation source, several decades below the driver's scale -- so
-    splitting is expected to change them, and does.
+    This test used to assert the opposite -- that the rule leaves the
+    denominator at exactly 1.0 and its populations come out BIT-IDENTICAL
+    with splitting on and off. That was right for the rule as it stood and
+    is wrong for the rule as derived. Section 4b of ``bep_autotune.md``
+    shows the denominator enters ``relvar(rho)`` with ``G_D = 1`` like any
+    other population, and that ``N_D`` sits far above its own optimum when
+    left untuned, so it belongs in the optimisation. The old assertion
+    encoded a restriction, not an invariant.
 
-    The denominator is different: it is a sample of the fission bank and
-    carries the same full-weight population an ordinary eigenvalue
-    calculation does, so the rule must leave it at exactly 1.0 and its
-    weights must come out BIT-IDENTICAL with splitting on and off -- not
-    merely consistent. That pins three things at once: that the denominator
-    is never given a weight of its own, that the numerator populations'
-    weights cannot leak into it, and that no extra random number is drawn on
-    the way, any of which would move the random walk of every tree in the
-    run.
+    What survives is what the old test was really protecting, and it is
+    checked here directly rather than as a side effect:
 
-    Bit-identical is also a reproducibility check in disguise, and it has
-    already earned its keep: it caught the denominator roots being keyed on
-    their index in the fission bank, which thread_safe_append() fills in
-    whatever order the threads finish, so two runs of the same seed differed
-    by over a per cent.
+    * **unbiasedness** -- splitting changes how finely the populations are
+      banked, never what they are worth, since ``E[N] = nu`` exactly at any
+      site weight. So the two worths must agree statistically even though
+      the populations no longer agree at all.
+    * **reproducibility** -- two runs of one configuration must be
+      bit-identical. That is the part that earned its keep: it caught the
+      denominator roots being keyed on their index in the fission bank,
+      which ``thread_safe_append()`` fills in whatever order the threads
+      finish, so two runs of the same seed differed by over a per cent.
     """
     _, absorber = _water_and_absorber(model)
     model.settings.particles = 2000
@@ -1472,22 +1472,43 @@ def test_site_splitting_leaves_the_denominator_alone(run_in_tmpdir, model):
                                  perturbation_id=1),
     ])
 
-    def tau_of(splitting):
+    def run_once(splitting):
         model.settings.perturbation_site_splitting = splitting
-        with h5py.File(model.run(), 'r') as f:
+        path = model.run()
+        with h5py.File(path, 'r') as f:
             g = f['local_perturbation']
             nd = int(g['n_generation'][()]) + 1
-            n_trees = int(g['n_trees'][()])
-            tau = np.array(g['tau_pooled'][()]).reshape(n_trees, nd)
+            tau = np.array(g['tau_pooled'][()]).reshape(
+                int(g['n_trees'][()]), nd)
             trees = np.array(g['perturbation 1']['trees'][()])
-            return tau[trees[0]], tau[trees[3]]      # D, L+
+            d = tau[trees[0]]
+        with openmc.StatePoint(path) as sp:
+            rho = sp.perturbations.by_id(1).rho
+        return d, rho
 
-    d_on, _ = tau_of(True)    # the default
-    d_off, _ = tau_of(False)  # unit-weight sites, as without the feature
+    d_on, rho_on = run_once(True)     # the default: every population tuned
+    d_on2, rho_on2 = run_once(True)   # same configuration, again
+    d_off, rho_off = run_once(False)  # unit-weight sites throughout
 
-    assert np.array_equal(d_on, d_off), (
-        'site splitting moved the denominator population, so it is '
-        'perturbing trees it has no business touching')
+    # Reproducibility, bit for bit.
+    assert np.array_equal(d_on, d_on2), \
+        'two runs of one configuration disagree; the shadow pass is not ' \
+        'reproducible'
+    assert rho_on.nominal_value == rho_on2.nominal_value
+
+    # With splitting off every site weight is 1, so the denominator is the
+    # raw banked population and the tuned run must differ from it -- that is
+    # the whole point of making it a tunable.
+    assert not np.array_equal(d_on, d_off), \
+        'the denominator population is identical with splitting on and ' \
+        'off, so the rule is still refusing to tune it'
+
+    # ...but the answer must not move. Unbiased at any site weight.
+    sigma = float(np.hypot(rho_on.std_dev, rho_off.std_dev))
+    assert sigma > 0.0
+    assert abs(rho_on.nominal_value - rho_off.nominal_value) < 4.0 * sigma, (
+        f'site splitting moved the worth: {rho_on} with splitting against '
+        f'{rho_off} without, which is more than 4 sigma apart')
 
 
 def test_site_splitting_xml_roundtrip():

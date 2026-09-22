@@ -118,19 +118,17 @@ class Settings:
         Number of generations to consider for the Iterated Fission Probability
         method.
     perturbation_site_splitting : bool
-        Whether a perturbation's shadow tree banks its fission sites split, at
-        a weight chosen for it each generation. The alternative, and what an
-        ordinary eigenvalue calculation does, is to bank unit-weight sites
-        with the parent's weight turned into the *probability* of banking one
-        -- which for a low-weight source such as the photoneutrons of an
-        :class:`openmc.PhotonuclearPerturbation` is a lottery that undoes the
-        sampling it was given. Measured on a photoneutron worth, turning it
-        off cost a factor of 16 in figure of merit, the perturbed tree falling
-        to about twenty sites per generation.
+        Whether a perturbation's numerator populations bank their fission
+        sites split, at a weight chosen for them each generation. The
+        alternative, and what an ordinary eigenvalue calculation does, is to
+        bank unit-weight sites with the parent's weight turned into the
+        *probability* of banking one -- which for a population carrying the
+        perturbation source, several decades below the driver's scale, is a
+        lottery that undoes the sampling it was given.
 
         The gain is variance, not bias. An unsplit calculation is unbiased;
         it is merely uninformative. Measured over 40 replicas at about twenty
-        sites per generation, the unsplit worth is 3.41 +/- 0.34 pcm against
+        sites per generation, the unsplit worth was 3.41 +/- 0.34 pcm against
         3.58 +/- 0.11 split -- half a sigma apart -- but with a standard
         deviation of 2.12 rather than 0.35, individual runs spanning 0.48 to
         9.61 pcm on one problem. A single unsplit run therefore carries almost
@@ -138,20 +136,31 @@ class Settings:
         a reference answer, and why what moves is the figure of merit and not
         the mean.
 
-        The population is not a user parameter. Writing ``N`` for the sites a
-        tree banks per generation and ``M`` for the number of independent
-        source events feeding it, the relative variance of its tau is
-        ``1/N + c/M`` -- a discreteness term splitting removes, over a floor
-        set by the source count that it cannot touch. With cost linear in
-        ``N`` this is minimised at ``N* = sqrt(gamma * N_ref * M/c)``, and
-        every term is measured from the tau already recorded. ``N*`` grows
-        with the run, so a longer calculation keeps improving the
-        perturbation as well as its reference.
+        The *denominator* population is never touched by this: it is a sample
+        of the fission bank and carries the same full-weight population an
+        ordinary eigenvalue calculation does, so its weights are bit-identical
+        whether this is on or off.
 
-        Leave it on unless comparing against an unsplit calculation. It has no
-        effect on a perturbation whose tree already carries a population
-        comparable to its reference, such as a material substitution, which is
-        left bit-for-bit unchanged.
+        The population is not a user parameter. Writing ``N`` for the sites a
+        population banks per generation and ``M`` for the number of
+        independent source events feeding it, its relative variance is
+        ``1/N + c/M`` -- a discreteness term splitting removes, over a floor
+        set by the source count that it cannot touch. Minimising variance
+        times cost gives ``N* = sqrt(G * C0/B)``, where ``G`` carries how
+        strongly that population enters the worth -- including the
+        cancellation between the + and - halves of a signed source, which can
+        amplify it a hundredfold -- and ``C0/B`` is one number shared by the
+        whole run. See ``docs/bep_autotune.md`` for the derivation.
+
+        .. note::
+            The rule in the code today is a **placeholder** that simply
+            matches the denominator's population, which the derivation shows
+            is one to two orders of magnitude too few sites for a weak
+            perturbation. Until that is fixed, the numerator populations are
+            under-sampled and the reported worth is noisier than it needs to
+            be -- unbiased, but wasteful.
+
+        Leave it on unless comparing against an unsplit calculation.
 
         .. versionadded:: 0.16.0
     perturbation_n_generation : int
@@ -160,6 +169,11 @@ class Settings:
         trees at the same depths, so it is a property of the run rather than
         of any individual :class:`openmc.LocalPerturbation`. Must be at least
         2, so that the level's approach to its plateau is visible.
+
+        This is a convergence parameter, not a fit window: the worth is the
+        level read at depth ``L`` and the whole curve ``d = 0..L`` is the
+        diagnostic. If it is still drifting at ``L``, raise it. See
+        :meth:`openmc.Perturbations.depth_convergence`.
     perturbation_n_roots : int
         Fission-bank sites sampled per generation as the *denominator*
         population of the level estimator. The whole bank would be exact but

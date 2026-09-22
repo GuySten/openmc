@@ -30,7 +30,10 @@
 //! you can converge rather than a bandwidth you must tune.
 //!
 //! BEP has NOT been validated against the published BBEP results. Reproduce
-//! the M&C 2019 7x7 doped-pin cases before trusting it (see BEP_README.md).
+//! the M&C 2019 7x7 doped-pin cases before trusting it. What HAS been checked
+//! is in docs/bep_level_design.md: a null substitution returns exactly zero, a
+//! displacement across a plane of symmetry returns zero, and a B10 sample
+//! worth -265 +/- 50 pcm against -263 +/- 5 from a direct k'-k difference.
 //!
 //! ESTIMATOR
 //! ---------
@@ -108,14 +111,10 @@ class Particle;
 
 constexpr int BEP_TRUNK {-1}; //!< value of bep_tree() for a driver particle
 
-//! Floor on tree_site_weight, so that a tree whose weight is measured
-//! anomalously small one generation cannot ask for an unbounded population
-//! the next.
+//! Floor on tree_site_weight, so that a population whose weight is measured
+//! anomalously small one generation cannot ask for an unbounded number of
+//! sites the next.
 constexpr double MIN_SITE_WEIGHT {1.0e-8};
-
-//! Generations of tau a tree must carry at one site weight before its spread
-//! is trusted to set the next one. Below this the rule uses its bootstrap.
-constexpr int64_t MIN_STAT_GENERATIONS {5};
 
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in
@@ -228,7 +227,7 @@ inline double site_weight(int tree)
 }
 
 //! Weight the shadow tree currently being transported on this thread was
-//! rooted at, i.e. the weight of the branch site it grew from, or 0 outside a
+//! rooted at, i.e. the weight of the source root it grew from, or 0 outside a
 //! shadow tree.
 //!
 //! This is the natural scale for anything inside a shadow tree: every weight
@@ -251,9 +250,9 @@ inline bool is_source_tree(int tree)
          tree_class[tree] != TREE_D;
 }
 
-//! Independent source events that seeded each tree this generation: the
-//! branch sites a material perturbation's tree grew from, the photoneutron
-//! births a photonuclear one's did. Counted, never estimated.
+//! Independent source events that seeded each population this generation:
+//! the roots it grew from -- fission-bank sites for the denominator, emitted
+//! source particles for the rest. Counted, never estimated.
 //!
 //! This is the M of the variance law, relative variance = 1/n + c/M. Nothing
 //! splitting does can raise it -- it is how many genuinely independent

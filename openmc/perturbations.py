@@ -64,9 +64,10 @@ class LocalPerturbation(IDManagerMixin):
             (b.rho - a.rho) / dz   # derivative, pcm per unit dz
             0.5 * (a.rho + b.rho)  # any combination you like
 
-        Perturbations sharing branch sites are strongly correlated, so a
-        difference formed this way has a far smaller uncertainty than the
-        quadrature sum of the two individual ones.
+        Perturbations substituting into the same cell emit the same
+        nuclides' source from the same seeds, so they are strongly
+        correlated and a difference formed this way has a far smaller
+        uncertainty than the quadrature sum of the two individual ones.
     depth_curve : numpy.ndarray
         The level against shadow-tree depth, in pcm: the same estimator
         :attr:`rho` is, read at every depth ``d = 0..L`` instead of only at

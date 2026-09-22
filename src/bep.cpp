@@ -71,8 +71,9 @@ namespace {
 //! create_fission_sites() stamps super_gen on each site it makes and calls
 //! score_site() with it, so nothing has to be measured after the fact.
 //!
-//! `seed_id` is shared by every tree spawned at one branch site, which is
-//! what makes the trees common-random-number correlated. ALL streams must be
+//! `seed_id` is shared by the trees that have to cancel against each other --
+//! the two halves of a +/- pair, and the same source in two perturbations --
+//! which is what makes them common-random-number correlated. ALL streams must be
 //! initialised from it, not just STREAM_TRACKING: ParticleData's constructor
 //! leaves seeds_ uninitialised and from_source() does not touch it, so a
 //! partially seeded particle picks up stack garbage for the other streams.
@@ -104,7 +105,7 @@ void run_one_tree(const SourceRoot& site)
   p.ww_factor() = 0.0;
   // wgt_born is the scale apply_russian_roulette() measures against, and for
   // a shadow tree that must be the weight a typical particle in the tree is
-  // born at, not the weight of the branch site it grew from. Those differ by
+  // born at, not the weight of the root it grew from. Those differ by
   // how far below its reference the perturbation's population actually sits:
   // judged against the root weight, such a tree's entire population is below
   // the cutoff and survival biasing would roulette all of it up to

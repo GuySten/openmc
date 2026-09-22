@@ -76,6 +76,8 @@ double Particle::mass() const
   case PDG_ELECTRON:
   case PDG_POSITRON:
     return MASS_ELECTRON_EV;
+  case PDG_PHOTON:
+    return 0.0;
   default:
     return this->type().mass() * AMU_EV;
   }
@@ -662,12 +664,6 @@ void Particle::cross_surface(const Surface& surf)
   if (settings::verbosity >= 10 || trace()) {
     write_message(1, "    Crossing surface {}", surf.id_);
   }
-
-// if we're crossing a CSG surface, make sure the DAG history is reset
-#ifdef OPENMC_DAGMC_ENABLED
-  if (surf.geom_type() == GeometryType::CSG)
-    history().reset();
-#endif
 
   // Handle any applicable boundary conditions.
   if (surf.bc_ && settings::run_mode != RunMode::PLOTTING &&

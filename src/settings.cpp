@@ -622,15 +622,6 @@ void read_settings_xml(pugi::xml_node root)
         }
       }
 
-      // How many fission-bank sites are sampled per generation as the
-      // DENOMINATOR population of the level estimator. The whole bank would
-      // be exact but costs a full extra transport of the problem at every
-      // depth; a sample of it is unbiased (each site is kept with
-      // probability p and carries 1/p) and its variance is one half of the
-      // cost/variance trade the run is tuned on -- the other half being the
-      // site weight the numerator populations bank at. 0 means the whole
-      // bank.
-
       // Force the numerator populations' site weight instead of letting the
       // rule choose it. This exists to MEASURE the rule: a figure-of-merit
       // curve against site weight is the only thing that can confirm the

@@ -539,8 +539,6 @@ def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
         g.create_dataset('n_generations_recorded', data=n_batch)
         g.create_dataset('n_batches', data=n_batch)
         g.create_dataset('n_trees', data=n_trees)
-        g.create_dataset('n_tracks', data=123456)
-        g.create_dataset('n_roots', data=123456)
         g.create_dataset('n_perturbations', data=len(ids))
         g.create_dataset('keff', data=keff)
         g.create_dataset('ids', data=np.asarray(ids, dtype=np.int32))

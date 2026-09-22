@@ -464,8 +464,6 @@ extern int64_t n_active_batches; //!< realizations behind the batch statistics
 extern vector<double> pooled_tau;
 
 extern int64_t n_generations;
-extern int64_t n_track_total; //!< driver segments seen in a touched cell
-extern int64_t n_root_total;  //!< shadow trees grown, all classes
 
 //! Offset within one thread's slab, and within the merged `tau`.
 inline int tau_index(int tree, int depth)

@@ -64,8 +64,6 @@ vector<double> ell_sum;
 vector<double> ell_cross;
 int64_t n_active_batches {0};
 int64_t n_generations {0};
-int64_t n_track_total {0};
-int64_t n_root_total {0};
 
 // Internal linkage. `inline` would be redundant inside an unnamed namespace,
 // so it is omitted; forward declarations let run_one_tree() live here with
@@ -1035,7 +1033,6 @@ void run_shadow_pass()
     [](const TrackSite& a, const TrackSite& b) {
       return a.seed_id < b.seed_id;
     });
-  n_track_total += static_cast<int64_t>(tracks.size());
 
   // ---- 1. the perturbation source, dH psi -------------------------------
   for (auto& v : thread_source_roots)
@@ -1080,7 +1077,6 @@ void run_shadow_pass()
         return a.seed_id < b.seed_id;
       return a.tree < b.tree;
     });
-  n_root_total += static_cast<int64_t>(source_roots.size());
 
   // ---- 3. grow every root L generations in its perturbation's physics ---
   //
@@ -1704,8 +1700,6 @@ void write_results(hid_t file_id)
   write_dataset(group, "n_generations_recorded", n_generations);
   write_dataset(group, "n_batches", n_active_batches);
   write_dataset(group, "n_trees", static_cast<int>(tree_pert.size()));
-  write_dataset(group, "n_tracks", n_track_total);
-  write_dataset(group, "n_roots", n_root_total);
   write_dataset(group, "n_perturbations", np);
   write_dataset(group, "keff", keff_norm);
 
@@ -1713,6 +1707,15 @@ void write_results(hid_t file_id)
   // against it and so a run that came out noisy can be diagnosed without a
   // rebuild.
   write_dataset(group, "site_weight", tree_site_weight);
+
+  // Root count per tree. Nothing in the Python layer reads it, and it was
+  // nearly deleted with n_tracks and n_roots for that reason -- but it is
+  // what makes the COST MODEL checkable after the fact. Reconstructing a
+  // run's per-generation history budget from n_sources, site_weight and
+  // tau_pooled and comparing it against n_histories is what established
+  // kappa = L-1 rather than L (docs/bep_autotune.md 11.2), on statepoints
+  // that already existed. Instrumentation that can settle a modelling
+  // question from data already on disk earns its bytes.
   write_dataset(group, "n_sources", tree_sources);
 
   // The histories the shadow pass actually transported.

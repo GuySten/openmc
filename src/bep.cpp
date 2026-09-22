@@ -223,6 +223,31 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
   const double w = std::abs(d_density) * base;
   const bool positive = d_density > 0.0;
 
+  // A root whose outgoing state is SAMPLED must not then be grown on the
+  // stream that sampled it.
+  //
+  // Both the fission root and the in-scatter root (b) below draw their (E, u)
+  // from a random stream, and each used to carry that same stream as its
+  // seed_id -- so run_one_tree()'s init_particle_seeds(site.seed_id, ...)
+  // replayed, as the tree's transport, the very numbers that had produced the
+  // tree's own starting energy. That is not a variance-reduction trick, it is
+  // a bias: writing the root's state as E = h(xi_1..xi_k) and the walk as
+  // g(xi_1, xi_2, ...), the estimator converges to E[g(xi; h(xi))] and not to
+  // E_E[ E_xi'[ g(xi'; E) ] ] = <phi', S>. The walk has to be conditionally
+  // independent of the phase point it starts from, and sharing a stream is
+  // exactly the dependence that breaks it.
+  //
+  // Roots (a) and (c) are untouched by this: their phase point is the driver
+  // segment's own (E, u), sampled by nothing, so no stream generated it.
+  //
+  // The fix keeps the (b)/(c) common-random-numbers pairing that the
+  // decomposition below relies on -- both still share ONE tree seed -- and
+  // only makes that tree seed different from the sampling seed. Keys 2 and 3
+  // sample; keys 4, 5 and 6 grow.
+  const int64_t fission_tree_seed =
+    combine_ids({site_seed, e.i_nuclide, 5});
+  const int64_t pair_tree_seed = combine_ids({site_seed, e.i_nuclide, 6});
+
   // ---- fission production: + chi_i nu sigma_f,i -------------------------
   if (micro.nu_fission > 0.0) {
     init_particle_seeds(
@@ -242,7 +267,7 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.time = site.time;
     root.wgt = w * micro.nu_fission;
     root.tree = positive ? pert.tree_fp : pert.tree_fn;
-    root.seed_id = combine_ids({site_seed, e.i_nuclide, 2});
+    root.seed_id = fission_tree_seed;
     out.push_back(root);
   }
 
@@ -282,6 +307,8 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
   // three.
   double sigma_a = micro.absorption;
   double sigma_s = micro.total - micro.absorption;
+  // Key 3 SAMPLES the scattered state; pair_tree_seed (key 6) GROWS both
+  // members of the pair. See the note above on why those must differ.
   int64_t seed = combine_ids({site_seed, e.i_nuclide, 3});
 
   // (a) absorption, at the segment's own phase point
@@ -306,10 +333,11 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     before.time = t.time;
     before.wgt = w * sigma_s;
     before.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
-    before.seed_id = seed;
+    before.seed_id = pair_tree_seed;
     out.push_back(before);
 
-    // (b) the scattered member, same weight, same seed
+    // (b) the scattered member: same weight, and the same TREE seed as (c)
+    // so the pair still tracks, but sampled from a different stream.
     init_particle_seeds(seed, s.seeds());
     s.stream() = STREAM_TRACKING;
     s.E() = t.E;
@@ -326,7 +354,7 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.time = t.time;
     root.wgt = w * sigma_s * s.wgt();
     root.tree = positive ? pert.tree_lp : pert.tree_ln;
-    root.seed_id = seed;
+    root.seed_id = pair_tree_seed;
     if (root.wgt > 0.0)
       out.push_back(root);
 

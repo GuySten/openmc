@@ -192,16 +192,13 @@ extern bool
   perturbation_site_splitting; //!< bank a perturbation tree's fission sites
                                //!< split, at the adaptively chosen weight
 extern int64_t bep_n_roots;    //!< denominator roots sampled from the fission
-                               //!< bank per generation, per perturbation.
-                               //!< 0 (the default) keeps the WHOLE bank:
-                               //!< sub-sampling it saves no transport at all,
-                               //!< because the roots that are kept carry the
-                               //!< weight of the ones that are not, so the
-                               //!< depth-L population and hence the banked
-                               //!< site count are the same either way. It
-                               //!< only costs independent source events, and
-                               //!< so only raises the floor. See
-                               //!< docs/bep_autotune.md section 4b.
+                               //!< bank per generation, per perturbation. A
+                               //!< real cost/accuracy knob with an optimum of
+                               //!< its own: each root is a transported
+                               //!< history, so the roots cost M*P of them,
+                               //!< while M is what divides the denominator's
+                               //!< irreducible floor. 0 means the whole bank.
+                               //!< See docs/bep_autotune.md section 4b.
 extern double bep_site_weight; //!< override for the numerator populations'
                                //!< site weight; 0 means use the rule
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff

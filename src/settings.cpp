@@ -142,7 +142,7 @@ SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
 bool perturbation_site_splitting {true};
-int64_t bep_n_roots {0}; // 0 = the whole fission bank; see bep_autotune.md 4b
+int64_t bep_n_roots {1000};
 double bep_site_weight {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};

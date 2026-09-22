@@ -143,6 +143,7 @@ int super_n_generation {0};
 int bep_n_generation {10};
 bool perturbation_site_splitting {true};
 int64_t bep_n_roots {1000};
+double bep_site_weight {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -632,6 +633,19 @@ void read_settings_xml(pugi::xml_node root)
         bep_n_roots = std::stoll(get_node_value(root, "perturbation_n_roots"));
         if (bep_n_roots < 0)
           fatal_error("'perturbation_n_roots' must not be negative.");
+      }
+
+      // Force the numerator populations' site weight instead of letting the
+      // rule choose it. This exists to MEASURE the rule: a figure-of-merit
+      // curve against site weight is the only thing that can confirm the
+      // optimum sits where the derivation says it does
+      // (docs/bep_autotune.md), and that curve cannot be swept while the
+      // code is choosing the value itself.
+      if (check_for_node(root, "perturbation_site_weight")) {
+        bep_site_weight =
+          std::stod(get_node_value(root, "perturbation_site_weight"));
+        if (bep_site_weight < 0.0)
+          fatal_error("'perturbation_site_weight' must not be negative.");
       }
     }
   }

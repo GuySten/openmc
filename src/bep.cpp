@@ -993,67 +993,44 @@ void update_site_weights()
 {
   int nd = settings::bep_n_generation + 1;
 
-  // Total weight each tree carried this generation, summed over depth.
+  // Total weight each population carried this generation, summed over depth.
   vector<double> total(tree_pert.size(), 0.0);
   for (size_t t = 0; t < tree_pert.size(); ++t) {
     for (int d = 0; d < nd; ++d)
       total[t] += tau[tau_index(static_cast<int>(t), d)];
   }
 
+  // Only weight_scale is set here, per generation. It describes the
+  // population rather than a choice about it -- what a typical particle in it
+  // weighs relative to the denominator's, which for a weak perturbation is
+  // several decades below one -- and it is measured whatever the splitting
+  // flag says, because it is what a weight cutoff inside the tree has to be
+  // judged against: against the denominator's scale the whole population sits
+  // below the cutoff and survival biasing would roulette all of it away.
+  //
+  // The SITE WEIGHT is chosen at the batch boundary instead, in
+  // choose_site_weights(), because the quantity it needs -- the measured
+  // relative variance of the worth -- is a batch statistic, and because a
+  // weight held constant for a whole batch makes the banked-site count it
+  // solves for exact rather than approximate.
   for (const auto& p : perturbations) {
     double w_d = total[p.tree_d];
     if (w_d <= 0.0)
-      continue; // nothing measured yet; leave every tree at unit weight
+      continue; // nothing measured yet
 
-    // The two members of a +/- pair are treated as ONE population and given
-    // ONE site weight, from their combined carried weight. They exist to be
-    // subtracted from each other, and giving them different sampling would
-    // decorrelate exactly the pair whose correlation the whole scheme rests
-    // on -- for no gain, since their magnitudes are nearly equal anyway.
     const int pairs[2][2] {{p.tree_fp, p.tree_fn}, {p.tree_lp, p.tree_ln}};
     for (const auto& pair : pairs) {
       double w = total[pair[0]] + total[pair[1]];
       if (w <= 0.0)
         continue;
-
-      // weight_scale describes the population rather than a choice about it
-      // -- it is what a typical particle in it weighs relative to the
-      // denominator's, which for a weak perturbation is several decades
-      // below one. It is measured whatever the splitting flag says, because
-      // it is what a weight cutoff inside the tree has to be judged against:
-      // against the denominator's scale the whole population sits below the
-      // cutoff and survival biasing would roulette all of it away.
+      // The two members of a +/- pair are one population as far as any of
+      // this is concerned: they exist to be subtracted from each other, and
+      // sampling them differently would decorrelate exactly the pair whose
+      // correlation the whole scheme rests on.
       double q = std::pow(10.0, std::floor(std::log10(w / w_d) + 0.5));
       q = std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
       tree_weight_scale[pair[0]] = q;
       tree_weight_scale[pair[1]] = q;
-
-      if (!settings::perturbation_site_splitting)
-        continue; // every tree banks unit-weight sites, as an ordinary
-                  // eigenvalue calculation does
-
-      // The site weight, and the reason it cannot just be 1. An ordinary
-      // eigenvalue calculation banks UNIT-weight fission sites and puts the
-      // parent's weight into the probability of banking one at all. For a
-      // population whose particles weigh 1e-4 that is a one-in-ten-thousand
-      // lottery: the expected banked weight is right, but almost every
-      // generation banks nothing and the occasional one banks a full-weight
-      // site, which is all variance and no information. Banking at the
-      // population's own scale instead, and proportionally more sites,
-      // leaves the expected weight identical and its variance far lower.
-      //
-      // The target is the same POPULATION the denominator carries, so every
-      // tree of a perturbation transports a comparable number of sites and
-      // none of them is the one that decides the answer's noise. Rounded to
-      // the nearest power of ten so the value does not drift generation to
-      // generation on sampling noise -- and so a population that already
-      // matches its denominator lands on exactly 1.0 and is bit-for-bit
-      // untouched by any of this.
-      double n_d = w_d / site_weight(p.tree_d);
-      double w_site = std::pow(10.0, std::floor(std::log10(w / n_d) + 0.5));
-      w_site = std::min(1.0, std::max(MIN_SITE_WEIGHT, w_site));
-      tree_site_weight[pair[0]] = w_site;
-      tree_site_weight[pair[1]] = w_site;
     }
   }
 }
@@ -1119,6 +1096,142 @@ void accumulate_generation()
   ++n_generations;
 }
 
+//! Choose each numerator population's site weight, from the batch just
+//! closed. See docs/bep_autotune.md for the derivation; the short form is
+//!
+//!     N_t* = sqrt( G_t * C0 / B )
+//!
+//! where N_t is the population's banked sites per batch, G_t is a
+//! dimensionless number saying how hard that population's sampling noise
+//! pushes on the worth, C0 is the cost of everything that is not a tunable
+//! population, and B is the irreducible floor of the worth's relative
+//! variance. The scale closes exactly -- at the optimum V/C = B/C0 -- which
+//! is what removes the run's total cost and total variance from the answer
+//! and makes this a constant map rather than an iteration needing a
+//! contraction guard.
+//!
+//! G_t is where the cancellation enters, and it is the whole reason the old
+//! rule (match the denominator's population) was wrong:
+//!
+//!     G_D = 1/k^2
+//!     G_L = [ (L+ + L-) / S ]^2
+//!     G_F = [ (F+ + F-) / (k S) ]^2      S = N_F/k + N_L, the numerator
+//!
+//! The bracket is the amplification a signed source suffers: the noise is set
+//! by the populations, the answer by their difference. Measured 8 for a
+//! strong absorber and 65 for a dissolved-U235 case, so those populations
+//! want 17x and 143x the denominator's sites -- not the 1x the old rule gave
+//! them.
+//!
+//! Correlation within a pair is taken as ZERO, i.e. G_t uses (L+ + L-) rather
+//! than (L+ + L-)(1 - r). That is the pessimistic bound and it over-samples;
+//! the optimum is flat enough (a factor of three costs at most a third of the
+//! figure of merit) that measuring r is not worth the accumulators.
+namespace {
+
+void choose_site_weights()
+{
+  if (settings::bep_site_weight > 0.0) {
+    // An explicit override short-circuits the rule. Used to sweep the site
+    // weight and measure the figure of merit against it, which is the only
+    // way to confirm the optimum is where the derivation says it is.
+    for (const auto& p : perturbations) {
+      for (int tree : {p.tree_fp, p.tree_fn, p.tree_lp, p.tree_ln})
+        tree_site_weight[tree] = settings::bep_site_weight;
+    }
+    return;
+  }
+  if (!settings::perturbation_site_splitting)
+    return; // unit-weight sites, as an ordinary eigenvalue calculation
+
+  // Five active batches before the measured spread is trusted at all. Below
+  // that B is inverted from two or three numbers and can come out anywhere.
+  if (n_active_batches < 5)
+    return;
+
+  int nd = settings::bep_n_generation + 1;
+  int L = settings::bep_n_generation;
+  size_t np = perturbations.size();
+
+  // The fixed cost per batch, in banked-site equivalents: the driver's own
+  // histories plus the denominator populations, which this rule does not
+  // tune (perturbation_n_roots does). A history costs what a history costs,
+  // which is what lets this avoid the clock -- a rule that timed itself would
+  // give two runs of the same seed different answers.
+  double c0 = static_cast<double>(settings::n_particles) *
+              static_cast<double>(settings::gen_per_batch);
+  for (const auto& p : perturbations)
+    c0 += batch_tau[tau_index(p.tree_d, L)] / site_weight(p.tree_d);
+
+  for (size_t ip = 0; ip < np; ++ip) {
+    const Perturbation& p = perturbations[ip];
+
+    double d_w = batch_tau[tau_index(p.tree_d, L)];
+    double fp = batch_tau[tau_index(p.tree_fp, L)];
+    double fn = batch_tau[tau_index(p.tree_fn, L)];
+    double lp = batch_tau[tau_index(p.tree_lp, L)];
+    double ln = batch_tau[tau_index(p.tree_ln, L)];
+    double n_f = fp - fn;
+    double n_l = lp - ln;
+    double s_num = n_f / keff_norm + n_l;
+    if (d_w <= 0.0 || s_num == 0.0)
+      continue;
+
+    double g_d = 1.0 / (keff_norm * keff_norm);
+    double g_l = std::pow((lp + ln) / s_num, 2);
+    double g_f = std::pow((fp + fn) / (keff_norm * s_num), 2);
+
+    // The measured relative variance of the worth, and the part of it the
+    // site weights are responsible for. What is left is B, the floor no
+    // amount of splitting can touch.
+    double n = static_cast<double>(n_active_batches);
+    double mean = ell_sum[ip * nd + L] / n;
+    if (mean == 0.0)
+      continue;
+    double sq = ell_cross[(ip * np + ip) * nd + L];
+    double var = (sq - n * mean * mean) / (n - 1.0);
+    if (var <= 0.0)
+      continue;
+    double v_meas = var / (mean * mean);
+
+    double n_d = d_w / site_weight(p.tree_d);
+    double n_l_sites = (lp + ln) / site_weight(p.tree_lp);
+    double n_f_sites = (fp + fn) / site_weight(p.tree_fp);
+    double discrete = (n_d > 0.0 ? g_d / n_d : 0.0) +
+                      (n_l_sites > 0.0 ? g_l / n_l_sites : 0.0) +
+                      (n_f_sites > 0.0 ? g_f / n_f_sites : 0.0);
+    double b = v_meas - discrete;
+    if (b <= 0.0)
+      continue; // the floor is not resolved yet; leave the weights alone
+
+    const struct {
+      int plus, minus;
+      double g, weight;
+    } pairs[2] {{p.tree_lp, p.tree_ln, g_l, lp + ln},
+      {p.tree_fp, p.tree_fn, g_f, fp + fn}};
+
+    for (const auto& pair : pairs) {
+      if (pair.weight <= 0.0 || pair.g <= 0.0)
+        continue;
+      double target = std::sqrt(pair.g * c0 / b);
+      if (!(target > 0.0))
+        continue;
+
+      // Rounded to the nearest HALF DECADE. Coarse enough that the value
+      // does not chase sampling noise from batch to batch, fine enough to
+      // cost at most 9% of the figure of merit at the worst rounding --
+      // where whole decades, which this used to use, can cost 37%.
+      double w = std::pow(
+        10.0, 0.5 * std::floor(2.0 * std::log10(pair.weight / target) + 0.5));
+      w = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
+      tree_site_weight[pair.plus] = w;
+      tree_site_weight[pair.minus] = w;
+    }
+  }
+}
+
+} // namespace
+
 void finalize_batch()
 {
   if (!simulation::bep_on)
@@ -1165,6 +1278,9 @@ void finalize_batch()
   }
   ++n_active_batches;
 
+  // Retune from the batch just closed, before its totals are cleared.
+  choose_site_weights();
+
   std::fill(batch_tau.begin(), batch_tau.end(), 0.0);
 }
 
@@ -1190,6 +1306,12 @@ void write_results(hid_t file_id)
   write_dataset(group, "n_roots", n_root_total);
   write_dataset(group, "n_perturbations", np);
   write_dataset(group, "keff", keff_norm);
+
+  // What the rule actually chose, so a figure-of-merit sweep can be plotted
+  // against it and so a run that came out noisy can be diagnosed without a
+  // rebuild.
+  write_dataset(group, "site_weight", tree_site_weight);
+  write_dataset(group, "n_sources", tree_sources);
 
   vector<int32_t> ids;
   for (const auto& p : perturbations)

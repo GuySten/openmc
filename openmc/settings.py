@@ -186,6 +186,15 @@ class Settings:
         the numerator populations.
 
         .. versionadded:: 0.16.0
+    perturbation_site_weight : float
+        Force the numerator populations' site weight instead of letting
+        :attr:`perturbation_site_splitting`'s rule choose it. Diagnostic
+        only: it exists so a figure-of-merit curve can be swept against the
+        site weight, which is the only thing that can confirm the rule's
+        optimum is where ``docs/bep_autotune.md`` derives it. Leave unset in
+        production.
+
+        .. versionadded:: 0.16.0
     max_lost_particles : int
         Maximum number of lost particles
 
@@ -516,6 +525,7 @@ class Settings:
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
         self._perturbation_n_roots = None
+        self._perturbation_site_weight = None
         self._perturbation_site_splitting = None
 
         # Collision track feature
@@ -1145,6 +1155,17 @@ class Settings:
             cv.check_greater_than("number of denominator roots", n, 0,
                                   equality=True)
         self._perturbation_n_roots = n
+
+    @property
+    def perturbation_site_weight(self) -> float:
+        return self._perturbation_site_weight
+
+    @perturbation_site_weight.setter
+    def perturbation_site_weight(self, w: float):
+        if w is not None:
+            cv.check_type("perturbation site weight", w, Real)
+            cv.check_greater_than("perturbation site weight", w, 0.0)
+        self._perturbation_site_weight = w
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1920,6 +1941,11 @@ class Settings:
             element = ET.SubElement(root, "perturbation_n_roots")
             element.text = str(self._perturbation_n_roots)
 
+    def _create_perturbation_site_weight_subelement(self, root):
+        if self._perturbation_site_weight is not None:
+            element = ET.SubElement(root, "perturbation_site_weight")
+            element.text = str(self._perturbation_site_weight)
+
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
             element = ET.SubElement(root, "tabular_legendre")
@@ -2460,6 +2486,11 @@ class Settings:
         if text is not None:
             self.perturbation_n_roots = int(text)
 
+    def _perturbation_site_weight_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_site_weight')
+        if text is not None:
+            self.perturbation_site_weight = float(text)
+
     def _ifp_n_generation_from_xml_element(self, root):
         text = get_text(root, 'ifp_n_generation')
         if text is not None:
@@ -2746,6 +2777,7 @@ class Settings:
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
         self._create_perturbation_n_roots_subelement(element)
+        self._create_perturbation_site_weight_subelement(element)
         self._create_perturbation_site_splitting_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
@@ -2868,6 +2900,7 @@ class Settings:
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
         settings._perturbation_n_roots_from_xml_element(elem)
+        settings._perturbation_site_weight_from_xml_element(elem)
         settings._perturbation_site_splitting_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)

@@ -193,6 +193,8 @@ extern bool
                                //!< split, at the adaptively chosen weight
 extern int64_t bep_n_roots;    //!< denominator roots sampled from the fission
                                //!< bank per generation, per perturbation
+extern double bep_site_weight; //!< override for the numerator populations'
+                               //!< site weight; 0 means use the rule
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

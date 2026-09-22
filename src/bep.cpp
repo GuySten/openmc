@@ -3,6 +3,8 @@
 
 #include "openmc/bep.h"
 
+#include <chrono>
+
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
@@ -51,6 +53,26 @@ vector<double> batch_pair_sq;
 vector<int64_t> batch_pair_n;
 int64_t n_history_total {0};
 int64_t batch_histories {0};
+
+// Wall-clock accounting for the shadow pass, master-thread only.
+//
+// DIAGNOSTIC, and deliberately walled off from the tuning rule: the rule
+// optimises against a HISTORY COUNT so that two runs of one seed give the
+// same answer on a loaded box, and it must never read a clock. These are for
+// answering where the time goes, which a history count cannot do -- measured
+// on PLUS7, runtime is FLAT in L (47.4 s at L=4 against 47.3 s at L=8), so on
+// that problem the transported-history model accounts for almost none of the
+// runtime and only a clock can say what does.
+double t_emit {0.0};      // the perturbation source: two calculate_xs per
+                          // segment per perturbation, plus per-nuclide roots
+double t_denroots {0.0};  // sampling the fission bank
+double t_transport {0.0}; // growing every root L generations
+double t_bookkeep {0.0};  // sorting, grouping, the signed pair sums
+using bep_clock = std::chrono::steady_clock;
+inline double secs_since(const bep_clock::time_point& t0)
+{
+  return std::chrono::duration<double>(bep_clock::now() - t0).count();
+}
 vector<vector<TrackSite>> thread_tracks;
 vector<TrackSite> tracks;
 vector<vector<SourceRoot>> thread_source_roots;
@@ -1026,6 +1048,7 @@ void run_shadow_pass()
   // by the seed, which is a property of the segment itself, makes the whole
   // shadow pass -- including the order the per-thread tau slabs are summed in
   // -- reproducible for a given thread count.
+  auto t_phase = bep_clock::now();
   tracks.clear();
   for (const auto& v : thread_tracks)
     tracks.insert(tracks.end(), v.begin(), v.end());
@@ -1033,8 +1056,10 @@ void run_shadow_pass()
     [](const TrackSite& a, const TrackSite& b) {
       return a.seed_id < b.seed_id;
     });
+  t_bookkeep += secs_since(t_phase);
 
   // ---- 1. the perturbation source, dH psi -------------------------------
+  t_phase = bep_clock::now();
   for (auto& v : thread_source_roots)
     v.clear();
   auto n_tracks = static_cast<int64_t>(tracks.size());
@@ -1054,9 +1079,12 @@ void run_shadow_pass()
   source_roots.clear();
   for (const auto& v : thread_source_roots)
     source_roots.insert(source_roots.end(), v.begin(), v.end());
+  t_emit += secs_since(t_phase);
 
   // ---- 2. the denominator, a sample of the reference fission source -----
+  t_phase = bep_clock::now();
   sample_denominator_roots();
+  t_denroots += secs_since(t_phase);
 
   if (source_roots.empty())
     return;
@@ -1071,12 +1099,14 @@ void run_shadow_pass()
   // input order is already deterministic -- per-thread vectors merged in
   // thread order, each filled by a static schedule over the sorted tracks --
   // so a stable sort keeps it that way.
+  t_phase = bep_clock::now();
   std::stable_sort(source_roots.begin(), source_roots.end(),
     [](const SourceRoot& a, const SourceRoot& b) {
       if (a.seed_id != b.seed_id)
         return a.seed_id < b.seed_id;
       return a.tree < b.tree;
     });
+  t_bookkeep += secs_since(t_phase);
 
   // ---- 3. grow every root L generations in its perturbation's physics ---
   //
@@ -1087,10 +1117,13 @@ void run_shadow_pass()
   // up, at the cost of bit-reproducibility.
   auto n = static_cast<int64_t>(source_roots.size());
   root_x.assign(source_roots.size(), 0.0);
+  t_phase = bep_clock::now();
 #pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < n; ++i) {
     run_one_tree(source_roots[i], &root_x[i]);
   }
+  t_transport += secs_since(t_phase);
+  t_phase = bep_clock::now();
 
   // ---- 4. the SIGNED within-batch spread of each numerator channel --------
   //
@@ -1164,6 +1197,7 @@ void run_shadow_pass()
       i = j;
     }
   }
+  t_bookkeep += secs_since(t_phase);
 }
 
 void update_site_weights()
@@ -1715,6 +1749,16 @@ void write_results(hid_t file_id)
   // A shadow tree transports one history per root plus one per banked site,
   // since every banked site is revived exactly once.
   write_dataset(group, "n_histories", n_history_total);
+
+  // Where the shadow pass actually spent its time. DIAGNOSTIC ONLY -- the
+  // tuning rule never reads a clock, by design, so that two runs of one seed
+  // agree on a loaded box. But a history count cannot answer "where does the
+  // time go", and on PLUS7 it demonstrably does not: runtime there is flat in
+  // L, so the transported-history cost model explains almost none of it.
+  write_dataset(group, "t_emit", t_emit);
+  write_dataset(group, "t_denominator_roots", t_denroots);
+  write_dataset(group, "t_transport", t_transport);
+  write_dataset(group, "t_bookkeeping", t_bookkeep);
 
   vector<int32_t> ids;
   for (const auto& p : perturbations)

@@ -46,8 +46,8 @@ vector<int64_t> tree_sources;
 vector<int64_t> batch_sources;
 vector<double> batch_root_sq;
 vector<double> thread_root_sq;
-int64_t n_roots_auto {0};
 int64_t n_history_total {0};
+int64_t batch_histories {0};
 vector<vector<TrackSite>> thread_tracks;
 vector<TrackSite> tracks;
 vector<vector<SourceRoot>> thread_source_roots;
@@ -158,6 +158,8 @@ void run_one_tree(const SourceRoot& site)
   // n_tracks() IS this tree's history count. Counted, never timed.
 #pragma omp atomic
   n_history_total += p.n_tracks();
+#pragma omp atomic
+  batch_histories += p.n_tracks();
   thread_root_sq[static_cast<size_t>(thread_num()) * tree_pert.size() +
                  static_cast<size_t>(tree)] += x * x;
 
@@ -923,14 +925,41 @@ void sample_denominator_roots()
   if (n_bank == 0)
     return;
 
-  // 0 means "let the rule decide" -- n_roots_auto is (11), measured from the
-  // spread across roots. Before the rule has run it is 0, and the whole bank
-  // is used, which is the right thing to do while nothing is known.
-  int64_t target = settings::bep_n_roots > 0 ? settings::bep_n_roots
-                                             : n_roots_auto;
-  double p_keep = (target <= 0 || target >= n_bank)
-                    ? 1.0
-                    : static_cast<double>(target) / n_bank;
+  // The root count is TIED to the denominator's site weight; it is not a
+  // knob of its own.
+  //
+  // It used to be one, with an optimum of its own derived in section 4b. That
+  // was a mistake of a particular kind: the roots and the sites they grow are
+  // the same population sampled at two different weights, and letting the two
+  // be chosen independently let them disagree. They did, badly. Measured on a
+  // tuned run, the denominator carried about 8000 roots to yield 78 sites --
+  // 95% of the whole denominator cost went into roots that were immediately
+  // rouletted away by a site weight of 100.
+  //
+  // Keeping a site with probability 1/w_D makes the kept roots carry weight
+  // w_D, which is the weight their descendants will be banked at anyway. The
+  // denominator then costs about L*N_D instead of M_D + (L-1)*N_D, and the
+  // variance per site changes by roughly a tenth. One knob, and the roots
+  // cannot disagree with the sites about how finely the denominator is
+  // sampled.
+  //
+  // The finest denominator across perturbations sets it, since a kept bank
+  // site is rooted once in EACH of them and a shared sample must not starve
+  // the one that wants the most roots.
+  double w_fine = 0.0;
+  for (const auto& p : perturbations) {
+    double w = site_weight(p.tree_d);
+    if (w > 0.0 && (w_fine == 0.0 || w < w_fine))
+      w_fine = w;
+  }
+  double p_keep = 1.0;
+  if (settings::bep_n_roots > 0) {
+    // An explicit pin still overrides, as a diagnostic.
+    p_keep = std::min(1.0, static_cast<double>(settings::bep_n_roots) /
+                             static_cast<double>(n_bank));
+  } else if (w_fine > 1.0) {
+    p_keep = 1.0 / w_fine;
+  }
   double scale = 1.0 / p_keep;
 
   for (int64_t i = 0; i < n_bank; ++i) {
@@ -1224,10 +1253,9 @@ void choose_site_weights()
   // perturbation_site_splitting = false and a perturbation_site_weight set
   // still had its numerator weights moved off 1. A switch a second setting
   // can quietly overrule is not an off switch. Off now means off: every site
-  // weight stays at 1 and n_roots_auto stays at 0, which sample_denominator_
-  // roots() reads as the whole fission bank -- i.e. exactly what an ordinary
-  // eigenvalue calculation banks, and the state this feature had before any
-  // tuning existed.
+  // weight stays at 1, and sample_denominator_roots() then keeps the whole
+  // fission bank -- i.e. exactly what an ordinary eigenvalue calculation
+  // banks, and the state this feature had before any tuning existed.
   if (!settings::perturbation_site_splitting)
     return;
 
@@ -1242,8 +1270,8 @@ void choose_site_weights()
     return;
   }
 
-  // Five active batches before the measured spread is trusted at all. Below
-  // that B is inverted from two or three numbers and can come out anywhere.
+
+  // Five active batches before anything measured here is trusted at all.
   if (n_active_batches < 5)
     return;
 
@@ -1251,63 +1279,53 @@ void choose_site_weights()
   int L = settings::bep_n_generation;
   size_t np = perturbations.size();
 
-  // Cost is HISTORIES, and a root is a history: run_one_tree() transports
-  // every one of them. So a tree costs
+  // ---- the cost model, checked against the history counter -----------------
   //
-  //     M_t  +  sum_{d=1..L} N_t(d)  ~  M_t + L*N_t
+  // Cost is HISTORIES, and a root is a history: run_one_tree() transports one
+  // per root (bep.cpp, transport_history_based_single_particle) and one per
+  // REVIVED site. The revival gate is `super_gen < gen_limit` with
+  // gen_limit = L + 1, and the sites banked at depth L carry super_gen = L+1,
+  // so they are scored and never revived. A tree therefore costs
   //
-  // and not N_t. Two consequences, both of which this rule got wrong before
-  // the cost model was written out (docs/bep_autotune.md 4b):
+  //     M_t  +  sum_{d=1..L-1} N_t(d)   ~   M_t + (L-1) * N_t
   //
-  //   - the FIXED cost is the driver plus every ROOT count, not the driver
-  //     alone. The numerator roots are set by the driver's tracks and are
-  //     not tunable at all; the denominator roots are tunable only through
-  //     perturbation_n_roots, which this rule does not set.
-  //   - each site-count knob costs L per unit, not 1, so the unit cost
-  //     kappa = L divides its gain in (7").
-  //
-  // A history costs what a history costs, which is what lets this avoid the
-  // clock: a rule that timed itself would give two runs of the same seed
-  // different answers.
-  const double gpb = static_cast<double>(settings::gen_per_batch);
-  double c_fixed = static_cast<double>(settings::n_particles) * gpb;
-  for (size_t t = 0; t < tree_sources.size(); ++t)
-    c_fixed += static_cast<double>(tree_sources[t]) * gpb;
-  const double kappa = static_cast<double>(L);
-  if (c_fixed <= 0.0 || kappa <= 0.0)
+  // and the unit cost of a site-count knob is kappa = L - 1, not L. This was
+  // L, and it is not a matter of taste: reconstructing the per-generation
+  // history budget from tau_pooled and n_sources in a finished statepoint
+  // matches the measured n_histories to 1.5% with L-1 and misses by 12-14%
+  // with L, on two independently tuned arms (see docs/bep_autotune.md 11).
+  const double kappa = static_cast<double>(L - 1);
+  if (kappa <= 0.0)
     return;
 
-  // ---- pass 1: every perturbation's G's and its floor ---------------------
-  //
-  // Two passes, because the scale in (7') is sqrt(C_drv/B_tot) with
-  // B_tot = sum_q B_q over ALL perturbations. One perturbation's weights
-  // cannot be chosen from its own floor alone.
-  struct PertPlan {
-    double g_d, g_l, g_f;     // (9) and section 2
-    double p_d, p_l, p_f;     // carried weights
-    double w_d, w_l, w_f;     // largest weight the delta method still allows
-    double b;                 // this perturbation's floor
-  };
-  vector<PertPlan> plan(np);
-  double b_tot = 0.0;
-  double c_d_tot = 0.0;
+  // The total cost of the batch just closed, COUNTED rather than modelled:
+  // the driver's histories plus every history the shadow pass transported.
+  // No part of it is assumed fixed, which matters because the denominator's
+  // root count is itself tunable -- putting it in a "fixed" cost, as the
+  // closed form below used to, double-counts the one knob it is choosing.
+  const double gpb = static_cast<double>(settings::gen_per_batch);
+  const double c_tot = static_cast<double>(settings::n_particles) * gpb +
+                       static_cast<double>(batch_histories);
+  if (c_tot <= 0.0)
+    return;
 
-  // The ROOT half of relvar(X_t) = 1/N_t + c_t/M_t, measured per tree rather
-  // than assumed away.
+  // The per-batch relative variance of tree t's depth-L weight, measured
+  // across that tree's own roots:
   //
-  // This is the term assumption A4 pretended did not exist (the audit,
-  // section 9). Leaving it out does not merely lose accuracy: because the
-  // floor B is obtained by SUBTRACTING the modelled part from the measured
-  // relative variance, every bit of variance the model fails to name is
-  // credited to B instead -- and a larger B tells the rule to coarsen, which
-  // raises the measured variance again. That is the feedback loop the audit
-  // found, and naming this term is what breaks it.
+  //     rv_t = sum(x^2)/(sum x)^2 - 1/M_t      (x = one root's depth-L weight)
   //
-  // c_t = M_t * sum(x^2) / (sum x)^2 - 1 over the tree's own roots, so
-  // c_t/M_t = sum(x^2)/(sum x)^2 - 1/M_t is the relative variance of their
-  // sum. It depends on the physics of the roots and not on the site weights,
-  // which is what makes it usable on the side of the equation B was being
-  // read off.
+  // Note what this is and is not. It is the FULL relative variance, including
+  // every layer of banking discreteness between depth 1 and depth L -- not a
+  // separate "root" term sitting beside a 1/N_t the model supplies. A
+  // branching process banked at weight w accumulates one layer of
+  // banking-plus-transport variance per generation, each of them proportional
+  // to w, so relvar(X_t) ~ a_t/N_t with a_t = 1 + (L-1)*sigma_Z^2, which is
+  // 5 to 20 here and not the <= 1 the derivation assumed. Splitting controls
+  // ALL of it.
+  //
+  // So rv_t is not something to add to 1/N_t -- that double-counts -- and it
+  // is not weight-independent either. It is the measurement that replaces the
+  // modelled coefficient outright.
   auto root_relvar = [&](int tree) -> double {
     double m = static_cast<double>(batch_sources[tree]);
     double sx = batch_tau[tau_index(tree, L)];
@@ -1318,19 +1336,15 @@ void choose_site_weights()
     return rv > 0.0 ? rv : 0.0;
   };
 
-  // The site floor, in the expansion's own terms: sqrt(1/N + c/M) <= EPS.
-  //
-  // Returns the largest site WEIGHT that still satisfies it, given the
-  // population weight the tree carries. When the root noise alone already
-  // breaches EPS no site count can rescue the expansion, and the honest
-  // answer is to stop coarsening entirely -- w = 1 leaves the sites as the
-  // physics hands them, neither split nor rouletted.
-  const double eps2 = DELTA_METHOD_EPS * DELTA_METHOD_EPS;
-  auto weight_cap = [&](double pop, double rv) -> double {
-    if (rv >= eps2)
-      return 1.0;
-    return pop * (eps2 - rv);
+  // ---- pass 1: the measured slope of each group ----------------------------
+  struct PertPlan {
+    double g_d, g_l, g_f;   // G_t * a_t: the MEASURED gain of each knob
+    double p_d, p_l, p_f;   // carried weights
+    double w_d;             // largest denominator weight the expansion allows
+    bool ok {false};
   };
+  vector<PertPlan> plan(np);
+  double v_tot = 0.0;
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1340,192 +1354,146 @@ void choose_site_weights()
     double fn = batch_tau[tau_index(p.tree_fn, L)];
     double lp = batch_tau[tau_index(p.tree_lp, L)];
     double ln = batch_tau[tau_index(p.tree_ln, L)];
-    double n_f = fp - fn;
-    double n_l = lp - ln;
-    double s_num = n_f / keff_norm + n_l;
-    if (d_w <= 0.0 || s_num == 0.0)
+    if (d_w <= 0.0)
       continue;
 
-    // G_t, the only population-specific quantity in the optimum. The
-    // derivation (docs/bep_autotune.md, sections 3-4) carries a factor
-    // (1 - r) on the pair terms, where r is the correlation of the two
-    // populations' BANKING fluctuations -- what the shared root seed is for.
-    // Taken as r = 0 here, deliberately.
+    // S from the POOLED totals, never from the batch just closed.
     //
-    // Not because r is negligible -- it is meant to be large -- but because
-    // there is currently no honest way to measure it, and the plausible way
-    // is actively dangerous. The batch-to-batch correlation of L+ and L- is
-    // nearly 1 for a reason that has nothing to do with banking: both are
-    // emitted from the same driver tracks, so a batch with more flux through
-    // the cell raises both. That shared source fluctuation belongs to the
-    // floor B, not to the term these weights control. Feeding it in as r
-    // would send G_L to zero and collapse the L population to nothing, in
-    // the channel that already dominates the noise.
-    //
-    // r = 0 over-splits by f = 1/sqrt(1-r) and costs figure of merit, never
-    // correctness -- banking is unbiased at any weight, since E[N] = nu
-    // exactly however w is chosen.
-    //
-    // The cost is bounded, and small. Section 5's sensitivity bound gives a
-    // worst-case FOM loss of 1.03 at r = 0.5, 1.12 at r = 0.75 and 1.37 at
-    // r = 0.9, so this only hurts for a pair that is almost perfectly
-    // synchronised. And where r -> 1 the pair contributes nothing to the
-    // answer: by the closed form in section 3,
-    //
-    //     r = [min(nu+,nu-) - nu+ nu-] / sqrt(nu+(1-nu+) nu-(1-nu-))
-    //
-    // r -> 1 needs the two walks to stay in step with matching nu, i.e. the
-    // (b) and (c) phase points not to have separated -- and such a pair has
-    // phi'(b) - phi'(c) -> 0, so it is in the population and not in the
-    // signal. The pairs that carry the worth are the ones whose scattered
-    // state lands far from its partner, hydrogen above all, and those
-    // desynchronise at once: for them r = 0 is exact, not conservative.
-    // G_D = 1, not 1/k^2. rho = S/(kD + N_F) with kD >> N_F, so
-    // d(rho)/dD = -rho/D and the RELATIVE sensitivity is exactly -1: a 1%
-    // fluctuation in D is a 1% fluctuation in rho, as it must be for a
-    // quantity proportional to 1/D. The 1/k^2 this used to carry came from
-    // a slip in section 2 of the derivation (d(rho)/dD written as
-    // -rho/(kD)) and made N_D* too small by k.
-    double g_d = 1.0;
-    double g_l = std::pow((lp + ln) / s_num, 2);
-    double g_f = std::pow((fp + fn) / (keff_norm * s_num), 2);
+    // G_L is (P_L/S)^2, and a single batch's S is a difference of two nearly
+    // equal populations: sign-indefinite, with a standard deviation of order
+    // its own mean. Dividing by its square is dividing by a variable whose
+    // reciprocal has no finite expectation, which put a heavy tail straight
+    // into the gain. The pooled S is the same quantity with the batch noise
+    // averaged out, and the gain is a property of the problem rather than of
+    // one batch.
+    double n_b = static_cast<double>(n_active_batches);
+    double pd = pooled_tau[tau_index(p.tree_d, L)];
+    double pfp = pooled_tau[tau_index(p.tree_fp, L)];
+    double pfn = pooled_tau[tau_index(p.tree_fn, L)];
+    double plp = pooled_tau[tau_index(p.tree_lp, L)];
+    double pln = pooled_tau[tau_index(p.tree_ln, L)];
+    double s_num = (pfp - pfn) / keff_norm + (plp - pln);
+    if (pd <= 0.0 || s_num == 0.0)
+      continue;
 
-    // The measured relative variance of the worth, and the part of it the
-    // site weights are responsible for. What is left is B, the floor no
-    // amount of splitting can touch.
-    double n = static_cast<double>(n_active_batches);
-    double mean = ell_sum[ip * nd + L] / n;
+    // G_t, the sensitivity of the worth to each population, as in section 2.
+    // G_D = 1 exactly: rho is proportional to 1/D, so a 1% fluctuation in D
+    // is a 1% fluctuation in rho. The numerator G's carry the cancellation
+    // between the + and - halves of a signed source, which is what can
+    // amplify a population's noise a hundredfold.
+    double g_d = 1.0;
+    double g_l = std::pow((plp + pln) / s_num, 2);
+    double g_f = std::pow((pfp + pfn) / (keff_norm * s_num), 2);
+
+    // The measured relative variance of the worth. Used DIRECTLY -- nothing
+    // is subtracted from it.
+    double mean = ell_sum[ip * nd + L] / n_b;
     if (mean == 0.0)
       continue;
     double sq = ell_cross[(ip * np + ip) * nd + L];
-    double var = (sq - n * mean * mean) / (n - 1.0);
+    double var = (sq - n_b * mean * mean) / (n_b - 1.0);
     if (var <= 0.0)
       continue;
-    double v_meas = var / (mean * mean);
+    v_tot += var / (mean * mean);
 
+    // The gain of each knob, MEASURED: relvar_t = a_t/N_t with
+    // a_t = rv_t * N_t, so the knob's gain is G_t * a_t = G_t * rv_t * N_t.
+    // Nothing here is a modelled coefficient.
     double n_d = d_w / site_weight(p.tree_d);
-    double n_l_sites = (lp + ln) / site_weight(p.tree_lp);
-    double n_f_sites = (fp + fn) / site_weight(p.tree_fp);
-
-    // relvar_t = 1/N_t + c_t/M_t, both halves. A4, corrected.
+    double n_l = (lp + ln) / site_weight(p.tree_lp);
+    double n_f = (fp + fn) / site_weight(p.tree_fp);
     double rv_d = root_relvar(p.tree_d);
     double rv_l = 0.5 * (root_relvar(p.tree_lp) + root_relvar(p.tree_ln));
     double rv_f = 0.5 * (root_relvar(p.tree_fp) + root_relvar(p.tree_fn));
 
-    double discrete = g_d * ((n_d > 0.0 ? 1.0 / n_d : 0.0) + rv_d) +
-                      g_l * ((n_l_sites > 0.0 ? 1.0 / n_l_sites : 0.0) + rv_l) +
-                      g_f * ((n_f_sites > 0.0 ? 1.0 / n_f_sites : 0.0) + rv_f);
-    double b = v_meas - discrete;
-    if (b <= 0.0)
-      return; // a floor is not resolved yet; leave every weight alone
+    // The delta method's domain of validity, and it binds on the DENOMINATOR
+    // alone. rho = S/(kD + N_F) is linear in S -- a noisy S is noisy, not
+    // biased -- but it is a ratio in D, and E[1/D] exceeds 1/E[D] by
+    // relvar(D) and by more when D is skewed. At N_D = 78 the depth-L
+    // denominator is a sum of a handful of surviving lineages of a critical
+    // branching process, and that bias was measured at -68 pcm on a -259 pcm
+    // worth.
+    //
+    // rv_D is proportional to w_D, so the largest weight that still satisfies
+    // rv_D <= EPS^2 extrapolates linearly from where the run is now. Taking
+    // rv_D at the CURRENT weight as if it would not move -- which the
+    // previous form did -- understates the constraint by the same factor the
+    // weight has to change by.
+    const double eps2 = DELTA_METHOD_EPS * DELTA_METHOD_EPS;
+    double w_now = site_weight(p.tree_d);
+    double w_cap = (rv_d > 0.0) ? w_now * eps2 / rv_d : 0.0;
 
-    plan[ip] = {g_d, g_l, g_f, d_w, lp + ln, fp + fn,
-      weight_cap(d_w, rv_d), weight_cap(lp + ln, rv_l),
-      weight_cap(fp + fn, rv_f), b};
-    b_tot += b;
-
-    // c_D for this perturbation's denominator. Same measurement as
-    // root_relvar() but carried as c rather than c/M, because (11) divides
-    // it by the root count it is choosing. Summed over perturbations because
-    // a single kept bank site is rooted once in EACH of them, so they share
-    // the knob and their floors add.
-    double m_d = static_cast<double>(batch_sources[p.tree_d]);
-    if (m_d > 1.0) {
-      double c = rv_d * m_d;
-      if (c > 0.0)
-        c_d_tot += c;
-    }
+    plan[ip] = {g_d * rv_d * n_d, g_l * rv_l * n_l, g_f * rv_f * n_f,
+      d_w, lp + ln, fp + fn, w_cap, true};
   }
 
-  if (b_tot <= 0.0)
+  if (v_tot <= 0.0)
     return;
 
-  // ---- the denominator's ROOT count, eq (11) -----------------------------
+  // ---- pass 2: N_t* = sqrt( g_t * C / (kappa * V) ), eq (4) ---------------
   //
-  // The same optimum, for the knob that sets how many fission-bank sites are
-  // rooted. Its unit cost is P -- one root per perturbation per kept site --
-  // and its gain is the floor it divides, sum_p c_{D,p}, which is measured
-  // above rather than assumed. So this needs nothing from the user, which is
-  // the point: perturbation_n_roots was the last number in the feature that
-  // had to be guessed.
-  if (c_d_tot > 0.0 && np > 0) {
-    double target = std::sqrt(c_d_tot / static_cast<double>(np) * c_fixed /
-                              b_tot);
-    // Never below a floor that could not resolve anything, and never above
-    // the bank, which is every site used once and is where the roots stop
-    // being independent of each other anyway.
-    target = std::max(target, MIN_TREE_ROOTS);
-    n_roots_auto = static_cast<int64_t>(target + 0.5);
-  }
-
-  // ---- pass 2: N* = sqrt( (G/kappa) C_fixed / B_tot ), eq (7") ----------
-  // One scale for the whole run; only sqrt(G) is population-specific.
-  const double scale = std::sqrt(c_fixed / (kappa * b_tot));
+  // The pre-closure optimum, used directly. The closed form it replaces,
+  // N_t* = sqrt(g_t * C_fixed / (kappa * B)), needs a floor B that is not
+  // measurable: it was obtained by subtracting the modelled part of the
+  // variance from the measured total, which credits to the floor every bit of
+  // variance the model fails to name -- and a larger floor tells the rule to
+  // coarsen, which raises the measured variance. That loop is stable, but it
+  // settles at a point set by the size of the modelling error rather than by
+  // anything physical, and it settled at N_D = 78.
+  //
+  // This form trades one unmeasurable quantity for two measured ones: V is
+  // the batch statistics of the estimator and C is a history count. Perturbed
+  // about a fixed point it contracts by (f_C + f_V)/2 with both fractions in
+  // (0,1), so it needs no guard of its own.
+  const double scale = std::sqrt(c_tot / (kappa * v_tot));
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
     const PertPlan& q = plan[ip];
-    if (q.p_d <= 0.0)
+    if (!q.ok)
       continue;
 
     const struct {
       int a, b2;
       double g, weight, cap;
     } groups[3] {{p.tree_d, p.tree_d, q.g_d, q.p_d, q.w_d},
-      {p.tree_lp, p.tree_ln, q.g_l, q.p_l, q.w_l},
-      {p.tree_fp, p.tree_fn, q.g_f, q.p_f, q.w_f}};
+      {p.tree_lp, p.tree_ln, q.g_l, q.p_l, 0.0},
+      {p.tree_fp, p.tree_fn, q.g_f, q.p_f, 0.0}};
 
     for (const auto& grp : groups) {
       if (grp.weight <= 0.0 || grp.g <= 0.0)
         continue;
       double target = std::sqrt(grp.g) * scale;
+      if (!(target > 0.0))
+        continue;
 
-      // Rounded to the nearest HALF DECADE. Coarse enough that the value
-      // does not chase sampling noise from batch to batch, fine enough to
-      // cost at most 9% of the figure of merit at the worst rounding --
-      // where whole decades, which this used to use, can cost 37%.
+      // Rounded to the nearest HALF DECADE. Coarse enough that the value does
+      // not chase sampling noise from batch to batch, fine enough to cost at
+      // most 9% of the figure of merit at the worst rounding -- where whole
+      // decades, which this used to use, can cost 37%.
       double w = std::pow(
         10.0, 0.5 * std::floor(2.0 * std::log10(grp.weight / target) + 0.5));
 
-      // At most one half decade per batch.
-      //
-      // The rule reads its own past output: the weights it chooses this
-      // batch change the variance it measures next batch. Corrected or not,
-      // that is a loop, and a loop with an unbounded step can run away from
-      // a single noisy batch before the next one can pull it back. Bounding
-      // the step does not change where the rule settles -- the fixed point
-      // is wherever (7") puts it -- only how fast it may travel, and the
-      // grid is half decades so the bound keeps w on it.
+      // At most one half decade per batch. The rule reads its own past
+      // output, and bounding the step keeps one noisy batch from throwing it
+      // a long way. It cannot move the fixed point, only the approach.
       double w_prev = tree_site_weight[grp.a];
       if (w_prev > 0.0) {
         const double step = std::sqrt(10.0);
         w = std::min(std::max(w, w_prev / step), w_prev * step);
       }
 
-      // The delta method's domain of validity, enforced on the REALISED site
-      // count and not on the target -- and applied last, because it is a
-      // hard bound and the damper above is only a damper. It may move w by
-      // more than a half decade in one batch; that direction is the safe
-      // one, and a damper that could hold the rule outside the domain its
-      // own optimum was derived in would be worse than no damper.
-      //
-      // This used to clamp `target` before the rounding, which does not
-      // preserve the clamp at all: rounding moves w UP as readily as down,
-      // and N = weight/w then lands BELOW the bound that was just applied.
-      // It was measured doing exactly that -- a target clamped to 100 sites
-      // came out at 77.6. So the cap is applied to w, and with floor()
-      // rather than the nearest half decade, since rounding to nearest is
-      // the very step that broke it.
+      // The validity cap, applied to the REALISED weight, after the rounding
+      // and after the damper -- a hard bound outranks a damper, and clamping
+      // before the rounding did not survive it at all (a target clamped to
+      // 100 sites came out at 77.6).
       if (grp.cap > 0.0 && w > grp.cap)
         w = std::pow(10.0, 0.5 * std::floor(2.0 * std::log10(grp.cap)));
 
       // No upper clamp beyond that one. w > 1 is Russian roulette on the
-      // sites -- fewer and heavier -- and it is what the denominator needs:
-      // N_D* is typically well below the population the bank hands it.
-      // Banking stays unbiased at any weight, since E[N] = nu exactly
-      // however w is chosen.
+      // sites -- fewer and heavier -- and banking stays unbiased at any
+      // weight, since E[N] = nu exactly however w is chosen.
       w = std::max(MIN_SITE_WEIGHT, w);
-
       tree_site_weight[grp.a] = w;
       tree_site_weight[grp.b2] = w;
     }
@@ -1583,7 +1551,20 @@ void finalize_batch()
   // Retune from the batch just closed, before its totals are cleared.
   choose_site_weights();
 
+  // Every per-batch accumulator, cleared together.
+  //
+  // batch_sources and batch_root_sq used to be missed here, so they were
+  // run-cumulative while batch_tau -- which the rule divides them by -- was
+  // per-batch. The measured per-root spread then grew without bound as the
+  // run went on: rv ~ n*rv_true + (n - 1/n)/m after n active batches, so by
+  // a few dozen batches the rule believed every population was hopelessly
+  // noisy no matter how finely it was split. Nothing downstream could work:
+  // the spread that sets both the floor and the root count was not a spread
+  // but a batch counter.
   std::fill(batch_tau.begin(), batch_tau.end(), 0.0);
+  std::fill(batch_sources.begin(), batch_sources.end(), 0);
+  std::fill(batch_root_sq.begin(), batch_root_sq.end(), 0.0);
+  batch_histories = 0;
 }
 
 

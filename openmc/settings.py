@@ -197,11 +197,12 @@ class Settings:
         population of the level estimator. The whole bank would be exact but
         costs a full extra transport of the problem at every shadow depth; a
         sample of it is unbiased -- each site is kept with probability ``p``
-        and carries ``1/p`` -- and turns that cost into a knob. **0, the
-        default, hands the choice to the auto-tune**, which sizes it from the
-        per-root spread it measures; before the rule has run, and whenever
-        :attr:`perturbation_site_splitting` is off, 0 falls back to the whole
-        bank. Set a positive value to pin it.
+        and carries ``1/p``. **0, the default, ties the root count to the
+        denominator's site weight** rather than treating it as an independent
+        knob: a site is kept with probability ``1/w_D``, so the kept roots
+        carry exactly the weight their descendants will be banked at. With
+        the auto-tune off, ``w_D`` is 1 and the whole bank is used. A positive
+        value pins the count, as a diagnostic.
 
         .. versionadded:: 0.16.0
     perturbation_site_weight : float
@@ -1169,28 +1170,27 @@ class Settings:
     def perturbation_n_roots(self) -> int:
         """Denominator roots taken from the fission bank each generation.
 
-        0, the default, lets the auto-tune choose, sizing it from the
-        per-root spread measured during the run. It falls back to the whole
-        bank before the rule has run and whenever
-        :attr:`perturbation_site_splitting` is off. A positive value pins it.
+        0, the default, ties this to the denominator's site weight: a bank
+        site is kept with probability ``1/w_D``. A positive value pins the
+        count instead, as a diagnostic.
 
-        Sub-sampling trades two things against each other. It saves the
-        transport of the roots themselves -- every root is a history, once
-        per perturbation -- but it cannot save the transport of their
-        descendants, because the kept roots carry the weight of the dropped
-        ones, so the depth-``d`` populations and the banked-site count that
-        dominates the cost are unchanged. What it costs is independent source
-        events, which is the only thing that lowers the denominator's
-        irreducible floor.
+        This was briefly an independent knob with an optimum of its own, and
+        that was a mistake worth recording. The roots and the sites they grow
+        are the same population sampled at two weights, so letting the two be
+        chosen independently lets them disagree -- and they did: on a tuned
+        run the denominator carried about 8000 roots to yield 78 sites, so
+        **95% of the denominator's cost went into roots that were immediately
+        rouletted away** by a site weight of 100. Tying them makes the
+        denominator cost about ``L*N_D`` instead of ``M_D + (L-1)*N_D``, for
+        roughly a tenth more variance per site.
 
-        .. warning::
-            How much of the total cost the root generation actually accounts
-            for is **under audit** and is not settled; an earlier version of
-            this docstring claimed sub-sampling saves no transport at all.
-            Until that is resolved, a pinned value here is a diagnostic
-            rather than a recommendation.
+        Sub-sampling saves the transport of the roots themselves -- every
+        root is a history, once per perturbation -- but not that of their
+        descendants, since the kept roots carry the dropped roots' weight, so
+        the depth-``d`` populations are unchanged. What it costs is
+        independent source events.
 
-        See ``docs/bep_autotune.md`` section 4b.
+        See ``docs/bep_autotune.md`` sections 4b and 11.
         """
         return self._perturbation_n_roots
 

@@ -126,26 +126,25 @@ constexpr double MIN_SITE_WEIGHT {1.0e-8};
 //! population so thin that the expansion which recommended it no longer
 //! holds.
 //!
-//! So the floor is stated in the expansion's own terms. A population's
-//! per-batch relative fluctuation is sqrt(relvar) = sqrt(1/N + c/M), and the
-//! second-order term the expansion drops is O(relvar) relative to the first.
-//! Holding sqrt(relvar) <= EPS bounds that neglected term at EPS^2 -- 1% of
-//! the variance model at EPS = 0.1.
+//! So the bound is stated in the expansion's own terms, on the population it
+//! actually binds on -- the DENOMINATOR. rho = S/(kD + N_F) is linear in S,
+//! so a noisy numerator is noisy and not biased; but it is a ratio in D, and
+//! E[1/D] exceeds 1/E[D] by relvar(D), and by more when D is skewed. Holding
 //!
-//! Note what this does NOT reduce to: a fixed site count. Solving for the
-//! site count gives N >= 1/(EPS^2 - c/M), which is 100 only when the ROOT
-//! noise c/M is negligible, and tightens without bound as the roots get
-//! noisy -- which is exactly the regime where a fixed count would have been
-//! most wrong. A count of 100 was the old constant; it is now the value this
-//! criterion takes in the easy case, not an assumption.
+//!     relvar(D) <= EPS^2
+//!
+//! bounds that bias at 1% for EPS = 0.1.
+//!
+//! What this does NOT reduce to is a fixed site count. relvar(D) is MEASURED
+//! across the denominator's own roots, so the bound tightens by itself
+//! wherever the population happens to be noisier per site than a count would
+//! have assumed. The previous constant here was a count of 100, and it was
+//! wrong twice over: the coefficient relating count to fluctuation is
+//! 1 + (L-1)*sigma_Z^2, which is 5 to 20 rather than 1, so 100 sites
+//! permitted a 6-20% bias and not the 1% it was chosen for -- and at 78
+//! sites, where the rule actually landed, the bias measured -68 pcm on a
+//! -259 pcm worth.
 constexpr double DELTA_METHOD_EPS {0.1};
-
-//! Fewest denominator roots the rule may ask for.
-//!
-//! Unlike the site floor above this one really is a resolution bound and not
-//! a validity bound: c_D itself is measured ACROSS those roots, so a handful
-//! of them cannot estimate the spread that sets their own optimal number.
-constexpr double MIN_TREE_ROOTS {100.0};
 
 // Whether BEP is configured at all is `!bep::perturbations.empty()`. There
 // is no separate flag: two representations of one fact have to be kept in
@@ -308,8 +307,11 @@ extern vector<int64_t> batch_sources;
 extern vector<double> batch_root_sq;
 extern vector<double> thread_root_sq;
 
-//! The root count the rule chose, used when perturbation_n_roots is 0.
-extern int64_t n_roots_auto;
+//! Histories the shadow pass transported in the batch just closed.
+//!
+//! The cost the tuning rule divides by, counted rather than modelled. Cleared
+//! in finalize_batch() with every other per-batch accumulator.
+extern int64_t batch_histories;
 
 //! Histories transported by the shadow pass over the whole run.
 //!

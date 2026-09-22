@@ -317,69 +317,96 @@ def test_results_accessors_without_results():
     with pytest.raises(ValueError):
         ps.correlation()
     with pytest.raises(ValueError):
-        ps.linearity(1)
+        ps.depth_convergence(1)
 
 
-def _transient_tau(amplitude, dominance_ratio, slope=-300e-5, n_gen=400,
-                   L=10, noise=2e-3, seed=7):
-    """Shadow weights whose log ratio is ``c + slope*d + A*r**d``.
+def _levels(curve, sigma=1.0, n_batches=30, seed=7, pooled_offset=0.0):
+    """A Perturbations whose per-batch levels follow ``curve`` in depth.
 
-    The last term is a sub-dominant mode that has not died out. It biases the
-    fitted slope, always in the same direction, which is exactly the failure
-    the diagnostics below have to catch.
+    The pooled level defaults to the mean of the draws, which is what a run
+    with no ratio-of-means bias gives; ``pooled_offset`` moves it away in
+    units of the standard error, to exercise the check that detects that.
     """
     rng = np.random.default_rng(seed)
-    d = np.arange(L + 1)
-    ell = slope * d + amplitude * dominance_ratio**d
-    den = np.exp(np.outer(np.ones(n_gen), 4.0 + 0.3 * d))
-    num = den * np.exp(ell) * np.exp(rng.normal(0, noise, (n_gen, L + 1)))
-    return num[None, ...], den[None, ...]
-
-
-def _fitted(amplitude, dominance_ratio, k_ref=1.38):
+    curve = np.asarray(curve, dtype=float)
+    nd = curve.size
+    draws = curve[None, :] + rng.normal(0.0, sigma, (n_batches, nd))
+    level_sum = draws.sum(0)[None, :]
+    level_cross = (draws * draws).sum(0)[None, None, :]
+    pooled = draws.mean(0)
+    if pooled_offset:
+        pooled = pooled + pooled_offset * draws.std(0, ddof=1) / np.sqrt(
+            n_batches)
     ps = openmc.Perturbations(
         [openmc.LocalPerturbation({71: 92}, perturbation_id=1)])
-    ps._set_results(*_transient_tau(amplitude, dominance_ratio), k_ref=k_ref)
+    ps._set_results(level_sum, level_cross, pooled[None, :], n_batches)
     return ps
 
 
-def test_linearity_is_a_real_chi_square():
-    """Near 1 without a transient, far above it with one.
+def test_depth_convergence_is_flat_without_a_transient():
+    """The one diagnostic the level estimator needs.
 
-    The old version divided the residuals by the curve's own magnitude rather
-    than by their uncertainty, so it read ~0 for any curve with a linear
-    trend -- including one whose slope was biased by hundreds of pcm.
+    A level is flat in depth once the perturbed fundamental mode has
+    established itself. A sub-dominant mode shows up directly as drift, with
+    no fit, no window and nothing to choose.
     """
-    clean = _fitted(0.0, 0.7)
-    assert 0.2 < clean.linearity(1) < 5.0
+    d = np.arange(13)
+    flat = _levels(np.full(13, -300e-5), sigma=2e-5)
+    curve = flat.depth_convergence(1)
+    values = np.array([curve[i][0] for i in d])
+    assert abs(values[1] - values[-1]) < 5.0     # pcm
 
-    contaminated = _fitted(0.05, 0.7)
-    assert contaminated.linearity(1) > 20.0
+    drifting = _levels(-300e-5 + 50e-5 * 0.7**d, sigma=2e-5)
+    curve = drifting.depth_convergence(1)
+    values = np.array([curve[i][0] for i in d])
+    assert values[1] - values[-1] > 20.0
 
 
-def test_worth_by_fit_start_exposes_a_transient():
-    """The worth must stop moving as the fit window shrinks.
+def test_confidence_interval_uses_student_t():
+    """A t-interval on n_batches - 1, not a normal quantile.
 
-    This is the diagnostic that answers "is n_generation large enough". A
-    sub-dominant mode makes the fitted worth drift monotonically with the
-    starting depth; without one it sits still.
+    With the twenty or so batches a perturbation run has, the difference is
+    several per cent and always in the direction of under-stating it.
     """
-    def drift(ps):
-        curve = ps.worth_by_fit_start(1)
-        starts = sorted(curve)
-        return curve[starts[1]][0] - curve[starts[-1]][0]
+    ps = _levels(np.full(3, -300e-5), sigma=1e-5, n_batches=10)
+    rho = ps.by_id(1).rho
+    lo, hi = ps.confidence_interval(1)
+    half = 0.5 * (hi - lo)
+    assert lo < rho.nominal_value < hi
+    assert half > 1.96 * rho.std_dev           # wider than the normal one
+    assert half == pytest.approx(2.262 * rho.std_dev, rel=1e-3)  # t(9)
 
-    assert abs(drift(_fitted(0.0, 0.7))) < 20.0
-    assert abs(drift(_fitted(0.05, 0.7))) > 100.0
+
+def test_pooled_agrees_with_the_batch_mean():
+    """The one assumption batch statistics make here, checked directly.
+
+    The metric is the gap between the pooled level and the mean of the
+    per-batch levels, in units of the worth's own sigma. Zero when there is
+    no ratio-of-means bias, and it must report the offset faithfully when
+    there is one.
+    """
+    ps = _levels(np.full(3, -300e-5), sigma=1e-5, n_batches=40)
+    assert abs(ps.pooled_vs_batch(1)) < 1e-9
+
+    shifted = _levels(np.full(3, -300e-5), sigma=1e-5, n_batches=40,
+                      pooled_offset=0.7)
+    assert shifted.pooled_vs_batch(1) == pytest.approx(0.7, rel=1e-6)
 
 
-def test_fit_diagnostics_need_results():
+def test_too_few_batches_raises():
+    with pytest.raises(DataError):
+        _levels(np.full(3, -300e-5), n_batches=1)
+
+
+def test_level_diagnostics_need_results():
     ps = openmc.Perturbations([openmc.LocalPerturbation({71: 92},
                                                         perturbation_id=1)])
     with pytest.raises(ValueError):
-        ps.linearity(1)
+        ps.depth_convergence(1)
     with pytest.raises(ValueError):
-        ps.worth_by_fit_start(1)
+        ps.confidence_interval(1)
+    with pytest.raises(ValueError):
+        ps.pooled_vs_batch(1)
 
 
 # ----------------------------------------------------------------------------
@@ -478,17 +505,30 @@ def test_no_perturbations_writes_no_file(run_in_tmpdir, cells_and_materials):
 def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
     """Minimal statepoint carrying only a local_perturbation group.
 
-    ``tau`` is [generation][tree][depth]. Tree 0 is the shared reference; tree
-    ``i + 1`` belongs to perturbation ``ids[i]``.
-
-    ``run_mode`` and ``k_combined`` are written because the reader needs
-    k-effective to turn the fitted slope (dk/k) into a reactivity. The default
-    of 1.0 makes that conversion the identity, so tests that check a slope
-    read unchanged; pass a realistic k to exercise the conversion.
+    ``tau`` is [batch][tree][depth] with five trees per perturbation, in the
+    C++'s class order: D, F+, F-, L+, L-. The level and its batch statistics
+    are formed here exactly as ``bep::finalize_batch`` forms them, so the
+    reader is tested against an independent implementation of the same
+    arithmetic rather than against itself.
     """
     tau = np.asarray(tau, dtype=float)
-    n_rec, n_trees, nd = tau.shape
+    n_batch, n_trees, nd = tau.shape
     assert nd == n_generation + 1
+    assert n_trees == 5 * len(ids)
+
+    def level(t):
+        d_w, fp, fn, lp, ln = t
+        n_f, n_l = fp - fn, lp - ln
+        den = keff * d_w + n_f
+        return np.where(den == 0.0, 0.0, (n_f / keff + n_l) / np.where(
+            den == 0.0, 1.0, den))
+
+    ell = np.stack(
+        [np.stack([level(tau[b, 5 * i:5 * i + 5]) for i in range(len(ids))])
+         for b in range(n_batch)])                     # [batch][pert][depth]
+    pooled = np.stack([level(tau[:, 5 * i:5 * i + 5].sum(0))
+                       for i in range(len(ids))])
+
     with h5py.File(path, 'w') as f:
         f.attrs['filetype'] = np.bytes_('statepoint')
         f.attrs['version'] = [18, 0]
@@ -496,201 +536,133 @@ def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
         f.create_dataset('k_combined', data=np.array([keff, 1.0e-5]))
         g = f.create_group('local_perturbation')
         g.create_dataset('n_generation', data=n_generation)
-        g.create_dataset('n_generations_recorded', data=n_rec)
+        g.create_dataset('n_generations_recorded', data=n_batch)
+        g.create_dataset('n_batches', data=n_batch)
         g.create_dataset('n_trees', data=n_trees)
-        g.create_dataset('n_branch', data=123456)
-        g.create_dataset('w_branch', data=1.0)
+        g.create_dataset('n_tracks', data=123456)
+        g.create_dataset('n_roots', data=123456)
         g.create_dataset('n_perturbations', data=len(ids))
+        g.create_dataset('keff', data=keff)
         g.create_dataset('ids', data=np.asarray(ids, dtype=np.int32))
-        g.create_dataset('tau', data=tau.ravel())
+        g.create_dataset('level_sum', data=ell.sum(0).ravel())
+        g.create_dataset('level_cross',
+                         data=np.einsum('bid,bjd->ijd', ell, ell).ravel())
+        g.create_dataset('level_pooled', data=pooled.ravel())
+        g.create_dataset('tau_pooled', data=tau.sum(0).ravel())
         for i, pid in enumerate(ids):
             pg = g.create_group(f'perturbation {pid}')
             pg.create_dataset('index', data=i)
-            pg.create_dataset('tree', data=i + 1)
-            pg.create_dataset('ref_trees',
-                              data=np.array([0], dtype=np.int32))
+            pg.create_dataset('trees',
+                              data=np.arange(5 * i, 5 * i + 5, dtype=np.int32))
             pg.create_dataset('cells', data=np.array([71], dtype=np.int32))
             pg.create_dataset('materials',
                               data=np.array([92 + i], dtype=np.int32))
 
 
-def _branching_tau(rng, k, rho, n_branch, n_gen, L):
-    """Simulate shadow forests: reference and perturbed weight per depth."""
-    ref = np.zeros((n_gen, L + 1))
-    pert = np.zeros((n_gen, L + 1))
-    for g in range(n_gen):
-        for out, kk in ((ref, k), (pert, k * (1.0 + rho))):
-            alive = np.full(n_branch, 1.0)
-            out[g, 0] = n_branch
-            for d in range(1, L + 1):
-                alive = rng.poisson(kk * alive).astype(float)
-                out[g, d] = alive.sum()
-    return ref, pert
+def _branching_tau(rng, k, rho, n_root, n_batch, L, keff=None):
+    """Simulate the five source-rooted forests for a known worth.
+
+    The denominator D is ``n_root`` roots grown as a branching process, and
+    the removal population L- is built to carry exactly the overlap that
+    makes the level come out at ``rho``: with no fission-production change
+    the level is ``N_L / (k D)``, so ``L- = -rho * k * D`` reproduces it at
+    every depth. The point of the exercise is the reader's arithmetic and its
+    statistics, not the transport.
+    """
+    keff = k if keff is None else keff
+    D = np.zeros((n_batch, L + 1))
+    for b in range(n_batch):
+        alive = np.full(n_root, 1.0)
+        D[b, 0] = n_root
+        for d in range(1, L + 1):
+            alive = rng.poisson(alive).astype(float)   # banking divides by k
+            D[b, d] = alive.sum()
+    zero = np.zeros_like(D)
+    return D, zero, zero, zero, -rho * keff * D
 
 
 def test_statepoint_parsing(run_in_tmpdir):
-    """Recover a known worth from simulated shadow forests.
-
-    The estimator is the slope of ln(tau_p / R_p), so feeding it branching
-    processes with a known ratio of mean offspring must return that ratio.
-    """
-    L, n_gen, k, rho = 10, 200, 2.2, -300e-5
+    """Recover a known worth from simulated source-rooted forests."""
+    L, n_batch, k, rho = 10, 60, 2.2, -300e-5
     rng = np.random.default_rng(20240829)
-    ref, pert = _branching_tau(rng, k, rho, 60, n_gen, L)
-
-    tau = np.stack([ref, pert], axis=1)          # [gen][tree][depth]
-    _write_statepoint('sp.h5', tau, [1], L)
+    tau = np.stack(_branching_tau(rng, k, rho, 400, n_batch, L), axis=1)
+    _write_statepoint('sp.h5', tau, [1], L, keff=k)
 
     with openmc.StatePoint('sp.h5', autolink=False) as sp:
         ps = sp.perturbations
         assert isinstance(ps, openmc.Perturbations)
         assert ps.ids == [1]
         assert ps.n_generation == L
-        assert ps.n_blocks >= 2
+        assert ps.n_batches == n_batch
 
         got = ps.by_id(1).rho
-        assert np.isfinite(got.nominal_value) and got.std_dev > 0.0
-        assert abs(got.nominal_value - 1e5 * rho) < 4.0 * got.std_dev, \
-            f'recovered {got:.1f} pcm, expected {1e5 * rho:.1f}'
+        assert got.nominal_value == pytest.approx(1e5 * rho, rel=1e-9), \
+            'the level is exact by construction here; nothing should move it'
+        assert got.std_dev == pytest.approx(0.0, abs=1e-9)
 
         assert ps.by_id(1).substitutions == {71: 92}
         assert len(ps.by_id(1).depth_curve) == L + 1
         assert np.isfinite(ps.by_id(1).depth_curve).all()
+        assert ps.by_id(1).rho_pooled == pytest.approx(1e5 * rho, rel=1e-9)
 
 
-def test_slope_is_converted_to_a_reactivity(run_in_tmpdir):
-    """The fitted slope is dk/k; the reported worth must be a reactivity.
+def test_level_inversion_is_exact_at_large_worth(run_in_tmpdir):
+    """The closed form, against the k' it is supposed to reproduce.
 
-    The slope of ln(tau_p/R_p) is ln(k_p/k_ref). The reactivity difference is
-    1/k_ref - 1/k_p, smaller by a factor of k. Reporting the slope directly
-    overstates every worth by that factor -- which is exactly what the 7x7
-    benchmark showed before this conversion existed.
+    A single Newton step -- drho ~ R(1-R)/k -- agrees only to O(R^2) and is
+    badly wrong for a large worth. Here the level is built from a KNOWN k',
+    so anything but the exact inversion shows up immediately.
     """
-    L, n_gen, k = 8, 120, 1.38
-    rng = np.random.default_rng(4242)
-    ref, pert = _branching_tau(rng, k, -300e-5, 40, n_gen, L)
-
-    def worth(k_ref):
-        ps = openmc.Perturbations(
-            [openmc.LocalPerturbation({71: 92}, perturbation_id=1)])
-        ps._set_results(np.array([pert]), np.array([ref]), k_ref=k_ref)
-        return ps.by_id(1).rho
-
-    raw = worth(1.0)          # dk/k
-    converted = worth(k)      # reactivity
-
-    assert converted.nominal_value == pytest.approx(
-        raw.nominal_value / k, rel=1e-6), \
-        'the slope was not divided by k'
-    assert converted.std_dev == pytest.approx(raw.std_dev / k, rel=1e-6), \
-        'the uncertainty was not transformed with the same Jacobian'
-    # exact form, not just the first-order 1/k
-    slope = -np.log1p(-raw.nominal_value / 1e5)
-    assert converted.nominal_value == pytest.approx(
-        1e5 * (1.0 - np.exp(-slope)) / k, rel=1e-9)
-
-
-def test_statepoint_applies_the_reactivity_conversion(run_in_tmpdir):
-    """The reader must divide the fitted slope by the run's k-effective.
-
-    `test_slope_is_converted_to_a_reactivity` checks the conversion itself;
-    this checks that StatePoint actually supplies k rather than leaving the
-    worth in dk/k. That omission is invisible to every internal consistency
-    check -- it took an independent method on the OECD benchmark to catch it.
-    """
-    L, n_gen, k = 8, 120, 1.38
-    rng = np.random.default_rng(31337)
-    ref, pert = _branching_tau(rng, k, -300e-5, 40, n_gen, L)
-    tau = np.stack([ref, pert], axis=1)
-
-    _write_statepoint('slope.h5', tau, [1], L, keff=1.0)
-    _write_statepoint('rho.h5', tau, [1], L, keff=k)
-
-    with openmc.StatePoint('slope.h5', autolink=False) as sp:
-        slope = sp.perturbations.by_id(1).rho
-    with openmc.StatePoint('rho.h5', autolink=False) as sp:
-        rho = sp.perturbations.by_id(1).rho
-
-    assert rho.nominal_value == pytest.approx(slope.nominal_value / k,
-                                              rel=1e-6)
-    assert rho.std_dev == pytest.approx(slope.std_dev / k, rel=1e-6)
+    L, k = 4, 1.0
+    for k_pert in (1.0003, 1.2, 1.5, 2.7):
+        # N_F/k' + N_L = (1/k - 1/k') <phi'|F psi>, with D = <phi'|F psi>/k
+        d_w = np.full(L + 1, 1000.0)
+        n_f = np.full(L + 1, 200.0)
+        drho = 1.0 / k - 1.0 / k_pert
+        n_l = drho * k * d_w - n_f / k_pert
+        tau = np.stack([d_w, n_f, np.zeros(L + 1), np.maximum(n_l, 0.0),
+                        np.maximum(-n_l, 0.0)])[None, ...]
+        tau = np.repeat(tau, 4, axis=0) / 4.0
+        _write_statepoint('sp.h5', tau, [1], L, keff=k)
+        with openmc.StatePoint('sp.h5', autolink=False) as sp:
+            got = sp.perturbations.by_id(1).rho.nominal_value
+        assert got == pytest.approx(1e5 * drho, rel=1e-9), \
+            f'k\'/k = {k_pert}: got {got:.3f} pcm, expected {1e5*drho:.3f}'
 
 
 def test_statepoint_survives_extinct_generations(run_in_tmpdir):
-    """Generations where a whole shadow forest dies must not poison the run.
+    """A batch whose whole forest dies must not poison the run.
 
-    This is the failure the per-generation form had: log(0) is -inf and one
-    bad generation turned the whole worth into nan. Summing over every
-    progenitor before dividing is what makes it harmless.
+    The level is a ratio of summed positive populations, so an extinct
+    forest contributes a finite zero rather than the log(0) the slope
+    estimator could hit. An all-zero batch gives level 0 by construction --
+    noise, not a nan.
     """
-    L, n_gen = 8, 120
+    L, n_batch = 8, 60
     rng = np.random.default_rng(7)
-    ref, pert = _branching_tau(rng, 2.2, -300e-5, 3, n_gen, L)
+    tau = np.stack(_branching_tau(rng, 2.2, -300e-5, 3, n_batch, L), axis=1)
+    tau[::7] = 0.0
 
-    # Force some generations to have a completely extinct perturbed forest
-    pert[::7, 1:] = 0.0
-    assert (pert[:, 1:].sum(1) == 0).any()
-
-    tau = np.stack([ref, pert], axis=1)
-    _write_statepoint('sp.h5', tau, [1], L)
-
+    _write_statepoint('sp.h5', tau, [1], L, keff=2.2)
     with openmc.StatePoint('sp.h5', autolink=False) as sp:
         ps = sp.perturbations
         got = ps.by_id(1).rho
-        assert np.isfinite(got.nominal_value), \
-            'extinct generations produced a nan worth'
+        assert np.isfinite(got.nominal_value)
         assert np.isfinite(got.std_dev)
         assert np.isfinite(ps.covariance).all()
 
 
-def test_statepoint_zero_depth_raises(run_in_tmpdir):
-    """No weight past depth 0 is a build fault, and must be named as one.
-
-    It means no shadow tree ever produced a fission site -- the symptom of a
-    chain-bounding gate reading settings::super_n_generation instead of
-    bep::generation_limit(). Reporting it as thin statistics would send
-    someone off adding particles for no reason.
-    """
-    L, n_gen = 8, 40
-    ref = np.ones((n_gen, L + 1))
-    pert = np.zeros((n_gen, L + 1))
-    pert[:, 0] = 1.0                     # roots exist, nothing descends
-    tau = np.stack([ref, pert], axis=1)
-    _write_statepoint('sp.h5', tau, [1], L)
-
-    with openmc.StatePoint('sp.h5', autolink=False) as sp:
-        with pytest.raises(DataError, match='fission site'):
-            sp.perturbations
-
-
-def test_statepoint_degenerate_jackknife_raises(run_in_tmpdir):
-    """If a leave-one-out replicate has nothing left, fail loudly.
-
-    Weight past depth 0 exists, so this is not the build fault above, but it
-    is concentrated in a single generation: drop that block and the replicate
-    has no surviving tree at any depth. Returning nan there would be worse
-    than an error.
-    """
-    L, n_gen = 8, 40
-    ref = np.ones((n_gen, L + 1))
-    pert = np.zeros((n_gen, L + 1))
-    pert[:, 0] = 1.0
-    pert[0, :] = 1.0                     # only the first generation survives
-    tau = np.stack([ref, pert], axis=1)
-    _write_statepoint('sp.h5', tau, [1], L)
-
-    with openmc.StatePoint('sp.h5', autolink=False) as sp:
-        with pytest.raises(DataError, match='extinct'):
-            sp.perturbations
-
-
 def test_statepoint_covariance_is_symmetric(run_in_tmpdir):
-    L, n_gen = 8, 150
+    L, n_batch = 8, 60
     rng = np.random.default_rng(99)
-    ref, p1 = _branching_tau(rng, 2.2, -300e-5, 40, n_gen, L)
-    _, p2 = _branching_tau(rng, 2.2, -150e-5, 40, n_gen, L)
-    tau = np.stack([ref, p1, p2], axis=1)
-    _write_statepoint('sp.h5', tau, [1, 2], L)
+    t1 = _branching_tau(rng, 2.2, -300e-5, 40, n_batch, L)
+    t2 = _branching_tau(rng, 2.2, -150e-5, 40, n_batch, L)
+    tau = np.stack(list(t1) + list(t2), axis=1)
+    # Give the second one noise of its own, or both levels are exact and the
+    # covariance is identically zero.
+    tau[:, 9, :] *= rng.normal(1.0, 0.05, (n_batch, L + 1))
+    tau[:, 4, :] *= rng.normal(1.0, 0.05, (n_batch, L + 1))
+    _write_statepoint('sp.h5', tau, [1, 2], L, keff=2.2)
 
     with openmc.StatePoint('sp.h5', autolink=False) as sp:
         ps = sp.perturbations
@@ -712,10 +684,10 @@ def test_statepoint_absent_group_returns_none(run_in_tmpdir):
 
 
 def test_statepoint_result_is_cached(run_in_tmpdir):
-    L, n_gen = 8, 60
+    L, n_batch = 8, 60
     rng = np.random.default_rng(1)
-    ref, pert = _branching_tau(rng, 2.2, -100e-5, 30, n_gen, L)
-    _write_statepoint('sp.h5', np.stack([ref, pert], axis=1), [1], L)
+    tau = np.stack(_branching_tau(rng, 2.2, -100e-5, 30, n_batch, L), axis=1)
+    _write_statepoint('sp.h5', tau, [1], L, keff=2.2)
     with openmc.StatePoint('sp.h5', autolink=False) as sp:
         assert sp.perturbations is sp.perturbations
 
@@ -999,12 +971,15 @@ def test_absorber_worth_is_negative(run_in_tmpdir, model):
             'or enlarge the sample rather than loosening the assertion.')
 
 
-def test_depth_curve_is_linear_not_flat(run_in_tmpdir, model):
-    """The estimator is the slope of l(d), and there is no plateau.
+def test_depth_curve_is_flat_not_linear(run_in_tmpdir, model):
+    """The estimator is a LEVEL, so its depth curve must plateau.
 
-    A curve that comes out flat would mean the perturbation is not reaching
-    the shadow trees at all. Check both that it varies and that a straight
-    line describes the asymptotic part.
+    This is the inverse of what the slope estimator needed. Depth 0 is the
+    source counted with no propagation at all -- uniform weighting, which is
+    not an importance and is wildly wrong -- and every depth after it is the
+    same ratio, flat once the perturbed fundamental mode has established
+    itself. Drift at the deep end means n_generation is too small; that is
+    the whole convergence diagnostic, and there is no fit window to pick.
     """
     _, absorber = _water_and_absorber(model)
     # Shadow trees cost ~k**d histories each, so trade particles for depth
@@ -1018,45 +993,59 @@ def test_depth_curve_is_linear_not_flat(run_in_tmpdir, model):
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
         ps = sp.perturbations
-        curve = ps.by_id(1).depth_curve
+        p = ps.by_id(1)
+        curve, sigma = p.depth_curve, p.depth_sigma
         assert len(curve) == 11
+        assert ps.depth_convergence(1)[10] == (curve[10], sigma[10])
 
-        # It must actually move with depth. A flat curve would mean the
-        # perturbation never reached the shadow trees at all.
-        assert abs(curve[-1] - curve[ps.n_generation // 2]) > 0.0
+        # Depth 0 is the un-propagated source: it must NOT look like the
+        # answer, or the propagation is not happening at all.
+        assert abs(curve[0] - curve[10]) > 3.0 * sigma[10]
 
-        # And be describable by a straight line over the fitted range.
-        #
-        # linearity is a reduced chi-square, so the scale is 1, not 0 -- an
-        # earlier version of this assertion used 0.5, left over from when
-        # the metric divided residuals by the curve's own magnitude and read
-        # ~0 for anything with a linear trend. With L=10 the fit has 4
-        # degrees of freedom, so the spread is 1.00 +/- 0.71 and a tight bar
-        # would be flaky at these statistics. 5 catches gross curvature at a
-        # false-failure rate of 5e-4.
-        assert ps.linearity(1) < 5.0
+        # Every propagated depth is the same level. Compared against the
+        # deepest one's own uncertainty, since they are strongly correlated
+        # and it is drift, not scatter, that matters.
+        for d in range(2, 11):
+            assert abs(curve[d] - curve[10]) < 3.0 * sigma[10], (
+                f'level at depth {d} is {curve[d]:.1f} pcm against '
+                f'{curve[10]:.1f} +/- {sigma[10]:.1f} at depth 10; a level '
+                'that still drifts has not converged')
 
 
 def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
                                                 model):
-    """Co-located perturbations must come out correlated.
+    """Perturbations sharing a source must come out correlated.
 
-    They share branch sites and seeds by construction, so a near-zero
-    off-diagonal would mean the shared-seed path is broken and every
-    difference would carry a needlessly large error bar.
+    Two substitutions into the same cell see the same driver segments and,
+    for every nuclide they both change, emit the same source particle from
+    the same seed -- differing only in its weight. Their estimator noise is
+    then largely common and subtracting them must beat treating them as
+    independent. A seed keyed on the perturbation index would destroy that,
+    and would show up here.
+
+    The pair that has to be strongly correlated is two absorbers at nearly
+    the same density: they change the same three nuclides by nearly the same
+    amounts, so almost all of their source coincides. Absorber against void
+    is NOT such a pair -- they share only the water's removal, while the
+    absorber's worth is dominated by boron the void does not have -- and
+    asserting a positive correlation there is a coin flip on a
+    finite-batch estimate.
     """
     water, absorber = _water_and_absorber(model)
-    fuel = model.materials[0]
+    lighter = openmc.Material(material_id=4)
+    lighter.add_nuclide('B10', 1.0)
+    lighter.set_density('g/cm3', 2.4)
+    model.materials.append(lighter)
+
     cell = _sample_cell(model)
     # No null perturbation here. A null has exactly zero worth AND exactly
-    # zero variance, so its row and column of the covariance are zero,
-    # and its correlation with itself is 0/0 -- correct, but it makes a
-    # correlation-matrix assertion meaningless. Three genuinely different
-    # substitutions instead: absorber and void are negative, fuel positive.
+    # zero variance, so its row and column of the covariance are zero, and
+    # its correlation with itself is 0/0 -- correct, but it makes a
+    # correlation-matrix assertion meaningless.
     model.perturbations = openmc.Perturbations([
-        openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
-        openmc.LocalPerturbation({cell: fuel}, perturbation_id=2),
-        openmc.LocalPerturbation({cell: None}, perturbation_id=3),
+        openmc.LocalPerturbation({cell: None}, perturbation_id=1),
+        openmc.LocalPerturbation({cell: absorber}, perturbation_id=2),
+        openmc.LocalPerturbation({cell: lighter}, perturbation_id=3),
     ])
     model.settings.perturbation_n_generation = 6
 
@@ -1066,42 +1055,46 @@ def test_covariance_is_symmetric_and_correlated(run_in_tmpdir,
         cov = ps.covariance
         assert cov.shape == (3, 3)
         assert np.allclose(cov, cov.T)
-        assert (np.diag(cov) >= 0.0).all()
+        assert (np.diag(cov) > 0.0).all(), \
+            'a perturbation has zero variance; is one of them a null?'
 
         corr = ps.correlation()
         assert np.allclose(np.diag(corr), 1.0)
         assert np.all(np.abs(corr) <= 1.0 + 1e-9)
 
-        assert (np.diag(cov) > 0.0).all(), \
-            'a perturbation has zero variance; is one of them a null?'
-
-        # No threshold on a raw correlation here. It is estimated from
-        # n_blocks jackknife replicates, so it carries about 1/sqrt(20) =
-        # 0.22 of its own noise -- an assertion like corr > 0.1 cannot
-        # distinguish a correlation of 0 from one of 0.5 and fails at
-        # random. The check below tests the same property and is robust,
+        # No absolute threshold on a raw correlation: it is estimated from
+        # n_batches realizations and carries about 1/sqrt(n) of its own
+        # noise. The check below tests the same property and is robust,
         # because it compares two numbers from the same covariance rather
-        # than one against an absolute bar.
-
-        # Absorber and void act on the same cell through the same branch
-        # sites and are compared against the same reference tree, so their
-        # estimator noise is shared and subtracting them must beat treating
-        # them as independent. That is what correlated_values buys, and a
-        # broken shared-seed path would show up here as equality.
-        diff = ps.by_id(3).rho - ps.by_id(1).rho
-        independent = np.hypot(ps.by_id(1).rho.std_dev,
+        # than one against a bar.
+        diff = ps.by_id(3).rho - ps.by_id(2).rho
+        independent = np.hypot(ps.by_id(2).rho.std_dev,
                                ps.by_id(3).rho.std_dev)
-        assert diff.std_dev < independent
+        assert diff.std_dev < 0.5 * independent, (
+            f'two absorbers 4% apart in density gave a difference of '
+            f'{diff:.1f} pcm against {independent:.1f} for independent '
+            'worths; their shared source is not being sampled in common')
 
 
-def test_displacement_matches_difference_of_positions(run_in_tmpdir):
-    """Two routes to the same quantity must agree.
+def test_displacement_across_a_symmetry_plane_is_zero(run_in_tmpdir):
+    """A multi-cell substitution with an exactly known answer.
 
-    A sliver-only displacement perturbation and the difference of two
-    whole-sample perturbations one slice apart estimate the same thing. The
-    displacement form should also be the tighter of the two, since it forms
-    the difference inside the correlated sample instead of between two
-    larger worths.
+    A displacement is a SET of substitutions applied together: the trailing
+    sliver reverting to what was there and the leading sliver taking the
+    sample. Displacing the sample across a plane of symmetry moves it
+    between two positions of identical importance, so the worth is exactly
+    zero -- not by construction the way a null substitution is (this one
+    really does emit a source, a negative population in one slice and a
+    positive one in the other), but as a property of the geometry. That
+    makes it the sharpest available check that the two halves of a two-cell
+    substitution are weighted correctly against each other.
+
+    The earlier version of this test compared the displacement against the
+    difference of two whole-sample perturbations. That comparison was not
+    well posed: the reference geometry held water in every slice, so the
+    ``trailing sliver reverts to water`` half of the displacement was a null
+    substitution and the displacement was just the leading half. The two
+    routes were never estimating the same thing.
     """
     fuel = openmc.Material(material_id=1)
     fuel.add_nuclide('U235', 1.0)
@@ -1117,10 +1110,10 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
     absorber.add_nuclide('B10', 1.0)
     absorber.set_density('g/cm3', 2.5)
 
-    # Axially sliced channel through a reflected fuel sphere.
-    # Reflective for the same reason as the fixture above: a leaky system
-    # starves the shadow trees, and this test needs two worths precise
-    # enough to difference.
+    # Axially sliced channel through a reflected fuel sphere, with the
+    # slice boundaries placed symmetrically about z = 0 so that slices 1 and
+    # 2 are mirror images. Reflective for the same reason as the fixture
+    # above: a leaky system starves the shadow trees.
     outer = openmc.Sphere(r=10.0, boundary_type='reflective')
     channel = openmc.ZCylinder(x0=4.0, r=1.2)
     planes = [openmc.ZPlane(z0=z) for z in np.linspace(-3.0, 3.0, 5)]
@@ -1130,9 +1123,11 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
         slices.append(openmc.Cell(
             cell_id=100 + i, fill=water,
             region=-channel & +planes[i] & -planes[i + 1]))
+    # The reference geometry HOLDS the sample, at slice 1; the displacement
+    # moves it to slice 2, its mirror image in z.
+    slices[1].fill = absorber
 
-    bulk_region = -outer & ~openmc.Union(
-        [c.region for c in slices])
+    bulk_region = -outer & ~openmc.Union([c.region for c in slices])
     bulk = openmc.Cell(cell_id=200, fill=fuel, region=bulk_region)
 
     model = openmc.Model()
@@ -1146,61 +1141,33 @@ def test_displacement_matches_difference_of_positions(run_in_tmpdir):
     model.settings.seed = 1
 
     ids = [c.id for c in slices]
-    at_1 = {c: water for c in ids}
-    at_1[ids[1]] = absorber
-    at_2 = {c: water for c in ids}
-    at_2[ids[2]] = absorber
-    # Only the symmetric difference: slice 1 reverts, 2 takes the
-    # sample
-    moved = {ids[1]: water, ids[2]: absorber}
-
     model.perturbations = openmc.Perturbations([
-        openmc.LocalPerturbation(at_1, perturbation_id=1,
-                                 name='at slice 1'),
-        openmc.LocalPerturbation(at_2, perturbation_id=2,
-                                 name='at slice 2'),
-        openmc.LocalPerturbation(moved, perturbation_id=3,
-                                 name='moved 1->2'),
+        openmc.LocalPerturbation({ids[1]: water, ids[2]: absorber},
+                                 perturbation_id=1, name='moved 1->2'),
     ])
     model.settings.perturbation_n_generation = 8
 
     sp_path = model.run()
     with openmc.StatePoint(sp_path) as sp:
-        ps = sp.perturbations
-        by_diff = ps.by_id(2).rho - ps.by_id(1).rho
-        by_displacement = ps.by_id(3).rho
-
-        # Both routes share the same run, so subtract them as correlated
-        # quantities too: the residual carries the right uncertainty.
-        residual = by_displacement - by_diff
-        assert abs(residual.nominal_value) < 4.0 * residual.std_dev, (
-            f'displacement {by_displacement:.3f} disagrees with '
-            f'difference {by_diff:.3f} (residual {residual:.3f})')
+        rho = sp.perturbations.by_id(1).rho
+        assert rho.std_dev > 0.0, 'a displacement does emit a source'
+        assert abs(rho.nominal_value) < 3.0 * rho.std_dev, (
+            f'displacing the sample across a plane of symmetry gave '
+            f'{rho:.3f} pcm; it must be zero')
 
 
-def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
-    """BEP must work in multigroup mode, not just continuous energy.
+def test_multigroup_is_refused_clearly(run_in_tmpdir):
+    """Multigroup is not supported yet, and must say so rather than guess.
 
-    SourceSite.E carries a GROUP INDEX in multigroup mode -- from_source()
-    does ``g() = int(src->E)`` there, while create_secondary() and split()
-    both write ``run_CE ? E() : g()``. Recording a shadow root's energy
-    without that distinction fed an energy in as a group index, which runs
-    off the end of every group-indexed array.
-
-    The null test catches it because a shadow root launched at a nonsense
-    group does not reproduce the reference tree.
+    The perturbation source needs the group-to-group transfer matrices of
+    both the reference and the substituted material to form dSigma_s, and
+    those are not wired up. An absorption-only source would run and would be
+    quietly wrong for any substitution that changes scattering, which is
+    almost all of them -- so the run stops instead.
     """
     groups = openmc.mgxs.EnergyGroups([0.0, 1.0e5, 20.0e6])
 
     def xsdata(name, absorption, scatter, fissile):
-        """Two-group data that balances against the totals.
-
-        For the fissile ones nu_fission is set EQUAL to absorption in both
-        groups, so k_inf = sum(nu_f phi) / sum(abs phi) = 1 for ANY
-        spectrum. The test cannot drift supercritical however the flux
-        settles, which matters because shadow trees grow as k**L: an earlier
-        version of this data gave k = 3.3 and the trees ran away.
-        """
         x = openmc.XSdata(name, groups)
         x.order = 0
         x.set_total([1.0, 2.0])
@@ -1212,7 +1179,6 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
         x.set_chi([1.0, 0.0])
         return x
 
-    # absorption + total scatter out == total, group by group
     fuel_scatter = np.array([[[0.60], [0.38]], [[0.00], [1.80]]])
     abs_scatter = np.array([[[0.57], [0.38]], [[0.00], [1.00]]])
 
@@ -1242,8 +1208,8 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
     model.materials = openmc.Materials([fuel, sample, absorber])
     model.materials.cross_sections = 'mgxs.h5'
     model.settings.energy_mode = 'multi-group'
-    model.settings.particles = 2000
-    model.settings.batches = 25
+    model.settings.particles = 200
+    model.settings.batches = 15
     model.settings.inactive = 5
     model.settings.seed = 1
     model.settings.source = openmc.IndependentSource(
@@ -1252,39 +1218,38 @@ def test_multigroup_null_is_exactly_zero(run_in_tmpdir):
     cell = model.geometry.get_all_cells()[10]
     model.perturbations = openmc.Perturbations([
         openmc.LocalPerturbation({cell: absorber}, perturbation_id=1),
-        openmc.LocalPerturbation({cell: sample}, perturbation_id=2,
-                                 name='null'),
     ])
-    model.settings.perturbation_n_generation = 6
+    model.settings.perturbation_n_generation = 4
 
-    sp_path = model.run()
-    with openmc.StatePoint(sp_path) as sp:
-        ps = sp.perturbations
-        assert abs(ps.by_id(2).rho.nominal_value) < 1.0e-6, \
-            'multigroup null perturbation is not zero'
-        assert ps.by_id(2).rho.std_dev < 1.0e-6
-        # and the real perturbation has to produce something finite
-        worth = ps.by_id(1).rho
-        assert np.isfinite(worth.nominal_value)
-        assert worth.std_dev > 0.0
+    with pytest.raises(RuntimeError, match='continuous-energy'):
+        model.run()
 
 
-def test_site_splitting_leaves_full_weight_trees_alone(run_in_tmpdir, model):
-    """Site splitting must not disturb an ordinary shadow tree.
+def test_site_splitting_leaves_the_denominator_alone(run_in_tmpdir, model):
+    """Site splitting must not touch the denominator population.
 
     Shadow fission sites are normally banked at unit weight, with the
-    parent's weight turned into the probability of banking one. That is only
-    a problem for a tree whose particles weigh far less than one; a material
-    perturbation's tree carries a full-weight population, the same as its
-    reference, so the site weight the rule chooses rounds to exactly 1.0 and
-    the arithmetic is the one an eigenvalue calculation has always done.
+    parent's weight turned into the probability of banking one. That is a
+    lottery for a population whose particles weigh far less than one, which
+    is exactly what the four NUMERATOR populations are -- they carry the
+    perturbation source, several decades below the driver's scale -- so
+    splitting is expected to change them, and does.
 
-    Turning it off entirely must therefore give BIT-IDENTICAL shadow weights
-    -- not merely consistent ones. That pins three things at once: that
-    reference trees are never given a weight of their own, that the rule
-    really does leave a full-weight population alone rather than only
-    approximately so, and that no extra random number is drawn on the way,
-    any of which would move the random walk of every tree in the run.
+    The denominator is different: it is a sample of the fission bank and
+    carries the same full-weight population an ordinary eigenvalue
+    calculation does, so the rule must leave it at exactly 1.0 and its
+    weights must come out BIT-IDENTICAL with splitting on and off -- not
+    merely consistent. That pins three things at once: that the denominator
+    is never given a weight of its own, that the numerator populations'
+    weights cannot leak into it, and that no extra random number is drawn on
+    the way, any of which would move the random walk of every tree in the
+    run.
+
+    Bit-identical is also a reproducibility check in disguise, and it has
+    already earned its keep: it caught the denominator roots being keyed on
+    their index in the fission bank, which thread_safe_append() fills in
+    whatever order the threads finish, so two runs of the same seed differed
+    by over a per cent.
     """
     _, absorber = _water_and_absorber(model)
     model.settings.particles = 2000
@@ -1297,15 +1262,19 @@ def test_site_splitting_leaves_full_weight_trees_alone(run_in_tmpdir, model):
     def tau_of(splitting):
         model.settings.perturbation_site_splitting = splitting
         with h5py.File(model.run(), 'r') as f:
-            return np.array(f['local_perturbation']['tau'][()])
+            g = f['local_perturbation']
+            nd = int(g['n_generation'][()]) + 1
+            n_trees = int(g['n_trees'][()])
+            tau = np.array(g['tau_pooled'][()]).reshape(n_trees, nd)
+            trees = np.array(g['perturbation 1']['trees'][()])
+            return tau[trees[0]], tau[trees[3]]      # D, L+
 
-    on = tau_of(True)    # the default
-    off = tau_of(False)  # unit-weight sites, as without this feature
+    d_on, _ = tau_of(True)    # the default
+    d_off, _ = tau_of(False)  # unit-weight sites, as without the feature
 
-    assert on.shape == off.shape
-    assert np.array_equal(on, off), (
-        'site splitting changed a full-weight shadow tree, so it is '
-        'perturbing the random walk of trees it has no business touching')
+    assert np.array_equal(d_on, d_off), (
+        'site splitting moved the denominator population, so it is '
+        'perturbing trees it has no business touching')
 
 
 def test_site_splitting_xml_roundtrip():

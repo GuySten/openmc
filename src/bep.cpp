@@ -396,10 +396,16 @@ void emit_perturbation_source(
       continue; // this perturbation touches the cell only through another sub
     const Perturbation& pert = perturbations[ip];
 
-    // The emission point, shared by every channel of this perturbation so
-    // that its sources stay correlated along one segment.
-    int64_t site_seed = combine_ids({t.seed_id, ip});
-    uint64_t rng = init_seed(site_seed, STREAM_TRACKING);
+    // The emission point, shared by every channel of every perturbation on
+    // this segment. Deliberately NOT keyed on `ip`: two perturbations that
+    // substitute into the same cell should emit the same nuclide's source at
+    // the same place, from the same outgoing state, differing only in the
+    // weight -- their trees are then the same tree and almost all of their
+    // noise is common. That shared noise is what makes the DIFFERENCE
+    // between two perturbations far better determined than either one, which
+    // is the whole reason for running them together. Keying the seed on `ip`
+    // instead guarantees the opposite.
+    uint64_t rng = init_seed(t.seed_id, STREAM_TRACKING);
     Position r_emit = t.r + t.u * (prn(&rng) * t.distance);
 
     // The reference side's nuclide list, taken with the reference material's
@@ -427,7 +433,7 @@ void emit_perturbation_source(
         }
       }
       emit_nuclide_source(
-        s, t, e, d_density, pert, r_emit, base, site_seed, out);
+        s, t, e, d_density, pert, r_emit, base, t.seed_id, out);
     }
 
     // ---- whatever the reference had and the substitution does not ----
@@ -440,7 +446,7 @@ void emit_perturbation_source(
       for (size_t j = 0; j < ref_nuc.size(); ++j) {
         if (!matched[j]) {
           emit_nuclide_source(s, t, ref_nuc[j], -ref_nuc[j].density, pert,
-            r_emit, base, site_seed, out);
+            r_emit, base, t.seed_id, out);
         }
       }
     }
@@ -866,13 +872,24 @@ void sample_denominator_roots()
                     : static_cast<double>(target) / n_bank;
   double scale = 1.0 / p_keep;
 
-  uint64_t seed = init_seed(
-    combine_ids({simulation::total_gen, mpi::rank, -1}), STREAM_TRACKING);
-
   for (int64_t i = 0; i < n_bank; ++i) {
-    if (p_keep < 1.0 && prn(&seed) >= p_keep)
-      continue;
     const SourceSite& s = simulation::fission_bank[i];
+
+    // Keyed on the SITE, never on its index in the bank. The bank is filled
+    // by thread_safe_append() during transport, so a site's index depends on
+    // which thread got there first and differs between two runs of the same
+    // seed. Driving either the sampling or the tree's seed from it made the
+    // whole denominator irreproducible -- two identical runs differed by
+    // over a per cent. (parent_id, progeny_id) is set deterministically when
+    // the site is created and identifies it uniquely within the generation.
+    int64_t sid =
+      combine_ids({simulation::total_gen, s.parent_id, s.progeny_id});
+    if (p_keep < 1.0) {
+      uint64_t rs = init_seed(sid, STREAM_TRACKING);
+      if (prn(&rs) >= p_keep)
+        continue;
+    }
+
     for (const auto& pert : perturbations) {
       SourceRoot root;
       root.r = s.r;
@@ -884,7 +901,7 @@ void sample_denominator_roots()
       // Each perturbation grows this site in ITS OWN perturbed physics, but
       // from the same seed, so the denominators of two perturbations differ
       // only where their physics does.
-      root.seed_id = combine_ids({simulation::total_gen, i, 0});
+      root.seed_id = sid;
       source_roots.push_back(root);
     }
   }
@@ -906,7 +923,7 @@ void run_shadow_pass()
   tracks.clear();
   for (const auto& v : thread_tracks)
     tracks.insert(tracks.end(), v.begin(), v.end());
-  std::sort(tracks.begin(), tracks.end(),
+  std::stable_sort(tracks.begin(), tracks.end(),
     [](const TrackSite& a, const TrackSite& b) {
       return a.seed_id < b.seed_id;
     });
@@ -941,7 +958,15 @@ void run_shadow_pass()
 
   // One deterministic order for the whole root list, whatever order the
   // threads and the bank produced it in.
-  std::sort(source_roots.begin(), source_roots.end(),
+  // STABLE, and the key is deliberately not unique: the two members of a
+  // +/- pair share a seed, and an (n,xn) source contributes several roots
+  // with the same seed AND the same tree. std::sort would order those
+  // arbitrarily, the static schedule below would then hand them to different
+  // threads, and the per-thread tau sums would stop being reproducible. The
+  // input order is already deterministic -- per-thread vectors merged in
+  // thread order, each filled by a static schedule over the sorted tracks --
+  // so a stable sort keeps it that way.
+  std::stable_sort(source_roots.begin(), source_roots.end(),
     [](const SourceRoot& a, const SourceRoot& b) {
       if (a.seed_id != b.seed_id)
         return a.seed_id < b.seed_id;

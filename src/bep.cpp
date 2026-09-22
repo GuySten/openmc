@@ -43,6 +43,11 @@ vector<vector<int>> cell_perts;
 vector<double> tree_site_weight;
 vector<double> tree_weight_scale;
 vector<int64_t> tree_sources;
+vector<int64_t> batch_sources;
+vector<double> batch_root_sq;
+vector<double> thread_root_sq;
+int64_t n_roots_auto {0};
+int64_t n_history_total {0};
 vector<vector<TrackSite>> thread_tracks;
 vector<TrackSite> tracks;
 vector<vector<SourceRoot>> thread_source_roots;
@@ -136,7 +141,25 @@ void run_one_tree(const SourceRoot& site)
 
   score_site(tree, 1, site.wgt); // the root is this tree's depth-0 weight
 
+  // This ROOT's own depth-L descendant weight, isolated by bracketing its
+  // transport. The roots are independent samples of exactly the quantity
+  // c_t describes, so accumulating the square here measures c_t directly
+  // instead of leaving it to be subtracted out of the measured spread.
+  const size_t slab = static_cast<size_t>(thread_num()) * tau_stride();
+  const size_t cell_L =
+    slab + static_cast<size_t>(tau_index(tree, settings::bep_n_generation));
+  const double before = thread_tau[cell_L];
+
   transport_history_based_single_particle(p);
+
+  const double x = thread_tau[cell_L] - before;
+  // run_one_tree() set n_tracks() = 1 for the root and
+  // event_revive_from_secondary() increments it once per revival, so
+  // n_tracks() IS this tree's history count. Counted, never timed.
+#pragma omp atomic
+  n_history_total += p.n_tracks();
+  thread_root_sq[static_cast<size_t>(thread_num()) * tree_pert.size() +
+                 static_cast<size_t>(tree)] += x * x;
 
   p.local_secondary_bank().clear();
   thread_root_weight[thread_num()] = 0.0;
@@ -679,6 +702,10 @@ void init()
   tree_site_weight.assign(tree_pert.size(), 1.0);
   tree_weight_scale.assign(tree_pert.size(), 1.0);
   tree_sources.assign(tree_pert.size(), 0);
+  batch_sources.assign(tree_pert.size(), 0);
+  batch_root_sq.assign(tree_pert.size(), 0.0);
+  thread_root_sq.assign(
+    static_cast<size_t>(num_threads()) * tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_root_weight.assign(num_threads(), 0.0);
   thread_tracks.assign(num_threads(), {});
@@ -722,6 +749,7 @@ void reset_generation()
   std::fill(tau.begin(), tau.end(), 0.0);
   std::fill(thread_tau.begin(), thread_tau.end(), 0.0);
   std::fill(tree_sources.begin(), tree_sources.end(), 0);
+  std::fill(thread_root_sq.begin(), thread_root_sq.end(), 0.0);
   for (auto& v : thread_tracks)
     v.clear();
   for (auto& v : thread_source_roots)
@@ -895,7 +923,11 @@ void sample_denominator_roots()
   if (n_bank == 0)
     return;
 
-  int64_t target = settings::bep_n_roots;
+  // 0 means "let the rule decide" -- n_roots_auto is (11), measured from the
+  // spread across roots. Before the rule has run it is 0, and the whole bank
+  // is used, which is the right thing to do while nothing is known.
+  int64_t target = settings::bep_n_roots > 0 ? settings::bep_n_roots
+                                             : n_roots_auto;
   double p_keep = (target <= 0 || target >= n_bank)
                     ? 1.0
                     : static_cast<double>(target) / n_bank;
@@ -1090,6 +1122,18 @@ void accumulate_generation()
       tau[i] += thread_tau[static_cast<size_t>(t) * stride + i];
   }
 
+  // The per-root spread, summed into the batch. Rank-local and taken before
+  // the reduction below, exactly as the site weights are: these feed a weight
+  // window, not an estimator, so a rank measuring from its own trees costs
+  // nothing in correctness. (With MPI the counts are therefore per-rank; the
+  // site-weight rule has always been.)
+  for (size_t t = 0; t < tree_pert.size(); ++t) {
+    batch_sources[t] += tree_sources[t];
+    for (int th = 0; th < num_threads(); ++th)
+      batch_root_sq[t] +=
+        thread_root_sq[static_cast<size_t>(th) * tree_pert.size() + t];
+  }
+
   // Set the next generation's site weights from this generation's tau, before
   // the reduction below: every rank then measures from its own trees. The
   // value is a weight window and not an estimator, so a rank choosing its own
@@ -1233,6 +1277,7 @@ void choose_site_weights()
   };
   vector<PertPlan> plan(np);
   double b_tot = 0.0;
+  double c_d_tot = 0.0;
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
@@ -1317,10 +1362,42 @@ void choose_site_weights()
 
     plan[ip] = {g_d, g_l, g_f, d_w, lp + ln, fp + fn, b};
     b_tot += b;
+
+    // c_D for this perturbation's denominator, measured across its roots
+    // rather than inferred: c = M*sum(x^2)/(sum x)^2 - 1, where x is one
+    // root's depth-L descendant weight. Summed over perturbations because a
+    // single kept bank site is rooted once in EACH of them, so they share
+    // the knob and their floors add.
+    double m_d = static_cast<double>(batch_sources[p.tree_d]);
+    double sx = batch_tau[tau_index(p.tree_d, L)];
+    double sxx = batch_root_sq[p.tree_d];
+    if (m_d > 1.0 && sx > 0.0 && sxx > 0.0) {
+      double c = m_d * sxx / (sx * sx) - 1.0;
+      if (c > 0.0)
+        c_d_tot += c;
+    }
   }
 
   if (b_tot <= 0.0)
     return;
+
+  // ---- the denominator's ROOT count, eq (11) -----------------------------
+  //
+  // The same optimum, for the knob that sets how many fission-bank sites are
+  // rooted. Its unit cost is P -- one root per perturbation per kept site --
+  // and its gain is the floor it divides, sum_p c_{D,p}, which is measured
+  // above rather than assumed. So this needs nothing from the user, which is
+  // the point: perturbation_n_roots was the last number in the feature that
+  // had to be guessed.
+  if (c_d_tot > 0.0 && np > 0) {
+    double target = std::sqrt(c_d_tot / static_cast<double>(np) * c_fixed /
+                              b_tot);
+    // Never below a floor that could not resolve anything, and never above
+    // the bank, which is every site used once and is where the roots stop
+    // being independent of each other anyway.
+    target = std::max(target, MIN_TREE_SITES);
+    n_roots_auto = static_cast<int64_t>(target + 0.5);
+  }
 
   // ---- pass 2: N* = sqrt( (G/kappa) C_fixed / B_tot ), eq (7") ----------
   // One scale for the whole run; only sqrt(G) is population-specific.
@@ -1449,6 +1526,19 @@ void write_results(hid_t file_id)
   // rebuild.
   write_dataset(group, "site_weight", tree_site_weight);
   write_dataset(group, "n_sources", tree_sources);
+
+  // The site weights, and the histories the shadow pass actually transported.
+  //
+  // WORK, not wall clock. A figure of merit needs a cost, and the cost has to
+  // be reproducible or the comparison is not either: two runs of one seed on
+  // a loaded box give different seconds and identical work. This is the same
+  // quantity the tuning rule optimises against -- histories -- so a measured
+  // figure of merit and the rule's own objective are in the same units.
+  //
+  // A shadow tree transports one history per root plus one per banked site,
+  // since every banked site is revived exactly once.
+  write_dataset(group, "site_weight", tree_site_weight);
+  write_dataset(group, "n_histories", n_history_total);
 
   vector<int32_t> ids;
   for (const auto& p : perturbations)

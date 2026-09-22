@@ -270,6 +270,35 @@ inline bool is_source_tree(int tree)
 //! population is optimised against.
 extern vector<int64_t> tree_sources;
 
+//! Per tree, summed over the batch: the number of roots, and the sum of the
+//! SQUARES of each root's own depth-L descendant weight.
+//!
+//! Together with the population itself (which is the sum of those weights)
+//! these give the per-source relative variance `c_t` of equation (1)
+//! directly, rather than by subtracting it out of the measured spread:
+//!
+//!     c_t = M * sum(x^2) / (sum x)^2  -  1
+//!
+//! The roots ARE independent samples of exactly the quantity `c_t` describes,
+//! and there are thousands of them every generation, so nothing has to be
+//! inferred. That is what makes `perturbation_n_roots` settable from the
+//! derivation instead of by the user (docs/bep_autotune.md 4b).
+extern vector<int64_t> batch_sources;
+extern vector<double> batch_root_sq;
+extern vector<double> thread_root_sq;
+
+//! The root count the rule chose, used when perturbation_n_roots is 0.
+extern int64_t n_roots_auto;
+
+//! Histories transported by the shadow pass over the whole run.
+//!
+//! The reproducible cost. A figure of merit needs a denominator, and wall
+//! clock is not one: two runs of a single seed on a loaded machine give
+//! different seconds and identical work. This is also the quantity the tuning
+//! rule optimises against, so a measured figure of merit and the rule's own
+//! objective are expressed in the same units.
+extern int64_t n_history_total;
+
 //! Weight a typical particle in `tree` carries, relative to the reference
 //! tree it is scored against. Measured, and independent of every
 //! variance-reduction knob.

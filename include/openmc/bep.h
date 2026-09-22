@@ -153,28 +153,46 @@ struct Substitution {
 struct Perturbation {
   int32_t id;
   vector<Substitution> subs;
-  vector<int32_t> cells; //!< cell indices touched, for the matched reference
-  int tree {-1};
-};
+  vector<int32_t> cells; //!< cell indices touched (where the source is emitted)
 
-//! Value in `tree_pert` for a reference tree, which belongs to no
-//! perturbation. Named because the bare -1 was previously written three
-//! different ways in three unrelated sentinels.
-constexpr int BEP_NO_PERT {-1};
+  //! The three SOURCE-ROOTED shadow-tree classes, all transported in this
+  //! perturbation's PERTURBED physics (all map to this pert in `tree_pert`):
+  //!   tree_D  -- the fission source F psi, the denominator
+  //!   tree_np -- the positive part of the perturbation source (dH psi)^+
+  //!   tree_nn -- the negative part, |(dH psi)^-|, tracked as a positive
+  //!              population and subtracted at readout (no negative weights)
+  //! The worth is the LEVEL at depth L: R = (N+ - N-)/D, rho = R/(k(1+R)).
+  //! See docs/bep_level_design.md.
+  int tree_D {-1};
+  int tree_np {-1};
+  int tree_nn {-1};
+};
 
 extern vector<Perturbation> perturbations;
 
-//! Shadow tree index -> index into `perturbations`, or BEP_NO_PERT for a
-//! reference tree. One entry per tree, so `tree_pert.size()` is the number
-//! of shadow populations and the first dimension of `tau`.
+//! Shadow tree index -> index into `perturbations`. Every tree now belongs to
+//! a perturbation (there are no reference trees): each perturbation owns three
+//! source-rooted trees -- D, N+, N-- all transported in its perturbed physics.
+//! One entry per tree, so `tree_pert.size()` is the number of shadow
+//! populations and the first dimension of `tau`.
 extern vector<int> tree_pert;
 
-//! cell index -> reference tree index, or -1 if untouched. Sized to
-//! model::cells so the hot-path test is one indexed load.
-extern vector<int> cell_ref_tree;
+//! Shadow tree index -> its class. The denominator tree grows the fission
+//! source; the two source trees grow the +/- parts of the perturbation source.
+enum TreeClass { TREE_D = 0, TREE_NP = 1, TREE_NN = 2 };
+extern vector<int> tree_class;
 
-//! cell index -> perturbations touching that cell.
+//! cell index -> perturbations touching that cell (where the source is
+//! emitted). Sized to model::cells so the hot-path test is one indexed load.
 extern vector<vector<int>> cell_perts;
+
+//! Is any perturbation's source emitted in this cell? The driver-side gate.
+inline bool cell_touched(int32_t cell_index)
+{
+  return cell_index >= 0 &&
+         cell_index < static_cast<int32_t>(cell_perts.size()) &&
+         !cell_perts[cell_index].empty();
+}
 
 //! Weight each tree banks its shadow fission sites at, one per tree.
 //!
@@ -216,18 +234,14 @@ inline double site_weight(int tree)
 //! affected by a setting meant for a shadow tree.
 double root_weight();
 
-//! Does `tree` belong to a perturbation, as opposed to being a reference tree
-//! or the trunk?
-//!
-//! What separates a tree whose population is the perturbation's own from one
-//! that is merely the reference it is scored against. A reference tree
-//! carries the same full-weight population an ordinary eigenvalue calculation
-//! would, so variance reduction aimed at a perturbation's thin, low-weight
-//! population has no business touching it.
-inline bool in_perturbation_tree(int tree)
+//! Is `tree` one of the thin source trees (N+/N-), as opposed to the
+//! full-weight denominator (D)? Variance reduction aimed at the perturbation's
+//! thin, low-weight source population has no business touching D, which carries
+//! the same full-weight population an ordinary eigenvalue calculation would.
+inline bool is_source_tree(int tree)
 {
-  return tree >= 0 && tree < static_cast<int>(tree_pert.size()) &&
-         tree_pert[tree] >= 0;
+  return tree >= 0 && tree < static_cast<int>(tree_class.size()) &&
+         tree_class[tree] != TREE_D;
 }
 
 //! Independent source events that seeded each tree this generation: the
@@ -265,53 +279,39 @@ inline double weight_scale(int tree)
            : 1.0;
 }
 
-//! The weight a typical particle in `tree` is born at.
-//!
-//! This is the scale a shadow tree's variance reduction has to measure
-//! against, and it is NOT the tree's root weight: a perturbation's population
-//! can sit decades below the branch site its tree grew from. Judging such a
-//! particle against the root weight declares the whole tree negligible;
-//! judging it against this says what was meant.
-//!
-//! Exactly the root weight for a reference tree and for a material
-//! perturbation's tree, both of which carry a full-weight population and have
-//! weight_scale 1.0, so neither is disturbed by anything keyed off this.
-inline double characteristic_weight(int tree)
-{
-  return root_weight() * weight_scale(tree);
-}
-
 //! Choose each tree's site weight from the weight it actually carried this
 //! generation, so that every tree transports a comparable number of sites
 //! whatever weight its particles happen to have. Called once per generation.
 void update_site_weights();
 
-struct BranchSite {
+//! A source root emitted during driver transport: one N+ or N- particle of
+//! the perturbation source dH psi, born at a driver collision, to be grown in
+//! the shadow pass. (The D roots come from `simulation::fission_bank`, not from
+//! these.)
+struct SourceRoot {
   Position r;
   Direction u;
   double E;
-  double wgt;
+  double wgt;  //!< expected source weight (always >= 0; sign is carried by tree)
   double time;
-  int32_t cell;
+  int tree;    //!< the N+ or N- shadow tree this root feeds
 
-  //! Seed for every shadow tree spawned here.
+  //! Seed for the shadow tree grown from this root.
   //!
-  //! Derived from the driver particle's own identity, NOT from this site's
-  //! position in `branch_sites`: that vector is filled under an omp critical
-  //! from a schedule(runtime) loop, so its order depends on thread timing.
-  //! Indexing by it gave a different seed to the same physical branch point
-  //! on every run, and BEP results were not reproducible.
+  //! Derived from the driver particle's own identity, NOT from this root's
+  //! position in the collection: that order depends on thread timing, which
+  //! would break reproducibility. N+ and N- roots born at the same collision
+  //! share this seed (CRN), so their descent noise cancels in N+ - N-.
   int64_t seed_id;
 };
 
-//! Branch sites collected during the current generation, one vector per
-//! thread. Per-thread rather than shared because the alternative is an omp
-//! critical inside the transport loop, which serialises every thread on a
-//! push_back. Merged and sorted at the start of the shadow pass.
-extern vector<vector<BranchSite>> thread_branch_sites;
+//! Source roots collected during the current generation, one vector per
+//! thread. Per-thread rather than shared to avoid an omp critical in the
+//! transport loop; merged and sorted at the start of the shadow pass.
+extern vector<vector<SourceRoot>> thread_source_roots;
 
-//! The merged, sorted branch sites the shadow pass iterates over.
-extern vector<BranchSite> branch_sites;
+//! The merged, sorted source roots the shadow pass iterates over.
+extern vector<SourceRoot> source_roots;
 
 //! Depth-d descendant weight for this generation, one slab per thread,
 //! indexed [thread][tree][depth].
@@ -326,10 +326,21 @@ extern vector<double> thread_tau;
 //! Per-thread slabs summed, i.e. this generation's tau. [tree * (L+1) + depth]
 extern vector<double> tau;
 
-//! Per-generation record of `tau`, appended once per active generation and
-//! laid out as [generation][tree][depth]. Everything downstream is derived
-//! from this in Python. Costs n_generations * n_trees * (L + 1) doubles.
-extern vector<double> tau_history;
+//! Per-batch working sum of `tau` over the current batch's generations, laid
+//! out like `tau` ([tree][depth]). Folded into the level accumulators at the
+//! batch boundary, then cleared.
+extern vector<double> batch_tau;
+
+//! The level estimator's batch statistics, per perturbation and per depth
+//! (d = 0..L), accumulated over active batches: sum and sum of squares of the
+//! per-batch level l_b(d) = Delta-rho from R_b(d) = (N+_b - N-_b)/D_b. The
+//! reported worth and its sigma come from the d = L slice; the whole curve is
+//! the depth-convergence diagnostic. This replaces the per-generation tau
+//! history -- O(n_pert * (L+1)) scalars, independent of run length.
+extern vector<double> ell_sum;   //!< [pert * (L+1) + depth]
+extern vector<double> ell_sumsq; //!< [pert * (L+1) + depth]
+extern int64_t n_active_batches; //!< realizations behind the batch statistics
+
 extern int64_t n_generations;
 extern int64_t n_branch_total;
 extern double w_branch_total;
@@ -344,16 +355,6 @@ inline int tau_index(int tree, int depth)
 inline int tau_stride()
 {
   return static_cast<int>(tree_pert.size()) * (settings::bep_n_generation + 1);
-}
-
-//! Reference tree owning `cell_index`, or -1 if no perturbation touches it.
-//! Safe before init().
-inline int ref_tree_of_cell(int32_t cell_index)
-{
-  return (cell_index >= 0 &&
-           cell_index < static_cast<int32_t>(cell_ref_tree.size()))
-           ? cell_ref_tree[cell_index]
-           : -1;
 }
 
 //! Material perturbation `pert` substitutes into `cell_index`. Returns false
@@ -414,7 +415,17 @@ void add_substitution_nuclide_temperatures(
 
 void init();
 void reset_generation();
-void maybe_branch(Particle& p, int32_t cell_index);
+
+//! Emit this perturbation's source at a driver collision in a touched cell.
+//!
+//! The driver (a BEP_TRUNK neutron) is only read, never altered -- exactly as
+//! forced photoneutron emission reads a driver photon collision. For each
+//! perturbation touching `cell_index`, the expected signed perturbation source
+//! dH psi is computed from the perturbed-minus-reference macroscopic cross
+//! sections at this collision and banked as +/- source roots (N+/N-), grown in
+//! the shadow pass. `p` must have its reference macro/micro xs already computed.
+void emit_perturbation_source(Particle& p, int32_t cell_index);
+
 void score_site(int tree, int super_gen, double wgt);
 void run_shadow_pass();
 void accumulate_generation();

@@ -1177,6 +1177,27 @@ void choose_site_weights()
     if (d_w <= 0.0 || s_num == 0.0)
       continue;
 
+    // G_t, the only population-specific quantity in the optimum. The
+    // derivation (docs/bep_autotune.md, sections 3-4) carries a factor
+    // (1 - r) on the pair terms, where r is the correlation of the two
+    // populations' BANKING fluctuations -- what the shared root seed is for.
+    // Taken as r = 0 here, deliberately.
+    //
+    // Not because r is negligible -- it is meant to be large -- but because
+    // there is currently no honest way to measure it, and the plausible way
+    // is actively dangerous. The batch-to-batch correlation of L+ and L- is
+    // nearly 1 for a reason that has nothing to do with banking: both are
+    // emitted from the same driver tracks, so a batch with more flux through
+    // the cell raises both. That shared source fluctuation belongs to the
+    // floor B, not to the term these weights control. Feeding it in as r
+    // would send G_L to zero and collapse the L population to nothing, in
+    // the channel that already dominates the noise.
+    //
+    // r = 0 is the pessimistic bound: it over-splits by 1/sqrt(1-r) and
+    // costs figure of merit, never correctness -- site splitting is unbiased
+    // whatever the weight. Separating r properly means using its scaling
+    // (the discreteness part goes as w, the floor does not), which is what
+    // the section 8 sweep measures anyway.
     double g_d = 1.0 / (keff_norm * keff_norm);
     double g_l = std::pow((lp + ln) / s_num, 2);
     double g_f = std::pow((fp + fn) / (keff_norm * s_num), 2);

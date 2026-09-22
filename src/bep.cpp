@@ -1235,11 +1235,24 @@ void choose_site_weights()
     // would send G_L to zero and collapse the L population to nothing, in
     // the channel that already dominates the noise.
     //
-    // r = 0 is the pessimistic bound: it over-splits by 1/sqrt(1-r) and
-    // costs figure of merit, never correctness -- site splitting is unbiased
-    // whatever the weight. Separating r properly means using its scaling
-    // (the discreteness part goes as w, the floor does not), which is what
-    // the section 8 sweep measures anyway.
+    // r = 0 over-splits by f = 1/sqrt(1-r) and costs figure of merit, never
+    // correctness -- banking is unbiased at any weight, since E[N] = nu
+    // exactly however w is chosen.
+    //
+    // The cost is bounded, and small. Section 5's sensitivity bound gives a
+    // worst-case FOM loss of 1.03 at r = 0.5, 1.12 at r = 0.75 and 1.37 at
+    // r = 0.9, so this only hurts for a pair that is almost perfectly
+    // synchronised. And where r -> 1 the pair contributes nothing to the
+    // answer: by the closed form in section 3,
+    //
+    //     r = [min(nu+,nu-) - nu+ nu-] / sqrt(nu+(1-nu+) nu-(1-nu-))
+    //
+    // r -> 1 needs the two walks to stay in step with matching nu, i.e. the
+    // (b) and (c) phase points not to have separated -- and such a pair has
+    // phi'(b) - phi'(c) -> 0, so it is in the population and not in the
+    // signal. The pairs that carry the worth are the ones whose scattered
+    // state lands far from its partner, hydrogen above all, and those
+    // desynchronise at once: for them r = 0 is exact, not conservative.
     double g_d = 1.0 / (keff_norm * keff_norm);
     double g_l = std::pow((lp + ln) / s_num, 2);
     double g_f = std::pow((fp + fn) / (keff_norm * s_num), 2);

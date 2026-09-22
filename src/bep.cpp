@@ -1195,15 +1195,31 @@ void choose_site_weights()
   int L = settings::bep_n_generation;
   size_t np = perturbations.size();
 
-  // The fixed cost per batch, in banked-site equivalents: the driver's own
-  // histories, and NOTHING ELSE. Every tree population is tunable now, the
-  // denominators included (docs/bep_autotune.md 4b), so they belong in the
-  // sum being optimised and not in C0 -- leaving them here would count them
-  // twice. A history costs what a history costs, which is what lets this
-  // avoid the clock: a rule that timed itself would give two runs of the
-  // same seed different answers.
-  const double c_drv = static_cast<double>(settings::n_particles) *
-                       static_cast<double>(settings::gen_per_batch);
+  // Cost is HISTORIES, and a root is a history: run_one_tree() transports
+  // every one of them. So a tree costs
+  //
+  //     M_t  +  sum_{d=1..L} N_t(d)  ~  M_t + L*N_t
+  //
+  // and not N_t. Two consequences, both of which this rule got wrong before
+  // the cost model was written out (docs/bep_autotune.md 4b):
+  //
+  //   - the FIXED cost is the driver plus every ROOT count, not the driver
+  //     alone. The numerator roots are set by the driver's tracks and are
+  //     not tunable at all; the denominator roots are tunable only through
+  //     perturbation_n_roots, which this rule does not set.
+  //   - each site-count knob costs L per unit, not 1, so the unit cost
+  //     kappa = L divides its gain in (7").
+  //
+  // A history costs what a history costs, which is what lets this avoid the
+  // clock: a rule that timed itself would give two runs of the same seed
+  // different answers.
+  const double gpb = static_cast<double>(settings::gen_per_batch);
+  double c_fixed = static_cast<double>(settings::n_particles) * gpb;
+  for (size_t t = 0; t < tree_sources.size(); ++t)
+    c_fixed += static_cast<double>(tree_sources[t]) * gpb;
+  const double kappa = static_cast<double>(L);
+  if (c_fixed <= 0.0 || kappa <= 0.0)
+    return;
 
   // ---- pass 1: every perturbation's G's and its floor ---------------------
   //
@@ -1306,8 +1322,9 @@ void choose_site_weights()
   if (b_tot <= 0.0)
     return;
 
-  // ---- pass 2: N* = sqrt(G C_drv / B_tot), one scale for the whole run ---
-  const double scale = std::sqrt(c_drv / b_tot);
+  // ---- pass 2: N* = sqrt( (G/kappa) C_fixed / B_tot ), eq (7") ----------
+  // One scale for the whole run; only sqrt(G) is population-specific.
+  const double scale = std::sqrt(c_fixed / (kappa * b_tot));
 
   for (size_t ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];

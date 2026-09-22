@@ -1511,6 +1511,36 @@ def test_site_splitting_tunes_the_denominator_without_moving_the_worth(
         f'{rho_off} without, which is more than 4 sigma apart')
 
 
+def test_the_off_switch_beats_the_site_weight_override(run_in_tmpdir, model):
+    """Off means off, even with an explicit site weight set.
+
+    The two settings used to be checked in the other order, so a run with
+    ``perturbation_site_splitting = False`` and a ``perturbation_site_weight``
+    still had its numerator weights moved off 1. A switch that a second
+    setting can quietly overrule is not an off switch, and a user who turns
+    the auto-tune off to get an untuned reference would have got a tuned one.
+
+    The override is a diagnostic; the switch is the contract.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 500
+    model.settings.perturbation_n_generation = 4
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+    model.settings.perturbation_site_splitting = False
+    model.settings.perturbation_site_weight = 0.1
+
+    path = model.run()
+    with h5py.File(path, 'r') as f:
+        w = np.array(f['local_perturbation']['site_weight'][()])
+
+    assert np.array_equal(w, np.ones_like(w)), (
+        f'the auto-tune is off and every site weight should be 1, but the '
+        f'run used {w}; the site-weight override is overruling the switch')
+
+
 def test_site_splitting_xml_roundtrip():
     s = openmc.Settings()
     assert s.perturbation_site_splitting is None

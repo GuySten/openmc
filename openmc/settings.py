@@ -118,13 +118,31 @@ class Settings:
         Number of generations to consider for the Iterated Fission Probability
         method.
     perturbation_site_splitting : bool
-        Whether a perturbation's numerator populations bank their fission
-        sites split, at a weight chosen for them each generation. The
-        alternative, and what an ordinary eigenvalue calculation does, is to
-        bank unit-weight sites with the parent's weight turned into the
-        *probability* of banking one -- which for a population carrying the
-        perturbation source, several decades below the driver's scale, is a
-        lottery that undoes the sampling it was given.
+        Master switch for the perturbation auto-tune. **On by default**, and
+        it should normally be left that way; set it to ``False`` to turn the
+        tuning off entirely.
+
+        With it on, the rule chooses every shadow population's site weight --
+        and the denominator's root count -- each batch, from quantities it
+        measures during the run. Nothing about it is a user parameter. With
+        it off, every site weight stays at 1 and the whole fission bank is
+        used as the denominator roots, which is what the feature did before
+        any tuning existed.
+
+        **Off is unbiased, not wrong.** Both settings estimate the same
+        worth; what changes is the figure of merit. So this is a knob for
+        speed, never for correctness, and the honest reason to turn it off is
+        to compare against an untuned calculation.
+
+        The switch is authoritative: :attr:`perturbation_site_weight` is
+        ignored when it is off, so turning the auto-tune off cannot be
+        silently undone by another setting.
+
+        What the tuning is for: an untuned calculation banks unit-weight
+        sites with the parent's weight turned into the *probability* of
+        banking one -- which for a population carrying the perturbation
+        source, several decades below the driver's scale, is a lottery that
+        undoes the sampling it was given.
 
         The gain is variance, not bias. An unsplit calculation is unbiased;
         it is merely uninformative. Measured over 40 replicas at about twenty
@@ -136,31 +154,31 @@ class Settings:
         a reference answer, and why what moves is the figure of merit and not
         the mean.
 
-        The *denominator* population is never touched by this: it is a sample
-        of the fission bank and carries the same full-weight population an
-        ordinary eigenvalue calculation does, so its weights are bit-identical
-        whether this is on or off.
+        The *denominator* is tuned too. It used to be exempt -- it is a
+        sample of the fission bank, and the argument was that it therefore
+        already carries a full-weight population. But the worth is
+        proportional to ``1/D``, so a 1% fluctuation in the denominator is a
+        1% fluctuation in the answer, and there is no reason a population
+        that enters that strongly should be the one population nobody sizes.
+        Note that it is tuned in the opposite direction from the numerators:
+        the bank hands it far more sites than the optimum wants, so its
+        weight goes *above* 1, which is Russian roulette -- fewer, heavier
+        sites. That stays unbiased, because a site is banked
+        ``floor(nu) + 1[xi <= frac(nu)]`` times and ``E[N] = nu`` exactly
+        however the weight is chosen.
 
-        The population is not a user parameter. Writing ``N`` for the sites a
-        population banks per generation and ``M`` for the number of
-        independent source events feeding it, its relative variance is
-        ``1/N + c/M`` -- a discreteness term splitting removes, over a floor
-        set by the source count that it cannot touch. Minimising variance
-        times cost gives ``N* = sqrt(G * C0/B)``, where ``G`` carries how
-        strongly that population enters the worth -- including the
-        cancellation between the + and - halves of a signed source, which can
-        amplify it a hundredfold -- and ``C0/B`` is one number shared by the
-        whole run. See ``docs/bep_autotune.md`` for the derivation.
-
-        .. note::
-            The rule in the code today is a **placeholder** that simply
-            matches the denominator's population, which the derivation shows
-            is one to two orders of magnitude too few sites for a weak
-            perturbation. Until that is fixed, the numerator populations are
-            under-sampled and the reported worth is noisier than it needs to
-            be -- unbiased, but wasteful.
-
-        Leave it on unless comparing against an unsplit calculation.
+        Writing ``N`` for the sites a population banks per generation and
+        ``M`` for the number of independent source events feeding it, its
+        relative variance is ``1/N + c/M`` -- a discreteness term splitting
+        removes, over a floor set by the source count that it cannot touch.
+        Minimising variance times cost gives ``N* = sqrt(G * C0/B)``, where
+        ``G`` carries how strongly that population enters the worth --
+        including the cancellation between the + and - halves of a signed
+        source, which can amplify it a hundredfold -- and ``C0/B`` is one
+        number shared by the whole run. See ``docs/bep_autotune.md`` for the
+        derivation, section 4b for the denominator and the multi-perturbation
+        case, and sections 9 and 10 for an audit of what the derivation
+        assumes against what the code does.
 
         .. versionadded:: 0.16.0
     perturbation_n_generation : int
@@ -179,20 +197,23 @@ class Settings:
         population of the level estimator. The whole bank would be exact but
         costs a full extra transport of the problem at every shadow depth; a
         sample of it is unbiased -- each site is kept with probability ``p``
-        and carries ``1/p`` -- and turns that cost into a knob. 0 means the
-        whole bank. This and
-        :attr:`perturbation_site_splitting` are the two halves of the same
-        cost/variance trade: this one sizes the denominator, that one sizes
-        the numerator populations.
+        and carries ``1/p`` -- and turns that cost into a knob. **0, the
+        default, hands the choice to the auto-tune**, which sizes it from the
+        per-root spread it measures; before the rule has run, and whenever
+        :attr:`perturbation_site_splitting` is off, 0 falls back to the whole
+        bank. Set a positive value to pin it.
 
         .. versionadded:: 0.16.0
     perturbation_site_weight : float
-        Force the numerator populations' site weight instead of letting
-        :attr:`perturbation_site_splitting`'s rule choose it. Diagnostic
-        only: it exists so a figure-of-merit curve can be swept against the
-        site weight, which is the only thing that can confirm the rule's
-        optimum is where ``docs/bep_autotune.md`` derives it. Leave unset in
-        production.
+        Force the numerator populations' site weight instead of letting the
+        auto-tune choose it. Diagnostic only: it exists so a figure-of-merit
+        curve can be swept against the site weight, which is the only thing
+        that can confirm the rule's optimum is where
+        ``docs/bep_autotune.md`` derives it. Leave unset in production.
+
+        Ignored when :attr:`perturbation_site_splitting` is ``False`` -- the
+        off switch wins, so a run with the auto-tune off has unit site
+        weights whatever this says.
 
         .. versionadded:: 0.16.0
     max_lost_particles : int
@@ -1148,18 +1169,26 @@ class Settings:
     def perturbation_n_roots(self) -> int:
         """Denominator roots taken from the fission bank each generation.
 
-        0, the default, keeps the whole bank, and that is very nearly always
-        what you want: **sub-sampling it saves no transport.** The roots that
-        are kept carry the weight of the ones that are not, so the total root
-        weight is the bank's weight either way, and so is the depth-``L``
-        population and the banked-site count that measures the cost. What
-        sub-sampling does cost is independent source events, which is the
-        only thing that lowers the denominator's irreducible floor.
+        0, the default, lets the auto-tune choose, sizing it from the
+        per-root spread measured during the run. It falls back to the whole
+        bank before the rule has run and whenever
+        :attr:`perturbation_site_splitting` is off. A positive value pins it.
 
-        So this is not a cost/accuracy knob in the way it looks. Setting it
-        below the bank size raises the floor for nothing. It is kept as a
-        setting for diagnostics, and because a very large bank may be worth
-        thinning for memory rather than for time.
+        Sub-sampling trades two things against each other. It saves the
+        transport of the roots themselves -- every root is a history, once
+        per perturbation -- but it cannot save the transport of their
+        descendants, because the kept roots carry the weight of the dropped
+        ones, so the depth-``d`` populations and the banked-site count that
+        dominates the cost are unchanged. What it costs is independent source
+        events, which is the only thing that lowers the denominator's
+        irreducible floor.
+
+        .. warning::
+            How much of the total cost the root generation actually accounts
+            for is **under audit** and is not settled; an earlier version of
+            this docstring claimed sub-sampling saves no transport at all.
+            Until that is resolved, a pinned value here is a diagnostic
+            rather than a recommendation.
 
         See ``docs/bep_autotune.md`` section 4b.
         """

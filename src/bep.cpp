@@ -1217,6 +1217,20 @@ namespace {
 
 void choose_site_weights()
 {
+  // The off switch, and it is checked FIRST -- before the diagnostic
+  // override, not after it.
+  //
+  // It used to be the other way round, so a run with
+  // perturbation_site_splitting = false and a perturbation_site_weight set
+  // still had its numerator weights moved off 1. A switch a second setting
+  // can quietly overrule is not an off switch. Off now means off: every site
+  // weight stays at 1 and n_roots_auto stays at 0, which sample_denominator_
+  // roots() reads as the whole fission bank -- i.e. exactly what an ordinary
+  // eigenvalue calculation banks, and the state this feature had before any
+  // tuning existed.
+  if (!settings::perturbation_site_splitting)
+    return;
+
   if (settings::bep_site_weight > 0.0) {
     // An explicit override short-circuits the rule. Used to sweep the site
     // weight and measure the figure of merit against it, which is the only
@@ -1227,8 +1241,6 @@ void choose_site_weights()
     }
     return;
   }
-  if (!settings::perturbation_site_splitting)
-    return; // unit-weight sites, as an ordinary eigenvalue calculation
 
   // Five active batches before the measured spread is trusted at all. Below
   // that B is inverted from two or three numbers and can come out anywhere.

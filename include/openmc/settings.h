@@ -189,8 +189,17 @@ extern int super_n_generation;    //!< Number of superhistory generations
 extern int bep_n_generation;      //!< Shadow tree depth for local
                                   //!< perturbations, shared by all of them
 extern bool
-  perturbation_site_splitting; //!< bank a perturbation tree's fission sites
-                               //!< split, at the adaptively chosen weight
+  perturbation_site_splitting; //!< the perturbation auto-tune's master
+                               //!< switch. TRUE by default: the rule chooses
+                               //!< every shadow population's site weight, and
+                               //!< the denominator's root count, from what it
+                               //!< measures. False leaves all of them at
+                               //!< their untuned values -- unit site weights
+                               //!< and the whole fission bank -- which is
+                               //!< unbiased and merely noisier, so it is a
+                               //!< figure-of-merit switch and never a
+                               //!< correctness one. Checked before
+                               //!< bep_site_weight, so off means off.
 extern int64_t bep_n_roots;    //!< denominator roots sampled from the fission
                                //!< bank per generation, per perturbation. A
                                //!< real cost/accuracy knob with an optimum of

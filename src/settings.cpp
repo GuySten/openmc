@@ -141,7 +141,9 @@ int64_t ssw_cell_id {C_NONE};
 SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
-bool perturbation_site_splitting {true};
+bool perturbation_site_splitting {true}; // auto-tune on, and off is a
+                                         // figure-of-merit choice, not a
+                                         // correctness one
 int64_t bep_n_roots {0}; // 0 = chosen by the rule; see bep_autotune.md 4b
 double bep_site_weight {0.0};
 double surface_grazing_cutoff {0.001};

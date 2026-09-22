@@ -191,6 +191,8 @@ extern int bep_n_generation;      //!< Shadow tree depth for local
 extern bool
   perturbation_site_splitting; //!< bank a perturbation tree's fission sites
                                //!< split, at the adaptively chosen weight
+extern int64_t bep_n_roots;    //!< denominator roots sampled from the fission
+                               //!< bank per generation, per perturbation
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff
 extern double surface_grazing_ratio;  //!< surface flux substitution ratio
 extern TemperatureMethod

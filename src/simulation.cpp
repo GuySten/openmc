@@ -529,6 +529,13 @@ void initialize_batch()
 
 void finalize_batch()
 {
+  // Fold this batch's shadow-tree totals into the level estimator's batch
+  // statistics: one realization per batch, exactly as a global tally gets
+  // one per batch. Here rather than in finalize_generation() because that
+  // is what generations_per_batch is for -- it is the knob that makes
+  // consecutive realizations independent.
+  bep::finalize_batch();
+
   // Reduce tallies onto master process and accumulate
   simulation::time_tallies.start();
   accumulate_tallies();
@@ -651,9 +658,12 @@ void initialize_generation()
 
 void finalize_generation()
 {
-  // Propagate this generation's branch sites through the reference tree and
-  // every perturbed tree, then fold the per-depth weights into the
-  // accumulators. Must run before sort_bank()/synchronize_bank() below.
+  // Emit this generation's perturbation source, sample the denominator roots
+  // from the fission bank, grow all of them L generations in each
+  // perturbation's perturbed physics, then fold the per-depth weights into
+  // the batch accumulator. Must run before sort_bank()/synchronize_bank()
+  // below, which is where simulation::fission_bank stops holding THIS
+  // generation's reference fission source.
   bep::run_shadow_pass();
   bep::accumulate_generation();
 

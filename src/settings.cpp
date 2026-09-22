@@ -142,6 +142,7 @@ SSWCellType ssw_cell_type {SSWCellType::None};
 int super_n_generation {0};
 int bep_n_generation {10};
 bool perturbation_site_splitting {true};
+int64_t bep_n_roots {1000};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
 TemperatureMethod temperature_method {TemperatureMethod::NEAREST};
@@ -614,10 +615,24 @@ void read_settings_xml(pugi::xml_node root)
           std::stoi(get_node_value(root, "perturbation_n_generation"));
         if (bep_n_generation < 2) {
           fatal_error("'perturbation_n_generation' must be at least 2: the "
-                      "estimator is a finite difference in depth.");
+                      "level has to be seen at more than one depth for its "
+                      "convergence to be visible.");
         }
       }
 
+      // How many fission-bank sites are sampled per generation as the
+      // DENOMINATOR population of the level estimator. The whole bank would
+      // be exact but costs a full extra transport of the problem at every
+      // depth; a sample of it is unbiased (each site is kept with
+      // probability p and carries 1/p) and its variance is one half of the
+      // cost/variance trade the run is tuned on -- the other half being the
+      // site weight the numerator populations bank at. 0 means the whole
+      // bank.
+      if (check_for_node(root, "perturbation_n_roots")) {
+        bep_n_roots = std::stoll(get_node_value(root, "perturbation_n_roots"));
+        if (bep_n_roots < 0)
+          fatal_error("'perturbation_n_roots' must not be negative.");
+      }
     }
   }
 

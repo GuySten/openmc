@@ -159,7 +159,19 @@ class Settings:
         whole run: every shadow tree is compared against the same reference
         trees at the same depths, so it is a property of the run rather than
         of any individual :class:`openmc.LocalPerturbation`. Must be at least
-        2, since the estimator is a finite difference in depth.
+        2, so that the level's approach to its plateau is visible.
+    perturbation_n_roots : int
+        Fission-bank sites sampled per generation as the *denominator*
+        population of the level estimator. The whole bank would be exact but
+        costs a full extra transport of the problem at every shadow depth; a
+        sample of it is unbiased -- each site is kept with probability ``p``
+        and carries ``1/p`` -- and turns that cost into a knob. 0 means the
+        whole bank. This and
+        :attr:`perturbation_site_splitting` are the two halves of the same
+        cost/variance trade: this one sizes the denominator, that one sizes
+        the numerator populations.
+
+        .. versionadded:: 0.16.0
     max_lost_particles : int
         Maximum number of lost particles
 
@@ -489,6 +501,7 @@ class Settings:
         # Iterated Fission Probability
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
+        self._perturbation_n_roots = None
         self._perturbation_site_splitting = None
 
         # Collision track feature
@@ -1106,6 +1119,18 @@ class Settings:
             cv.check_greater_than("number of generations", n, 2,
                                   equality=True)
         self._perturbation_n_generation = n
+
+    @property
+    def perturbation_n_roots(self) -> int:
+        return self._perturbation_n_roots
+
+    @perturbation_n_roots.setter
+    def perturbation_n_roots(self, n: int):
+        if n is not None:
+            cv.check_type("number of denominator roots", n, Integral)
+            cv.check_greater_than("number of denominator roots", n, 0,
+                                  equality=True)
+        self._perturbation_n_roots = n
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1876,6 +1901,11 @@ class Settings:
             element = ET.SubElement(root, "perturbation_n_generation")
             element.text = str(self._perturbation_n_generation)
 
+    def _create_perturbation_n_roots_subelement(self, root):
+        if self._perturbation_n_roots is not None:
+            element = ET.SubElement(root, "perturbation_n_roots")
+            element.text = str(self._perturbation_n_roots)
+
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
             element = ET.SubElement(root, "tabular_legendre")
@@ -2411,6 +2441,11 @@ class Settings:
         if text is not None:
             self.perturbation_n_generation = int(text)
 
+    def _perturbation_n_roots_from_xml_element(self, root):
+        text = get_text(root, 'perturbation_n_roots')
+        if text is not None:
+            self.perturbation_n_roots = int(text)
+
     def _ifp_n_generation_from_xml_element(self, root):
         text = get_text(root, 'ifp_n_generation')
         if text is not None:
@@ -2696,6 +2731,7 @@ class Settings:
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
+        self._create_perturbation_n_roots_subelement(element)
         self._create_perturbation_site_splitting_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
@@ -2817,6 +2853,7 @@ class Settings:
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
+        settings._perturbation_n_roots_from_xml_element(elem)
         settings._perturbation_site_splitting_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)

@@ -489,8 +489,8 @@ class StatePoint:
         ufloat in pcm carrying its own uncertainty. Subtract worths directly
         rather than combining uncertainties by hand: they are built from the
         full covariance of the run, so ``b.rho - a.rho`` propagates the
-        correlation, and perturbations sharing branch sites are correlated
-        strongly enough that this matters.
+        correlation, and perturbations sharing a run are correlated strongly
+        enough that this matters.
 
         .. versionadded:: 0.16.0
 
@@ -498,40 +498,37 @@ class StatePoint:
         if self._perturbations is None and 'local_perturbation' in self._f:
             group = self._f['local_perturbation']
             n_gen = int(group['n_generation'][()])
-            n_rec = int(group['n_generations_recorded'][()])
-            n_trees = int(group['n_trees'][()])
+            n_batches = int(group['n_batches'][()])
             ids = [int(i) for i in np.asarray(group['ids'][()])]
+            n_pert = len(ids)
 
-            # [generation][tree][depth]
-            tau = np.asarray(group['tau'][()], dtype=float).reshape(
-                n_rec, n_trees, n_gen + 1)
+            level_sum = np.asarray(group['level_sum'][()], dtype=float)
+            level_sum = level_sum.reshape(n_pert, n_gen + 1)
+            level_cross = np.asarray(group['level_cross'][()], dtype=float)
+            level_cross = level_cross.reshape(n_pert, n_pert, n_gen + 1)
+            level_pooled = np.asarray(group['level_pooled'][()], dtype=float)
+            level_pooled = level_pooled.reshape(n_pert, n_gen + 1)
 
             # n_generation is an OUTPUT here: it describes the run the
             # results came from. Setting it is done via
             # Settings.perturbation_n_generation.
             perturbations = openmc.Perturbations()
             perturbations._n_generation = n_gen
-            numerators, denominators = [], []
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', openmc.IDWarning)
                 for pid in ids:
                     pgroup = group[f'perturbation {pid}']
-                    p = openmc.LocalPerturbation(
+                    perturbations.append(openmc.LocalPerturbation(
                         dict(zip(
                             map(int, np.asarray(pgroup['cells'][()])),
                             map(int, np.asarray(pgroup['materials'][()])))),
-                        perturbation_id=pid)
-                    numerators.append(tau[:, int(pgroup['tree'][()]), :])
-                    denominators.append(
-                        tau[:, np.asarray(pgroup['ref_trees'][()]), :].sum(1))
-                    perturbations.append(p)
+                        perturbation_id=pid))
 
-            # The fitted slope is ln(k_p / k_ref); k_ref converts it to a
-            # reactivity difference. Without it every worth comes out too
-            # large by a factor of k.
-            perturbations._set_results(np.array(numerators),
-                                       np.array(denominators),
-                                       k_ref=self.keff.nominal_value)
+            # No k conversion here: the C++ level estimator already returns
+            # 1/k - 1/k', having inverted for k' in closed form. There is
+            # nothing left for the analysis layer to get wrong.
+            perturbations._set_results(level_sum, level_cross, level_pooled,
+                                       n_batches)
             self._perturbations = perturbations
 
         return self._perturbations

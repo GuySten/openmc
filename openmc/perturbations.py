@@ -68,8 +68,21 @@ class LocalPerturbation(IDManagerMixin):
         difference formed this way has a far smaller uncertainty than the
         quadrature sum of the two individual ones.
     depth_curve : numpy.ndarray
-        ``l(d)``, the log importance ratio against shadow-tree depth, whose
-        slope is :attr:`rho`. Only present when read from a statepoint.
+        The level against shadow-tree depth, in pcm: the same estimator
+        :attr:`rho` is, read at every depth ``d = 0..L`` instead of only at
+        ``L``. It is FLAT once the perturbed fundamental mode has established
+        itself, so its approach to a plateau is the convergence diagnostic --
+        there is no fit window here and so no window bias to correct. Only
+        present when read from a statepoint.
+    depth_sigma : numpy.ndarray
+        Batch-statistics standard deviation of :attr:`depth_curve`, pcm.
+    rho_pooled : float
+        The worth in pcm formed from the run's POOLED totals rather than as a
+        mean of per-batch levels. A ratio of means has no ratio-of-means bias
+        and this one does not; the two agreeing to a small fraction of
+        :attr:`rho`'s sigma is the single assumption the batch statistics
+        make, and it can be checked directly. Quote this one if they ever
+        disagree.
 
     """
 
@@ -84,6 +97,8 @@ class LocalPerturbation(IDManagerMixin):
         # Populated only when read from a statepoint
         self.rho = None
         self.depth_curve = None
+        self.depth_sigma = None
+        self.rho_pooled = None
 
     def __repr__(self):
         parts = [f'LocalPerturbation\n{"":<12}ID={self.id}']
@@ -190,11 +205,12 @@ class Perturbations(cv.CheckedList):
     ...     openmc.LocalPerturbation({sample_cell: zircaloy}),
     ... ])
 
-    All perturbations are computed in one eigenvalue run. Those sharing a cell
-    share branch sites and random seeds, so their worths come out strongly
-    correlated and differences between them are far better determined than the
-    individual values. Each :attr:`LocalPerturbation.rho` is a correlated
-    :mod:`uncertainties` value, so that is automatic::
+    All perturbations are computed in one eigenvalue run. They share the
+    driver, the fission source and -- where they touch the same cell -- their
+    random seeds, so their worths come out strongly correlated and differences
+    between them are far better determined than the individual values. Each
+    :attr:`LocalPerturbation.rho` is a correlated :mod:`uncertainties` value,
+    so that is automatic::
 
         a, b = sp.perturbations
         b.rho - a.rho            # correlation carried through
@@ -212,10 +228,12 @@ class Perturbations(cv.CheckedList):
     n_generation : int
         Shadow tree depth, L. Read-only here, and only meaningful on a
         collection read back from a statepoint, where it says how many
-        depths the recorded curves span. To CHOOSE it, set
+        depths the recorded curves span. The worth is the level at ``d = L``.
+        To CHOOSE it, set
         :attr:`openmc.Settings.perturbation_n_generation` -- it applies to
-        the whole run, not to one perturbation, since every shadow tree is
-        compared against the same reference trees at the same depths.
+        the whole run, not to one perturbation.
+    n_batches : int
+        Active batches behind the batch statistics.
 
     """
 
@@ -246,145 +264,88 @@ class Perturbations(cv.CheckedList):
         return super().__getitem__(self.ids.index(perturbation_id))
 
     # ------------------------------------------------------------- results
-    def _set_results(self, numerators, denominators, k_ref=1.0,
-                     n_blocks=None):
-        """Derive worths and their covariance from recorded shadow weights.
+    def _set_results(self, level_sum, level_cross, level_pooled, n_batches):
+        """Derive worths and their covariance from the level batch statistics.
 
         Parameters
         ----------
-        numerators : numpy.ndarray
-            ``tau_p(d)`` per generation, shape (n_perturbations, n_gen, L+1).
-        denominators : numpy.ndarray
-            The matched reference ``R_p(d)``, same shape.
-        k_ref : float
-            k-effective of the reference system, used to convert the fitted
-            slope into a reactivity. Defaults to 1, which leaves the result
-            in dk/k.
-        n_blocks : int, optional
-            Number of groups the generations are split into for the
-            delete-one-block jackknife.
+        level_sum : numpy.ndarray
+            Sum over active batches of the per-batch level, shape
+            (n_perturbations, L+1). Already a reactivity (1/k - 1/k'), in
+            absolute units -- the C++ does the whole estimator, including the
+            exact inversion for k', because it is the same three lines
+            whatever the analysis layer wants to do afterwards.
+        level_cross : numpy.ndarray
+            Sum over active batches of the outer product of the per-batch
+            levels, shape (n_perturbations, n_perturbations, L+1).
+        level_pooled : numpy.ndarray
+            The same level formed from the run's pooled totals instead of as a
+            mean of per-batch values, shape (n_perturbations, L+1).
+        n_batches : int
+            Active batches behind the sums: the realization count of the batch
+            statistics, exactly as for any other OpenMC tally.
 
-        The ratio is formed from sums over MANY generations, never one at a
-        time: a shadow tree is a branching process that can go extinct, so a
-        single generation's ``tau`` may be zero and ``log(0)`` is ``-inf``.
-        Ordinary IFP estimators are robust to exactly this because they sum
-        over every progenitor before dividing.
-
-        The slope of ``l_p(d) = ln[tau_p(d) / R_p(d)]`` is
-        ``ln(k_p / k_ref)``, i.e. dk/k -- NOT a reactivity. The reactivity
-        difference is ``1/k_ref - 1/k_p``, which is smaller by a factor of k.
-        Reporting the slope directly would overstate every worth by that
-        factor, so it is converted here, exactly rather than to first order::
-
-            rho = (1 - exp(-slope)) / k_ref
-
-        k_ref carries its own uncertainty, but as a common multiplicative
-        factor of order 1e-5 relative it is negligible against the worths and
-        is not propagated.
+        The uncertainty is the ordinary spread of the per-batch realizations,
+        with no model of the correlation between generations anywhere. That is
+        what ``generations_per_batch`` is for: raise it until sigma stops
+        growing, and the batches are independent enough for this to be honest.
+        Check that plateau once per problem; it is the only thing standing
+        between these error bars and the truth.
         """
-        n_pert, n_gen, nd = numerators.shape
+        level_sum = np.asarray(level_sum, dtype=float)
+        level_cross = np.asarray(level_cross, dtype=float)
+        level_pooled = np.asarray(level_pooled, dtype=float)
+        n_pert, nd = level_sum.shape
         L = nd - 1
         # The results describe their own depth, so a collection read back
         # from a statepoint is self-contained even if the caller never sees
         # the Settings that produced it.
         self._n_generation = L
-        d_min = L // 2
-        d = np.arange(nd)
-        fit = d >= d_min
-        if fit.sum() < 2:
-            raise ValueError('n_generation is too small to fit a slope')
+        self._n_batches = int(n_batches)
 
-        def slope(num, den):
-            """Least-squares slope of ln(num/den) over the fitted depths."""
-            x = d[fit] - d[fit].mean()
-            with np.errstate(divide='ignore', invalid='ignore'):
-                ell = np.log(num[..., fit] / den[..., fit])
-                return (ell * x).sum(-1) / (x**2).sum()
-
-        # Point estimate from the whole run: the largest possible sums, so
-        # extinction of individual trees is irrelevant.
-        total = slope(numerators.sum(1), denominators.sum(1))
-
-        # Uncertainty and covariance by delete-one-block jackknife. The
-        # estimator is a slope of a log of a ratio, so it is nonlinear in the
-        # accumulated sums and the spread of independent per-block estimates
-        # is the wrong thing to average. Each jackknife replicate instead uses
-        # all but one block, so it is as well-conditioned as the full estimate
-        # -- extinction inside a single block cannot make a replicate
-        # degenerate, which plain blocking could not promise.
-        if n_blocks is None:
-            n_blocks = min(20, n_gen)
-        n_blocks = max(2, min(n_blocks, n_gen))
-        edges = np.linspace(0, n_gen, n_blocks + 1).astype(int)
-
-        num_all, den_all = numerators.sum(1), denominators.sum(1)
-        num_drop = np.array([num_all - numerators[:, a:b].sum(1)
-                             for a, b in zip(edges[:-1], edges[1:])])
-        den_drop = np.array([den_all - denominators[:, a:b].sum(1)
-                             for a, b in zip(edges[:-1], edges[1:])])
-        if (numerators[..., 1:] == 0).all():
+        if self._n_batches < 2:
             raise DataError(
-                'Every shadow tree has zero weight beyond depth 0, so no '
-                'tree ever produced a fission site. That is a build or '
-                'configuration fault, not a statistics one: check that the '
-                'fission-site creation gate in sample_neutron_reaction() and '
-                'the revival gate in event_check_limit_and_revive() both use '
-                'bep::generation_limit(), rather than '
-                'settings::super_n_generation directly.')
+                'Batch statistics need at least two active batches; this run '
+                'has {}. Increase batches, or reduce '
+                'generations_per_batch.'.format(self._n_batches))
 
-        if not ((num_drop > 0).all() and (den_drop > 0).all()):
-            raise DataError(
-                'A jackknife replicate has a shadow tree that is extinct at '
-                'every depth, so no uncertainty can be formed. Increase the '
-                'particles per generation so more branch sites are recorded, '
-                'enlarge the perturbed region, or reduce n_generation.')
+        n = float(self._n_batches)
+        mean = level_sum / n
 
-        replicates = slope(num_drop, den_drop)        # (n_blocks, n_pert)
-        centred = replicates - replicates.mean(0)
-        cov = (n_blocks - 1) / n_blocks * (centred.T @ centred)
-        cov = np.atleast_2d(cov)
+        # Covariance OF THE MEAN, in one step from the accumulated sums:
+        #     cov_ij = (S_ij - n * mean_i * mean_j) / (n * (n - 1))
+        # The off-diagonal is not decoration. Two perturbations in one run
+        # share the driver, the fission source and -- where they touch the
+        # same cell -- their seeds, so most of their noise is common; a
+        # difference between them is far better determined than the
+        # quadrature sum of the two sigmas would suggest.
+        outer = mean[:, None, :] * mean[None, :, :]
+        cov = (level_cross - n * outer) / (n * (n - 1.0))
 
-        # Keep the depth curves, per replicate as well as in total. Every
-        # honest diagnostic about the fit -- whether the residuals are
-        # consistent with the noise, whether the slope has stopped moving as
-        # the fit window shrinks -- needs their covariance, and the jackknife
-        # replicates are the only source of it.
-        with np.errstate(divide='ignore', invalid='ignore'):
-            self._ell = np.log(num_all / den_all)             # (n_pert, nd)
-            self._ell_replicates = np.log(num_drop / den_drop)
-        self._k_ref = k_ref
-        self._fit_from = d_min
+        # Numerical noise can leave a tiny negative variance where a
+        # perturbation is identically zero (the null test), and
+        # correlated_values will not take that.
+        for i in range(n_pert):
+            if cov[i, i, L] < 0.0:
+                cov[i, i, L] = 0.0
 
-        # Slope (dk/k) -> reactivity. The Jacobian of
-        # rho = (1 - exp(-s))/k_ref is exp(-s)/k_ref, essentially 1/k_ref for
-        # any realistic worth, and the covariance transforms with it.
-        jacobian = np.exp(-total) / k_ref
-        total = (1.0 - np.exp(-total)) / k_ref
-        cov = cov * np.outer(jacobian, jacobian)
+        self._mean = mean
+        self._cov = cov
+        self._pooled = level_pooled
 
-        self._n_blocks = n_blocks
-
-        # Hand the whole covariance to uncertainties rather than storing a
-        # scalar sigma per perturbation. Every rho then carries its
-        # correlations with the others, so a difference, a derivative or any
-        # weighted combination propagates correctly with no bookkeeping here
-        # and none in user code.
-        rho = correlated_values(1.0e5 * total, 1.0e10 * cov)
+        # pcm, and pcm^2 for the covariance.
+        rho = correlated_values(1.0e5 * mean[:, L], 1.0e10 * cov[:, :, L])
+        sigma = np.sqrt(np.abs(np.einsum('iid->id', cov)))
         for i, p in enumerate(self):
             p.rho = rho[i]
-            with np.errstate(divide='ignore', invalid='ignore'):
-                p.depth_curve = np.log(numerators[i].sum(0) /
-                                       denominators[i].sum(0))
+            p.depth_curve = 1.0e5 * mean[i]
+            p.depth_sigma = 1.0e5 * sigma[i]
+            p.rho_pooled = 1.0e5 * float(level_pooled[i, L])
 
     @property
-    def n_blocks(self):
-        """Jackknife groups the generations were split into.
-
-        The jackknife treats blocks as independent. Generations share a
-        fission source, so uncertainties are somewhat optimistic; vary this
-        and check the error bar is stable before relying on it.
-        """
-        return getattr(self, '_n_blocks', None)
+    def n_batches(self):
+        """Active batches behind the batch statistics, or None."""
+        return getattr(self, '_n_batches', None)
 
     @property
     def covariance(self):
@@ -418,82 +379,65 @@ class Perturbations(cv.CheckedList):
         with np.errstate(divide='ignore', invalid='ignore'):
             return cov / np.outer(std_dev, std_dev)
 
-    def _replicate_stats(self, values):
-        """Jackknife mean and standard deviation of a per-replicate array."""
-        n = values.shape[0]
-        centred = values - values.mean(0)
-        return values.mean(0), np.sqrt((n - 1) / n * (centred**2).sum(0))
+    def confidence_interval(self, perturbation_id, level=0.95):
+        """Two-sided t-interval on the worth, in pcm.
 
-    def linearity(self, perturbation_id, d_min=None):
-        """Reduced chi-square of the straight-line fit to the depth curve.
+        Student's t on ``n_batches - 1`` degrees of freedom, not a normal
+        quantile: with the twenty or so batches a perturbation run typically
+        has, the difference is several per cent of the interval and always in
+        the direction of under-stating it.
 
-        A real chi-square: residuals are weighted by the jackknife covariance
-        of the depth curve, so the scale is meaningful. Near 1 means the
-        deviations from a straight line are no larger than the noise, i.e. the
-        asymptotic regime has been reached over the fitted range. Well above 1
-        means it has not, and the fitted worth is biased -- see
-        :meth:`worth_by_fit_start`, which shows that bias directly.
-
-        The points are strongly correlated across depth, so the covariance is
-        used in full rather than point-by-point error bars.
+        Returns
+        -------
+        tuple of float
+            Lower and upper bound in pcm.
         """
-        if getattr(self, '_ell', None) is None:
+        from scipy.stats import t as student_t
+
+        if getattr(self, '_mean', None) is None:
             raise ValueError('No results present; read from a statepoint.')
         i = self.ids.index(perturbation_id)
-        d = np.arange(self._ell.shape[1])
-        sel = d >= (self._fit_from if d_min is None else d_min)
-        if sel.sum() < 3:
-            return float('nan')
+        rho = self[i].rho
+        half = student_t.ppf(0.5 * (1.0 + level),
+                             self._n_batches - 1) * rho.std_dev
+        return (rho.nominal_value - half, rho.nominal_value + half)
 
-        y = self._ell[i, sel]
-        reps = self._ell_replicates[:, i, :][:, sel]
-        n = reps.shape[0]
-        centred = reps - reps.mean(0)
-        cov = (n - 1) / n * (centred.T @ centred)
+    def pooled_vs_batch(self, perturbation_id):
+        """How far the pooled worth sits from the mean of the batch levels.
 
-        resid = y - np.polyval(np.polyfit(d[sel], y, 1), d[sel])
-        # pinv, not inv: with n_blocks replicates the covariance has rank at
-        # most n_blocks - 1 and can be ill-conditioned.
-        chi2 = float(resid @ np.linalg.pinv(cov, rcond=1e-10) @ resid)
-        return chi2 / (sel.sum() - 2)
+        A mean of ratios is not the ratio of means, and the difference is the
+        one bias batch statistics can introduce here. This returns it in units
+        of the worth's own sigma: anything much below 0.1 is negligible, and
+        anything approaching 1 means :attr:`LocalPerturbation.rho_pooled` is
+        the number to quote.
+        """
+        if getattr(self, '_mean', None) is None:
+            raise ValueError('No results present; read from a statepoint.')
+        i = self.ids.index(perturbation_id)
+        p = self[i]
+        if p.rho.std_dev == 0.0:
+            return 0.0
+        return (p.rho_pooled - p.rho.nominal_value) / p.rho.std_dev
 
-    def worth_by_fit_start(self, perturbation_id):
-        """Worth in pcm as a function of where the slope fit starts.
-
-        The one diagnostic that answers "has the transient died out?"
-        directly. A sub-dominant mode decaying as (dominance ratio)**d biases
-        the slope, always in the same direction, and the bias shrinks as the
-        fit starts later. If these values drift with the starting depth, the
-        quoted worth is biased and ``n_generation`` is too small; if they
-        plateau, it is not.
+    def depth_convergence(self, perturbation_id):
+        """Level against depth for one perturbation, as a diagnostic.
 
         Returns
         -------
         dict
-            Starting depth -> (worth, sigma) in pcm, fitted over that depth
-            through L.
+            Depth -> (level, sigma) in pcm. The level is flat in depth once
+            the perturbed fundamental mode has established itself; if it is
+            still moving at ``d = L`` then ``perturbation_n_generation`` is
+            too small and the reported worth has not converged. This replaces
+            every fit-window diagnostic the slope estimator needed, because
+            there is no window.
         """
-        if getattr(self, '_ell', None) is None:
+        if getattr(self, '_mean', None) is None:
             raise ValueError('No results present; read from a statepoint.')
         i = self.ids.index(perturbation_id)
-        nd = self._ell.shape[1]
-        d = np.arange(nd)
-
-        def fit(curve, d0):
-            sel = d >= d0
-            x = d[sel] - d[sel].mean()
-            return ((curve[..., sel] - curve[..., sel].mean(-1, keepdims=True))
-                    * x).sum(-1) / (x**2).sum()
-
-        out = {}
-        for d0 in range(nd - 2):
-            total = float(fit(self._ell[i], d0))
-            reps = fit(self._ell_replicates[:, i, :], d0)
-            _, sd = self._replicate_stats(reps[:, None])
-            jac = np.exp(-total) / self._k_ref
-            out[d0] = (1.0e5 * (1.0 - np.exp(-total)) / self._k_ref,
-                       1.0e5 * float(sd[0]) * jac)
-        return out
+        p = self[i]
+        return {d: (float(p.depth_curve[d]), float(p.depth_sigma[d]))
+                for d in range(len(p.depth_curve))}
 
     # ----------------------------------------------------------------- XML
     def to_xml_element(self):

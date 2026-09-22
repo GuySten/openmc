@@ -18,8 +18,11 @@
 #include "openmc/message_passing.h"
 #include "openmc/openmp_interface.h"
 #include "openmc/mgxs_interface.h"
+#include "openmc/bank.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
+#include "openmc/physics.h"
+#include "openmc/reaction.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
@@ -35,27 +38,26 @@ namespace bep {
 
 vector<Perturbation> perturbations;
 vector<int> tree_pert;
-vector<int> cell_ref_tree;
+vector<int> tree_class;
 vector<vector<int>> cell_perts;
 vector<double> tree_site_weight;
 vector<double> tree_weight_scale;
 vector<int64_t> tree_sources;
-// Running per-generation statistics of each tree's carried weight, used by
-// update_site_weights() to measure the spread of tau. Reset whenever a tree's
-// site weight moves, since the spread is only meaningful at one weight.
-vector<int64_t> stat_n;
-vector<char> stat_primed;
-vector<double> stat_sum;
-vector<double> stat_sumsq;
-vector<vector<BranchSite>> thread_branch_sites;
-vector<BranchSite> branch_sites;
+vector<vector<TrackSite>> thread_tracks;
+vector<TrackSite> tracks;
+vector<vector<SourceRoot>> thread_source_roots;
+vector<SourceRoot> source_roots;
 vector<double> thread_tau;
 vector<double> thread_root_weight;
 vector<double> tau;
-vector<double> tau_history;
+vector<double> batch_tau;
+vector<double> pooled_tau;
+vector<double> ell_sum;
+vector<double> ell_cross;
+int64_t n_active_batches {0};
 int64_t n_generations {0};
-int64_t n_branch_total {0};
-double w_branch_total {0.0};
+int64_t n_track_total {0};
+int64_t n_root_total {0};
 
 // Internal linkage. `inline` would be redundant inside an unnamed namespace,
 // so it is omitted; forward declarations let run_one_tree() live here with
@@ -78,8 +80,9 @@ namespace {
 //! sample_neutron_reaction(), so leaving it unseeded silently decorrelates
 //! the trees wherever a nuclide has unresolved resonances -- and a null
 //! perturbation then returns noise instead of zero.
-void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
+void run_one_tree(const SourceRoot& site)
 {
+  const int tree = site.tree;
   Particle p;
 
   SourceSite root;
@@ -116,8 +119,8 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   // Read only by apply_russian_roulette(), which returns immediately unless
   // survival_biasing is on, so with it off this changes nothing anywhere.
   p.wgt_born() = p.wgt() * weight_scale(tree);
-  p.id() = seed_id;
-  init_particle_seeds(seed_id, p.seeds());
+  p.id() = site.seed_id;
+  init_particle_seeds(site.seed_id, p.seeds());
   p.stream() = STREAM_TRACKING;
 
   // The scale everything inside this tree is measured against; see
@@ -125,9 +128,8 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
   // outside a shadow tree can read a stale value.
   thread_root_weight[thread_num()] = site.wgt;
 
-  // One independent source event for this tree. A photonuclear
-  // perturbation's tree is not run here and counts its own, at the
-  // photoneutron births that seed it.
+  // One independent source event for this tree: the M of the variance law,
+  // counted rather than estimated.
 #pragma omp atomic
   tree_sources[tree] += 1;
 
@@ -137,6 +139,313 @@ void run_one_tree(const BranchSite& site, int tree, int64_t seed_id)
 
   p.local_secondary_bank().clear();
   thread_root_weight[thread_num()] = 0.0;
+}
+
+//! The reference eigenvalue the fission bank was normalised by, and hence the
+//! kk of level(). Captured at the start of the shadow pass so that every
+//! reader within a generation uses one value.
+double keff_norm {1.0};
+
+//! Evaluate a material's macroscopic cross sections at a track segment's
+//! phase point, on a scratch particle.
+//!
+//! Done here, in the shadow pass, and NOT at the driver collision that
+//! recorded the segment. Evaluating a second material on the driver itself
+//! would overwrite its cached macro cross sections and could draw from its
+//! unresolved-resonance stream, and the driver has to stay bit-identical to a
+//! stock run. `mat` may be MATERIAL_VOID, which has no cross sections at all.
+void material_macro(Particle& s, const TrackSite& t, int32_t mat, double& st,
+  double& sa, double& snf)
+{
+  if (mat == MATERIAL_VOID) {
+    st = sa = snf = 0.0;
+    return;
+  }
+  s.E() = t.E;
+  s.sqrtkT() = t.sqrtkT;
+  s.density_mult() = t.density_mult;
+  model::materials[mat]->calculate_xs(s);
+  st = s.macro_xs().total;
+  sa = s.macro_xs().absorption;
+  snf = s.macro_xs().nu_fission;
+}
+
+//! One nuclide of a material, as the source generator sees it.
+struct NuclideEntry {
+  int i_nuclide;
+  int index_sab;
+  double sab_frac;
+  double density;
+};
+
+//! List the nuclides of `mat` at this phase point, with `mat`'s own thermal
+//! scattering assignment. The scratch particle must already hold `mat`'s
+//! cross sections.
+void list_nuclides(
+  Particle& s, const TrackSite& t, int32_t mat, vector<NuclideEntry>& out)
+{
+  out.clear();
+  if (mat == MATERIAL_VOID)
+    return;
+  const Material& m {*model::materials[mat]};
+  for (int i = 0; i < static_cast<int>(m.nuclides().size()); ++i) {
+    int i_nuc = m.nuclides()[i];
+    const auto& micro = s.neutron_xs(i_nuc);
+    out.push_back({i_nuc, micro.index_sab, micro.sab_frac,
+      m.atom_density(i, t.density_mult)});
+  }
+}
+
+//! Emit this nuclide's contribution to the perturbation source.
+//!
+//! `d_density` is the SIGNED change in this nuclide's atom density that the
+//! substitution makes -- zero for every nuclide the substitution leaves
+//! alone, which is why nothing is emitted for them at all. That is the whole
+//! point of decomposing the source by nuclide rather than by material: a
+//! material-level pair, +Sigma_s' from one kernel and -Sigma_s from the
+//! other, would emit two O(Sigma_s) populations whose difference is the
+//! answer, and the noise would be set by the populations rather than by the
+//! difference. Measured on a water-plus-boron substitution, that cost a
+//! factor of order the ratio between them.
+//!
+//! The scratch particle must hold the cross sections of the material this
+//! nuclide was listed from, and s.material() must be that material:
+//! scatter() reads its isotropic-in-lab flags through it.
+void emit_nuclide_source(Particle& s, const TrackSite& t,
+  const NuclideEntry& e, double d_density, const Perturbation& pert,
+  const Position& r_emit, double base, int64_t site_seed,
+  vector<SourceRoot>& out)
+{
+  if (d_density == 0.0)
+    return;
+  const auto& micro = s.neutron_xs(e.i_nuclide);
+  const double w = std::abs(d_density) * base;
+  const bool positive = d_density > 0.0;
+
+  // ---- fission production: + chi_i nu sigma_f,i -------------------------
+  if (micro.nu_fission > 0.0) {
+    init_particle_seeds(
+      combine_ids({site_seed, e.i_nuclide, 2}), s.seeds());
+    s.stream() = STREAM_TRACKING;
+    s.E() = t.E;
+    s.u() = t.u;
+    SourceSite site;
+    site.time = t.time;
+    const Reaction& rx = sample_fission(e.i_nuclide, s);
+    sample_fission_neutron(e.i_nuclide, rx, &site, s);
+
+    SourceRoot root;
+    root.r = r_emit;
+    root.u = site.u;
+    root.E = site.E;
+    root.time = site.time;
+    root.wgt = w * micro.nu_fission;
+    root.tree = positive ? pert.tree_fp : pert.tree_fn;
+    root.seed_id = combine_ids({site_seed, e.i_nuclide, 2});
+    out.push_back(root);
+  }
+
+  // ---- removal and in-scatter ------------------------------------------
+  //
+  // This nuclide's share of -(dL psi) is
+  //
+  //     -dn_i sigma_t,i psi(E,u)  +  dn_i sigma_s,i psi(E,u) scattered
+  //
+  // and writing it that way directly is a disaster: sigma_t and sigma_s
+  // differ only by the absorption, so the answer is a difference of two
+  // nearly equal populations. Measured on a dissolved-U235 substitution the
+  // two came to 4530 and 4450 against a true difference of order 50 -- a
+  // hundredfold cancellation, with the level wandering by its own size from
+  // one depth to the next.
+  //
+  // Splitting sigma_t = sigma_a + sigma_s first gives three roots instead,
+  //
+  //     (a)  -dn_i sigma_a,i   at (E, u)              the absorption
+  //     (b)  +dn_i sigma_s,i   at the SCATTERED state
+  //     (c)  -dn_i sigma_s,i   at (E, u)              unscattered
+  //
+  // which is the same thing exactly, but now (a) is a clean one-signed term
+  // carrying the absorption -- usually most of the worth -- and the whole of
+  // the remaining cancellation sits in (b) + (c), whose weights are
+  // IDENTICAL by construction. That pair is the importance change across one
+  // scattering event; sharing its seed makes the two trees track each other
+  // wherever they are doing the same physics, and with equal weights there
+  // is nothing left to spoil the cancellation but the scattering itself.
+  //
+  // What that costs is honest and irreducible here: for a scatterer that
+  // throws the neutron somewhere quite different -- hydrogen above all --
+  // the two trees decorrelate at once and the noise is set by sigma_s rather
+  // than by the answer. That is a property of a signed source, not of this
+  // bookkeeping, and it is why the per-nuclide decomposition above matters
+  // so much: a nuclide the substitution leaves alone emits none of the
+  // three.
+  double sigma_a = micro.absorption;
+  double sigma_s = micro.total - micro.absorption;
+  int64_t seed = combine_ids({site_seed, e.i_nuclide, 3});
+
+  // (a) absorption, at the segment's own phase point
+  if (sigma_a > 0.0) {
+    SourceRoot root;
+    root.r = r_emit;
+    root.u = t.u;
+    root.E = t.E;
+    root.time = t.time;
+    root.wgt = w * sigma_a;
+    root.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
+    root.seed_id = combine_ids({site_seed, e.i_nuclide, 4});
+    out.push_back(root);
+  }
+
+  if (sigma_s > 0.0) {
+    // (c) the unscattered member of the pair
+    SourceRoot before;
+    before.r = r_emit;
+    before.u = t.u;
+    before.E = t.E;
+    before.time = t.time;
+    before.wgt = w * sigma_s;
+    before.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
+    before.seed_id = seed;
+    out.push_back(before);
+
+    // (b) the scattered member, same weight, same seed
+    init_particle_seeds(seed, s.seeds());
+    s.stream() = STREAM_TRACKING;
+    s.E() = t.E;
+    s.u() = t.u;
+    s.wgt() = 1.0;
+    s.local_secondary_bank().clear();
+
+    scatter(s, e.i_nuclide);
+
+    SourceRoot root;
+    root.r = r_emit;
+    root.u = s.u();
+    root.E = s.E();
+    root.time = t.time;
+    root.wgt = w * sigma_s * s.wgt();
+    root.tree = positive ? pert.tree_lp : pert.tree_ln;
+    root.seed_id = seed;
+    if (root.wgt > 0.0)
+      out.push_back(root);
+
+    // The multiplicity of an (n,xn) comes out of scatter() too -- as a
+    // weight factor for a non-integral yield, as extra neutrons in the local
+    // bank for an integral one -- and both are carried, because this is a
+    // source of NEUTRONS and an (n,2n) makes two.
+    for (const auto& sec : s.local_secondary_bank()) {
+      SourceRoot extra = root;
+      extra.u = sec.u;
+      extra.E = sec.E;
+      extra.wgt = w * sigma_s * sec.wgt;
+      if (extra.wgt > 0.0)
+        out.push_back(extra);
+    }
+    s.local_secondary_bank().clear();
+  }
+}
+
+//! Emit the perturbation source dH psi carried by one driver track segment.
+//!
+//! Track-length form: the expected source from a segment of length l carrying
+//! weight w is (dSigma * w * l), with the emission point uniform along the
+//! segment. Three channels make up  -(dL psi) = -dSigma_t psi + dSigma_s psi
+//! and  dF psi = d(chi nu Sigma_f) psi:
+//!
+//!   removal    -(Sigma_t' - Sigma_t) * w * l   at the segment's own (u, E)
+//!   in-scatter  +dn_i * sigma_s,i * w * l      per nuclide, from ITS kernel
+//!   fission     +dn_i * nu sigma_f,i * w * l   per nuclide, from ITS spectrum
+//!
+//! The removal channel is a single signed root because both sides share a
+//! phase point exactly, so what is emitted is already the small difference.
+//! The other two cannot be written that way -- the outgoing distributions
+//! differ -- so they are decomposed by NUCLIDE instead, and each nuclide
+//! contributes in proportion to the change dn_i in its atom density. A
+//! nuclide the substitution leaves alone has dn_i = 0 and emits nothing at
+//! all, so a null substitution produces no source whatsoever and the worth is
+//! a hard zero rather than the difference of two noisy estimates.
+//!
+//! A nuclide whose THERMAL SCATTERING assignment differs between the two
+//! materials is not the same scatterer in both, so it is not matched: it
+//! contributes in full on each side, and only those two populations have to
+//! cancel against each other.
+void emit_perturbation_source(
+  const TrackSite& t, Particle& s, vector<SourceRoot>& out)
+{
+  const double base = t.wgt * t.distance;
+  if (base <= 0.0)
+    return;
+
+  // Seed the scratch particle before anything reads a random number from it.
+  // Evaluating a material's cross sections can draw from the
+  // unresolved-resonance stream, and a Particle's seeds are not initialised
+  // by its constructor -- an unseeded scratch would take stack garbage and
+  // make the source non-reproducible.
+  init_particle_seeds(t.seed_id, s.seeds());
+  s.stream() = STREAM_TRACKING;
+  s.n_secondaries() = 0;
+  s.r() = t.r;
+  s.time() = t.time;
+  s.local_secondary_bank().clear();
+
+  vector<NuclideEntry> ref_nuc, pert_nuc;
+
+  for (int ip : cell_perts[t.cell]) {
+    int32_t mat_p;
+    if (!substitute(ip, t.cell, mat_p))
+      continue; // this perturbation touches the cell only through another sub
+    const Perturbation& pert = perturbations[ip];
+
+    // The emission point, shared by every channel of this perturbation so
+    // that its sources stay correlated along one segment.
+    int64_t site_seed = combine_ids({t.seed_id, ip});
+    uint64_t rng = init_seed(site_seed, STREAM_TRACKING);
+    Position r_emit = t.r + t.u * (prn(&rng) * t.distance);
+
+    // The reference side's nuclide list, taken with the reference material's
+    // own cross sections loaded.
+    double st_r, sa_r, snf_r;
+    material_macro(s, t, t.material, st_r, sa_r, snf_r);
+    list_nuclides(s, t, t.material, ref_nuc);
+
+    // ---- the substituted material -----------------------------------
+    double st_p, sa_p, snf_p;
+    material_macro(s, t, mat_p, st_p, sa_p, snf_p);
+    list_nuclides(s, t, mat_p, pert_nuc);
+    s.material() = mat_p;
+
+    vector<char> matched(ref_nuc.size(), 0);
+    for (const auto& e : pert_nuc) {
+      double d_density = e.density;
+      for (size_t j = 0; j < ref_nuc.size(); ++j) {
+        if (ref_nuc[j].i_nuclide == e.i_nuclide &&
+            ref_nuc[j].index_sab == e.index_sab &&
+            ref_nuc[j].sab_frac == e.sab_frac) {
+          d_density -= ref_nuc[j].density;
+          matched[j] = 1;
+          break;
+        }
+      }
+      emit_nuclide_source(
+        s, t, e, d_density, pert, r_emit, base, site_seed, out);
+    }
+
+    // ---- whatever the reference had and the substitution does not ----
+    bool any_unmatched = false;
+    for (size_t j = 0; j < ref_nuc.size(); ++j)
+      any_unmatched = any_unmatched || !matched[j];
+    if (any_unmatched) {
+      material_macro(s, t, t.material, st_r, sa_r, snf_r);
+      s.material() = t.material;
+      for (size_t j = 0; j < ref_nuc.size(); ++j) {
+        if (!matched[j]) {
+          emit_nuclide_source(s, t, ref_nuc[j], -ref_nuc[j].density, pert,
+            r_emit, base, site_seed, out);
+        }
+      }
+    }
+
+  }
 }
 
 } // namespace
@@ -196,12 +505,11 @@ void init()
     }
   }
 
-  cell_ref_tree.assign(model::cells.size(), -1);
   cell_perts.assign(model::cells.size(), {});
   tree_pert.clear();
+  tree_class.clear();
 
-  // Pass 1: resolve every substitution and create one reference tree per
-  // distinct touched cell.
+  // Pass 1: resolve every substitution.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
     Perturbation& p = perturbations[ip];
     std::unordered_set<int32_t> seen_cells;
@@ -250,10 +558,6 @@ void init()
         s.mat_index = m->second;
       }
 
-      if (cell_ref_tree[s.cell_index] < 0) {
-        cell_ref_tree[s.cell_index] = static_cast<int>(tree_pert.size());
-        tree_pert.push_back(BEP_NO_PERT);
-      }
       cell_perts[s.cell_index].push_back(static_cast<int>(ip));
       p.cells.push_back(s.cell_index);
     }
@@ -300,10 +604,23 @@ void init()
     }
   }
 
-  // Pass 2: one tree per perturbation, after all reference trees exist.
+  // Pass 2: five source-rooted trees per perturbation, in class order. All
+  // five map back to the same perturbation, because all five are transported
+  // in ITS perturbed physics -- the denominator included. That is the point:
+  // numerator and denominator then grow at the same rate k'^d and the level
+  // is flat in depth.
   for (size_t ip = 0; ip < perturbations.size(); ++ip) {
-    perturbations[ip].tree = static_cast<int>(tree_pert.size());
-    tree_pert.push_back(static_cast<int>(ip));
+    Perturbation& p = perturbations[ip];
+    int base = static_cast<int>(tree_pert.size());
+    for (int c = 0; c < N_TREE_CLASS; ++c) {
+      tree_pert.push_back(static_cast<int>(ip));
+      tree_class.push_back(c);
+    }
+    p.tree_d = base + TREE_D;
+    p.tree_fp = base + TREE_FP;
+    p.tree_fn = base + TREE_FN;
+    p.tree_lp = base + TREE_LP;
+    p.tree_ln = base + TREE_LN;
   }
 
   // NOTE: settings::super_n_generation is deliberately NOT touched here.
@@ -317,36 +634,36 @@ void init()
   int nd = settings::bep_n_generation + 1;
   size_t np = perturbations.size();
   tau.assign(tree_pert.size() * nd, 0.0);
+  batch_tau.assign(tree_pert.size() * nd, 0.0);
+  pooled_tau.assign(tree_pert.size() * nd, 0.0);
+  ell_sum.assign(np * nd, 0.0);
+  ell_cross.assign(np * np * nd, 0.0);
+  n_active_batches = 0;
   // Unit weight until a generation has been run to measure from, which is
   // exactly what an eigenvalue calculation does anyway.
   tree_site_weight.assign(tree_pert.size(), 1.0);
   tree_weight_scale.assign(tree_pert.size(), 1.0);
   tree_sources.assign(tree_pert.size(), 0);
-  stat_n.assign(tree_pert.size(), 0);
-  stat_primed.assign(tree_pert.size(), 0);
-  stat_sum.assign(tree_pert.size(), 0.0);
-  stat_sumsq.assign(tree_pert.size(), 0.0);
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_root_weight.assign(num_threads(), 0.0);
-  thread_branch_sites.assign(num_threads(), {});
-  tau_history.clear();
-  branch_sites.clear();
+  thread_tracks.assign(num_threads(), {});
+  thread_source_roots.assign(num_threads(), {});
+  tracks.clear();
+  source_roots.clear();
 
-  // One row per active generation. Warn rather than surprise the user with a
-  // large allocation late in the run.
-  double mb = 8.0 * settings::n_max_batches * settings::gen_per_batch *
-              tree_pert.size() * nd / (1024.0 * 1024.0);
-  if (mb > 256.0) {
-    warning(fmt::format("<local_perturbation> will record about {:.0f} MB of "
-                        "per-generation data ({} trees, L = {}).",
-      mb, tree_pert.size(), settings::bep_n_generation));
-  }
+  // Everything the run records is now O(n_pert * L) and independent of its
+  // length, so there is no allocation to warn about.
 
-  size_t n_cells_touched = tree_pert.size() - np;
+  size_t n_cells_touched = 0;
+  for (const auto& cp : cell_perts)
+    if (!cp.empty())
+      ++n_cells_touched;
   write_message(
     fmt::format("BEP: {} perturbation(s) over {} cell(s), {} shadow trees, "
-                "L = {}.",
-      np, n_cells_touched, tree_pert.size(), settings::bep_n_generation),
+                "L = {}, {} denominator roots per generation.",
+      np, n_cells_touched, tree_pert.size(), settings::bep_n_generation,
+      settings::bep_n_roots > 0 ? fmt::format("{}", settings::bep_n_roots)
+                                : std::string("all")),
     5);
 }
 
@@ -370,9 +687,12 @@ void reset_generation()
   std::fill(tau.begin(), tau.end(), 0.0);
   std::fill(thread_tau.begin(), thread_tau.end(), 0.0);
   std::fill(tree_sources.begin(), tree_sources.end(), 0);
-  for (auto& sites : thread_branch_sites)
-    sites.clear();
-  branch_sites.clear();
+  for (auto& v : thread_tracks)
+    v.clear();
+  for (auto& v : thread_source_roots)
+    v.clear();
+  tracks.clear();
+  source_roots.clear();
 }
 
 //==============================================================================
@@ -442,27 +762,42 @@ void add_substitution_nuclide_temperatures(vector<vector<double>>& nuc_temps)
   }
 }
 
-void maybe_branch(Particle& p, int32_t cell_index)
+void record_track(Particle& p, int32_t cell_index, double distance)
 {
   // Caller has established that BEP is on this batch, that p is a trunk
   // and that cell_index is touched by at least one perturbation.
   if (!p.type().is_neutron())
     return;
-  if (p.wgt() == 0.0)
+  if (p.wgt() == 0.0 || distance <= 0.0)
     return;
+  if (!settings::run_CE) {
+    // The multigroup source would need the group-to-group transfer matrices
+    // of both materials, which is the same work as the continuous-energy
+    // scattering kernel deferred to stage 3. Refusing is better than a
+    // silently absorption-only source.
+    fatal_error("<local_perturbation> currently requires continuous-energy "
+                "transport: the perturbation source is not implemented for "
+                "multigroup data.");
+  }
 
-  BranchSite site;
+  TrackSite site;
   site.r = p.r();
   site.u = p.u();
-  // SourceSite::E carries a GROUP INDEX in multigroup mode, not an energy:
-  // from_source() does g() = int(src->E) there. Storing p.E() unconditionally
-  // fed an energy in as a group index, which runs off the end of every
-  // group-indexed array. Same idiom as create_secondary() and split().
-  site.E = settings::run_CE ? p.E() : p.g();
+  site.E = p.E();
   site.wgt = p.wgt();
   site.time = p.time();
+  site.distance = distance;
+  // The reference cross sections come for free: the driver has just computed
+  // them for this very flight, so the source costs no cross-section lookup
+  // at all on the reference side.
+  site.sigma_t = p.macro_xs().total;
+  site.sigma_a = p.macro_xs().absorption;
+  site.nu_sigma_f = p.macro_xs().nu_fission;
+  site.sqrtkT = p.sqrtkT();
+  site.density_mult = p.density_mult();
   site.cell = cell_index;
-  // Seeded on the identity of the branch, not its arrival order, so the
+  site.material = p.material();
+  // Seeded on the identity of the segment, not its arrival order, so the
   // shadow trees do not depend on which thread got here first. (id,
   // n_tracks, n_event) is unique for a driver particle within a generation
   // -- n_event alone is not, because event_revive_from_secondary() resets
@@ -474,20 +809,13 @@ void maybe_branch(Particle& p, int32_t cell_index)
   // here serialises every thread on a push_back. The vectors are merged in
   // run_shadow_pass(), where the order no longer matters because each site
   // carries its own seed.
-  thread_branch_sites[thread_num()].push_back(site);
+  thread_tracks[thread_num()].push_back(site);
 
-  // The driver is deliberately NOT stopped and NOT tagged: it carries on in
-  // the reference state exactly as in a stock run, so k, the fission source
-  // and all ordinary tallies are untouched. The reference shadow is a
-  // separate copy on purpose -- the driver's bank is renormalised and combed
-  // every generation while a shadow tree is not.
-  //
-  // A trunk history that leaves and re-enters branches again, and a trunk
-  // history that visits two different perturbed cells branches at each. Both
-  // are correct: the estimator is the SLOPE of l(d), and each branch is an
-  // independent sample of the same slope, so extra branches add (correlated)
-  // statistics without bias. Only an absolute-normalisation estimator would
-  // need first-entry-only bookkeeping.
+  // The driver is deliberately NOT stopped, NOT tagged and NOT sampled from:
+  // it carries on in the reference state exactly as in a stock run, so k, the
+  // fission source and all ordinary tallies are untouched. Every segment of
+  // every history through a touched cell is recorded, which is exactly the
+  // track-length estimator of the perturbation source integral.
 }
 
 double root_weight()
@@ -512,57 +840,126 @@ void score_site(int tree, int super_gen, double wgt)
 // Shadow pass
 //==============================================================================
 
+//! Sample this generation's DENOMINATOR roots from the fission bank.
+//!
+//! The bank is the reference fission source already divided by the eigenvalue
+//! -- create_fission_sites() banks an expected w * nu Sigma_f / (Sigma_t *
+//! keff) sites per collision -- so it is a realisation of (1/k) F psi, which
+//! is exactly the denominator the level needs and exactly the normalisation
+//! level()'s kk assumes.
+//!
+//! Sampling rather than taking the whole bank: each site is kept with
+//! probability p and carries 1/p, which is unbiased and makes the cost of the
+//! denominator a tunable knob instead of a full extra transport of the
+//! problem at every depth. The draws come from a stream seeded on the
+//! generation and the rank alone, so the sample does not depend on thread
+//! timing or on the order the bank was filled in.
+void sample_denominator_roots()
+{
+  auto n_bank = static_cast<int64_t>(simulation::fission_bank.size());
+  if (n_bank == 0)
+    return;
+
+  int64_t target = settings::bep_n_roots;
+  double p_keep = (target <= 0 || target >= n_bank)
+                    ? 1.0
+                    : static_cast<double>(target) / n_bank;
+  double scale = 1.0 / p_keep;
+
+  uint64_t seed = init_seed(
+    combine_ids({simulation::total_gen, mpi::rank, -1}), STREAM_TRACKING);
+
+  for (int64_t i = 0; i < n_bank; ++i) {
+    if (p_keep < 1.0 && prn(&seed) >= p_keep)
+      continue;
+    const SourceSite& s = simulation::fission_bank[i];
+    for (const auto& pert : perturbations) {
+      SourceRoot root;
+      root.r = s.r;
+      root.u = s.u;
+      root.E = s.E;
+      root.wgt = s.wgt * scale;
+      root.time = s.time;
+      root.tree = pert.tree_d;
+      // Each perturbation grows this site in ITS OWN perturbed physics, but
+      // from the same seed, so the denominators of two perturbations differ
+      // only where their physics does.
+      root.seed_id = combine_ids({simulation::total_gen, i, 0});
+      source_roots.push_back(root);
+    }
+  }
+}
+
 void run_shadow_pass()
 {
   if (!simulation::bep_on)
     return;
 
-  // Merge the per-thread vectors and put them in a deterministic order. The
-  // order the threads recorded them in varies run to run; sorting by the
-  // seed, which is a property of the branch itself, makes the whole shadow
-  // pass -- including the order the per-thread tau slabs are summed in --
-  // reproducible for a given thread count.
-  branch_sites.clear();
-  for (const auto& sites : thread_branch_sites)
-    branch_sites.insert(branch_sites.end(), sites.begin(), sites.end());
-  if (branch_sites.empty())
-    return;
-  std::sort(branch_sites.begin(), branch_sites.end(),
-    [](const BranchSite& a, const BranchSite& b) {
+  // The eigenvalue the bank was normalised by, and hence the kk of level().
+  keff_norm = simulation::keff;
+
+  // Merge the per-thread track vectors and put them in a deterministic
+  // order. The order the threads recorded them in varies run to run; sorting
+  // by the seed, which is a property of the segment itself, makes the whole
+  // shadow pass -- including the order the per-thread tau slabs are summed in
+  // -- reproducible for a given thread count.
+  tracks.clear();
+  for (const auto& v : thread_tracks)
+    tracks.insert(tracks.end(), v.begin(), v.end());
+  std::sort(tracks.begin(), tracks.end(),
+    [](const TrackSite& a, const TrackSite& b) {
       return a.seed_id < b.seed_id;
     });
-  for (const auto& site : branch_sites) {
-    ++n_branch_total;
-    w_branch_total += site.wgt;
+  n_track_total += static_cast<int64_t>(tracks.size());
+
+  // ---- 1. the perturbation source, dH psi -------------------------------
+  for (auto& v : thread_source_roots)
+    v.clear();
+  auto n_tracks = static_cast<int64_t>(tracks.size());
+#pragma omp parallel
+  {
+    // One scratch particle per thread, reused across segments: it exists only
+    // to hold the cross sections of a material the driver is not in, and to
+    // sample a fission neutron from it.
+    Particle scratch;
+    scratch.type() = ParticleType::neutron();
+    vector<SourceRoot>& out = thread_source_roots[thread_num()];
+#pragma omp for schedule(static)
+    for (int64_t i = 0; i < n_tracks; ++i)
+      emit_perturbation_source(tracks[i], scratch, out);
   }
 
-  auto n = static_cast<int64_t>(branch_sites.size());
+  source_roots.clear();
+  for (const auto& v : thread_source_roots)
+    source_roots.insert(source_roots.end(), v.begin(), v.end());
 
-  // Static, not dynamic: with the sites in a fixed order it gives each thread
+  // ---- 2. the denominator, a sample of the reference fission source -----
+  sample_denominator_roots();
+
+  if (source_roots.empty())
+    return;
+
+  // One deterministic order for the whole root list, whatever order the
+  // threads and the bank produced it in.
+  std::sort(source_roots.begin(), source_roots.end(),
+    [](const SourceRoot& a, const SourceRoot& b) {
+      if (a.seed_id != b.seed_id)
+        return a.seed_id < b.seed_id;
+      return a.tree < b.tree;
+    });
+  n_root_total += static_cast<int64_t>(source_roots.size());
+
+  // ---- 3. grow every root L generations in its perturbation's physics ---
+  //
+  // Static, not dynamic: with the roots in a fixed order it gives each thread
   // a fixed chunk, so the per-thread partial sums are reproducible. Tree cost
-  // varies a lot -- it is a branching process -- but with many sites per
+  // varies a lot -- it is a branching process -- but with many roots per
   // thread that averages out. Switch to dynamic if load imbalance ever shows
   // up, at the cost of bit-reproducibility.
+  auto n = static_cast<int64_t>(source_roots.size());
 #pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < n; ++i) {
-    const BranchSite& site = branch_sites[i];
-
-    // One seed per branch site, shared by the reference tree and every
-    // perturbed tree spawned here, so all of them draw the same numbers
-    // wherever they are doing the same physics. That is what collapses the
-    // variance of a difference, and what makes a null perturbation return
-    // zero rather than noise. It was fixed when the site was recorded, so it
-    // does not depend on this loop's index -- see BranchSite::seed_id.
-    int64_t seed_id = site.seed_id;
-
-    run_one_tree(site, cell_ref_tree[site.cell], seed_id);
-
-    // Only the perturbations that touch THIS cell spawn a tree here. A
-    // perturbation whose other cells the history later reaches is picked up
-    // by a separate branch there, since the driver stays untagged.
-    for (int ip : cell_perts[site.cell]) {
-      run_one_tree(site, perturbations[ip].tree, seed_id);
-    }
+    run_one_tree(source_roots[i]);
   }
 }
 
@@ -577,199 +974,60 @@ void update_site_weights()
       total[t] += tau[tau_index(static_cast<int>(t), d)];
   }
 
-  // weight_scale describes the tree rather than a choice about it, so it is
-  // measured whatever the splitting flag says.
-  for (size_t ip = 0; ip < perturbations.size(); ++ip) {
-    const Perturbation& p = perturbations[ip];
-    double w_ref = 0.0;
-    for (int32_t ci : p.cells)
-      w_ref += total[cell_ref_tree[ci]];
-    double w_pert = total[p.tree];
-    if (w_ref <= 0.0 || w_pert <= 0.0)
-      continue;
-    double q = std::pow(10.0, std::floor(std::log10(w_pert / w_ref) + 0.5));
-    tree_weight_scale[p.tree] = std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
-  }
+  for (const auto& p : perturbations) {
+    double w_d = total[p.tree_d];
+    if (w_d <= 0.0)
+      continue; // nothing measured yet; leave every tree at unit weight
 
-  if (!settings::perturbation_site_splitting)
-    return; // every tree banks unit-weight sites, as an ordinary eigenvalue
-            // calculation does
-
-  for (size_t ip = 0; ip < perturbations.size(); ++ip) {
-    const Perturbation& p = perturbations[ip];
-
-    double w_ref = 0.0;
-    for (int32_t ci : p.cells)
-      w_ref += total[cell_ref_tree[ci]];
-    double w_pert = total[p.tree];
-    if (w_ref <= 0.0 || w_pert <= 0.0)
-      continue; // nothing measured yet; leave it at unit weight
-
-    // A tree's site count is its carried weight divided by the weight it
-    // banks at -- reference trees bank at 1, so for them weight IS count. No
-    // separate counter is needed, and none of this reads a clock: a sampling
-    // rule that did would give two runs of the same seed different answers.
-    //
-    // CUMULATIVE over the run, not this generation's: T0/kappa is how much
-    // non-perturbation work the whole calculation does, against which the
-    // perturbation's total cost is weighed. Using one generation's count
-    // under-targets by the square root of the generation count, which on a
-    // 30-generation run is a factor of five -- a decade below the measured
-    // plateau once rounded.
-    // Every site the run transports THIS GENERATION except this tree's own:
-    // its reference trees, and the trees of every other perturbation sharing
-    // the run. The optimum weighs this tree's marginal cost against the fixed
-    // cost of everything else, so with several perturbations each one can
-    // afford a larger population than it could alone.
-    //
-    // PER GENERATION, not cumulative. The number of generations enters the
-    // cost as an overall factor and the variance as its reciprocal, and both
-    // are independent of the population, so it cancels from the stationarity
-    // condition entirely: the optimal per-generation population is the same
-    // whether the run is ten generations or ten thousand. Accumulating over
-    // the run instead multiplies the target by the square root of the
-    // generation count, which is simply wrong however well it happened to
-    // compensate for an unrelated error elsewhere.
-    //
-    // The driver's own cost belongs in here too and is not counted: it cannot
-    // be expressed in sites without timing the run, which would cost
-    // reproducibility. Omitting it understates the total by of order ten per
-    // cent, moving the target by five -- far inside the rounding below.
-    double n_rest = 0.0;
-    for (size_t t2 = 0; t2 < tree_pert.size(); ++t2)
-      if (t2 != static_cast<size_t>(p.tree))
-        n_rest += total[t2] / site_weight(static_cast<int>(t2));
-
-    // Accumulate this generation's carried weight, so the spread of tau can
-    // be measured across generations. Reset whenever the site weight moves,
-    // because the spread has to be measured at ONE weight to be meaningful.
-    double& w_site = tree_site_weight[p.tree];
-    size_t t = p.tree;
-    // Accumulate the RATIO of this tree's weight to its reference trees',
-    // not the weight itself. b is the sampling floor, and consecutive
-    // generations share a fission source that drifts for reasons that have
-    // nothing to do with banking; that common mode inflates the raw spread of
-    // tau by a large factor -- measured sixty here -- and an inflated b
-    // deflates the target by its square root. The drift is common to
-    // numerator and denominator and cancels to first order in the ratio,
-    // which is in any case the quantity the worth is actually built from. The
-    // reference tree's own sampling noise, of order 1/n_ref, is four decades
-    // below this tree's and is left in.
-    double ratio = w_pert / w_ref;
-    stat_n[t] += 1;
-    stat_sum[t] += ratio;
-    stat_sumsq[t] += ratio * ratio;
-
-    // The rule. Writing N for the sites the tree banks per generation and M
-    // for the number of INDEPENDENT source events feeding it, the banking is
-    // a counting process on top of the chain's own spread, so
-    //
-    //     relative variance of tau  =  1/N  +  c/M
-    //
-    // -- a discreteness term that splitting removes, and a floor that it
-    // cannot touch, set by how many independent sources there were. With the
-    // cost linear in N, T = T0 + kappa*N, minimising sigma^2*T gives
-    //
-    //     N* = sqrt( T0*M / (kappa*c) ) = sqrt( gamma * n_ref * M_eff )
-    //
-    // where M_eff = M/c and gamma = T0/(kappa*n_ref) is the cost of the rest
-    // of the run measured in shadow sites. A site costs what a site costs and
-    // the shadow pass dominates a BEP run, so gamma ~ 1 -- which is what lets
-    // this avoid the clock. The error that approximation can carry is bounded
-    // by how flat the optimum is: being a factor of three off costs under
-    // 10% of the figure of merit, and the rounding below is coarser than that
-    // anyway.
-    //
-    // M_eff never has to be split into M and c. Inverting the variance
-    // relation gives it directly from quantities already in hand:
-    //
-    //     M_eff = 1 / ( relative variance - 1/N )
-    //
-    // N* then scales linearly with the run size (T0 and M both grow with it,
-    // c and kappa do not), which is why this is expressed as a site weight
-    // derived per generation rather than as a fixed target: a fixed count
-    // would stop the tree benefiting from a longer run.
-    double target_n;
-    if (stat_n[t] < MIN_STAT_GENERATIONS) {
-      // Only ever bootstrap ONCE. Changing the weight resets the statistics,
-      // so a tree that has already measured one would otherwise fall back to
-      // the bootstrap on the very next generation and revert the change it
-      // had just made -- a limit cycle that parks the tree near the bootstrap
-      // population however good its estimate was. Once primed, hold the
-      // current weight while the statistics rebuild.
-      if (stat_primed[t])
+    // The two members of a +/- pair are treated as ONE population and given
+    // ONE site weight, from their combined carried weight. They exist to be
+    // subtracted from each other, and giving them different sampling would
+    // decorrelate exactly the pair whose correlation the whole scheme rests
+    // on -- for no gain, since their magnitudes are nearly equal anyway.
+    const int pairs[2][2] {{p.tree_fp, p.tree_fn}, {p.tree_lp, p.tree_ln}};
+    for (const auto& pair : pairs) {
+      double w = total[pair[0]] + total[pair[1]];
+      if (w <= 0.0)
         continue;
-      // No spread measured yet, so b cannot be inverted from it -- but it
-      // need not be guessed either. b = c/M, and M is COUNTED: the source
-      // events that seeded this tree this generation. c is the relative
-      // variance of one source's depth-summed contribution, which for a
-      // near-critical chain followed over L generations is of order L. So
-      //
-      //     b ~ L / M   and   n ~ sqrt(C * M / L)
-      //
-      // needing no tuned constant. Being only an initial condition it does
-      // not have to be exact -- the update below is a fixed-point iteration
-      // and converges from any start -- but it does have to be CLOSE, because
-      // shadow trees do not run during inactive batches, so every generation
-      // spent converging is an active one whose noise lands in the answer.
-      int64_t m = tree_sources[p.tree];
-      if (m <= 0)
-        continue; // nothing seeded this tree yet; leave it at unit weight
-      double b0 = static_cast<double>(settings::bep_n_generation) /
-                  static_cast<double>(m);
-      target_n = std::sqrt((n_rest + w_pert / w_site) / b0);
-    } else {
-      double n = static_cast<double>(stat_n[t]);
-      double mean = stat_sum[t] / n;
-      double var = (stat_sumsq[t] - n * mean * mean) / (n - 1.0);
-      if (mean <= 0.0 || var <= 0.0)
-        continue;
-      double rel_var = var / (mean * mean);
-      double b = rel_var - w_site / w_pert; // 1/n, with n = w_pert / w_site
-      if (b <= 0.0)
-        continue; // the floor is not resolved yet; leave the weight alone
-      // Stationarity of sigma^2 * T gives b n^2 + n - C = 0, whose positive
-      // root is this. C is the whole generation's cost in sites, this tree
-      // included, since growing this tree also grows what it is weighed
-      // against. Reduces to sqrt(C/b) once b*C is large, which it is here,
-      // but the root costs nothing and is right in both limits.
-      //
-      // Solving it per generation against the PREVIOUS generation's
-      // populations is precisely the fixed-point iteration for
-      //
-      //     C = r + sum_q max(W_q, phi_q(C)),   phi_q(C) the root above,
-      //
-      // whose solution is the joint optimum over every perturbation sharing
-      // the run. The iteration converges when the map contracts, that is when
-      // sum_q phi_q'(C) < 1 with phi'(C) = 1/sqrt(1 + 4 b C). Each tree can
-      // only check its own term, so require that K of them would still
-      // contract; if not, hold the weight rather than iterate a map that may
-      // not settle. The condition only bites when a perturbation is cheap
-      // relative to the run, where b*C is small and the optimum is flat
-      // anyway.
-      double C = n_rest + w_pert / w_site;
-      double slope = 1.0 / std::sqrt(1.0 + 4.0 * b * C);
-      if (slope * static_cast<double>(perturbations.size()) >= 1.0)
-        continue;
-      target_n = (-1.0 + std::sqrt(1.0 + 4.0 * b * C)) / (2.0 * b);
-      stat_primed[t] = true;
-    }
 
-    // Rounded to the NEAREST power of ten, for three reasons. It stops the
-    // value drifting generation to generation on statistical noise, which
-    // would make each shadow pass depend on how the last one happened to come
-    // out. It is coarser than the optimum is sharp, so nothing is lost. And
-    // it leaves a tree whose population already matches its reference -- a
-    // material perturbation, which carries a full one -- at exactly 1.0, so
-    // that kind of perturbation is bit-for-bit untouched by any of this.
-    double w = std::pow(10.0, std::floor(std::log10(w_pert / target_n) + 0.5));
-    w = std::min(1.0, std::max(MIN_SITE_WEIGHT, w));
+      // weight_scale describes the population rather than a choice about it
+      // -- it is what a typical particle in it weighs relative to the
+      // denominator's, which for a weak perturbation is several decades
+      // below one. It is measured whatever the splitting flag says, because
+      // it is what a weight cutoff inside the tree has to be judged against:
+      // against the denominator's scale the whole population sits below the
+      // cutoff and survival biasing would roulette all of it away.
+      double q = std::pow(10.0, std::floor(std::log10(w / w_d) + 0.5));
+      q = std::min(1.0, std::max(MIN_SITE_WEIGHT, q));
+      tree_weight_scale[pair[0]] = q;
+      tree_weight_scale[pair[1]] = q;
 
-    if (w != w_site) {
-      w_site = w;
-      stat_n[t] = 0;
-      stat_sum[t] = 0.0;
-      stat_sumsq[t] = 0.0;
+      if (!settings::perturbation_site_splitting)
+        continue; // every tree banks unit-weight sites, as an ordinary
+                  // eigenvalue calculation does
+
+      // The site weight, and the reason it cannot just be 1. An ordinary
+      // eigenvalue calculation banks UNIT-weight fission sites and puts the
+      // parent's weight into the probability of banking one at all. For a
+      // population whose particles weigh 1e-4 that is a one-in-ten-thousand
+      // lottery: the expected banked weight is right, but almost every
+      // generation banks nothing and the occasional one banks a full-weight
+      // site, which is all variance and no information. Banking at the
+      // population's own scale instead, and proportionally more sites,
+      // leaves the expected weight identical and its variance far lower.
+      //
+      // The target is the same POPULATION the denominator carries, so every
+      // tree of a perturbation transports a comparable number of sites and
+      // none of them is the one that decides the answer's noise. Rounded to
+      // the nearest power of ten so the value does not drift generation to
+      // generation on sampling noise -- and so a population that already
+      // matches its denominator lands on exactly 1.0 and is bit-for-bit
+      // untouched by any of this.
+      double n_d = w_d / site_weight(p.tree_d);
+      double w_site = std::pow(10.0, std::floor(std::log10(w / n_d) + 0.5));
+      w_site = std::min(1.0, std::max(MIN_SITE_WEIGHT, w_site));
+      tree_site_weight[pair[0]] = w_site;
+      tree_site_weight[pair[1]] = w_site;
     }
   }
 }
@@ -816,22 +1074,72 @@ void accumulate_generation()
   }
 #endif
 
-  // Record and nothing else. Deliberately no ratio, no logarithm and no
-  // per-generation realisation: a shadow tree is a branching process that
-  // can go extinct, so tau for a whole generation can be zero over a small
-  // number of branch sites, and log(0) is -inf. Ordinary IFP estimators are
-  // robust to this precisely because they sum over every progenitor before
-  // dividing, and BEP now does the same. Dropping degenerate generations
-  // would bias the worth, since extinction correlates with the strength of
-  // the perturbation.
+  // Accumulate into the batch, and form no ratio here. A shadow tree is a
+  // branching process that can go extinct, so a single generation's tau can
+  // be zero; summing over every root of the whole batch before dividing is
+  // what makes this robust to that, exactly as ordinary IFP estimators are.
+  // Dropping degenerate generations instead would bias the worth, since
+  // extinction correlates with the strength of the perturbation.
   //
   // Only the master holds the global sum after the reduction, so only the
   // master keeps the record. n_generations counts on every rank so the two
-  // stay in step if a later change ever wants the history elsewhere.
+  // stay in step if a later change ever wants the totals elsewhere.
   if (mpi::master) {
-    tau_history.insert(tau_history.end(), tau.begin(), tau.end());
+    for (size_t i = 0; i < tau.size(); ++i) {
+      batch_tau[i] += tau[i];
+      pooled_tau[i] += tau[i];
+    }
   }
   ++n_generations;
+}
+
+void finalize_batch()
+{
+  if (!simulation::bep_on)
+    return;
+  if (!mpi::master) {
+    std::fill(batch_tau.begin(), batch_tau.end(), 0.0);
+    return;
+  }
+
+  int nd = settings::bep_n_generation + 1;
+
+  // One realisation of the estimator per batch, at every depth. The worth is
+  // the d = L entry; the rest is the depth-convergence curve, which is what
+  // tells the user whether L was deep enough -- the level is flat in d once
+  // the perturbed fundamental mode has established itself.
+  //
+  // The level is formed from the batch's SUMS, not from a mean of
+  // per-generation levels: the ratio of means is the estimator, and the mean
+  // of ratios is not. generations_per_batch is what makes consecutive batches
+  // effectively independent, and it is the user's knob, checked by the
+  // plateau of sigma against it.
+  size_t np = perturbations.size();
+  vector<double> l_b(np * nd, 0.0);
+  for (size_t ip = 0; ip < np; ++ip) {
+    const Perturbation& p = perturbations[ip];
+    for (int d = 0; d < nd; ++d) {
+      double l = level(batch_tau[tau_index(p.tree_d, d)],
+        batch_tau[tau_index(p.tree_fp, d)], batch_tau[tau_index(p.tree_fn, d)],
+        batch_tau[tau_index(p.tree_lp, d)], batch_tau[tau_index(p.tree_ln, d)],
+        keff_norm);
+      l_b[ip * nd + d] = l;
+      ell_sum[ip * nd + d] += l;
+    }
+  }
+  // The full cross-products, not just the squares: two perturbations sharing
+  // this run share nearly all of their noise, and the covariance is what lets
+  // a difference between them be quoted honestly.
+  for (size_t i = 0; i < np; ++i) {
+    for (size_t j = 0; j < np; ++j) {
+      for (int d = 0; d < nd; ++d) {
+        ell_cross[(i * np + j) * nd + d] += l_b[i * nd + d] * l_b[j * nd + d];
+      }
+    }
+  }
+  ++n_active_batches;
+
+  std::fill(batch_tau.begin(), batch_tau.end(), 0.0);
 }
 
 
@@ -841,7 +1149,7 @@ void accumulate_generation()
 
 void write_results(hid_t file_id)
 {
-  if (perturbations.empty() || n_generations == 0)
+  if (perturbations.empty() || n_active_batches == 0)
     return;
 
   int nd = settings::bep_n_generation + 1;
@@ -850,35 +1158,64 @@ void write_results(hid_t file_id)
 
   write_dataset(group, "n_generation", settings::bep_n_generation);
   write_dataset(group, "n_generations_recorded", n_generations);
+  write_dataset(group, "n_batches", n_active_batches);
   write_dataset(group, "n_trees", static_cast<int>(tree_pert.size()));
-  write_dataset(group, "n_branch", n_branch_total);
-  write_dataset(group, "w_branch", w_branch_total);
+  write_dataset(group, "n_tracks", n_track_total);
+  write_dataset(group, "n_roots", n_root_total);
   write_dataset(group, "n_perturbations", np);
+  write_dataset(group, "keff", keff_norm);
 
   vector<int32_t> ids;
   for (const auto& p : perturbations)
     ids.push_back(p.id);
   write_dataset(group, "ids", ids);
 
-  // Flat [generation][tree][depth]; Python reshapes with n_trees and
-  // n_generation. Raw, because forming the ratio, fitting the slope and
-  // blocking for an uncertainty all belong where they can be changed without
-  // a rebuild.
-  write_dataset(group, "tau", tau_history);
+  // Everything the analysis needs, and nothing else.
+  //
+  // `level_sum` and `level_sumsq` are the batch statistics of the estimator
+  // itself: per perturbation and per depth, the sum and the sum of squares of
+  // the per-batch level over `n_batches` active batches. Mean, sigma and a
+  // t-interval on (n_batches - 1) degrees of freedom come out of them the
+  // same way they do for any other OpenMC tally -- there is no model of the
+  // inter-generation correlation anywhere, because generations_per_batch is
+  // what is supposed to remove it.
+  //
+  // `level_pooled` is the same level formed from the run's POOLED totals
+  // instead. It carries no ratio-of-means bias, so the two agreeing to a
+  // small fraction of sigma is the one assumption this estimator makes, and
+  // it can be checked from the file. If they ever disagree, the pooled one is
+  // the number to quote.
+  write_dataset(group, "level_sum", ell_sum);
+  write_dataset(group, "level_cross", ell_cross);
+
+  vector<double> pooled(static_cast<size_t>(np) * nd, 0.0);
+  for (int ip = 0; ip < np; ++ip) {
+    const Perturbation& p = perturbations[ip];
+    for (int d = 0; d < nd; ++d) {
+      pooled[static_cast<size_t>(ip) * nd + d] =
+        level(pooled_tau[tau_index(p.tree_d, d)],
+          pooled_tau[tau_index(p.tree_fp, d)],
+          pooled_tau[tau_index(p.tree_fn, d)],
+          pooled_tau[tau_index(p.tree_lp, d)],
+          pooled_tau[tau_index(p.tree_ln, d)], keff_norm);
+    }
+  }
+  write_dataset(group, "level_pooled", pooled);
+
+  // The five populations' run totals, [tree][depth]. Kept because they are
+  // what a reviewer needs to re-derive the level by hand, and because the
+  // relative size of the +/- pair is the only direct read on how much
+  // cancellation the signed source is costing. O(n_pert * L) either way.
+  write_dataset(group, "tau_pooled", pooled_tau);
 
   for (int ip = 0; ip < np; ++ip) {
     const Perturbation& p = perturbations[ip];
     hid_t pg = create_group(group, fmt::format("perturbation {}", p.id));
     write_dataset(pg, "index", ip);
-    write_dataset(pg, "tree", p.tree);
 
-    // Which reference trees make up this perturbation's matched denominator:
-    // exactly the cells it touches, i.e. exactly the branch sites where it
-    // spawned a tree.
-    vector<int32_t> ref_trees;
-    for (int32_t ci : p.cells)
-      ref_trees.push_back(cell_ref_tree[ci]);
-    write_dataset(pg, "ref_trees", ref_trees);
+    vector<int32_t> trees {p.tree_d, p.tree_fp, p.tree_fn, p.tree_lp,
+      p.tree_ln};
+    write_dataset(pg, "trees", trees);
 
     vector<int32_t> cids, mids;
     for (const auto& sub : p.subs) {

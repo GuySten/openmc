@@ -284,22 +284,24 @@ void Particle::event_calculate_xs()
   if (settings::check_overlaps)
     check_cell_overlap(*this);
 
-  if (simulation::bep_on) {
+  if (simulation::bep_on && bep_tree() != BEP_TRUNK) {
     int32_t i_cell = lowest_coord().cell();
-    if (bep::ref_tree_of_cell(i_cell) >= 0) {
-      if (bep_tree() == BEP_TRUNK) {
-        bep::maybe_branch(*this, i_cell);
-      } else {
-        // The geometry holds the REFERENCE material. A shadow applies only
-        // ITS OWN perturbation's substitutions, so a tree owned by A passing
-        // through a cell only B touches correctly sees the reference
-        // material there. find_cell() has already set material_last(), so
-        // the cross-section cache invalidates on entry.
-        int i_pert = bep::tree_pert[bep_tree()];
-        int32_t m;
-        if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m)) {
-          material() = m;
-        }
+    if (bep::cell_touched(i_cell)) {
+      // The geometry holds the REFERENCE material. A shadow applies only
+      // ITS OWN perturbation's substitutions, so a tree owned by A passing
+      // through a cell only B touches correctly sees the reference
+      // material there. find_cell() has already set material_last(), so
+      // the cross-section cache invalidates on entry.
+      //
+      // Every one of a perturbation's five populations -- the denominator
+      // included -- is transported here, in that perturbation's PERTURBED
+      // physics. That is what makes the importance that weights the source
+      // the perturbed adjoint, and what makes numerator and denominator grow
+      // at the same rate so their ratio is a level.
+      int i_pert = bep::tree_pert[bep_tree()];
+      int32_t m;
+      if (i_pert >= 0 && bep::substitute(i_pert, i_cell, m)) {
+        material() = m;
       }
     }
   }
@@ -354,6 +356,16 @@ void Particle::event_advance()
   // Select smaller of the three distances
   double distance =
     std::min({boundary().distance(), collision_distance(), distance_cutoff});
+
+  // Record this segment as a sample of the perturbation source, before the
+  // particle moves: the source is a track-length estimator and needs the
+  // START of the flight. The driver is only read here.
+  if (simulation::bep_on && bep_tree() == BEP_TRUNK && type().is_neutron() &&
+      wgt() != 0.0 && distance > 0.0) {
+    int32_t i_cell = lowest_coord().cell();
+    if (bep::cell_touched(i_cell))
+      bep::record_track(*this, i_cell, distance);
+  }
 
   // Advance particle in space and time
   this->move_distance(distance);

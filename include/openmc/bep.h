@@ -38,51 +38,38 @@
 //! It is never modified, so k, the fission source and all ordinary tallies
 //! stay bit-identical to a stock run.
 //!
-//! When a driver particle enters any cell touched by any perturbation, its
-//! phase point is recorded as a BRANCH SITE. After the generation finishes
-//! each site is propagated privately for L generations: once in that cell's
-//! REFERENCE tree, and once per perturbation that touches that cell. A
-//! perturbation's tree applies ALL of its own substitutions and none of any
-//! other's, so trees interact correctly with regions they do not own.
+//! BEP is a LEVEL estimator, read at one depth. Per perturbation it grows five
+//! SOURCE-ROOTED populations, all in that perturbation's perturbed physics:
 //!
-//! Let tau_t(d) be the depth-d descendant weight in tree t, and for a
-//! perturbation p let R_p(d) be the sum of the reference trees over exactly
-//! the cells p touches -- i.e. over exactly the branch sites where p spawned
-//! a tree. Asymptotically tau -> W * phi^dagger * k^d, so
+//!   D   the reference fission source, sampled from simulation::fission_bank,
+//!       i.e. (1/k) F psi -- the denominator;
+//!   F+  the fission-production source chi' nu Sigma_f' psi,
+//!   F-  the fission-production source chi  nu Sigma_f  psi,
+//!   L+  the positive part of -(dL psi) = -(dSigma_t psi) + (dSigma_s psi),
+//!   L-  its negative part, carried as a POSITIVE population.
 //!
-//!     l_p(d) = ln[ tau_p(d) / R_p(d) ] = const + d * ln(k_p / k_ref)
+//! Grown d generations in the perturbed physics, each population's total
+//! weight tends to k'^d times its overlap with the PERTURBED adjoint,
+//! <phi'^dag, .>. That common k'^d cancels in the combination in level()
+//! (see below), which is therefore FLAT in d -- a level, not a slope. The
+//! worth is read at d = L; the whole curve d = 0..L is the convergence
+//! diagnostic, and there is no fit window to choose and no window bias to
+//! correct. Signs are carried by which population a root feeds, never by a
+//! negative weight: the +/- pairs are subtracted only at scalar readout.
 //!
-//! and the SLOPE of l_p(d) is ln(k_p / k_ref), i.e. dk/k. That is NOT a
-//! reactivity: the reactivity difference is 1/k_ref - 1/k_p, smaller by a
-//! factor of k. Python converts it (Perturbations._set_results); this file
-//! records only tau, so nothing here needs k. The intercept is the
-//! mode-overlap difference; keeping it out of the slope is what makes this
-//! exact rather than first order. Note the LOG: the ratio of importance sums
-//! appears as a multiplicative constant, so it cancels from the slope
-//! exactly. Fitting the
-//! bare ratio r = tau_p/R_p - 1 instead scales the slope by that constant,
-//! which is second order but not negligible when a sample strongly depresses
-//! the local importance. l is formed as log1p(r) with r built from the
-//! correlated difference, so the cancellation survives the log.
+//! This is the perturbed-adjoint (exact) form of perturbation theory. The
+//! importance that weights the source is built by the propagation AFTER the
+//! perturbation, so propagating for the full depth in the PERTURBED physics is
+//! what makes phi'^dag perturbed and the result exact rather than first order.
 //!
-//! CRITICALLY, the ratio is formed ONCE, from sums accumulated over the whole
-//! run -- never per generation. A shadow tree is a branching process and can
-//! go extinct: with mean offspring k the extinction probability of a single
-//! tree is the root of q = exp(k(q-1)), about 0.16 even at k = 2.2. Over a
-//! handful of branch sites the whole population can die, and log(0) is -inf.
-//! Summing over every progenitor first is what makes ordinary IFP estimators
-//! robust to this -- a dead tree simply contributes zero -- and BEP does the
-//! same. Dropping degenerate generations instead would have been worse than
-//! noisy: extinction correlates with the perturbation's strength, so the
-//! selection biases the worth.
-//!
-//! So this file records only tau_t(d) per generation. Forming l_p(d), fitting
-//! the slope, and blocking the generations for an uncertainty all happen in
-//! Python, where the block size can be adapted to the branch rate without a
-//! rebuild. Blocks are also what give the covariance between perturbations,
-//! and hence exact uncertainties on any linear combination -- a difference
-//! between two sample positions, a finite-difference derivative, a fitted
-//! traverse.
+//! The ratio is formed ONCE per BATCH, from sums over that batch's
+//! generations, never per generation. A shadow tree is a branching process and
+//! can go extinct; summing over every root before dividing is what makes
+//! ordinary IFP estimators robust to that, and BEP does the same. The
+//! uncertainty is then the ordinary spread of the per-batch realisations over
+//! active batches -- standard OpenMC batch statistics, with
+//! generations_per_batch chosen so batches are effectively independent. No
+//! jackknife, no log, no slope fit, no correlation model anywhere.
 //!
 //! Sign: rho < 0 for an added absorber.
 //!
@@ -155,31 +142,51 @@ struct Perturbation {
   vector<Substitution> subs;
   vector<int32_t> cells; //!< cell indices touched (where the source is emitted)
 
-  //! The three SOURCE-ROOTED shadow-tree classes, all transported in this
+  //! The five SOURCE-ROOTED shadow-tree classes, all transported in this
   //! perturbation's PERTURBED physics (all map to this pert in `tree_pert`):
-  //!   tree_D  -- the fission source F psi, the denominator
-  //!   tree_np -- the positive part of the perturbation source (dH psi)^+
-  //!   tree_nn -- the negative part, |(dH psi)^-|, tracked as a positive
-  //!              population and subtracted at readout (no negative weights)
-  //! The worth is the LEVEL at depth L: R = (N+ - N-)/D, rho = R/(k(1+R)).
-  //! See docs/bep_level_design.md.
-  int tree_D {-1};
-  int tree_np {-1};
-  int tree_nn {-1};
+  //!
+  //!   tree_d  -- the reference fission source (1/k) F psi: the DENOMINATOR.
+  //!   tree_fp -- the fission-production source  chi' nu Sigma_f' psi
+  //!   tree_fn -- the fission-production source  chi  nu Sigma_f  psi
+  //!   tree_lp -- the positive part of -(dL psi), the removal/scatter source
+  //!   tree_ln -- its negative part, tracked as a POSITIVE population and
+  //!              subtracted at readout, so no weight is ever negative.
+  //!
+  //! Why the fission channel is separate from the removal channel rather than
+  //! summed into one signed source: the exact relation between the two is
+  //!
+  //!     N_F / k'  +  N_L  =  (1/k - 1/k') * <phi'^dag, F psi>
+  //!
+  //! -- the fission term carries a 1/k' the removal term does not. Folding
+  //! them together before k' is known forces either a linearisation or an
+  //! iteration; kept apart, the depth-d level inverts in closed form with no
+  //! approximation at all (see level()). That matters because this estimator's
+  //! whole claim is exactness at large worth.
+  int tree_d {-1};
+  int tree_fp {-1};
+  int tree_fn {-1};
+  int tree_lp {-1};
+  int tree_ln {-1};
 };
 
 extern vector<Perturbation> perturbations;
 
 //! Shadow tree index -> index into `perturbations`. Every tree now belongs to
-//! a perturbation (there are no reference trees): each perturbation owns three
-//! source-rooted trees -- D, N+, N-- all transported in its perturbed physics.
-//! One entry per tree, so `tree_pert.size()` is the number of shadow
-//! populations and the first dimension of `tau`.
+//! a perturbation (there are no reference trees): each perturbation owns five
+//! source-rooted trees, all transported in its perturbed physics. One entry
+//! per tree, so `tree_pert.size()` is the number of shadow populations and the
+//! first dimension of `tau`.
 extern vector<int> tree_pert;
 
-//! Shadow tree index -> its class. The denominator tree grows the fission
-//! source; the two source trees grow the +/- parts of the perturbation source.
-enum TreeClass { TREE_D = 0, TREE_NP = 1, TREE_NN = 2 };
+//! Shadow tree index -> its class; see Perturbation above.
+enum TreeClass {
+  TREE_D = 0,
+  TREE_FP = 1,
+  TREE_FN = 2,
+  TREE_LP = 3,
+  TREE_LN = 4,
+  N_TREE_CLASS = 5
+};
 extern vector<int> tree_class;
 
 //! cell index -> perturbations touching that cell (where the source is
@@ -284,33 +291,70 @@ inline double weight_scale(int tree)
 //! whatever weight its particles happen to have. Called once per generation.
 void update_site_weights();
 
-//! A source root emitted during driver transport: one N+ or N- particle of
-//! the perturbation source dH psi, born at a driver collision, to be grown in
-//! the shadow pass. (The D roots come from `simulation::fission_bank`, not from
-//! these.)
+//! One driver track segment inside a cell some perturbation touches.
+//!
+//! The perturbation source dH psi is estimated with a TRACK-LENGTH estimator,
+//! not a collision estimator: a collision estimator has no collisions to score
+//! at where the reference material is void, so it cannot see a perturbation
+//! that FILLS a void -- exactly the voided-plenum case run backwards. The
+//! track-length form costs nothing extra and is lower variance besides.
+//!
+//! Everything the source needs is captured here, so the driver itself is only
+//! ever READ -- never stopped, tagged, or re-seeded. The reference macroscopic
+//! cross sections come along for free because the driver has just computed
+//! them; only the SUBSTITUTED material's have to be evaluated, and that is
+//! done in the shadow pass on a scratch particle, off the transport hot path.
+struct TrackSite {
+  Position r;        //!< START of the segment (before the flight)
+  Direction u;
+  double E;          //!< energy in CE, group index in MG
+  double wgt;
+  double time;
+  double distance;   //!< length of the segment inside this cell
+  double sigma_t;    //!< reference macroscopic total at this phase point
+  double sigma_a;    //!< reference macroscopic absorption
+  double nu_sigma_f; //!< reference macroscopic production
+  double sqrtkT;     //!< so the substituted material is evaluated at the
+                     //!< host cell's temperature
+  double density_mult;
+  int32_t cell;
+  int32_t material;  //!< reference material index filling that cell
+  int64_t seed_id;   //!< identity of the segment; see SourceRoot::seed_id
+};
+
+//! Track segments collected during the current generation, one vector per
+//! thread. Per-thread rather than shared to avoid an omp critical in the
+//! transport loop; merged and sorted at the start of the shadow pass.
+extern vector<vector<TrackSite>> thread_tracks;
+
+//! The merged, sorted track segments the shadow pass reads the source from.
+extern vector<TrackSite> tracks;
+
+//! A root of one shadow tree: a fission-bank site sampled for the denominator,
+//! or one particle of the perturbation source emitted from a track segment.
 struct SourceRoot {
   Position r;
   Direction u;
   double E;
-  double wgt;  //!< expected source weight (always >= 0; sign is carried by tree)
+  double wgt; //!< expected source weight (always >= 0; the sign is carried by
+              //!< which tree it feeds)
   double time;
-  int tree;    //!< the N+ or N- shadow tree this root feeds
+  int tree;
 
   //! Seed for the shadow tree grown from this root.
   //!
-  //! Derived from the driver particle's own identity, NOT from this root's
-  //! position in the collection: that order depends on thread timing, which
-  //! would break reproducibility. N+ and N- roots born at the same collision
-  //! share this seed (CRN), so their descent noise cancels in N+ - N-.
+  //! Derived from the driver's own identity, NOT from this root's position in
+  //! the collection: that order depends on thread timing, which would break
+  //! reproducibility. The two roots of a +/- PAIR born on the same segment
+  //! share this seed (common random numbers), so their descent noise cancels
+  //! in the difference -- which is what makes a null perturbation return
+  //! exactly zero rather than the difference of two independent estimates.
   int64_t seed_id;
 };
 
-//! Source roots collected during the current generation, one vector per
-//! thread. Per-thread rather than shared to avoid an omp critical in the
-//! transport loop; merged and sorted at the start of the shadow pass.
+//! Roots collected for the current generation, one vector per thread while the
+//! source is being emitted, then merged and sorted.
 extern vector<vector<SourceRoot>> thread_source_roots;
-
-//! The merged, sorted source roots the shadow pass iterates over.
 extern vector<SourceRoot> source_roots;
 
 //! Depth-d descendant weight for this generation, one slab per thread,
@@ -333,17 +377,34 @@ extern vector<double> batch_tau;
 
 //! The level estimator's batch statistics, per perturbation and per depth
 //! (d = 0..L), accumulated over active batches: sum and sum of squares of the
-//! per-batch level l_b(d) = Delta-rho from R_b(d) = (N+_b - N-_b)/D_b. The
-//! reported worth and its sigma come from the d = L slice; the whole curve is
-//! the depth-convergence diagnostic. This replaces the per-generation tau
-//! history -- O(n_pert * (L+1)) scalars, independent of run length.
-extern vector<double> ell_sum;   //!< [pert * (L+1) + depth]
-extern vector<double> ell_sumsq; //!< [pert * (L+1) + depth]
+//! per-batch level l_b(d) = level(d) below. The reported worth and its sigma
+//! come from the d = L slice; the whole curve is the depth-convergence
+//! diagnostic. This replaces the per-generation tau history -- O(n_pert *
+//! (L+1)) scalars, independent of run length.
+extern vector<double> ell_sum; //!< [pert * (L+1) + depth]
+
+//! Sum over active batches of l_i(d) * l_j(d), indexed
+//! [(i * n_pert + j) * (L+1) + depth]. The diagonal is the sum of squares, so
+//! this carries the variance as well; the off-diagonal is what makes the
+//! DIFFERENCE between two perturbations far better determined than either one
+//! -- they share a driver, a fission source and, where they touch the same
+//! cell, their seeds, so most of their noise is common and cancels. Storing
+//! only per-perturbation sums would throw that away and force every
+//! difference to be quoted with the two variances added.
+extern vector<double> ell_cross;
+
 extern int64_t n_active_batches; //!< realizations behind the batch statistics
 
+//! `tau` summed over every active generation of the run, laid out like `tau`
+//! ([tree][depth]). The level formed from these pooled totals carries no
+//! ratio-of-means bias; it is reported beside the mean of the per-batch levels
+//! and is the number to quote if the two ever disagree by a noticeable
+//! fraction of sigma.
+extern vector<double> pooled_tau;
+
 extern int64_t n_generations;
-extern int64_t n_branch_total;
-extern double w_branch_total;
+extern int64_t n_track_total; //!< driver segments seen in a touched cell
+extern int64_t n_root_total;  //!< shadow trees grown, all classes
 
 //! Offset within one thread's slab, and within the merged `tau`.
 inline int tau_index(int tree, int depth)
@@ -416,20 +477,59 @@ void add_substitution_nuclide_temperatures(
 void init();
 void reset_generation();
 
-//! Emit this perturbation's source at a driver collision in a touched cell.
+//! Record a driver track segment of length `distance` inside `cell_index`.
 //!
-//! The driver (a BEP_TRUNK neutron) is only read, never altered -- exactly as
-//! forced photoneutron emission reads a driver photon collision. For each
-//! perturbation touching `cell_index`, the expected signed perturbation source
-//! dH psi is computed from the perturbed-minus-reference macroscopic cross
-//! sections at this collision and banked as +/- source roots (N+/N-), grown in
-//! the shadow pass. `p` must have its reference macro/micro xs already computed.
-void emit_perturbation_source(Particle& p, int32_t cell_index);
+//! The driver (a BEP_TRUNK neutron) is only read, never altered: this copies
+//! its phase point and the reference cross sections it has already computed,
+//! and returns. Everything else -- evaluating the substituted material,
+//! sampling the source, growing it -- happens in the shadow pass, so nothing
+//! but a struct copy sits in the transport hot path and no random number is
+//! ever drawn from the driver's streams.
+void record_track(Particle& p, int32_t cell_index, double distance);
 
 void score_site(int tree, int super_gen, double wgt);
 void run_shadow_pass();
 void accumulate_generation();
+
+//! Fold this batch's summed tau into the level's batch statistics. Called at
+//! the batch boundary, after the last generation of the batch.
+void finalize_batch();
+
 void write_results(hid_t file_id);
+
+//! The depth-d level: the reactivity worth 1/k - 1/k', in absolute units.
+//!
+//! `d_w`, `fp`, `fn`, `lp`, `ln` are the depth-d descendant weights of the
+//! five source-rooted populations and `kk` the reference eigenvalue the
+//! fission bank was normalised by (simulation::keff, the same value
+//! create_fission_sites() divides by, so the denominator population really is
+//! (1/kk) F psi).
+//!
+//! Writing N_F = fp - fn and N_L = lp - ln, the exact relation between the
+//! perturbed-adjoint-weighted sources is
+//!
+//!     N_F / k'  +  N_L  =  (1/k - 1/k') * <phi'^dag, F psi>  =  drho * kk * D
+//!
+//! Substituting 1/k' = 1/k - drho and solving for drho gives the closed form
+//! below. It is EXACT at any k': no linearisation, no Newton step, no
+//! iteration. (A single Newton step, drho ~ R(1-R)/k, agrees only to O(R^2)
+//! and is badly wrong for large worths -- -24% at k'/k = 1.49 in the toy.)
+//!
+//! Both numerator and denominator grow as k'^d with the same coefficient, so
+//! the common factor cancels and the level is FLAT in d once the perturbed
+//! fundamental mode has established itself. That flatness is the convergence
+//! diagnostic, and reading the level at d = L rather than fitting a slope is
+//! what removes the fit window and its bias.
+inline double level(
+  double d_w, double fp, double fn, double lp, double ln, double kk)
+{
+  double n_f = fp - fn;
+  double n_l = lp - ln;
+  double den = kk * d_w + n_f;
+  if (den == 0.0)
+    return 0.0;
+  return (n_f / kk + n_l) / den;
+}
 
 } // namespace bep
 

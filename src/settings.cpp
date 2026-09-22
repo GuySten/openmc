@@ -144,7 +144,6 @@ int bep_n_generation {10};
 bool perturbation_site_splitting {true}; // auto-tune on, and off is a
                                          // figure-of-merit choice, not a
                                          // correctness one
-int64_t bep_n_roots {0}; // 0 = chosen by the rule; see bep_autotune.md 4b
 double bep_site_weight {0.0};
 double surface_grazing_cutoff {0.001};
 double surface_grazing_ratio {0.5};
@@ -631,11 +630,6 @@ void read_settings_xml(pugi::xml_node root)
       // cost/variance trade the run is tuned on -- the other half being the
       // site weight the numerator populations bank at. 0 means the whole
       // bank.
-      if (check_for_node(root, "perturbation_n_roots")) {
-        bep_n_roots = std::stoll(get_node_value(root, "perturbation_n_roots"));
-        if (bep_n_roots < 0)
-          fatal_error("'perturbation_n_roots' must not be negative.");
-      }
 
       // Force the numerator populations' site weight instead of letting the
       // rule choose it. This exists to MEASURE the rule: a figure-of-merit

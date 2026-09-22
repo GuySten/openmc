@@ -737,10 +737,8 @@ void init()
       ++n_cells_touched;
   write_message(
     fmt::format("BEP: {} perturbation(s) over {} cell(s), {} shadow trees, "
-                "L = {}, {} denominator roots per generation.",
-      np, n_cells_touched, tree_pert.size(), settings::bep_n_generation,
-      settings::bep_n_roots > 0 ? fmt::format("{}", settings::bep_n_roots)
-                                : std::string("all")),
+                "L = {}.",
+      np, n_cells_touched, tree_pert.size(), settings::bep_n_generation),
     5);
 }
 
@@ -965,14 +963,7 @@ void sample_denominator_roots()
     if (w > 0.0 && (w_fine == 0.0 || w < w_fine))
       w_fine = w;
   }
-  double p_keep = 1.0;
-  if (settings::bep_n_roots > 0) {
-    // An explicit pin still overrides, as a diagnostic.
-    p_keep = std::min(1.0, static_cast<double>(settings::bep_n_roots) /
-                             static_cast<double>(n_bank));
-  } else if (w_fine > 1.0) {
-    p_keep = 1.0 / w_fine;
-  }
+  double p_keep = (w_fine > 1.0) ? 1.0 / w_fine : 1.0;
   double scale = 1.0 / p_keep;
 
   for (int64_t i = 0; i < n_bank; ++i) {

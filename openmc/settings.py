@@ -192,19 +192,6 @@ class Settings:
         level read at depth ``L`` and the whole curve ``d = 0..L`` is the
         diagnostic. If it is still drifting at ``L``, raise it. See
         :meth:`openmc.Perturbations.depth_convergence`.
-    perturbation_n_roots : int
-        Fission-bank sites sampled per generation as the *denominator*
-        population of the level estimator. The whole bank would be exact but
-        costs a full extra transport of the problem at every shadow depth; a
-        sample of it is unbiased -- each site is kept with probability ``p``
-        and carries ``1/p``. **0, the default, ties the root count to the
-        denominator's site weight** rather than treating it as an independent
-        knob: a site is kept with probability ``1/w_D``, so the kept roots
-        carry exactly the weight their descendants will be banked at. With
-        the auto-tune off, ``w_D`` is 1 and the whole bank is used. A positive
-        value pins the count, as a diagnostic.
-
-        .. versionadded:: 0.16.0
     perturbation_site_weight : float
         Force the numerator populations' site weight instead of letting the
         auto-tune choose it. Diagnostic only: it exists so a figure-of-merit
@@ -546,7 +533,6 @@ class Settings:
         # Iterated Fission Probability
         self._ifp_n_generation = None
         self._perturbation_n_generation = None
-        self._perturbation_n_roots = None
         self._perturbation_site_weight = None
         self._perturbation_site_splitting = None
 
@@ -1165,42 +1151,6 @@ class Settings:
             cv.check_greater_than("number of generations", n, 2,
                                   equality=True)
         self._perturbation_n_generation = n
-
-    @property
-    def perturbation_n_roots(self) -> int:
-        """Denominator roots taken from the fission bank each generation.
-
-        0, the default, ties this to the denominator's site weight: a bank
-        site is kept with probability ``1/w_D``. A positive value pins the
-        count instead, as a diagnostic.
-
-        This was briefly an independent knob with an optimum of its own, and
-        that was a mistake worth recording. The roots and the sites they grow
-        are the same population sampled at two weights, so letting the two be
-        chosen independently lets them disagree -- and they did: on a tuned
-        run the denominator carried about 8000 roots to yield 78 sites, so
-        **95% of the denominator's cost went into roots that were immediately
-        rouletted away** by a site weight of 100. Tying them makes the
-        denominator cost about ``L*N_D`` instead of ``M_D + (L-1)*N_D``, for
-        roughly a tenth more variance per site.
-
-        Sub-sampling saves the transport of the roots themselves -- every
-        root is a history, once per perturbation -- but not that of their
-        descendants, since the kept roots carry the dropped roots' weight, so
-        the depth-``d`` populations are unchanged. What it costs is
-        independent source events.
-
-        See ``docs/bep_autotune.md`` sections 4b and 11.
-        """
-        return self._perturbation_n_roots
-
-    @perturbation_n_roots.setter
-    def perturbation_n_roots(self, n: int):
-        if n is not None:
-            cv.check_type("number of denominator roots", n, Integral)
-            cv.check_greater_than("number of denominator roots", n, 0,
-                                  equality=True)
-        self._perturbation_n_roots = n
 
     @property
     def perturbation_site_weight(self) -> float:
@@ -1982,11 +1932,6 @@ class Settings:
             element = ET.SubElement(root, "perturbation_n_generation")
             element.text = str(self._perturbation_n_generation)
 
-    def _create_perturbation_n_roots_subelement(self, root):
-        if self._perturbation_n_roots is not None:
-            element = ET.SubElement(root, "perturbation_n_roots")
-            element.text = str(self._perturbation_n_roots)
-
     def _create_perturbation_site_weight_subelement(self, root):
         if self._perturbation_site_weight is not None:
             element = ET.SubElement(root, "perturbation_site_weight")
@@ -2527,11 +2472,6 @@ class Settings:
         if text is not None:
             self.perturbation_n_generation = int(text)
 
-    def _perturbation_n_roots_from_xml_element(self, root):
-        text = get_text(root, 'perturbation_n_roots')
-        if text is not None:
-            self.perturbation_n_roots = int(text)
-
     def _perturbation_site_weight_from_xml_element(self, root):
         text = get_text(root, 'perturbation_site_weight')
         if text is not None:
@@ -2822,7 +2762,6 @@ class Settings:
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
         self._create_perturbation_n_generation_subelement(element)
-        self._create_perturbation_n_roots_subelement(element)
         self._create_perturbation_site_weight_subelement(element)
         self._create_perturbation_site_splitting_subelement(element)
         self._create_tabular_legendre_subelements(element)
@@ -2945,7 +2884,6 @@ class Settings:
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
         settings._perturbation_n_generation_from_xml_element(elem)
-        settings._perturbation_n_roots_from_xml_element(elem)
         settings._perturbation_site_weight_from_xml_element(elem)
         settings._perturbation_site_splitting_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)

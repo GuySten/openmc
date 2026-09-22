@@ -200,15 +200,6 @@ extern bool
                                //!< figure-of-merit switch and never a
                                //!< correctness one. Checked before
                                //!< bep_site_weight, so off means off.
-extern int64_t bep_n_roots;    //!< denominator roots sampled from the fission
-                               //!< bank per generation, per perturbation. A
-                               //!< real cost/accuracy knob with an optimum of
-                               //!< its own: each root is a transported
-                               //!< history, so the roots cost M*P of them,
-                               //!< while M is what divides the denominator's
-                               //!< irreducible floor. 0, the default, lets
-                               //!< the rule choose it from the measured
-                               //!< per-root spread; see bep_autotune.md 4b.
 extern double bep_site_weight; //!< override for the numerator populations'
                                //!< site weight; 0 means use the rule
 extern double surface_grazing_cutoff; //!< surface flux cosine cutoff

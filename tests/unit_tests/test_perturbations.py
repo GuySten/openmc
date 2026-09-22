@@ -1030,6 +1030,57 @@ def test_survival_biasing_preserves_the_null_perturbation(run_in_tmpdir,
         assert np.allclose(p.depth_curve, 0.0, atol=1.0e-12)
 
 
+def test_survival_biasing_does_not_bias_a_real_worth(run_in_tmpdir, model):
+    """A NON-null worth must survive survival biasing.
+
+    The other survival-biasing test uses a null perturbation, and a null
+    perturbation is blind to multiplicative errors by construction: it
+    checks that a tree and its reference have not drifted apart, which is
+    real and useful, but a worth uniformly scaled by some factor still
+    returns zero. A 38% scale error would sit in a green suite.
+
+    That gap was found the expensive way. A one-seed probe under survival
+    biasing read -366 pcm against a direct k'-k truth of -266.9 +- 0.7 and
+    looked like a serious bias; 40 seed-matched replicas put it at
+    -271.68 +- 3.76, consistent with the truth, and the paired difference
+    against the analog arm at -2.77 pcm [-12.83, +7.84] -- not separated.
+    The alarm was one seed of noise. But nothing in the suite could have
+    told the difference, which is what this closes.
+
+    Cheap version of that measurement: one run each, asserting the two
+    agree well inside their combined batch-statistics sigma. The 40-replica
+    result says the true gap is about 3 pcm against a combined sigma of
+    order 50, so this has room to be honest without being flaky.
+    """
+    _, absorber = _water_and_absorber(model)
+    model.settings.particles = 2000
+    model.settings.perturbation_n_generation = 6
+    model.perturbations = openmc.Perturbations([
+        openmc.LocalPerturbation({_sample_cell(model): absorber},
+                                 perturbation_id=1),
+    ])
+
+    def run_once(survival):
+        model.settings.survival_biasing = survival
+        # survival_normalization is a CUTOFF key, not a Settings attribute.
+        # Assigning it as an attribute silently does nothing, which is how
+        # the first probe of this measured the wrong configuration.
+        model.settings.cutoff = (
+            {'survival_normalization': True} if survival else {})
+        with openmc.StatePoint(model.run()) as sp:
+            return sp.perturbations.by_id(1).rho
+
+    rho_analog = run_once(False)
+    rho_sb = run_once(True)
+
+    assert rho_analog.nominal_value < 0.0, 'the absorber worth must be negative'
+    sigma = float(np.hypot(rho_analog.std_dev, rho_sb.std_dev))
+    assert sigma > 0.0
+    assert abs(rho_sb.nominal_value - rho_analog.nominal_value) < 4.0 * sigma, (
+        f'survival biasing moved a real worth: {rho_sb} against '
+        f'{rho_analog} analog, more than 4 sigma apart')
+
+
 def test_survival_biasing_does_not_leak_into_the_driver(run_in_tmpdir,
                                                        model):
     """The shadow-tree roulette override must stop at the trunk.

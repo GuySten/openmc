@@ -692,6 +692,101 @@ def test_statepoint_result_is_cached(run_in_tmpdir):
         assert sp.perturbations is sp.perturbations
 
 
+def test_amplification_sees_a_cancellation_the_level_cannot(run_in_tmpdir):
+    """Padding L+ and L- equally leaves the level alone and is the whole risk.
+
+    The level is a difference of populations. Adding the same amount to both
+    removal populations changes nothing about the answer and everything about
+    how hard the answer is to get: a transient that is a fixed fraction of
+    the populations is a hundred times more of the answer once the
+    populations are a hundred times the answer. The depth curve is blind to
+    this -- it is identical in both runs below -- so the diagnostic that
+    decides whether a depth is enough has to measure it separately.
+    """
+    L, n_batch, k, rho = 8, 40, 2.2, -300e-5
+    rng = np.random.default_rng(7)
+    D, zero, _, lp, ln = _branching_tau(rng, k, rho, 300, n_batch, L)
+
+    # Pad both removal populations by 49x the surviving difference, so the
+    # cancellation is 100:1 instead of 2:1 while N_L = L+ - L- is untouched.
+    pad = 49.0 * abs(rho) * k * D
+    padded = np.stack([D, zero, zero, lp + pad, ln + pad], axis=1)
+    plain = np.stack([D, zero, zero, lp, ln], axis=1)
+
+    _write_statepoint('plain.h5', plain, [1], L, keff=k)
+    _write_statepoint('padded.h5', padded, [1], L, keff=k)
+
+    with openmc.StatePoint('plain.h5', autolink=False) as sp:
+        a_plain = sp.perturbations.amplification(1)
+        curve_plain = np.asarray(sp.perturbations.by_id(1).depth_curve)
+    with openmc.StatePoint('padded.h5', autolink=False) as sp:
+        a_padded = sp.perturbations.amplification(1)
+        curve_padded = np.asarray(sp.perturbations.by_id(1).depth_curve)
+
+    assert curve_padded == pytest.approx(curve_plain, rel=1e-12), \
+        'the padding must not move the answer, or the test proves nothing'
+    assert a_plain[1:] == pytest.approx(2.0, rel=1e-9)
+    assert a_padded[1:] == pytest.approx(100.0, rel=1e-9)
+
+
+def test_convergence_recovers_a_planted_transient(run_in_tmpdir):
+    """A + B r**d, planted in the removal population and read back.
+
+    ``convergence`` exists because 'the curve looks flat' and 'the drift is
+    inside the error bars' both passed a level that was 6.5% wrong. Here the
+    asymptote, the decay rate and what is left to go at L are all known, so
+    the fit can be held to them.
+    """
+    L, n_batch, k = 24, 40, 2.2
+    A, B, r = -300e-5, -900e-5, 0.8         # level runs -1200 pcm -> -300 pcm
+    rng = np.random.default_rng(11)
+    D, zero, *_ = _branching_tau(rng, k, 0.0, 400, n_batch, L)
+
+    d = np.arange(L + 1, dtype=float)
+    ell = A + B * r ** d                     # the level wanted at each depth
+    ln = -ell * k * D                        # N_L = -L- makes level = ell
+    tau = np.stack([D, zero, zero, np.zeros_like(D), ln], axis=1)
+    _write_statepoint('sp.h5', tau, [1], L, keff=k)
+
+    with openmc.StatePoint('sp.h5', autolink=False) as sp:
+        c = sp.perturbations.convergence(1, target=0.05)
+
+    assert c['rate'] == pytest.approx(r, abs=2e-3)
+    assert c['asymptote'] == pytest.approx(1.0e5 * A, rel=1e-3)
+    assert c['remaining'] == pytest.approx(1.0e5 * B * r ** L, rel=5e-2)
+
+    # Two roots below the answer at L=24: converged on the drift alone.
+    assert abs(c['remaining']) < 0.05 * abs(c['asymptote'])
+    # ...but the required depth is set by the cancellation, not by the drift,
+    # and at amplification 2 with target 0.05 that is ln(40)/ln(1.25) = 16.5.
+    assert c['amplification'] == pytest.approx(2.0, rel=1e-6)
+    assert c['required_depth'] == pytest.approx(
+        np.log(2.0 / 0.05) / np.log(1.0 / c['rate']), rel=1e-9)
+    assert c['converged'] is True
+
+    # The same curve read at a depth short of that is not converged, even
+    # though its drift there is still small against its own error bars.
+    short = 10
+    _write_statepoint('short.h5', tau[:, :, :short + 1], [1], short, keff=k)
+    with openmc.StatePoint('short.h5', autolink=False) as sp:
+        assert sp.perturbations.convergence(1, target=0.05)['converged'] \
+            is False
+
+
+def test_convergence_needs_the_populations(run_in_tmpdir):
+    """Without tau_pooled the amplification is unknowable -- say so."""
+    L, n_batch = 8, 40
+    rng = np.random.default_rng(3)
+    tau = np.stack(_branching_tau(rng, 2.2, -100e-5, 30, n_batch, L), axis=1)
+    _write_statepoint('sp.h5', tau, [1], L, keff=2.2)
+    with h5py.File('sp.h5', 'a') as f:
+        del f['local_perturbation']['tau_pooled']
+
+    with openmc.StatePoint('sp.h5', autolink=False) as sp:
+        with pytest.raises(ValueError, match='population totals'):
+            sp.perturbations.amplification(1)
+
+
 # ----------------------------------------------------------------------------
 # Tests that run OpenMC
 #

@@ -265,7 +265,8 @@ class Perturbations(cv.CheckedList):
         return super().__getitem__(self.ids.index(perturbation_id))
 
     # ------------------------------------------------------------- results
-    def _set_results(self, level_sum, level_cross, level_pooled, n_batches):
+    def _set_results(self, level_sum, level_cross, level_pooled, n_batches,
+                     tau_pooled=None, trees=None, keff=None):
         """Derive worths and their covariance from the level batch statistics.
 
         Parameters
@@ -285,6 +286,15 @@ class Perturbations(cv.CheckedList):
         n_batches : int
             Active batches behind the sums: the realization count of the batch
             statistics, exactly as for any other OpenMC tally.
+        tau_pooled : numpy.ndarray, optional
+            The five populations' run totals, shape (n_trees, L+1). Needed by
+            :meth:`amplification` and :meth:`convergence`; without it those
+            raise.
+        trees : list of numpy.ndarray, optional
+            Each perturbation's five tree indices into ``tau_pooled``, in the
+            C++'s class order D, F+, F-, L+, L-.
+        keff : float, optional
+            The eigenvalue the fission bank was normalised by.
 
         The uncertainty is the ordinary spread of the per-batch realizations,
         with no model of the correlation between generations anywhere. That is
@@ -333,6 +343,10 @@ class Perturbations(cv.CheckedList):
         self._mean = mean
         self._cov = cov
         self._pooled = level_pooled
+        self._tau = None if tau_pooled is None else np.asarray(
+            tau_pooled, dtype=float)
+        self._trees = trees
+        self._keff = keff
 
         # pcm, and pcm^2 for the covariance.
         rho = correlated_values(1.0e5 * mean[:, L], 1.0e10 * cov[:, :, L])
@@ -420,6 +434,113 @@ class Perturbations(cv.CheckedList):
             return 0.0
         return (p.rho_pooled - p.rho.nominal_value) / p.rho.std_dev
 
+    def amplification(self, perturbation_id):
+        """How much the estimator magnifies a transient, per depth.
+
+        The worth is a small difference of large populations, twice over: the
+        fission channel against the removal channel, and within the removal
+        channel the positive part against the negative one. A transient that
+        is one part in a thousand of the populations is still a large
+        fraction of the ANSWER, and it is the answer it has to be small
+        against.
+
+        This returns, per depth, the ratio of the magnitudes being
+        subtracted to the magnitude of what survives::
+
+            amplification(d) = (|N_F|/k + |N_L| + |L+| + |L-|) / |N_F/k + N_L|
+
+        Measured 440 on a fuel-density perturbation, where the level ran from
+        +19 to −154 pcm over twelve generations against a true worth of
+        +1.2. It is the number that decides how deep ``L`` has to be; see
+        :meth:`convergence`.
+
+        Returns
+        -------
+        numpy.ndarray
+            Amplification at each depth ``0..L``.
+        """
+        if self._tau is None:
+            raise ValueError('No population totals present; this statepoint '
+                             'predates tau_pooled, or was built by hand.')
+        i = self.ids.index(perturbation_id)
+        d_w, fp, fn, lp, ln = self._tau[self._trees[i]]
+        k = self._keff
+        n_f, n_l = fp - fn, lp - ln
+        num = np.abs(n_f) / k + np.abs(n_l) + lp + ln
+        den = np.abs(n_f / k + n_l)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            return np.where(den > 0.0, num / den, np.inf)
+
+    def convergence(self, perturbation_id, target=0.05, d_min=None):
+        """Is the level converged, and if not how deep would it have to be?
+
+        Fits ``A + B r**d`` to the level curve. ``r`` is the rate the
+        transient dies at -- the dominance ratio of the perturbed system, as
+        the estimator sees it -- ``A`` is the extrapolated asymptote, and
+        ``B r**L`` is what is still left to go at the depth actually run.
+
+        **This replaces judging flatness by eye, and it replaces comparing
+        the drift to the noise.** Comparing to the noise is what makes an
+        unconverged level look converged: at forty replicas a 6.5 pcm drift
+        sat comfortably inside a 12 pcm tolerance and passed, while the worth
+        it licensed was 6.5% wrong. The drift has to be compared to the
+        ANSWER, magnified by :meth:`amplification`.
+
+        Parameters
+        ----------
+        target : float
+            Fractional precision wanted on the worth.
+        d_min : int, optional
+            First depth to fit from. Defaults to 1, since depth 0 is the
+            source counted with no propagation at all and is not on the curve.
+
+        Returns
+        -------
+        dict
+            ``asymptote`` (pcm), ``remaining`` (pcm still to go at ``L``),
+            ``rate`` (the fitted ``r``), ``amplification`` at ``L``,
+            ``required_depth`` for ``target``, and ``converged``.
+        """
+        if getattr(self, '_mean', None) is None:
+            raise ValueError('No results present; read from a statepoint.')
+        i = self.ids.index(perturbation_id)
+        p = self[i]
+        curve = np.asarray(p.depth_curve, dtype=float)
+        L = len(curve) - 1
+        d = np.arange(len(curve), dtype=float)
+        sel = d >= (1 if d_min is None else d_min)
+        x, y = d[sel], curve[sel]
+
+        best = None
+        for r in np.linspace(0.05, 0.999, 2000):
+            M = np.vstack([np.ones_like(x), r ** x]).T
+            try:
+                coef, *_ = np.linalg.lstsq(M, y, rcond=None)
+            except np.linalg.LinAlgError:
+                continue
+            chi2 = float(((y - M @ coef) ** 2).sum())
+            if best is None or chi2 < best[0]:
+                best = (chi2, r, coef[0], coef[1])
+        _, r, A, B = best
+        remaining = B * r ** L
+
+        amp = np.inf
+        try:
+            amp = float(self.amplification(perturbation_id)[L])
+        except ValueError:
+            pass
+        with np.errstate(divide='ignore', invalid='ignore'):
+            need = (np.log(amp / target) / np.log(1.0 / r)
+                    if 0.0 < r < 1.0 and np.isfinite(amp) else np.inf)
+        return {
+            'asymptote': float(A),
+            'remaining': float(remaining),
+            'rate': float(r),
+            'amplification': amp,
+            'required_depth': float(need),
+            'converged': bool(abs(remaining) <= target * abs(A) and L >= need),
+        }
+
     def depth_convergence(self, perturbation_id):
         """Level against depth for one perturbation, as a diagnostic.
 
@@ -429,9 +550,13 @@ class Perturbations(cv.CheckedList):
             Depth -> (level, sigma) in pcm. The level is flat in depth once
             the perturbed fundamental mode has established itself; if it is
             still moving at ``d = L`` then ``perturbation_n_generation`` is
-            too small and the reported worth has not converged. This replaces
-            every fit-window diagnostic the slope estimator needed, because
-            there is no window.
+            too small and the reported worth has not converged.
+
+            This is the curve to look at, but do not judge it by eye and do
+            not compare its drift to its error bars -- use
+            :meth:`convergence`, which compares the drift to the answer
+            magnified by :meth:`amplification`. A curve whose drift is small
+            against the noise can still carry a worth that is badly wrong.
         """
         if getattr(self, '_mean', None) is None:
             raise ValueError('No results present; read from a statepoint.')

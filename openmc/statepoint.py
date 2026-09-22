@@ -514,6 +514,7 @@ class StatePoint:
             # Settings.perturbation_n_generation.
             perturbations = openmc.Perturbations()
             perturbations._n_generation = n_gen
+            trees = []
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore', openmc.IDWarning)
                 for pid in ids:
@@ -523,12 +524,34 @@ class StatePoint:
                             map(int, np.asarray(pgroup['cells'][()])),
                             map(int, np.asarray(pgroup['materials'][()])))),
                         perturbation_id=pid))
+                    if 'trees' in pgroup:
+                        trees.append(
+                            np.asarray(pgroup['trees'][()], dtype=int))
+
+            # The five populations' run totals, which is what makes the
+            # convergence diagnostic quantitative: the cancellation between
+            # them says how small the transient has to get before the level
+            # can be trusted, and that cannot be read off the level curve
+            # alone.
+            # They are optional so that a statepoint written before they
+            # existed still reads; the diagnostic that needs them says what
+            # is missing rather than failing here.
+            tau_pooled = keff = None
+            if len(trees) != len(ids):
+                trees = None
+            elif 'tau_pooled' in group and 'keff' in group:
+                n_trees = int(group['n_trees'][()])
+                tau_pooled = np.asarray(
+                    group['tau_pooled'][()], dtype=float).reshape(
+                        n_trees, n_gen + 1)
+                keff = float(group['keff'][()])
 
             # No k conversion here: the C++ level estimator already returns
             # 1/k - 1/k', having inverted for k' in closed form. There is
             # nothing left for the analysis layer to get wrong.
             perturbations._set_results(level_sum, level_cross, level_pooled,
-                                       n_batches)
+                                       n_batches, tau_pooled=tau_pooled,
+                                       trees=trees, keff=keff)
             self._perturbations = perturbations
 
         return self._perturbations

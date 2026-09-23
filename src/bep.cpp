@@ -1784,9 +1784,31 @@ void choose_site_weights()
     double w_now = site_weight(p.tree_d);
     double w_cap = (rv_d > 0.0) ? w_now * eps2 / rv_d : 0.0;
 
-    plan[ip] = {rv_d * n_d, rvs_l * n_l, rvs_f * n_f,
+    // The objective is the SUM OF ABSOLUTE VARIANCES, sum_q Var(rho_q), in
+    // pcm^2 -- not the sum of relative ones. Everything above is relative to
+    // the worth, so converting is one factor of rho_q^2 on the floor and on
+    // every gain of perturbation q (docs/bep_autotune.md 17).
+    //
+    // The relative objective ranked perturbations backwards. Var/rho^2 blows
+    // up as rho -> 0, so a near-null perturbation -- already the most
+    // precisely known worth in pcm -- commanded 91.5% of the objective in a
+    // five-perturbation run, set the shared scale, and switched numerator
+    // splitting off for the four beside it. Absolute variance is well defined
+    // at rho = 0, and pcm is what worths are compared and summed in.
+    //
+    // With ONE perturbation rho^2 multiplies both B and every g, so it
+    // cancels from sqrt(g/kappa * C0/B) and the choice is unchanged; this can
+    // only reallocate effort BETWEEN perturbations. rho from the pooled
+    // totals, like S, for the same reason: one batch's is too noisy to divide
+    // or multiply by.
+    const double rho_q = level(pd, pfp, pfn, plp, pln, keff_norm);
+    const double a2 = rho_q * rho_q;
+    if (!(a2 > 0.0))
+      continue;
+
+    plan[ip] = {a2 * rv_d * n_d, a2 * rvs_l * n_l, a2 * rvs_f * n_f,
       d_w, lp + ln, fp + fn, w_cap, true};
-    b_tot += b;
+    b_tot += a2 * b;
   }
 
   if (b_tot <= 0.0)

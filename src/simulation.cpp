@@ -969,11 +969,12 @@ void initialize_data()
       // nuclide and reaction is responsible, since the usual cause is a single
       // nuclide with a short library rather than anything about the model.
       //
-      // The preferred remedy is neutron data covering the photonuclear energy
-      // range. As a last resort, when the user-specified maximum neutron energy
-      // (settings::energy_max) is at or below the top of the neutron transport
-      // data, any such photoneutron is killed when it is created, so photons
-      // do not need to be restricted and the check is skipped.
+      // The recommended remedy is neutron data covering the photonuclear
+      // energy range. Alternatively, when the user-specified maximum neutron
+      // energy (settings::energy_max) is at or below the top of the neutron
+      // transport data, any such photoneutron is killed when it is created, so
+      // photons do not need to be restricted and the check is skipped. This is
+      // not recommended since those photoneutrons are then lost.
       int neutron = ParticleType::neutron().transport_index();
       int photon = ParticleType::photon().transport_index();
       std::string limiting_nuclide;
@@ -999,10 +1000,10 @@ void initialize_data()
           "to the same value when thick-target bremsstrahlung is enabled. "
           "Sources above this energy will be rejected. To model higher "
           "energies, use neutron data covering the photonuclear energy range. "
-          "As a last resort, setting the maximum neutron energy "
+          "Alternatively, setting the maximum neutron energy "
           "(Settings.energy_max) to at most {:.4g} eV lifts this restriction, "
-          "but neutrons produced above that energy are then killed and not "
-          "transported.",
+          "but this is not recommended since neutrons produced above that "
+          "energy are then killed and not transported.",
           data::photonuclear_energy_max, E_safe, data::energy_max[neutron],
           limiting_mt, limiting_nuclide, data::energy_max[photon], E_safe,
           data::energy_max[neutron]));

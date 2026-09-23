@@ -480,12 +480,20 @@ double max_safe_photon_energy(
         if (i_hi < 0)
           continue;
 
-        // The very first energy at which this product appears already exceeds
-        // the neutron data range, so there is no safe window at all.
-        if (i_hi == 0) {
-          E_safe = 0.0;
-          limiting_nuclide = nuc->name_;
-          limiting_mt = rx->mt_;
+        // The reaction's threshold point already exceeds the neutron data
+        // range. The cross section is zero below the threshold, so photons
+        // below it cannot undergo this reaction and the threshold itself is
+        // the limit. Bisecting towards the previous grid point (or reporting
+        // zero when the threshold is the first grid point) would cap photons
+        // that cannot produce this neutron at all. The cross section can be
+        // nonzero exactly at the threshold point, so step just below it.
+        if (i_hi == rx->xs_.threshold) {
+          double E_threshold = std::nextafter(nuc->energy_[i_hi], 0.0);
+          if (E_threshold < E_safe) {
+            E_safe = E_threshold;
+            limiting_nuclide = nuc->name_;
+            limiting_mt = rx->mt_;
+          }
           continue;
         }
 

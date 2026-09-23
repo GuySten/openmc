@@ -43,6 +43,10 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
+
 private:
   const CoherentElasticXS& xs_; //!< Coherent elastic scattering cross section
   tensor::Tensor<double> bragg_edges_; //!< Copy of Bragg edges for slicing
@@ -78,6 +82,10 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
+
 private:
   double debye_waller_;
 };
@@ -111,6 +119,10 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
 
 private:
   const vector<double>& energy_;  //!< Energies at which cosines are tabulated
@@ -152,6 +164,10 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
 
 private:
   const vector<double>& energy_; //!< Incident energies
@@ -199,6 +215,10 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
 
 private:
   //! Secondary energy/angle distribution
@@ -249,6 +269,10 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy. Thermal scattering never up-scatters beyond a
+  //! few eV, so the incident energy is an adequate and attainable bound.
+  double max_energy(double E_in) const override { return E_in; }
 
 private:
   CoherentElasticAE coherent_dist_;         //!< Coherent distribution

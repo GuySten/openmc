@@ -11,6 +11,7 @@
 #include "pugixml.hpp"
 
 #include "openmc/angle_energy.h" // for AngleEnergy
+#include "openmc/constants.h"    // for INFTY
 #include "openmc/distribution.h" // for UPtrDist
 #include "openmc/memory.h"       // for unique_ptr
 #include "openmc/vector.h"
@@ -79,6 +80,13 @@ public:
   //! \return Probability density for the scattering cosine
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
+
+  //! Maximum outgoing energy. The energy is drawn from an arbitrary
+  //! Distribution, which exposes no upper bound, so no tight value is
+  //! available. INFTY is the conservative answer: any caller using this to
+  //! decide whether secondaries fit within available transport data will treat
+  //! the distribution as unbounded rather than silently assuming a limit.
+  double max_energy(double E_in) const override { return INFTY; }
 
 private:
   const Distribution* photon_energy_;

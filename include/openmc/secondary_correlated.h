@@ -57,6 +57,11 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const override;
 
+  //! Maximum outgoing energy, in the frame the distribution is tabulated in
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \return Maximum outgoing energy in [eV]
+  double max_energy(double E_in) const override;
+
   // energy property
   vector<double>& energy() { return energy_; }
   const vector<double>& energy() const { return energy_; }

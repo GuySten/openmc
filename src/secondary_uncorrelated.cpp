@@ -83,4 +83,11 @@ double UncorrelatedAngleEnergy::sample_energy_and_pdf(
   }
 }
 
+double UncorrelatedAngleEnergy::max_energy(double E_in) const
+{
+  // No energy distribution means elastic scattering, handled separately; the
+  // outgoing energy cannot exceed the incident energy.
+  return energy_ ? energy_->max_energy(E_in) : E_in;
+}
+
 } // namespace openmc

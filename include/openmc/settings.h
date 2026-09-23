@@ -132,6 +132,8 @@ extern array<double, 4>
   energy_cutoff; //!< Energy cutoff in [eV] for each particle type
 extern array<double, 4>
   time_cutoff; //!< Time cutoff in [s] for each particle type
+extern array<double, 4>
+  energy_max; //!< Energy in [eV] above which each particle type is killed
 extern int
   ifp_n_generation; //!< Number of generation for Iterated Fission Probability
 extern int

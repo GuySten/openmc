@@ -32,6 +32,11 @@ void collision_mg(Particle& p)
   // Sample the reaction type
   sample_reaction(p);
 
+  // Kill particle if energy rises above maximum energy
+  if (p.E() > settings::energy_max[p.type().transport_index()]) {
+    p.wgt() = 0.0;
+  }
+
   if (settings::weight_windows_on) {
     auto [ww_found, ww] = search_weight_window(p);
     if (!ww_found && p.type() == ParticleType::neutron()) {
@@ -159,6 +164,12 @@ void create_fission_sites(Particle& p)
 
     // Store the energy and delayed groups on the fission bank
     site.E = gout;
+
+    // Reject site if it exceeds maximum energy
+    if (data::mg.energy_bin_avg_[gout] >
+        settings::energy_max[site.particle.transport_index()]) {
+      continue;
+    }
 
     // We add 1 to the delayed_group bc in MG, -1 is prompt, but in the rest
     // of the code, 0 is prompt.

@@ -4,6 +4,7 @@
 #include <cmath>   // for ceil, pow
 #include <cstring> // for strcmp
 #include <limits>  // for numeric_limits
+#include <stdexcept>
 #include <string>
 
 #include <fmt/core.h>
@@ -25,6 +26,7 @@
 #include "openmc/mesh.h"
 #include "openmc/message_passing.h"
 #include "openmc/output.h"
+#include "openmc/particle_type.h"
 #include "openmc/plot.h"
 #include "openmc/random_lcg.h"
 #include "openmc/random_ray/random_ray.h"
@@ -115,6 +117,7 @@ int max_particle_events {1000000};
 ElectronTreatment electron_treatment {ElectronTreatment::TTB};
 array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
+array<double, 4> energy_max {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
@@ -805,6 +808,27 @@ void read_settings_xml(pugi::xml_node root)
     }
     if (check_for_node(node_cutoff, "time_positron")) {
       time_cutoff[3] = std::stod(get_node_value(node_cutoff, "time_positron"));
+    }
+  }
+
+  // Energies above which particles are killed
+  if (check_for_node(root, "energy_max")) {
+    for (auto node : root.child("energy_max").children()) {
+      ParticleType type;
+      try {
+        type = ParticleType {node.name()};
+      } catch (const std::invalid_argument&) {
+        fatal_error(fmt::format(
+          "Unknown particle type '{}' in <energy_max>.", node.name()));
+      }
+      int idx = type.transport_index();
+      if (idx == C_NONE) {
+        fatal_error(fmt::format(
+          "Maximum energy cannot be specified for non-transported particle "
+          "type '{}'.",
+          node.name()));
+      }
+      energy_max[idx] = std::stod(node.child_value());
     }
   }
 

@@ -246,6 +246,34 @@ secondary bremsstrahlung photons (``ttb``).
 
   *Default*: ttb
 
+------------------------
+``<energy_max>`` Element
+------------------------
+
+The ``<energy_max>`` element specifies, for each particle type, an energy in
+[eV] above which particles of that type are killed. Unlike the energy cutoff in
+the ``<cutoff>`` element, which removes particles that are no longer important
+at low energy, this is intended to remove particles above an energy range of
+interest. Source particles above this energy are killed before being
+transported, secondary particles above it are never created, and particles
+whose energy rises above it in a collision are killed. The energy of killed
+particles is not deposited locally. The element has one sub-element per
+particle type:
+
+  :neutron:
+    The energy above which neutrons will be killed.
+
+  :photon:
+    The energy above which photons will be killed.
+
+  :electron:
+    The energy above which electrons will be killed.
+
+  :positron:
+    The energy above which positrons will be killed.
+
+  *Default*: None (no particles are killed)
+
 .. _energy_mode:
 
 -------------------------

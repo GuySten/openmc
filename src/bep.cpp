@@ -394,28 +394,40 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
         {tree, 0, sid, t.importance, raw, p_last, 0.0});
   };
 
+  // DECIDE FIRST, SAMPLE SECOND. A root's weight is known before its outgoing
+  // state is, and the roulette needs only the weight -- so a root that is
+  // rouletted away is never sampled at all. On PLUS7 that is all but ~400 of
+  // 1.6 million decisions per generation, each of which used to pay for a
+  // fission-spectrum or scattering-kernel sample and throw it away.
+  //
+  // This changes no result. Each sampler runs on a stream freshly seeded
+  // from its own key, and the roulette draws are on key 7, in the same order
+  // as before. The seeding call is KEPT on the dead branches: it resets the
+  // scratch particle's every stream, including the unresolved-resonance one
+  // the next material evaluation reads, so skipping it would leave that
+  // stream where the previous root put it rather than where it used to be.
+
   // ---- fission production: + chi_i nu sigma_f,i -------------------------
   if (micro.nu_fission > 0.0) {
     init_particle_seeds(
       combine_ids({site_seed, e.i_nuclide, 2}), s.seeds());
-    s.stream() = STREAM_TRACKING;
-    s.E() = t.E;
-    s.u() = t.u;
-    SourceSite site;
-    site.time = t.time;
-    const Reaction& rx = sample_fission(e.i_nuclide, s);
-    sample_fission_neutron(e.i_nuclide, rx, &site, s);
-
     SourceRoot root;
-    root.r = r_emit;
-    root.u = site.u;
-    root.E = site.E;
-    root.time = site.time;
     root.wgt = w * micro.nu_fission;
     root.tree = positive ? pert.tree_fp : pert.tree_fn;
     root.seed_id = fission_tree_seed;
     const double raw = root.wgt;
     if (survives(root.wgt, root.tree)) {
+      s.stream() = STREAM_TRACKING;
+      s.E() = t.E;
+      s.u() = t.u;
+      SourceSite site;
+      site.time = t.time;
+      const Reaction& rx = sample_fission(e.i_nuclide, s);
+      sample_fission_neutron(e.i_nuclide, rx, &site, s);
+      root.r = r_emit;
+      root.u = site.u;
+      root.E = site.E;
+      root.time = site.time;
       stamp(root, raw);
       out.push_back(root);
     } else {
@@ -514,8 +526,12 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
       out.push_back(before);
 
     // (b) the scattered member: same weight, and the same TREE seed as (c)
-    // so the pair still tracks, but sampled from a different stream.
+    // so the pair still tracks, but sampled from a different stream. A dead
+    // pair is not sampled; see "decide first" above for why the seeding
+    // still happens.
     init_particle_seeds(seed, s.seeds());
+    if (!pair_lives)
+      return;
     s.stream() = STREAM_TRACKING;
     s.E() = t.E;
     s.u() = t.u;

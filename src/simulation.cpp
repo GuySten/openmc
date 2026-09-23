@@ -764,8 +764,17 @@ void initialize_particle_track(
     below_cutoff = p.E() < settings::energy_cutoff[idx];
   }
 
+  // Determine whether the source particle is above the maximum energy for its
+  // type, in which case it is killed before being transported
+  bool above_energy_max = false;
+  if (!is_secondary) {
+    int idx = p.type().transport_index();
+    above_energy_max = idx != C_NONE && p.E() > settings::energy_max[idx];
+  }
+  bool kill = below_cutoff || above_energy_max;
+
   // Set the particle's initial weight window value.
-  if (!is_secondary && !below_cutoff) {
+  if (!is_secondary && !kill) {
     p.wgt_ww_born() = -1.0;
     apply_weight_windows(p);
   }
@@ -781,8 +790,9 @@ void initialize_particle_track(
     simulation::total_weight += p.wgt();
   }
 
-  // Kill source neutrons below the energy cutoff
-  if (below_cutoff) {
+  // Kill source neutrons below the energy cutoff and source particles above
+  // the maximum energy
+  if (kill) {
     p.wgt() = 0.0;
   }
 

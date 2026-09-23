@@ -96,6 +96,14 @@ bool Particle::create_secondary(
     return false;
   }
 
+  // If energy is above the maximum energy for this particle type, don't create
+  // secondary particle. Its energy is treated as having left the problem
+  // rather than being deposited locally.
+  if (E > settings::energy_max[idx]) {
+    bank_second_E() += E;
+    return false;
+  }
+
   // Increment number of secondaries created (for ParticleProductionFilter)
   n_secondaries()++;
 

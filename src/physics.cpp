@@ -76,9 +76,10 @@ void collision(Particle& p)
     }
   }
 
-  // Kill particle if energy falls below cutoff
+  // Kill particle if energy falls below cutoff or rises above maximum energy
   int type = p.type().transport_index();
-  if (type != C_NONE && p.E() < settings::energy_cutoff[type]) {
+  if (type != C_NONE && (p.E() < settings::energy_cutoff[type] ||
+                          p.E() > settings::energy_max[type])) {
     p.wgt() = 0.0;
   }
 
@@ -219,6 +220,11 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
 
     // Sample delayed group and angle/energy for fission reaction
     sample_fission_neutron(i_nuclide, rx, &site, p);
+
+    // Reject site if it exceeds maximum energy
+    if (site.E > settings::energy_max[site.particle.transport_index()]) {
+      continue;
+    }
 
     // Reject site if it exceeds time cutoff
     if (site.delayed_group > 0) {
@@ -473,6 +479,13 @@ void process_charged_secondary(
   int idx = type.transport_index();
   if (idx == C_NONE || E < settings::energy_cutoff[idx])
     return;
+
+  // Charged particles above the maximum energy are removed from the problem, so
+  // their energy is not deposited locally
+  if (E > settings::energy_max[idx]) {
+    p.bank_second_E() += E;
+    return;
+  }
 
   if (settings::electron_treatment == ElectronTreatment::TTB) {
     thick_target_bremsstrahlung(p, type, u, E);

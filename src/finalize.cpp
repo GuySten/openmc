@@ -90,6 +90,7 @@ int openmc_finalize()
   settings::delayed_photon_scaling = true;
   settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0};
   settings::time_cutoff = {INFTY, INFTY, INFTY, INFTY};
+  settings::energy_max = {INFTY, INFTY, INFTY, INFTY};
   settings::entropy_on = false;
   settings::event_based = false;
   settings::free_gas_threshold = 400.0;

@@ -83,3 +83,28 @@ def test_source_below_energy_cutoff(run_in_tmpdir):
 
     assert flux[0] == 0.0
     assert heating[0] == pytest.approx(source_energy)
+
+
+def test_energy_max(run_in_tmpdir):
+    # Source photons above the maximum energy should be killed before being
+    # transported and should not deposit any energy
+    cutoff_energy = 1e3
+    source_energy = 1e5
+    model = inf_medium_model(cutoff_energy, source_energy)
+    model.settings.energy_max = {'photon': 0.5*source_energy}
+    statepoint_path = model.run()
+
+    with openmc.StatePoint(statepoint_path) as sp:
+        flux = sp.get_tally(name='flux').mean.ravel()
+        heating = sp.get_tally(name='heating').mean.ravel()
+
+    assert all(flux == 0.0)
+    assert heating[0] == 0.0
+
+
+def test_energy_max_invalid():
+    settings = openmc.Settings()
+    with pytest.raises(ValueError):
+        settings.energy_max = {'proton': 1e6}
+    with pytest.raises(ValueError):
+        settings.energy_max = {'neutron': -1.0}

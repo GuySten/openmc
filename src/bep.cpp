@@ -1043,9 +1043,15 @@ void record_track(Particle& p, int32_t cell_index, double distance)
   // shadow trees do not depend on which thread got here first. (id,
   // n_tracks, n_event) is unique for a driver particle within a generation
   // -- n_event alone is not, because event_revive_from_secondary() resets
-  // it -- and total_gen distinguishes generations.
+  // it. The generation has to be keyed explicitly: particle ids restart
+  // every generation, and simulation::total_gen stays 0 for the whole of a
+  // run (it only advances at finalize, for restarts), so keying on it alone
+  // reused every seed in every generation and correlated the batches that
+  // batch statistics assume independent. Same key as
+  // compute_transport_seed() uses for the driver.
   site.seed_id = combine_ids(
-    {simulation::total_gen, p.id(), p.n_tracks(), p.n_event()});
+    {simulation::total_gen + overall_generation(), p.id(), p.n_tracks(),
+      p.n_event()});
 
   // The driver's collision estimate of fission production so far; the
   // difference at end_history() is what this history produced AFTER here.
@@ -1164,7 +1170,8 @@ void sample_denominator_roots()
     // over a per cent. (parent_id, progeny_id) is set deterministically when
     // the site is created and identifies it uniquely within the generation.
     int64_t sid =
-      combine_ids({simulation::total_gen, s.parent_id, s.progeny_id});
+      combine_ids({simulation::total_gen + overall_generation(), s.parent_id,
+      s.progeny_id});
 
     // The keep/reject draw comes from a DIFFERENT stream than the one the
     // kept site's tree is grown on, for the same reason the sampled source
@@ -1372,7 +1379,8 @@ void run_shadow_pass()
     int64_t n_rec = static_cast<int64_t>(source_roots.size());
     for (const auto& v : thread_dead)
       n_rec += static_cast<int64_t>(v.size());
-    const int64_t head[3] {simulation::total_gen, n_tracks, n_rec};
+    const int64_t head[3] {
+      simulation::total_gen + overall_generation(), n_tracks, n_rec};
     std::fwrite(head, sizeof(int64_t), 3, dump_file);
     std::fwrite(&keff_norm, sizeof(double), 1, dump_file);
     for (size_t i = 0; i < source_roots.size(); ++i) {

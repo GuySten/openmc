@@ -304,6 +304,48 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     combine_ids({site_seed, e.i_nuclide, 5});
   const int64_t pair_tree_seed = combine_ids({site_seed, e.i_nuclide, 6});
 
+  // ---- emission roulette ------------------------------------------------
+  //
+  // Emitting one root per (segment, nuclide, channel) is what the cost of
+  // this estimator IS. Profiled on PLUS7 at 1000 ppm: 2,448,465 roots per
+  // generation against 106,341 descendants, so the roots are 95.8% of all
+  // transport, and generating them is 0.8% -- it is transporting them that
+  // costs. Each is a full history in the perturbed physics.
+  //
+  // And almost all of that transport buys nothing. A root's mean weight
+  // there is 2.3e-05 against a site weight of 0.032, so nu = 7.2e-04: over
+  // 99.9% of roots bank no site at all and the tree dies at depth 0. That is
+  // also why runtime is flat in L (47.4 s at L=4 against 47.3 s at L=8) --
+  // the trees are sterile, so there is nothing for depth to multiply.
+  //
+  // So roots are rouletted to the weight their own descendants will be
+  // banked at. A root lighter than the site weight survives with probability
+  // nu = wgt/w and then carries w; one already at or above it is emitted
+  // unchanged. E[weight emitted] = wgt exactly, by the same rule and the
+  // same argument as the site banking itself, so this is unbiased at any
+  // weight and is not an approximation.
+  //
+  // It also makes ONE knob set both the root count and the site count, which
+  // is the same correction already made to the denominator: a root count and
+  // a site weight free to disagree will disagree, and there the two were
+  // observed two orders of magnitude apart.
+  //
+  // The draw is on key 7, a stream no root ever walks on. A walk that
+  // replays the numbers deciding its own existence is biased, not merely
+  // correlated -- that is the mechanism behind this estimator's earlier
+  // 6.5% error, in two separate places.
+  uint64_t rr_seed =
+    init_seed(combine_ids({site_seed, e.i_nuclide, 7}), STREAM_TRACKING);
+  auto survives = [&rr_seed](double& wgt, int tree) -> bool {
+    const double target = site_weight(tree);
+    if (!(target > 0.0) || wgt >= target)
+      return true;              // already at least as heavy as a site
+    if (prn(&rr_seed) >= wgt / target)
+      return false;
+    wgt = target;
+    return true;
+  };
+
   // ---- fission production: + chi_i nu sigma_f,i -------------------------
   if (micro.nu_fission > 0.0) {
     init_particle_seeds(
@@ -324,7 +366,8 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.wgt = w * micro.nu_fission;
     root.tree = positive ? pert.tree_fp : pert.tree_fn;
     root.seed_id = fission_tree_seed;
-    out.push_back(root);
+    if (survives(root.wgt, root.tree))
+      out.push_back(root);
   }
 
   // ---- removal and in-scatter ------------------------------------------
@@ -377,20 +420,37 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.wgt = w * sigma_a;
     root.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
     root.seed_id = combine_ids({site_seed, e.i_nuclide, 4});
-    out.push_back(root);
+    if (survives(root.wgt, root.tree))
+      out.push_back(root);
   }
 
   if (sigma_s > 0.0) {
+    // ONE draw for the whole pair, and for the (n,xn) extras that come with
+    // it, keyed on the (c) member's tree.
+    //
+    // This is the part of the roulette that has to be got right. (b) and (c)
+    // have IDENTICAL weights by construction and share a tree seed precisely
+    // so their descent noise cancels in the difference -- that cancellation
+    // is what makes a null perturbation return exactly zero rather than the
+    // difference of two independent estimates. Rouletting them separately
+    // would kill one and keep the other, destroying it. They live or die
+    // together.
+    const int pair_tree = positive ? pert.tree_ln : pert.tree_lp;
+    double pair_wgt = w * sigma_s;
+    const bool pair_lives = survives(pair_wgt, pair_tree);
+    const double pair_scale = (w * sigma_s > 0.0) ? pair_wgt / (w * sigma_s) : 0.0;
+
     // (c) the unscattered member of the pair
     SourceRoot before;
     before.r = r_emit;
     before.u = t.u;
     before.E = t.E;
     before.time = t.time;
-    before.wgt = w * sigma_s;
-    before.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
+    before.wgt = pair_wgt;
+    before.tree = pair_tree; // note: -dn
     before.seed_id = pair_tree_seed;
-    out.push_back(before);
+    if (pair_lives)
+      out.push_back(before);
 
     // (b) the scattered member: same weight, and the same TREE seed as (c)
     // so the pair still tracks, but sampled from a different stream.
@@ -408,10 +468,12 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.u = s.u();
     root.E = s.E();
     root.time = t.time;
-    root.wgt = w * sigma_s * s.wgt();
+    // Scaled by the SAME factor the (c) member was, so the pair stays
+    // weight-matched -- the property the cancellation rests on.
+    root.wgt = w * sigma_s * s.wgt() * pair_scale;
     root.tree = positive ? pert.tree_lp : pert.tree_ln;
     root.seed_id = pair_tree_seed;
-    if (root.wgt > 0.0)
+    if (pair_lives && root.wgt > 0.0)
       out.push_back(root);
 
     // The multiplicity of an (n,xn) comes out of scatter() too -- as a
@@ -422,8 +484,8 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
       SourceRoot extra = root;
       extra.u = sec.u;
       extra.E = sec.E;
-      extra.wgt = w * sigma_s * sec.wgt;
-      if (extra.wgt > 0.0)
+      extra.wgt = w * sigma_s * sec.wgt * pair_scale;
+      if (pair_lives && extra.wgt > 0.0)
         out.push_back(extra);
     }
     s.local_secondary_bank().clear();

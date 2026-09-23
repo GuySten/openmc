@@ -68,7 +68,11 @@ def test_source_below_energy_cutoff(run_in_tmpdir):
     # immediately rather than transported
     source_energy = 1e3
     cutoff_energy = 2e3
-    model = inf_medium_model(cutoff_energy, source_energy)
+    model = inf_medium_model(cutoff_energy, 2*cutoff_energy)
+    model.settings.source = openmc.IndependentSource(
+        particle='photon',
+        energy=openmc.stats.Discrete([source_energy], [1.0]),
+    )
     model.tallies[0].filters = [openmc.ParticleFilter(['photon'])]
     statepoint_path = model.run()
 

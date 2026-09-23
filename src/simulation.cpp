@@ -968,12 +968,20 @@ void initialize_data()
       // neutron transport data. Work out where that starts and say which
       // nuclide and reaction is responsible, since the usual cause is a single
       // nuclide with a short library rather than anything about the model.
+      //
+      // When the user-specified maximum neutron energy (settings::energy_max)
+      // is at or below the top of the neutron transport data, any such
+      // photoneutron is killed when it is created, so photons do not need to
+      // be restricted and the check is skipped.
       int neutron = ParticleType::neutron().transport_index();
       int photon = ParticleType::photon().transport_index();
       std::string limiting_nuclide;
       int limiting_mt;
-      double E_safe = max_safe_photon_energy(
-        data::energy_max[neutron], limiting_nuclide, limiting_mt);
+      double E_safe = INFTY;
+      if (settings::energy_max[neutron] > data::energy_max[neutron]) {
+        E_safe = max_safe_photon_energy(
+          data::energy_max[neutron], limiting_nuclide, limiting_mt);
+      }
 
       if (E_safe < data::energy_max[photon]) {
         // Cap the photon transport ceiling so that no photon capable of
@@ -989,9 +997,12 @@ void initialize_data()
           "{:.4g} eV, and the maximum electron and positron energy is limited "
           "to the same value when thick-target bremsstrahlung is enabled. "
           "Sources above this energy will be rejected. To model higher "
-          "energies, use neutron data covering the photonuclear energy range.",
+          "energies, use neutron data covering the photonuclear energy range, "
+          "or set the maximum neutron energy (Settings.energy_max) to at most "
+          "{:.4g} eV so that neutrons beyond the data range are killed.",
           data::photonuclear_energy_max, E_safe, data::energy_max[neutron],
-          limiting_mt, limiting_nuclide, data::energy_max[photon], E_safe));
+          limiting_mt, limiting_nuclide, data::energy_max[photon], E_safe,
+          data::energy_max[neutron]));
 
         data::energy_max[photon] = E_safe;
 

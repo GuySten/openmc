@@ -1628,12 +1628,16 @@ double emit_photonuclear_product(Particle& p,
     mu = std::clamp(mu, -1.0, 1.0);
   }
 
-  if (E > E_max) {
+  // Products above the user-specified maximum energy (settings::energy_max)
+  // are killed by create_secondary(), so they are allowed to exceed the
+  // transport data range.
+  if (E > E_max && E <= settings::energy_max[i_type]) {
     // Unreachable by construction: initialize_data() lowers the maximum photon
     // energy so that no photon able to produce a product above E_max can be
-    // transported, and source sampling enforces that ceiling. Reaching here
-    // means max_safe_photon_energy() computed a bound that some distribution
-    // can exceed, which would silently corrupt results if ignored.
+    // transported, unless the maximum energy setting kills such products, and
+    // source sampling enforces that ceiling. Reaching here means
+    // max_safe_photon_energy() computed a bound that some distribution can
+    // exceed, which would silently corrupt results if ignored.
     p.write_restart();
     fatal_error(fmt::format(
       "Photonuclear product of {:.6g} eV from nuclide {} exceeds the maximum "

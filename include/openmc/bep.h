@@ -381,6 +381,15 @@ struct TrackSite {
   int32_t cell;
   int32_t material;  //!< reference material index filling that cell
   int64_t seed_id;   //!< identity of the segment; see SourceRoot::seed_id
+
+  //! The driver's own collision-estimated fission production from this
+  //! segment to the end of its history (secondaries included). Recorded as
+  //! the running keff_tally_collision() at the segment, and turned into
+  //! "what came after" by end_history() once the history is over. A
+  //! mesh-free, per-history estimate of the depth-1 reference importance at
+  //! this phase point. DIAGNOSTIC: it steers nothing yet.
+  double fprod_before {0.0};
+  double importance {-1.0};
 };
 
 //! Track segments collected during the current generation, one vector per
@@ -411,6 +420,14 @@ struct SourceRoot {
   //! in the difference -- which is what makes a null perturbation return
   //! exactly zero rather than the difference of two independent estimates.
   int64_t seed_id;
+
+  //! Diagnostic only (see OPENMC_BEP_DUMP_ROOTS): the driver importance of
+  //! the segment this root came from (-1 for denominator roots, which are
+  //! bank sites with no future yet), the weight before the emission
+  //! roulette, and the survival probability the roulette used.
+  double importance {-1.0};
+  double wgt_raw {0.0};
+  double p_surv {1.0};
 };
 
 //! Roots collected for the current generation, one vector per thread while the
@@ -545,6 +562,11 @@ void reset_generation();
 //! but a struct copy sits in the transport hot path and no random number is
 //! ever drawn from the driver's streams.
 void record_track(Particle& p, int32_t cell_index, double distance);
+
+//! Close a driver history: turn each of its recorded segments' running
+//! fission estimate into the production that came after it. Must run before
+//! event_death() flushes and zeroes keff_tally_collision().
+void end_history(Particle& p);
 
 void score_site(int tree, int super_gen, double wgt);
 void run_shadow_pass();

@@ -665,6 +665,11 @@ void Particle::event_check_limit_and_revive()
 
 void Particle::event_death()
 {
+  // Before the keff tallies are flushed and zeroed below: BEP reads the
+  // collision estimate to close this history's recorded segments.
+  if (simulation::bep_on && bep_tree() == BEP_TRUNK)
+    bep::end_history(*this);
+
 #ifdef OPENMC_DAGMC_ENABLED
   history().reset();
 #endif

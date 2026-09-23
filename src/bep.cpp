@@ -4,6 +4,8 @@
 #include "openmc/bep.h"
 
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 
 #include <algorithm>
 #include <cmath>
@@ -75,6 +77,35 @@ inline double secs_since(const bep_clock::time_point& t0)
 }
 vector<vector<TrackSite>> thread_tracks;
 vector<TrackSite> tracks;
+
+// Per-thread bookkeeping for the history currently being transported, so
+// that end_history() can find that history's segments. DIAGNOSTIC: feeds only
+// TrackSite::importance, which steers nothing.
+vector<int64_t> thread_hist_id;
+vector<size_t> thread_hist_begin;
+
+// ---- OPENMC_BEP_DUMP_ROOTS: a raw per-decision-unit dump -------------------
+//
+// DIAGNOSTIC, off unless the environment variable names an output file. It
+// writes, for the first OPENMC_BEP_DUMP_GENS active generations (default 3),
+// one record per emitted root -- with its raw pre-roulette weight, its
+// survival probability, its driver's importance and its measured depth-L
+// contribution -- and one per rouletted-away numerator decision, so that an
+// importance-weighted roulette can be evaluated offline against the one in
+// use. It changes no result: the same roots are drawn on the same streams.
+struct DumpRec {
+  int32_t tree;
+  int32_t kept;
+  int64_t seed_id;
+  double importance;
+  double wgt_raw;
+  double p_surv;
+  double x;
+};
+vector<vector<DumpRec>> thread_dead;
+std::FILE* dump_file {nullptr};
+int dump_gens_left {0};
+bool dump_this_gen {false};
 vector<vector<SourceRoot>> thread_source_roots;
 vector<SourceRoot> source_roots;
 vector<double> thread_tau;
@@ -336,14 +367,28 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
   // 6.5% error, in two separate places.
   uint64_t rr_seed =
     init_seed(combine_ids({site_seed, e.i_nuclide, 7}), STREAM_TRACKING);
-  auto survives = [&rr_seed](double& wgt, int tree) -> bool {
+  double p_last = 1.0; // survival probability of the last decision
+  auto survives = [&rr_seed, &p_last](double& wgt, int tree) -> bool {
     const double target = site_weight(tree);
+    p_last = 1.0;
     if (!(target > 0.0) || wgt >= target)
       return true;              // already at least as heavy as a site
-    if (prn(&rr_seed) >= wgt / target)
+    p_last = wgt / target;
+    if (prn(&rr_seed) >= p_last)
       return false;
     wgt = target;
     return true;
+  };
+  // Diagnostic stamping; see OPENMC_BEP_DUMP_ROOTS.
+  auto stamp = [&](SourceRoot& r, double raw) {
+    r.importance = t.importance;
+    r.wgt_raw = raw;
+    r.p_surv = p_last;
+  };
+  auto dead = [&](int tree, int64_t sid, double raw) {
+    if (dump_this_gen)
+      thread_dead[thread_num()].push_back(
+        {tree, 0, sid, t.importance, raw, p_last, 0.0});
   };
 
   // ---- fission production: + chi_i nu sigma_f,i -------------------------
@@ -366,8 +411,13 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.wgt = w * micro.nu_fission;
     root.tree = positive ? pert.tree_fp : pert.tree_fn;
     root.seed_id = fission_tree_seed;
-    if (survives(root.wgt, root.tree))
+    const double raw = root.wgt;
+    if (survives(root.wgt, root.tree)) {
+      stamp(root, raw);
       out.push_back(root);
+    } else {
+      dead(root.tree, root.seed_id, raw);
+    }
   }
 
   // ---- removal and in-scatter ------------------------------------------
@@ -420,8 +470,13 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.wgt = w * sigma_a;
     root.tree = positive ? pert.tree_ln : pert.tree_lp; // note: -dn
     root.seed_id = combine_ids({site_seed, e.i_nuclide, 4});
-    if (survives(root.wgt, root.tree))
+    const double raw = root.wgt;
+    if (survives(root.wgt, root.tree)) {
+      stamp(root, raw);
       out.push_back(root);
+    } else {
+      dead(root.tree, root.seed_id, raw);
+    }
   }
 
   if (sigma_s > 0.0) {
@@ -439,6 +494,8 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     double pair_wgt = w * sigma_s;
     const bool pair_lives = survives(pair_wgt, pair_tree);
     const double pair_scale = (w * sigma_s > 0.0) ? pair_wgt / (w * sigma_s) : 0.0;
+    if (!pair_lives)
+      dead(pair_tree, pair_tree_seed, w * sigma_s);
 
     // (c) the unscattered member of the pair
     SourceRoot before;
@@ -449,6 +506,7 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     before.wgt = pair_wgt;
     before.tree = pair_tree; // note: -dn
     before.seed_id = pair_tree_seed;
+    stamp(before, w * sigma_s);
     if (pair_lives)
       out.push_back(before);
 
@@ -473,6 +531,7 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
     root.wgt = w * sigma_s * s.wgt() * pair_scale;
     root.tree = positive ? pert.tree_lp : pert.tree_ln;
     root.seed_id = pair_tree_seed;
+    stamp(root, w * sigma_s * s.wgt());
     if (pair_lives && root.wgt > 0.0)
       out.push_back(root);
 
@@ -485,6 +544,7 @@ void emit_nuclide_source(Particle& s, const TrackSite& t,
       extra.u = sec.u;
       extra.E = sec.E;
       extra.wgt = w * sigma_s * sec.wgt * pair_scale;
+      extra.wgt_raw = w * sigma_s * sec.wgt;
       if (pair_lives && extra.wgt > 0.0)
         out.push_back(extra);
     }
@@ -806,6 +866,26 @@ void init()
   thread_tau.assign(static_cast<size_t>(num_threads()) * tau_stride(), 0.0);
   thread_root_weight.assign(num_threads(), 0.0);
   thread_tracks.assign(num_threads(), {});
+  thread_hist_id.assign(num_threads(), -1);
+  thread_hist_begin.assign(num_threads(), 0);
+  thread_dead.assign(num_threads(), {});
+  if (const char* path = std::getenv("OPENMC_BEP_DUMP_ROOTS")) {
+    if (mpi::master && path[0] != '\0') {
+      dump_file = std::fopen(path, "wb");
+      if (!dump_file)
+        fatal_error(fmt::format("Cannot open BEP dump file {}.", path));
+      const char* g = std::getenv("OPENMC_BEP_DUMP_GENS");
+      dump_gens_left = g ? std::atoi(g) : 3;
+      // File header: the tree table, so a record's tree index can be read
+      // as (perturbation, class).
+      const int32_t nt = static_cast<int32_t>(tree_pert.size());
+      std::fwrite(&nt, sizeof(nt), 1, dump_file);
+      for (int32_t i = 0; i < nt; ++i) {
+        const int32_t row[2] {tree_pert[i], tree_class[i]};
+        std::fwrite(row, sizeof(int32_t), 2, dump_file);
+      }
+    }
+  }
   thread_source_roots.assign(num_threads(), {});
   tracks.clear();
   source_roots.clear();
@@ -849,6 +929,10 @@ void reset_generation()
     v.clear();
   for (auto& v : thread_source_roots)
     v.clear();
+  for (auto& v : thread_dead)
+    v.clear();
+  std::fill(thread_hist_id.begin(), thread_hist_id.end(), -1);
+  dump_this_gen = dump_file && dump_gens_left > 0;
   tracks.clear();
   source_roots.clear();
 }
@@ -963,6 +1047,15 @@ void record_track(Particle& p, int32_t cell_index, double distance)
   site.seed_id = combine_ids(
     {simulation::total_gen, p.id(), p.n_tracks(), p.n_event()});
 
+  // The driver's collision estimate of fission production so far; the
+  // difference at end_history() is what this history produced AFTER here.
+  const int th = thread_num();
+  if (thread_hist_id[th] != p.id()) {
+    thread_hist_id[th] = p.id();
+    thread_hist_begin[th] = thread_tracks[th].size();
+  }
+  site.fprod_before = p.keff_tally_collision();
+
   // No synchronisation: this runs in the transport loop, and an omp critical
   // here serialises every thread on a push_back. The vectors are merged in
   // run_shadow_pass(), where the order no longer matters because each site
@@ -974,6 +1067,18 @@ void record_track(Particle& p, int32_t cell_index, double distance)
   // fission source and all ordinary tallies are untouched. Every segment of
   // every history through a touched cell is recorded, which is exactly the
   // track-length estimator of the perturbation source integral.
+}
+
+void end_history(Particle& p)
+{
+  const int th = thread_num();
+  if (thread_hist_id[th] != p.id())
+    return; // this history recorded no segment
+  const double fin = p.keff_tally_collision();
+  auto& v = thread_tracks[th];
+  for (size_t i = thread_hist_begin[th]; i < v.size(); ++i)
+    v[i].importance = fin - v[i].fprod_before;
+  thread_hist_id[th] = -1;
 }
 
 double root_weight()
@@ -1092,6 +1197,8 @@ void sample_denominator_roots()
       // from the same seed, so the denominators of two perturbations differ
       // only where their physics does.
       root.seed_id = sid;
+      root.wgt_raw = s.wgt;
+      root.p_surv = p_keep;
       source_roots.push_back(root);
     }
   }
@@ -1260,6 +1367,29 @@ void run_shadow_pass()
     }
   }
   t_bookkeep += secs_since(t_phase);
+
+  if (dump_this_gen) {
+    int64_t n_rec = static_cast<int64_t>(source_roots.size());
+    for (const auto& v : thread_dead)
+      n_rec += static_cast<int64_t>(v.size());
+    const int64_t head[3] {simulation::total_gen, n_tracks, n_rec};
+    std::fwrite(head, sizeof(int64_t), 3, dump_file);
+    std::fwrite(&keff_norm, sizeof(double), 1, dump_file);
+    for (size_t i = 0; i < source_roots.size(); ++i) {
+      const auto& r = source_roots[i];
+      const DumpRec rec {r.tree, 1, r.seed_id, r.importance, r.wgt_raw,
+        r.p_surv, root_x[i]};
+      std::fwrite(&rec, sizeof(rec), 1, dump_file);
+    }
+    for (const auto& v : thread_dead)
+      if (!v.empty())
+        std::fwrite(v.data(), sizeof(DumpRec), v.size(), dump_file);
+    std::fflush(dump_file);
+    if (--dump_gens_left == 0) {
+      std::fclose(dump_file);
+      dump_file = nullptr;
+    }
+  }
 }
 
 void update_site_weights()

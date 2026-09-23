@@ -126,6 +126,18 @@ class Settings:
     ifp_n_generation : int
         Number of generations to consider for the Iterated Fission Probability
         method.
+    adjoint_populations : dict
+        Adjoint side populations for importance-weighted kinetics parameters
+        and photoneutron effects in an eigenvalue calculation. Acceptable keys
+        are:
+
+        :n_generation: Depth, in generations, to which each root's importance
+            is grown (int, required)
+        :photoneutrons: Divert photoneutrons from the transport into their own
+            population instead of banking them as secondaries (bool, requires
+            photonuclear physics). Default is False.
+
+        Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
         Maximum number of lost particles
 
@@ -487,6 +499,9 @@ class Settings:
 
         # Iterated Fission Probability
         self._ifp_n_generation = None
+
+        # Adjoint side populations
+        self._adjoint_populations = {}
 
         # Collision track feature
         self._collision_track = {}
@@ -1122,6 +1137,28 @@ class Settings:
             cv.check_type("number of generations", ifp_n_generation, Integral)
             cv.check_greater_than("number of generations", ifp_n_generation, 0)
         self._ifp_n_generation = ifp_n_generation
+
+    @property
+    def adjoint_populations(self) -> dict:
+        return self._adjoint_populations
+
+    @adjoint_populations.setter
+    def adjoint_populations(self, adjoint_populations: dict):
+        cv.check_type('adjoint populations', adjoint_populations, Mapping)
+        for key, value in adjoint_populations.items():
+            cv.check_value('adjoint populations key', key,
+                           ('n_generation', 'photoneutrons'))
+            if key == 'n_generation':
+                cv.check_type('adjoint populations n_generation', value,
+                              Integral)
+                cv.check_greater_than('adjoint populations n_generation',
+                                      value, 0)
+            else:
+                cv.check_type('adjoint populations photoneutrons', value,
+                              bool)
+        if adjoint_populations and 'n_generation' not in adjoint_populations:
+            raise ValueError("adjoint_populations requires 'n_generation'.")
+        self._adjoint_populations = dict(adjoint_populations)
 
     @property
     def tabular_legendre(self) -> dict:
@@ -1902,6 +1939,16 @@ class Settings:
             element = ET.SubElement(root, "ifp_n_generation")
             element.text = str(self._ifp_n_generation)
 
+    def _create_adjoint_populations_subelement(self, root):
+        if self._adjoint_populations:
+            element = ET.SubElement(root, "adjoint_populations")
+            for key, value in self._adjoint_populations.items():
+                subelement = ET.SubElement(element, key)
+                if isinstance(value, bool):
+                    subelement.text = str(value).lower()
+                else:
+                    subelement.text = str(value)
+
     def _create_tabular_legendre_subelements(self, root):
         if self.tabular_legendre:
             element = ET.SubElement(root, "tabular_legendre")
@@ -2448,6 +2495,18 @@ class Settings:
         if text is not None:
             self.ifp_n_generation = int(text)
 
+    def _adjoint_populations_from_xml_element(self, root):
+        elem = root.find('adjoint_populations')
+        if elem is not None:
+            value = {}
+            text = get_text(elem, 'n_generation')
+            if text is not None:
+                value['n_generation'] = int(text)
+            text = get_text(elem, 'photoneutrons')
+            if text is not None:
+                value['photoneutrons'] = text in ('true', '1')
+            self.adjoint_populations = value
+
     def _tabular_legendre_from_xml_element(self, root):
         elem = root.find('tabular_legendre')
         if elem is not None:
@@ -2734,6 +2793,7 @@ class Settings:
         self._create_no_reduce_subelement(element)
         self._create_verbosity_subelement(element)
         self._create_ifp_n_generation_subelement(element)
+        self._create_adjoint_populations_subelement(element)
         self._create_tabular_legendre_subelements(element)
         self._create_temperature_subelements(element)
         self._create_properties_file_element(element)
@@ -2856,6 +2916,7 @@ class Settings:
         settings._no_reduce_from_xml_element(elem)
         settings._verbosity_from_xml_element(elem)
         settings._ifp_n_generation_from_xml_element(elem)
+        settings._adjoint_populations_from_xml_element(elem)
         settings._tabular_legendre_from_xml_element(elem)
         settings._temperature_from_xml_element(elem)
         settings._properties_file_from_xml_element(elem)

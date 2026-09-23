@@ -122,6 +122,9 @@ bool Particle::create_secondary(
   bank.wgt_born = wgt_born();
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
+  bank.shadow_depth = shadow_depth();
+  bank.shadow_tag = shadow_tag();
+  bank.shadow_t0 = shadow_t0();
 
   local_secondary_bank().emplace_back(bank);
   return true;
@@ -153,6 +156,9 @@ void Particle::split(double wgt)
   if (settings::use_shared_secondary_bank) {
     bank.progeny_id = n_progeny()++;
   }
+  bank.shadow_depth = shadow_depth();
+  bank.shadow_tag = shadow_tag();
+  bank.shadow_t0 = shadow_t0();
 
   local_secondary_bank().emplace_back(bank);
 }
@@ -208,6 +214,9 @@ void Particle::from_source(const SourceSite* src)
   wgt_born() = src->wgt_born;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
+  shadow_depth() = src->shadow_depth;
+  shadow_tag() = src->shadow_tag;
+  shadow_t0() = src->shadow_t0;
 }
 
 void Particle::event_calculate_xs()
@@ -589,6 +598,16 @@ void Particle::event_death()
 #ifdef OPENMC_DAGMC_ENABLED
   history().reset();
 #endif
+
+  // A shadow-tree particle contributes only to its side population: its k
+  // accumulators are discarded, and it records no progeny and no tracks.
+  if (shadow_depth() >= 0) {
+    keff_tally_absorption() = 0.0;
+    keff_tally_collision() = 0.0;
+    keff_tally_tracklength() = 0.0;
+    keff_tally_leakage() = 0.0;
+    return;
+  }
 
   // Finish particle track output.
   if (write_track()) {
@@ -1009,6 +1028,8 @@ void Particle::update_neutron_xs(
 //==============================================================================
 void add_surf_source_to_bank(Particle& p, const Surface& surf)
 {
+  if (p.shadow_depth() >= 0)
+    return;
   if (simulation::current_batch <= settings::n_inactive ||
       simulation::surf_source_bank.full()) {
     return;

@@ -119,6 +119,8 @@ array<double, 4> energy_cutoff {0.0, 1000.0, 0.0, 0.0};
 array<double, 4> time_cutoff {INFTY, INFTY, INFTY, INFTY};
 array<double, 4> energy_max {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
+int adjpop_n_generation {0};
+bool adjpop_photoneutrons {false};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -599,6 +601,23 @@ void read_settings_xml(pugi::xml_node root)
       if (ifp_n_generation > n_inactive) {
         fatal_error("'ifp_n_generation' must be lower than or equal to the "
                     "number of inactive cycles.");
+      }
+    }
+
+    // Adjoint side populations: importance-weighted kinetics parameters and
+    // photoneutron effects
+    if (check_for_node(root, "adjoint_populations")) {
+      xml_node node = root.child("adjoint_populations");
+      if (!check_for_node(node, "n_generation")) {
+        fatal_error("<adjoint_populations> requires <n_generation>.");
+      }
+      adjpop_n_generation = std::stoi(get_node_value(node, "n_generation"));
+      if (adjpop_n_generation <= 0) {
+        fatal_error(
+          "<adjoint_populations> 'n_generation' must be greater than 0.");
+      }
+      if (check_for_node(node, "photoneutrons")) {
+        adjpop_photoneutrons = get_node_value_bool(node, "photoneutrons");
       }
     }
   }

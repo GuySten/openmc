@@ -136,6 +136,9 @@ extern array<double, 4>
   energy_max; //!< Energy in [eV] above which each particle type is killed
 extern int
   ifp_n_generation; //!< Number of generation for Iterated Fission Probability
+extern int adjpop_n_generation; //!< Depth of the adjoint side populations
+extern bool
+  adjpop_photoneutrons; //!< divert photoneutrons into a side population?
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

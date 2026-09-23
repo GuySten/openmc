@@ -1,5 +1,6 @@
 #include "openmc/finalize.h"
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/chain.h"
@@ -42,6 +43,7 @@ void free_memory()
   free_memory_material();
   free_memory_volume();
   free_memory_simulation();
+  adjpop::clear();
   free_memory_photon();
   free_memory_settings();
   free_memory_thermal();
@@ -112,6 +114,8 @@ int openmc_finalize()
   settings::n_inactive = 0;
   settings::n_particles = -1;
   settings::ifp_n_generation = -1;
+  settings::adjpop_n_generation = 0;
+  settings::adjpop_photoneutrons = false;
   settings::output_summary = true;
   settings::output_tallies = true;
   settings::particle_restart_run = false;

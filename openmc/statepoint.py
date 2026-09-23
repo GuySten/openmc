@@ -269,6 +269,14 @@ class StatePoint:
             return None
 
     @property
+    def adjoint_populations(self):
+        """Adjoint side-population results, or None if not requested"""
+        if self.run_mode == 'eigenvalue' and 'adjoint_populations' in self._f:
+            return openmc.AdjointPopulations(
+                self._f['adjoint_populations'], self.keff.n)
+        return None
+
+    @property
     def k_generation(self):
         if self.run_mode == 'eigenvalue':
             return self._f['k_generation'][()]

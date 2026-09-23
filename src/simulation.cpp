@@ -1,5 +1,6 @@
 #include "openmc/simulation.h"
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/collision_track.h"
@@ -94,6 +95,9 @@ int openmc_simulation_init()
 
   // Allocate source, fission and surface source banks.
   allocate_banks();
+
+  // Storage for the adjoint side populations, if requested
+  adjpop::init();
 
   // Create track file if needed
   if (!settings::track_identifiers.empty() || settings::write_all_tracks) {
@@ -526,6 +530,9 @@ void finalize_batch()
   accumulate_tallies();
   simulation::time_tallies.stop();
 
+  // Fold this batch's adjoint side-population sums into the batch record
+  adjpop::finalize_batch();
+
   // update weight windows if needed
   for (const auto& wwg : variance_reduction::weight_windows_generators) {
     wwg->update();
@@ -629,6 +636,9 @@ void initialize_generation()
     // Clear out the fission bank
     simulation::fission_bank.resize(0);
 
+    // Decide whether this generation grows adjoint side populations
+    adjpop::reset_generation();
+
     // Count source sites if using uniform fission source weighting
     if (settings::ufs_on)
       ufs_count_sites();
@@ -667,6 +677,10 @@ void finalize_generation()
     // so as to allow for reproducibility regardless of which order particles
     // are run in.
     sort_bank(simulation::fission_bank, true);
+
+    // Grow this generation's adjoint side populations while the complete
+    // fission bank is still in hand
+    adjpop::run_shadow_pass();
 
     // Distribute fission bank across processors evenly
     synchronize_bank();
@@ -950,8 +964,12 @@ void initialize_data()
       // would therefore produce a fission source inconsistent with the keff
       // they are normalized against, and the fission heating would miss the
       // keff re-weighting applied to neutron-induced fission. Refuse the
-      // combination rather than return a subtly wrong eigenvalue.
-      if (settings::run_mode == RunMode::EIGENVALUE) {
+      // combination rather than return a subtly wrong eigenvalue. The adjoint
+      // side populations take every photoneutron, photofission neutrons
+      // included, out of the transport, so none of them is ever banked.
+      if (settings::run_mode == RunMode::EIGENVALUE &&
+          !(settings::adjpop_n_generation > 0 &&
+            settings::adjpop_photoneutrons)) {
         for (const auto& pn_nuc : data::photonuclears) {
           if (pn_nuc->fissionable_) {
             fatal_error(fmt::format(

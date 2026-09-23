@@ -26,6 +26,7 @@ from openmc.tally_derivative import *
 from openmc.tallies import *
 from openmc.mgxs_library import *
 from openmc.executor import *
+from openmc.adjoint_populations import AdjointPopulations
 from openmc.statepoint import *
 from openmc.summary import *
 from openmc.particle_restart import *

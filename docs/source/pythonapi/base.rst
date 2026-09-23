@@ -208,6 +208,7 @@ Post-processing
    :nosignatures:
    :template: myclass.rst
 
+   openmc.AdjointPopulations
    openmc.Particle
    openmc.ParticleList
    openmc.ParticleTrack

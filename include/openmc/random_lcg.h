@@ -2,6 +2,7 @@
 #define OPENMC_RANDOM_LCG_H
 
 #include <cstdint>
+#include <initializer_list>
 
 namespace openmc {
 
@@ -58,6 +59,21 @@ uint64_t init_seed(int64_t id, int offset);
 //==============================================================================
 
 void init_particle_seeds(int64_t id, uint64_t* seeds);
+
+//==============================================================================
+//! Fold several small counters into one id fit for init_particle_seeds().
+//!
+//! init_seed() and init_particle_seeds() separate streams by multiplying the
+//! id by prn_stride and do no mixing, so an id assembled from a generation, a
+//! particle id and an event counter -- consecutive callers differing in one
+//! low bit -- has to be scrambled first. Uses the splitmix64 finalizer on
+//! each component in turn.
+//!
+//! \param components identity of the thing being seeded, in a fixed order
+//! \return non-negative id, well separated for nearby components
+//==============================================================================
+
+int64_t combine_ids(std::initializer_list<int64_t> components);
 
 //==============================================================================
 //! Advance the random number seed 'n' times from the current seed. This

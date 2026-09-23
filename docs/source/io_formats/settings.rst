@@ -7,6 +7,31 @@ Settings Specification -- settings.xml
 All simulation parameters and miscellaneous options are specified in the
 settings.xml file.
 
+---------------------------------
+``<adjoint_populations>`` Element
+---------------------------------
+
+The ``<adjoint_populations>`` element requests adjoint side populations in an
+eigenvalue calculation: importance-weighted kinetics parameters and, optionally,
+the effect of photoneutrons on reactivity, the effective delayed-neutron
+fraction and the generation time. Each active generation, a sample of the
+fission bank, the expected delayed neutrons of every fission, and optionally
+every photoneutron, are grown ``n_generation`` generations as neutron-only
+trees that do not affect the calculation. This element has the following
+sub-elements:
+
+  :n_generation:
+    Depth, in generations, to which each root's importance is grown. Required.
+
+  :photoneutrons:
+    If true, photoneutrons are taken out of the transport and grown as their
+    own population instead of being banked as secondaries, so that they never
+    enter the fission chain. Requires ``<photonuclear_physics>``. With this
+    option, photonuclear data containing photofission may be used in an
+    eigenvalue calculation.
+
+    *Default*: false
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

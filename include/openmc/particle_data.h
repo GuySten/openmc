@@ -56,6 +56,14 @@ struct SourceSite {
   double wgt_ww_born {-1.0};
   int64_t n_split {0};
   int n_collision {0};
+
+  // Adjoint side populations (see adjoint_populations.h). A driver site has
+  // depth -1; a shadow-tree site carries its generation depth below its
+  // root, the root's tag, and the lifetime its depth-0 ancestor had reached
+  // at the fission that started its line (IFP's generation-time weight).
+  int shadow_depth {-1};
+  int shadow_tag {-1};
+  double shadow_t0 {0.0};
 };
 
 struct CollisionTrackSite {
@@ -549,6 +557,12 @@ private:
 
   int n_collision_ {0};
 
+  // Adjoint side populations: -1 for the driver, else the depth below the
+  // root in a shadow tree. See SourceSite::shadow_depth.
+  int shadow_depth_ {-1};
+  int shadow_tag_ {-1};
+  double shadow_t0_ {0.0};
+
   bool write_track_ {false};
 
   uint64_t seeds_[N_STREAMS];
@@ -707,6 +721,12 @@ public:
   // Total number of collisions suffered by particle
   int& n_collision() { return n_collision_; }
   const int& n_collision() const { return n_collision_; }
+  int& shadow_depth() { return shadow_depth_; }
+  const int& shadow_depth() const { return shadow_depth_; }
+  int& shadow_tag() { return shadow_tag_; }
+  const int& shadow_tag() const { return shadow_tag_; }
+  double& shadow_t0() { return shadow_t0_; }
+  const double& shadow_t0() const { return shadow_t0_; }
 
   // whether this track is to be written
   bool& write_track() { return write_track_; }

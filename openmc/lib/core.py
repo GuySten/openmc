@@ -35,7 +35,10 @@ class _SourceSite(Structure):
                 ('wgt_born', c_double),
                 ('wgt_ww_born', c_double),
                 ('n_split', c_int64),
-                ('n_collision', c_int)]
+                ('n_collision', c_int),
+                ('shadow_depth', c_int),
+                ('shadow_tag', c_int),
+                ('shadow_t0', c_double)]
 
 # Define input type for numpy arrays that will be passed into C++ functions
 # Must be an int or double array, with single dimension that is contiguous

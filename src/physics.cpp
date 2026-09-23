@@ -1,5 +1,6 @@
 #include "openmc/physics.h"
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/bank.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
@@ -140,8 +141,8 @@ void sample_neutron_reaction(Particle& p)
     p.event_mt() = rx.mt_;
   }
 
-  // Create secondary photons
-  if (settings::photon_transport) {
+  // Create secondary photons. Shadow trees are neutron-only.
+  if (settings::photon_transport && p.shadow_depth() < 0) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -175,6 +176,14 @@ void sample_neutron_reaction(Particle& p)
 
 void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
 {
+  // A shadow-tree neutron banks into its own tree, never the fission bank
+  if (p.shadow_depth() >= 0) {
+    adjpop::create_tree_sites(p, i_nuclide, rx);
+    return;
+  }
+  // The driver only records the event, drawing no random number
+  adjpop::record_fission(p, i_nuclide, rx);
+
   // If uniform fission source weighting is turned on, we increase or decrease
   // the expected number of fission sites produced
   double weight = settings::ufs_on ? ufs_get_weight(p) : 1.0;
@@ -1649,6 +1658,22 @@ double emit_photonuclear_product(Particle& p,
 
   // Sample the new direction
   Direction u = rotate_angle(p.u(), mu, nullptr, p.current_seed());
+
+  // With adjoint side populations taking photoneutrons, the photoneutron
+  // becomes a root there instead of a secondary here, so it never enters the
+  // fission chain. Its energy still leaves the collision, as it would have.
+  if (is_neutron) {
+    int group = 0;
+    if (nuc.fissionable_ && &rx == nuc.fission_rx_ && !rx.products_.empty()) {
+      const auto idx = &product - rx.products_.data();
+      if (idx > 0 && idx < static_cast<long>(rx.products_.size()))
+        group = static_cast<int>(idx);
+    }
+    if (adjpop::record_photoneutron(p, wgt, u, E, group)) {
+      p.bank_second_E() += E;
+      return E;
+    }
+  }
 
   // Create the secondary particle
   p.create_secondary(wgt, u, E, product.particle_);

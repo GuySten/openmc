@@ -159,4 +159,28 @@ extern "C" void openmc_set_stride(uint64_t new_stride)
   prn_stride = new_stride;
 }
 
+namespace {
+
+//! splitmix64 finalizer.
+uint64_t mix_seed(uint64_t x)
+{
+  x += 0x9e3779b97f4a7c15ULL;
+  x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+  return x ^ (x >> 31);
+}
+
+} // namespace
+
+int64_t combine_ids(std::initializer_list<int64_t> components)
+{
+  uint64_t h = 0;
+  for (int64_t c : components) {
+    h = mix_seed(h ^ static_cast<uint64_t>(c));
+  }
+  // Shifted, not masked: callers take a signed id, and a negative one would
+  // be multiplied by prn_stride.
+  return static_cast<int64_t>(h >> 1);
+}
+
 } // namespace openmc

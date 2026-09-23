@@ -7,6 +7,7 @@
 #include "openmc/tensor.h"
 #include <fmt/core.h>
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/bank.h"
 #include "openmc/bank_io.h"
 #include "openmc/capi.h"
@@ -309,6 +310,11 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
   } else if (mpi::master) {
     // Write number of global realizations
     write_dataset(file_id, "n_realizations", simulation::n_realizations);
+  }
+
+  // Write the adjoint side-population sums
+  if (mpi::master && settings::run_mode == RunMode::EIGENVALUE) {
+    adjpop::write_results(file_id);
   }
 
   if (mpi::master) {

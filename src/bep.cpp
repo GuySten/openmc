@@ -115,6 +115,9 @@ vector<double> batch_tau;
 vector<double> pooled_tau;
 vector<double> ell_sum;
 vector<double> ell_cross;
+vector<double> den_sum;
+vector<double> den_sumsq;
+vector<int64_t> den_nonpositive;
 int64_t n_active_batches {0};
 int64_t n_generations {0};
 
@@ -851,6 +854,9 @@ void init()
   pooled_tau.assign(tree_pert.size() * nd, 0.0);
   ell_sum.assign(np * nd, 0.0);
   ell_cross.assign(np * np * nd, 0.0);
+  den_sum.assign(np * nd, 0.0);
+  den_sumsq.assign(np * nd, 0.0);
+  den_nonpositive.assign(np * nd, 0);
   n_active_batches = 0;
   // Unit weight until a generation has been run to measure from, which is
   // exactly what an eigenvalue calculation does anyway.
@@ -1867,6 +1873,22 @@ void finalize_batch()
         keff_norm);
       l_b[ip * nd + d] = l;
       ell_sum[ip * nd + d] += l;
+
+      // The batch's own denominator, k D + N_F, for the resolution guard.
+      // Every batch forms its OWN ratio, so what decides whether the mean of
+      // those ratios can be trusted is how much this fluctuates from batch
+      // to batch -- the mean-of-ratios bias is about R cv^2 -- not whether
+      // its run mean is significant, which only improves as 1/sqrt(n). And a
+      // batch whose denominator is not positive is one level() has already
+      // replaced by zero: it cannot be averaged in, and it must not go
+      // unreported.
+      const double den = keff_norm * batch_tau[tau_index(p.tree_d, d)] +
+                         batch_tau[tau_index(p.tree_fp, d)] -
+                         batch_tau[tau_index(p.tree_fn, d)];
+      den_sum[ip * nd + d] += den;
+      den_sumsq[ip * nd + d] += den * den;
+      if (!(den > 0.0))
+        ++den_nonpositive[ip * nd + d];
     }
   }
   // The full cross-products, not just the squares: two perturbations sharing
@@ -1982,6 +2004,13 @@ void write_results(hid_t file_id)
   // the number to quote.
   write_dataset(group, "level_sum", ell_sum);
   write_dataset(group, "level_cross", ell_cross);
+
+  // The per-batch denominator k D + N_F: sum, sum of squares and the count of
+  // batches where it was not positive, per perturbation and depth. What the
+  // resolution guard reads (Perturbations.resolved); see finalize_batch().
+  write_dataset(group, "denominator_sum", den_sum);
+  write_dataset(group, "denominator_sumsq", den_sumsq);
+  write_dataset(group, "denominator_nonpositive", den_nonpositive);
 
   vector<double> pooled(static_cast<size_t>(np) * nd, 0.0);
   for (int ip = 0; ip < np; ++ip) {

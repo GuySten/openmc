@@ -502,7 +502,8 @@ def test_no_perturbations_writes_no_file(run_in_tmpdir, cells_and_materials):
 # StatePoint parsing
 # ----------------------------------------------------------------------------
 
-def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
+def _write_statepoint(path, tau, ids, n_generation, keff=1.0,
+                      denominator=True):
     """Minimal statepoint carrying only a local_perturbation group.
 
     ``tau`` is [batch][tree][depth] with five trees per perturbation, in the
@@ -547,6 +548,16 @@ def _write_statepoint(path, tau, ids, n_generation, keff=1.0):
                          data=np.einsum('bid,bjd->ijd', ell, ell).ravel())
         g.create_dataset('level_pooled', data=pooled.ravel())
         g.create_dataset('tau_pooled', data=tau.sum(0).ravel())
+        if denominator:
+            # k D + N_F per batch, as finalize_batch() accumulates it
+            den = np.stack([keff * tau[:, 5 * i] + tau[:, 5 * i + 1]
+                            - tau[:, 5 * i + 2] for i in range(len(ids))],
+                           axis=1)                     # [batch][pert][depth]
+            g.create_dataset('denominator_sum', data=den.sum(0).ravel())
+            g.create_dataset('denominator_sumsq',
+                             data=(den * den).sum(0).ravel())
+            g.create_dataset('denominator_nonpositive',
+                             data=(den <= 0.0).sum(0).astype(np.int64).ravel())
         for i, pid in enumerate(ids):
             pg = g.create_group(f'perturbation {pid}')
             pg.create_dataset('index', data=i)
@@ -602,6 +613,52 @@ def test_statepoint_parsing(run_in_tmpdir):
         assert len(ps.by_id(1).depth_curve) == L + 1
         assert np.isfinite(ps.by_id(1).depth_curve).all()
         assert ps.by_id(1).rho_pooled == pytest.approx(1e5 * rho, rel=1e-9)
+
+
+def test_denominator_guard_flags_what_it_should(run_in_tmpdir):
+    """An unresolved denominator is reported, and only that.
+
+    Three perturbations in one file: a denominator grown from many roots
+    (per-batch cv ~ 0.02), one from few (cv ~ 0.3, a mean-of-ratios bias of
+    order 10%), and one so thin that it dies out in some batches, where
+    level() has silently substituted zero.
+    """
+    L, n_batch, k, rho = 10, 40, 2.2, -300e-5
+    rng = np.random.default_rng(7)
+    parts = [np.stack(_branching_tau(rng, k, rho, n, n_batch, L), axis=1)
+             for n in (20000, 100, 3)]
+    tau = np.concatenate(parts, axis=1)
+    _write_statepoint('sp.h5', tau, [1, 2, 3], L, keff=k)
+
+    with pytest.warns(UserWarning, match='UNRESOLVED') as rec:
+        with openmc.StatePoint('sp.h5', autolink=False) as sp:
+            ps = sp.perturbations
+    msg = ' '.join(str(w.message) for w in rec)
+    assert '1 (' not in msg and '2 (' in msg and '3 (' in msg
+
+    good, noisy, thin = ps.by_id(1), ps.by_id(2), ps.by_id(3)
+    assert good.resolved is True and good.n_denominator_nonpositive == 0
+    assert noisy.resolved is False and noisy.n_denominator_nonpositive == 0
+    assert thin.resolved is False and thin.n_denominator_nonpositive > 0
+
+    # the cv is the plain per-batch spread of k D_L (N_F = 0 here)
+    den = k * parts[1][:, 0, L]
+    assert noisy.denominator_cv == pytest.approx(
+        den.std(ddof=1) / den.mean(), rel=1e-9)
+    assert good.denominator_cv < openmc.Perturbations.DENOMINATOR_CV_MAX
+    assert noisy.denominator_cv > openmc.Perturbations.DENOMINATOR_CV_MAX
+    assert 'UNRESOLVED' in repr(thin) and 'UNRESOLVED' not in repr(good)
+
+
+def test_statepoint_without_the_guard_still_reads(run_in_tmpdir):
+    L, n_batch, k, rho = 4, 10, 2.2, -300e-5
+    rng = np.random.default_rng(3)
+    tau = np.stack(_branching_tau(rng, k, rho, 400, n_batch, L), axis=1)
+    _write_statepoint('sp.h5', tau, [1], L, keff=k, denominator=False)
+    with openmc.StatePoint('sp.h5', autolink=False) as sp:
+        p = sp.perturbations.by_id(1)
+        assert p.rho is not None
+        assert p.resolved is None and p.denominator_cv is None
 
 
 def test_level_inversion_is_exact_at_large_worth(run_in_tmpdir):
@@ -991,6 +1048,10 @@ def test_null_perturbation_is_exactly_zero(run_in_tmpdir, model):
             'numbers are not holding between the trees'
         assert p.rho.std_dev < 1.0e-6
         assert np.allclose(p.depth_curve, 0.0, atol=1.0e-12)
+        # the C++ writes the resolution guard's data: a null perturbation's
+        # denominator is the reference population itself, well resolved
+        assert p.resolved is True
+        assert p.n_denominator_nonpositive == 0
 
 
 def test_survival_biasing_preserves_the_null_perturbation(run_in_tmpdir,

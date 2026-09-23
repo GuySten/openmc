@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from numbers import Integral
 from pathlib import Path
+import warnings
 
 import lxml.etree as ET
 import numpy as np
@@ -84,6 +85,29 @@ class LocalPerturbation(IDManagerMixin):
         :attr:`rho`'s sigma is the single assumption the batch statistics
         make, and it can be checked directly. Quote this one if they ever
         disagree.
+    resolved : bool or None
+        Whether the worth's denominator, k D + N_F, was resolved in every
+        batch. The worth is a mean of per-batch ratios, and a ratio is only
+        trustworthy when its denominator is well determined: the mean-of-ratios
+        bias grows as the square of the denominator's per-batch coefficient of
+        variation, and a batch whose denominator came out non-positive had its
+        level replaced by zero. False when any batch denominator was
+        non-positive or when its per-batch coefficient of variation exceeded
+        :data:`Perturbations.DENOMINATOR_CV_MAX`; a warning is issued and
+        :attr:`rho` should not be quoted. The usual cause is a strong
+        perturbation that lowers k: the denominator is k' (D - N_L), the
+        perturbed population at depth L, which shrinks like (k'/k)^(L+1) and
+        dies out long before k' itself is small -- a Godiva whole-sphere
+        density x0.4 (k' = 0.42) fails at L = 10 because 0.42^11 ~ 1e-4. A
+        shallower ``perturbation_n_generation`` or more particles per batch
+        brings it back. None for a statepoint written before the guard
+        existed.
+    denominator_cv : float or None
+        The per-batch coefficient of variation of k D + N_F at d = L. The
+        mean-of-ratios bias of :attr:`rho` is of order ``denominator_cv**2``
+        relative.
+    n_denominator_nonpositive : int or None
+        Batches whose denominator at d = L was zero or negative.
 
     """
 
@@ -100,6 +124,9 @@ class LocalPerturbation(IDManagerMixin):
         self.depth_curve = None
         self.depth_sigma = None
         self.rho_pooled = None
+        self.resolved = None
+        self.denominator_cv = None
+        self.n_denominator_nonpositive = None
 
     def __repr__(self):
         parts = [f'LocalPerturbation\n{"":<12}ID={self.id}']
@@ -108,6 +135,9 @@ class LocalPerturbation(IDManagerMixin):
         parts.append(f'{"":<12}Substitutions={self.substitutions}')
         if self.rho is not None:
             parts.append(f'{"":<12}Worth={self.rho:.4g} pcm')
+        if self.resolved is False:
+            parts.append(f'{"":<12}UNRESOLVED: denominator not determined '
+                         '(see LocalPerturbation.resolved)')
         return '\n'.join(parts) + '\n'
 
     @property
@@ -238,6 +268,14 @@ class Perturbations(cv.CheckedList):
 
     """
 
+    #: Largest per-batch coefficient of variation of the worth's denominator,
+    #: k D + N_F, for which a perturbation counts as resolved. The mean of
+    #: per-batch ratios is biased by about cv**2 relative, so this holds that
+    #: bias to about 1%. It is the same bound the auto-tune places on the
+    #: denominator (DELTA_METHOD_EPS in bep.h, applied there as rv_D <= EPS^2),
+    #: so the tuner can never coarsen D past what this accepts.
+    DENOMINATOR_CV_MAX = 0.1
+
     def __init__(self, perturbations=None):
         super().__init__(LocalPerturbation, 'collection of perturbations')
         self._n_generation = None
@@ -266,7 +304,8 @@ class Perturbations(cv.CheckedList):
 
     # ------------------------------------------------------------- results
     def _set_results(self, level_sum, level_cross, level_pooled, n_batches,
-                     tau_pooled=None, trees=None, keff=None):
+                     tau_pooled=None, trees=None, keff=None,
+                     denominator=None):
         """Derive worths and their covariance from the level batch statistics.
 
         Parameters
@@ -295,6 +334,10 @@ class Perturbations(cv.CheckedList):
             C++'s class order D, F+, F-, L+, L-.
         keff : float, optional
             The eigenvalue the fission bank was normalised by.
+        denominator : tuple of numpy.ndarray, optional
+            ``(sum, sumsq, n_nonpositive)`` of the per-batch denominator
+            k D + N_F, each of shape (n_perturbations, L+1). Sets
+            :attr:`LocalPerturbation.resolved`; without it that stays None.
 
         The uncertainty is the ordinary spread of the per-batch realizations,
         with no model of the correlation between generations anywhere. That is
@@ -356,6 +399,37 @@ class Perturbations(cv.CheckedList):
             p.depth_curve = 1.0e5 * mean[i]
             p.depth_sigma = 1.0e5 * sigma[i]
             p.rho_pooled = 1.0e5 * float(level_pooled[i, L])
+
+        if denominator is not None:
+            self._set_resolution(*denominator, n)
+
+    def _set_resolution(self, d_sum, d_sumsq, d_nonpos, n):
+        """Classify each perturbation's denominator as resolved or not."""
+        d_sum = np.asarray(d_sum, dtype=float)
+        d_sumsq = np.asarray(d_sumsq, dtype=float)
+        d_nonpos = np.asarray(d_nonpos, dtype=int)
+        L = d_sum.shape[1] - 1
+        unresolved = []
+        for i, p in enumerate(self):
+            mean = d_sum[i, L] / n
+            var = max(d_sumsq[i, L] - n * mean * mean, 0.0) / (n - 1.0)
+            cv_b = np.sqrt(var) / mean if mean > 0.0 else np.inf
+            p.denominator_cv = float(cv_b)
+            p.n_denominator_nonpositive = int(d_nonpos[i, L])
+            p.resolved = bool(p.n_denominator_nonpositive == 0 and
+                              cv_b <= self.DENOMINATOR_CV_MAX)
+            if not p.resolved:
+                unresolved.append(
+                    f'{p.id} (per-batch denominator cv {cv_b:.3g}, '
+                    f'{p.n_denominator_nonpositive} of {int(n)} batches '
+                    'non-positive)')
+        if unresolved:
+            warnings.warn(
+                'Perturbation worth(s) UNRESOLVED -- the denominator k D + N_F '
+                'is not determined batch by batch, so the mean of per-batch '
+                'ratios is not a usable estimate: ' + '; '.join(unresolved) +
+                '. Do not quote rho for these. See LocalPerturbation.resolved.',
+                UserWarning, stacklevel=3)
 
     @property
     def n_batches(self):

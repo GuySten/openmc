@@ -549,9 +549,19 @@ class StatePoint:
             # No k conversion here: the C++ level estimator already returns
             # 1/k - 1/k', having inverted for k' in closed form. There is
             # nothing left for the analysis layer to get wrong.
+            # The per-batch denominator, for the resolution guard. Optional
+            # so that a statepoint written before it existed still reads.
+            denominator = None
+            if 'denominator_sum' in group:
+                denominator = tuple(
+                    np.asarray(group[name][()]).reshape(n_pert, n_gen + 1)
+                    for name in ('denominator_sum', 'denominator_sumsq',
+                                 'denominator_nonpositive'))
+
             perturbations._set_results(level_sum, level_cross, level_pooled,
                                        n_batches, tau_pooled=tau_pooled,
-                                       trees=trees, keff=keff)
+                                       trees=trees, keff=keff,
+                                       denominator=denominator)
             self._perturbations = perturbations
 
         return self._perturbations

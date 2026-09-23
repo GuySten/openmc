@@ -64,8 +64,9 @@ def test_energy_cutoff(run_in_tmpdir):
 
 
 def test_source_below_energy_cutoff(run_in_tmpdir):
-    # Source particles born below the energy cutoff should be killed
-    # immediately rather than transported
+    # Source photons born below the energy cutoff should not be transported
+    # but should deposit their energy locally, as photons that fall below the
+    # cutoff during transport do
     source_energy = 1e3
     cutoff_energy = 2e3
     model = inf_medium_model(cutoff_energy, 2*cutoff_energy)
@@ -78,5 +79,7 @@ def test_source_below_energy_cutoff(run_in_tmpdir):
 
     with openmc.StatePoint(statepoint_path) as sp:
         flux = sp.get_tally(name='flux').mean.ravel()
+        heating = sp.get_tally(name='heating').mean.ravel()
 
     assert flux[0] == 0.0
+    assert heating[0] == pytest.approx(source_energy)

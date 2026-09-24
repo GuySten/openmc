@@ -121,6 +121,7 @@ array<double, 4> energy_max {INFTY, INFTY, INFTY, INFTY};
 int ifp_n_generation {-1};
 int adjpop_n_generation {0};
 bool adjpop_photoneutrons {false};
+bool adjpop_perturbed_importance {false};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -618,6 +619,10 @@ void read_settings_xml(pugi::xml_node root)
       }
       if (check_for_node(node, "photoneutrons")) {
         adjpop_photoneutrons = get_node_value_bool(node, "photoneutrons");
+      }
+      if (check_for_node(node, "perturbed_importance")) {
+        adjpop_perturbed_importance =
+          get_node_value_bool(node, "perturbed_importance");
       }
     }
   }

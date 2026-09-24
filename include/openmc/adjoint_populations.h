@@ -16,6 +16,12 @@
 //!    enter the fission chain. Tagged with the photofission delayed group
 //!    (0 = prompt).
 //!
+//! With perturbed importance on, fission- and delayed-root trees also
+//! transport photons below their root, and every photoneutron those photons
+//! make grows on as a branch of its tree, scored in a class of its own. The
+//! tree's weight without its branches is the unperturbed importance, and with
+//! them the importance with photoneutrons in the chain, to first order.
+//!
 //! After each active generation every root is Russian-rouletted to its
 //! population's target weight and grown n_generation generations in the
 //! unperturbed physics, as a neutron-only shadow tree that banks its fission
@@ -48,13 +54,16 @@ class Reaction;
 
 namespace adjpop {
 
-//! Root populations
+//! Root populations, and the perturbation branches scored beside them
 enum RootClass : int {
-  CLASS_FISSION = 0,     //!< sample of the fission bank (the denominator)
-  CLASS_DELAYED = 1,     //!< forced expected-value delayed neutrons
-  CLASS_PHOTONEUTRON = 2 //!< photoneutrons diverted from the driver
+  CLASS_FISSION = 0,        //!< sample of the fission bank (the denominator)
+  CLASS_DELAYED = 1,        //!< forced expected-value delayed neutrons
+  CLASS_PHOTONEUTRON = 2,   //!< photoneutrons diverted from the driver
+  CLASS_FISSION_BRANCH = 3, //!< photoneutron branches of fission-root trees
+  CLASS_DELAYED_BRANCH = 4  //!< photoneutron branches of delayed-root trees
 };
-constexpr int N_CLASS = 3;
+constexpr int N_CLASS = 3;       //!< root populations
+constexpr int N_SCORE_CLASS = 5; //!< root populations and branches
 
 //! Tags are 0 (prompt) or a delayed group 1..N_TAG-1
 constexpr int N_TAG = 9;
@@ -113,6 +122,19 @@ bool record_photoneutron(
 //! Shadow-tree hook in create_fission_sites(): bank this tree's fission
 //! sites at its population's target weight and score them by depth
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx);
+
+//! Does this shadow-tree neutron emit photons? Only with perturbed importance
+//! on, and only below the root (depth >= 1) of fission- and delayed-root
+//! trees: photoneutrons of the root itself are the driver's photoneutron
+//! population, and branches of branches are second order.
+bool tree_makes_photons(const Particle& p);
+
+//! Shadow-tree hook for a photoneutron leaving a tree photon: roulette it to
+//! its branch's target weight.
+//! \param[inout] wgt photoneutron weight, set to the weight it is banked with
+//! \param[out] tag shadow tag the banked photoneutron is to carry
+//! \return false if the photoneutron was killed by the roulette
+bool branch_photoneutron(Particle& p, double& wgt, int& tag);
 
 //! Grow every root recorded this generation. Called from
 //! finalize_generation() once the fission bank is complete.

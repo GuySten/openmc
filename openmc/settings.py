@@ -136,6 +136,11 @@ class Settings:
         :photoneutrons: Divert photoneutrons from the transport into their own
             population instead of banking them as secondaries (bool, requires
             photonuclear physics). Default is False.
+        :perturbed_importance: Also transport photons below the root of the
+            fission- and delayed-root trees and grow their photoneutrons as
+            branches, giving the change of the importance function that the
+            change of beta_eff and of the generation time need (bool,
+            requires photoneutrons). Default is False.
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1147,15 +1152,15 @@ class Settings:
         cv.check_type('adjoint populations', adjoint_populations, Mapping)
         for key, value in adjoint_populations.items():
             cv.check_value('adjoint populations key', key,
-                           ('n_generation', 'photoneutrons'))
+                           ('n_generation', 'photoneutrons',
+                            'perturbed_importance'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
                 cv.check_greater_than('adjoint populations n_generation',
                                       value, 0)
             else:
-                cv.check_type('adjoint populations photoneutrons', value,
-                              bool)
+                cv.check_type(f'adjoint populations {key}', value, bool)
         if adjoint_populations and 'n_generation' not in adjoint_populations:
             raise ValueError("adjoint_populations requires 'n_generation'.")
         self._adjoint_populations = dict(adjoint_populations)
@@ -2505,6 +2510,9 @@ class Settings:
             text = get_text(elem, 'photoneutrons')
             if text is not None:
                 value['photoneutrons'] = text in ('true', '1')
+            text = get_text(elem, 'perturbed_importance')
+            if text is not None:
+                value['perturbed_importance'] = text in ('true', '1')
             self.adjoint_populations = value
 
     def _tabular_legendre_from_xml_element(self, root):

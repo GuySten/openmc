@@ -116,6 +116,7 @@ int openmc_finalize()
   settings::ifp_n_generation = -1;
   settings::adjpop_n_generation = 0;
   settings::adjpop_photoneutrons = false;
+  settings::adjpop_perturbed_importance = false;
   settings::output_summary = true;
   settings::output_tallies = true;
   settings::particle_restart_run = false;

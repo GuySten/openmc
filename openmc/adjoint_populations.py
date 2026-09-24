@@ -12,9 +12,16 @@ summed weight at every depth is recorded per batch:
   of the transport so that they never enter the fission chain, tagged with
   the photofission delayed group (0 = prompt).
 
+With perturbed importance on, the fission- and delayed-root trees also
+transport photons below their root, and the photoneutrons those photons make
+grow on as branches, scored separately. The trees without their branches give
+the unperturbed importance; with them, the importance with photoneutrons in
+the chain.
+
 A root's weight at depth L is its importance (iterated fission probability).
 All roots are weighted like fission sites, per 1/k. With importance sums I
-and lifetime-weighted sums T at depth L, the quantities reported are
+and lifetime-weighted sums T at depth L (primes: branches included), the
+quantities reported are
 
 - beta_eff per group g: I_delayed,g / I_fission (forced), or
   I_fission,g / I_fission (analog, as in iterated fission probability);
@@ -22,12 +29,21 @@ and lifetime-weighted sums T at depth L, the quantities reported are
 - photoneutron reactivity: drho = 1/k - 1/k' = I_pn / I_fission, where k' is
   the eigenvalue with photoneutrons transported as secondaries;
 - beta_eff with photoneutrons, per group:
-  (I_delayed,g + I_pn,g) / (I_fission + I_pn);
+  (I'_delayed,g + k I_pn,g) / (I'_fission + k I_pn);
 - generation time with photoneutrons:
-  (T_fission + k T_pn) / (k' (I_fission + I_pn)).
+  (T'_fission + k T_pn) / (k' (I'_fission + k I_pn)),
 
-The photoneutron quantities are first order in the photoneutron source: the
-change the photoneutrons make to the importance function is not included.
+where a primed sum at depth d includes the branches and is divided by
+1 + (d - 1) k drho, the growth the branches add over the d - 1 generations
+that make photons (iterated fission probability with photoneutrons in the
+chain removes it by dividing by k' at every fission).
+
+The last two follow the convention of iterated fission probability with
+photoneutrons in the fission chain: a photoneutron counts as a neutron of the
+generation of the neutron that made it, not divided by k. They are first
+order in the photoneutron source, including its change of the importance
+function (which needs perturbed importance), but not the redistribution of the
+fission source that the photoneutrons cause.
 
 Every quantity is a ratio of batch means. Its uncertainty is from the batch
 statistics, linearised about the means (the delta method); k is treated as
@@ -40,6 +56,8 @@ from uncertainties import ufloat
 CLASS_FISSION = 0
 CLASS_DELAYED = 1
 CLASS_PHOTONEUTRON = 2
+CLASS_FISSION_BRANCH = 3
+CLASS_DELAYED_BRANCH = 4
 
 
 class AdjointPopulations:
@@ -60,6 +78,8 @@ class AdjointPopulations:
         Number of active batches recorded
     photoneutrons : bool
         Whether photoneutrons were taken as a population
+    perturbed_importance : bool
+        Whether photoneutron branches were grown in the trees
     keff : float
         k used to form the ratios
     weight : numpy.ndarray
@@ -78,6 +98,8 @@ class AdjointPopulations:
         self.n_generation = int(group['n_generation'][()])
         self.n_batches = int(group['n_batches'][()])
         self.photoneutrons = bool(group['photoneutrons'][()])
+        self.perturbed_importance = bool(group['perturbed_importance'][()]) \
+            if 'perturbed_importance' in group else False
         n_class = int(group['n_class'][()])
         n_tag = int(group['n_tag'][()])
         shape = (self.n_batches, n_class, n_tag, self.n_generation + 1)
@@ -116,7 +138,7 @@ class AdjointPopulations:
         g = self._groups(group)
         w = self.weight[..., d]
         wt = self.weight_t0[..., d]
-        return {
+        x = {
             'I_F': w[:, CLASS_FISSION].sum(axis=1),
             'I_Fg': w[:, CLASS_FISSION, g].sum(axis=1),
             'I_Dg': w[:, CLASS_DELAYED, g].sum(axis=1),
@@ -125,6 +147,11 @@ class AdjointPopulations:
             'T_F': wt[:, CLASS_FISSION].sum(axis=1),
             'T_P': wt[:, CLASS_PHOTONEUTRON].sum(axis=1),
         }
+        if w.shape[1] > CLASS_DELAYED_BRANCH:
+            x['B_F'] = w[:, CLASS_FISSION_BRANCH].sum(axis=1)
+            x['B_Dg'] = w[:, CLASS_DELAYED_BRANCH, g].sum(axis=1)
+            x['BT_F'] = wt[:, CLASS_FISSION_BRANCH].sum(axis=1)
+        return x
 
     def _estimate(self, func, depth, group=None):
         """Evaluate func at the batch means of the sums, with a delta-method
@@ -201,37 +228,64 @@ class AdjointPopulations:
         return self._estimate(
             lambda m: k / (1.0 - k * m['I_P'] / m['I_F']), depth)
 
+    def _check_perturbed(self):
+        self._check_photoneutrons()
+        if not self.perturbed_importance:
+            raise ValueError(
+                'The change of beta_eff and of the generation time needs the '
+                'change of the importance function: run with '
+                "adjoint_populations['perturbed_importance'] = True.")
+
+    def _perturbed(self, m, d):
+        """Importance sums with photoneutron branches, less the growth the
+        branches add to every tree. Branches do not branch, so over the d - 1
+        generations that make photons a tree grows by 1 + (d - 1) k drho to
+        first order; iterated fission probability with photoneutrons in the
+        chain removes that growth by dividing by k' at every fission."""
+        k = self.keff
+        g = 1.0 + (d - 1) * k * m['I_P'] / m['I_F']
+        return ((m['I_F'] + m['B_F']) / g, (m['I_Dg'] + m['B_Dg']) / g,
+                (m['T_F'] + m['BT_F']) / g)
+
+    def _beta_pn(self, m, d):
+        k = self.keff
+        I_F, I_D, _ = self._perturbed(m, d)
+        return (I_D + k * m['I_Pg']) / (I_F + k * m['I_P'])
+
+    def _gen_time_pn(self, m, d):
+        k = self.keff
+        kp = k / (1.0 - k * m['I_P'] / m['I_F'])
+        I_F, _, T_F = self._perturbed(m, d)
+        return (T_F + k * m['T_P']) / (kp * (I_F + k * m['I_P']))
+
     def beta_eff_with_photoneutrons(self, group=None, depth=None):
         """Effective delayed-neutron fraction with photoneutrons transported,
         using the expected-value delayed roots."""
-        self._check_photoneutrons()
-        return self._estimate(
-            lambda m: (m['I_Dg'] + m['I_Pg']) / (m['I_F'] + m['I_P']),
-            depth, group)
+        self._check_perturbed()
+        d = self._depth(depth)
+        return self._estimate(lambda m: self._beta_pn(m, d), depth, group)
 
     def delta_beta_eff(self, group=None, depth=None):
         """Change in beta_eff due to the photoneutrons."""
-        self._check_photoneutrons()
+        self._check_perturbed()
+        d = self._depth(depth)
         return self._estimate(
-            lambda m: (m['I_Dg'] + m['I_Pg']) / (m['I_F'] + m['I_P'])
-            - m['I_Dg'] / m['I_F'], depth, group)
-
-    def _gen_time_pn(self, m):
-        k = self.keff
-        kp = k / (1.0 - k * m['I_P'] / m['I_F'])
-        return (m['T_F'] + k * m['T_P']) / (kp * (m['I_F'] + m['I_P']))
+            lambda m: self._beta_pn(m, d) - m['I_Dg'] / m['I_F'], depth, group)
 
     def generation_time_with_photoneutrons(self, depth=None):
         """Generation time with photoneutrons transported [s]."""
-        self._check_photoneutrons()
-        return self._estimate(self._gen_time_pn, depth)
+        self._check_perturbed()
+        d = self._depth(depth)
+        return self._estimate(lambda m: self._gen_time_pn(m, d), depth)
 
     def delta_generation_time(self, depth=None):
         """Change in generation time due to the photoneutrons [s]."""
-        self._check_photoneutrons()
+        self._check_perturbed()
         k = self.keff
+        d = self._depth(depth)
         return self._estimate(
-            lambda m: self._gen_time_pn(m) - m['T_F'] / (k * m['I_F']), depth)
+            lambda m: self._gen_time_pn(m, d) - m['T_F'] / (k * m['I_F']),
+            depth)
 
     # -------------------------------------------------------------------------
 

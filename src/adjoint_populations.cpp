@@ -37,7 +37,7 @@ int n_depth()
 }
 int n_bins()
 {
-  return N_CLASS * N_TAG * n_depth();
+  return N_SCORE_CLASS * N_TAG * n_depth();
 }
 size_t bin(int cls, int tag, int depth)
 {
@@ -48,8 +48,14 @@ size_t bin(int cls, int tag, int depth)
 vector<vector<Root>> thread_roots;
 vector<vector<FissionRecord>> thread_fissions;
 
-// Target (site) weight of each population for the current shadow pass
-double site_w[N_CLASS] {1.0, 1.0, 1.0};
+// Target (site) weight of each population and branch class for the current
+// shadow pass. A branch target of 0 means not yet set.
+double site_w[N_SCORE_CLASS] {1.0, 1.0, 1.0, 0.0, 0.0};
+
+// Per-thread raw weight and count of branch photoneutrons (before and after
+// their roulette) in the current shadow pass, per branched class
+vector<double> thread_branch_raw;
+vector<int64_t> thread_branch_n;
 
 // Per-thread scoring slabs: summed weight, and weight times lifetime stamp
 vector<double> thread_w;
@@ -63,8 +69,8 @@ vector<double> batches_wt;
 int n_batches_recorded {0};
 
 // Diagnostics of the last shadow pass
-int64_t last_roots[N_CLASS] {0, 0, 0};
-double last_raw_weight[N_CLASS] {0.0, 0.0, 0.0};
+int64_t last_roots[N_SCORE_CLASS] {0, 0, 0, 0, 0};
+double last_raw_weight[N_SCORE_CLASS] {0.0, 0.0, 0.0, 0.0, 0.0};
 int64_t n_histories {0};
 
 int64_t generation_key()
@@ -219,12 +225,17 @@ void init()
   if (settings::adjpop_photoneutrons && !settings::photonuclear_physics)
     fatal_error("<adjoint_populations> photoneutrons require "
                 "<photonuclear_physics> to be on.");
+  if (settings::adjpop_perturbed_importance && !settings::adjpop_photoneutrons)
+    fatal_error("<adjoint_populations> perturbed_importance requires "
+                "photoneutrons to be on.");
 
   const int n_threads = num_threads();
   thread_roots.assign(n_threads, {});
   thread_fissions.assign(n_threads, {});
   thread_w.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   thread_wt.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
+  thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
+  thread_branch_n.assign(static_cast<size_t>(n_threads) * 2, 0);
   batch_w.assign(n_bins(), 0.0);
   batch_wt.assign(n_bins(), 0.0);
   batches_w.clear();
@@ -245,6 +256,8 @@ void reset_generation()
     v.clear();
   std::fill(thread_w.begin(), thread_w.end(), 0.0);
   std::fill(thread_wt.begin(), thread_wt.end(), 0.0);
+  std::fill(thread_branch_raw.begin(), thread_branch_raw.end(), 0.0);
+  std::fill(thread_branch_n.begin(), thread_branch_n.end(), 0);
 }
 
 void record_fission(Particle& p, int i_nuclide, const Reaction& rx)
@@ -343,6 +356,31 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
   }
 }
 
+bool tree_makes_photons(const Particle& p)
+{
+  if (!settings::adjpop_perturbed_importance || p.shadow_depth() < 1)
+    return false;
+  const int cls = p.shadow_tag() / N_TAG;
+  return cls == CLASS_FISSION || cls == CLASS_DELAYED;
+}
+
+bool branch_photoneutron(Particle& p, double& wgt, int& tag)
+{
+  const int cls = p.shadow_tag() / N_TAG;
+  const int b = cls + CLASS_FISSION_BRANCH;
+  const size_t slot = static_cast<size_t>(thread_num()) * 2 + cls;
+  thread_branch_raw[slot] += wgt;
+  const double target = site_w[b];
+  if (wgt < target) {
+    if (prn(p.current_seed()) >= wgt / target)
+      return false;
+    wgt = target;
+  }
+  ++thread_branch_n[slot];
+  tag = b * N_TAG + p.shadow_tag() % N_TAG;
+  return true;
+}
+
 void run_shadow_pass()
 {
   if (!simulation::adjpop_on)
@@ -380,6 +418,20 @@ void run_shadow_pass()
     last_raw_weight[c] = raw[c];
     if (raw[c] > 0.0)
       site_w[c] = raw[c] / m_target;
+  }
+  // First guess of the branch targets, before any branch has been seen: the
+  // driver's photoneutron weight per fission-bank weight, spread over the
+  // depths that branch, so that each branched class makes about m_target
+  // branches per pass. Afterwards they follow the measured branch weight.
+  if (settings::adjpop_perturbed_importance) {
+    for (int c = 0; c < 2; ++c) {
+      const int b = c + CLASS_FISSION_BRANCH;
+      if (site_w[b] == 0.0 && raw[CLASS_PHOTONEUTRON] > 0.0 &&
+          raw[CLASS_FISSION] > 0.0) {
+        site_w[b] = site_w[c] * raw[CLASS_PHOTONEUTRON] / raw[CLASS_FISSION] *
+                    std::max(1, settings::adjpop_n_generation - 1);
+      }
+    }
   }
 
   // The surviving roots of all three populations
@@ -434,6 +486,23 @@ void run_shadow_pass()
   for (int i = 0; i < 8; ++i)
     saved[i].swap(*lists[i]);
 
+  // Branch weight of this pass sets the branch targets of the next
+  if (settings::adjpop_perturbed_importance) {
+    for (int c = 0; c < 2; ++c) {
+      const int b = c + CLASS_FISSION_BRANCH;
+      double raw_b = 0.0;
+      int64_t n_b = 0;
+      for (int t = 0; t < num_threads(); ++t) {
+        raw_b += thread_branch_raw[static_cast<size_t>(t) * 2 + c];
+        n_b += thread_branch_n[static_cast<size_t>(t) * 2 + c];
+      }
+      last_raw_weight[b] = raw_b;
+      last_roots[b] = n_b;
+      if (raw_b > 0.0)
+        site_w[b] = raw_b / m_target;
+    }
+  }
+
   // Reduce the slabs, in thread order, into this batch
   const int nb = n_bins();
   for (int t = 0; t < num_threads(); ++t) {
@@ -478,18 +547,20 @@ void write_results(hid_t file_id)
   hid_t group = create_group(file_id, "adjoint_populations");
   write_dataset(group, "n_generation", settings::adjpop_n_generation);
   write_dataset(group, "n_batches", n_batches_recorded);
-  write_dataset(group, "n_class", N_CLASS);
+  write_dataset(group, "n_class", N_SCORE_CLASS);
   write_dataset(group, "n_tag", N_TAG);
   write_dataset(
     group, "photoneutrons", static_cast<int>(settings::adjpop_photoneutrons));
+  write_dataset(group, "perturbed_importance",
+    static_cast<int>(settings::adjpop_perturbed_importance));
   // [batch][class][tag][depth], flattened
   write_dataset(group, "weight", batches_w);
   write_dataset(group, "weight_t0", batches_wt);
-  vector<double> sw(site_w, site_w + N_CLASS);
+  vector<double> sw(site_w, site_w + N_SCORE_CLASS);
   write_dataset(group, "site_weight", sw);
-  vector<int64_t> nr(last_roots, last_roots + N_CLASS);
+  vector<int64_t> nr(last_roots, last_roots + N_SCORE_CLASS);
   write_dataset(group, "n_roots_last_generation", nr);
-  vector<double> rw(last_raw_weight, last_raw_weight + N_CLASS);
+  vector<double> rw(last_raw_weight, last_raw_weight + N_SCORE_CLASS);
   write_dataset(group, "raw_weight_last_generation", rw);
   write_dataset(group, "n_histories", n_histories);
   close_group(group);
@@ -501,6 +572,8 @@ void clear()
   thread_fissions.clear();
   thread_w.clear();
   thread_wt.clear();
+  thread_branch_raw.clear();
+  thread_branch_n.clear();
   batch_w.clear();
   batch_wt.clear();
   batches_w.clear();
@@ -508,8 +581,11 @@ void clear()
   n_batches_recorded = 0;
   n_histories = 0;
   simulation::adjpop_on = false;
-  for (int c = 0; c < N_CLASS; ++c)
-    site_w[c] = 1.0;
+  for (int c = 0; c < N_SCORE_CLASS; ++c) {
+    site_w[c] = (c < N_CLASS) ? 1.0 : 0.0;
+    last_roots[c] = 0;
+    last_raw_weight[c] = 0.0;
+  }
 }
 
 } // namespace adjpop

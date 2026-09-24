@@ -141,8 +141,10 @@ void sample_neutron_reaction(Particle& p)
     p.event_mt() = rx.mt_;
   }
 
-  // Create secondary photons. Shadow trees are neutron-only.
-  if (settings::photon_transport && p.shadow_depth() < 0) {
+  // Create secondary photons. Shadow trees are neutron-only, except below
+  // the root when their photoneutron branches are wanted.
+  if (settings::photon_transport &&
+      (p.shadow_depth() < 0 || adjpop::tree_makes_photons(p))) {
     sample_secondary_photons(p, i_nuclide);
   }
 
@@ -1675,8 +1677,19 @@ double emit_photonuclear_product(Particle& p,
     }
   }
 
+  // A photoneutron made inside a shadow tree grows on as a branch of it
+  int branch_tag = -1;
+  if (is_neutron && p.shadow_depth() >= 0) {
+    if (!adjpop::branch_photoneutron(p, wgt, branch_tag)) {
+      p.bank_second_E() += E;
+      return E;
+    }
+  }
+
   // Create the secondary particle
-  p.create_secondary(wgt, u, E, product.particle_);
+  if (p.create_secondary(wgt, u, E, product.particle_) && branch_tag >= 0) {
+    p.local_secondary_bank().back().shadow_tag = branch_tag;
+  }
 
   return E;
 }

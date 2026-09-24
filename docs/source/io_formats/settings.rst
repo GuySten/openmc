@@ -32,6 +32,15 @@ sub-elements:
 
     *Default*: false
 
+  :perturbed_importance:
+    If true, the fission- and delayed-root trees also transport photons below
+    their root, and the photoneutrons those photons make grow on as branches
+    of the tree. This gives the change the photoneutrons make to the importance
+    function, which the changes of the effective delayed-neutron fraction and
+    of the generation time need. Requires ``photoneutrons``.
+
+    *Default*: false
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

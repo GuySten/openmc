@@ -4,15 +4,17 @@ import pytest
 
 import openmc
 from openmc.adjoint_populations import (
-    CLASS_FISSION, CLASS_DELAYED, CLASS_PHOTONEUTRON)
+    CLASS_FISSION, CLASS_DELAYED, CLASS_PHOTONEUTRON, CLASS_FISSION_BRANCH,
+    CLASS_DELAYED_BRANCH)
 
 
 def test_settings_roundtrip(run_in_tmpdir):
     s = openmc.Settings()
-    s.adjoint_populations = {'n_generation': 7, 'photoneutrons': True}
+    value = {'n_generation': 7, 'photoneutrons': True,
+             'perturbed_importance': True}
+    s.adjoint_populations = value
     s.export_to_xml()
-    elem = openmc.Settings.from_xml().adjoint_populations
-    assert elem == {'n_generation': 7, 'photoneutrons': True}
+    assert openmc.Settings.from_xml().adjoint_populations == value
 
 
 def test_settings_checks():
@@ -27,7 +29,7 @@ def test_settings_checks():
         s.adjoint_populations = {'n_generation': 3, 'photoneutrons': 1}
 
 
-def _write(path, weight, weight_t0, photoneutrons=True):
+def _write(path, weight, weight_t0, photoneutrons=True, perturbed=True):
     n_batches, n_class, n_tag, n_depth = weight.shape
     with h5py.File(path, 'w') as f:
         g = f.create_group('adjoint_populations')
@@ -36,6 +38,7 @@ def _write(path, weight, weight_t0, photoneutrons=True):
         g['n_class'] = n_class
         g['n_tag'] = n_tag
         g['photoneutrons'] = int(photoneutrons)
+        g['perturbed_importance'] = int(perturbed)
         g['weight'] = weight.ravel()
         g['weight_t0'] = weight_t0.ravel()
         g['site_weight'] = np.ones(n_class)
@@ -52,7 +55,7 @@ def _read(path, keff):
 def test_estimators(run_in_tmpdir):
     """Every estimator against its formula, on exact (noiseless) sums"""
     L, k = 3, 1.2
-    w = np.zeros((4, 3, 9, L + 1))
+    w = np.zeros((4, 5, 9, L + 1))
     wt = np.zeros_like(w)
     # Fission roots: prompt, and groups 1 and 2
     w[:, CLASS_FISSION, 0, :] = 100.0
@@ -66,11 +69,17 @@ def test_estimators(run_in_tmpdir):
     w[:, CLASS_PHOTONEUTRON, 0, :] = 0.05
     w[:, CLASS_PHOTONEUTRON, 2, :] = 0.01
     wt[:, CLASS_PHOTONEUTRON, 0, 1:] = 0.05 * 5e-8
+    # Photoneutron branches of the fission- and delayed-root trees
+    w[:, CLASS_FISSION_BRANCH, 0, 1:] = 0.3
+    wt[:, CLASS_FISSION_BRANCH, 0, 1:] = 0.3 * 4e-8
+    w[:, CLASS_DELAYED_BRANCH, 1, 1:] = 0.002
+    w[:, CLASS_DELAYED_BRANCH, 2, 1:] = 0.003
     _write('ap.h5', w, wt)
     ap = _read('ap.h5', k)
 
     I_F, T_F = 100.6, 2e-6
     I_P, T_P = 0.06, 0.05 * 5e-8
+    B_F, BT_F = 0.3, 0.3 * 4e-8
     assert ap.n_delayed_groups == 2
     assert ap.beta_eff().n == pytest.approx(0.70 / I_F)
     assert ap.beta_eff(2).n == pytest.approx(0.45 / I_F)
@@ -83,11 +92,13 @@ def test_estimators(run_in_tmpdir):
     assert ap.photoneutron_reactivity().n == pytest.approx(drho)
     assert ap.keff_with_photoneutrons().n == pytest.approx(kp)
     assert 1 / k - 1 / ap.keff_with_photoneutrons().n == pytest.approx(drho)
+    g = 1 + (L - 1) * k * drho
+    den = (I_F + B_F) / g + k * I_P
     assert ap.beta_eff_with_photoneutrons().n == \
-        pytest.approx((0.70 + 0.01) / (I_F + I_P))
+        pytest.approx(((0.70 + 0.005) / g + k * 0.01) / den)
     assert ap.delta_beta_eff(1).n == \
-        pytest.approx(0.25 / (I_F + I_P) - 0.25 / I_F)
-    lam_p = (T_F + k * T_P) / (kp * (I_F + I_P))
+        pytest.approx((0.25 + 0.002) / g / den - 0.25 / I_F)
+    lam_p = ((T_F + BT_F) / g + k * T_P) / (kp * den)
     assert ap.generation_time_with_photoneutrons().n == pytest.approx(lam_p)
     assert ap.delta_generation_time().n == \
         pytest.approx(lam_p - T_F / (k * I_F))
@@ -98,12 +109,21 @@ def test_estimators(run_in_tmpdir):
     with pytest.raises(ValueError):
         ap.beta_eff(group=9)
 
+    # Without perturbed importance, the changes are refused
+    _write('ap2.h5', w, wt, perturbed=False)
+    ap2 = _read('ap2.h5', k)
+    assert ap2.photoneutron_reactivity().n == pytest.approx(drho)
+    with pytest.raises(ValueError):
+        ap2.delta_beta_eff()
+    with pytest.raises(ValueError):
+        ap2.delta_generation_time()
+
 
 def test_uncertainty_matches_delta_method(run_in_tmpdir):
     """The reported sigma of a ratio is the delta-method sigma"""
     rng = np.random.default_rng(1)
     n = 200
-    w = np.zeros((n, 3, 9, 2))
+    w = np.zeros((n, 5, 9, 2))
     num = 0.7 + 0.05 * rng.standard_normal(n)
     den = 100.0 + 2.0 * rng.standard_normal(n) + 10.0 * (num - 0.7)
     w[:, CLASS_DELAYED, 1, 1] = num

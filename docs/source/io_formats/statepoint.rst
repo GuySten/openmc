@@ -176,22 +176,25 @@ Present only if adjoint side populations were requested.
 
 :Datasets: - **n_generation** (*int*) -- Depth to which each root was grown.
            - **n_batches** (*int*) -- Number of active batches recorded.
-           - **n_class** (*int*) -- Number of root populations: fission (0),
-             delayed (1) and photoneutron (2).
+           - **n_class** (*int*) -- Number of scored classes: fission (0),
+             delayed (1) and photoneutron (2) roots, and the photoneutron
+             branches of fission-root (3) and delayed-root (4) trees.
            - **n_tag** (*int*) -- Number of tags per population: 0 for prompt,
              otherwise the delayed group.
            - **photoneutrons** (*int*) -- Whether photoneutrons were taken as a
              population.
+           - **perturbed_importance** (*int*) -- Whether photoneutron branches
+             were grown.
            - **weight** (*double[]*) -- Summed weight per batch, population,
              tag and depth (0 to n_generation), in that order.
            - **weight_t0** (*double[]*) -- As **weight**, times the lifetime
              the root had reached at the fission that started each line.
-           - **site_weight** (*double[]*) -- Target weight of each population
-             in the last generation.
-           - **n_roots_last_generation** (*int8_t[]*) -- Roots grown per
-             population in the last generation.
+           - **site_weight** (*double[]*) -- Target weight of each class in the
+             last generation.
+           - **n_roots_last_generation** (*int8_t[]*) -- Roots (branches for
+             classes 3 and 4) grown per class in the last generation.
            - **raw_weight_last_generation** (*double[]*) -- Weight of each
-             population in the last generation, before roulette.
+             class in the last generation, before roulette.
            - **n_histories** (*int8_t*) -- Number of side-population histories
              tracked.
 

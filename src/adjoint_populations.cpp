@@ -367,6 +367,9 @@ bool tree_makes_photons(const Particle& p)
 bool branch_photoneutron(Particle& p, double& wgt, int& tag)
 {
   const int cls = p.shadow_tag() / N_TAG;
+  // Only fission- and delayed-root trees make photons (tree_makes_photons)
+  if (cls != CLASS_FISSION && cls != CLASS_DELAYED)
+    return false;
   const int b = cls + CLASS_FISSION_BRANCH;
   const size_t slot = static_cast<size_t>(thread_num()) * 2 + cls;
   thread_branch_raw[slot] += wgt;
@@ -431,6 +434,10 @@ void run_shadow_pass()
         site_w[b] = site_w[c] * raw[CLASS_PHOTONEUTRON] / raw[CLASS_FISSION] *
                     std::max(1, settings::adjpop_n_generation - 1);
       }
+      // No photoneutron seen yet: any positive target is unbiased, and the
+      // tree's own is safe until the branch weight has been measured
+      if (site_w[b] == 0.0)
+        site_w[b] = site_w[c];
     }
   }
 

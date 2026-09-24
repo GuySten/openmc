@@ -68,6 +68,7 @@ bool particle_restart_run {false};
 bool photon_transport {false};
 bool photonuclear_physics {false};
 bool photoneutron_biasing {false};
+bool fission_photons_only {false};
 bool atomic_relaxation {true};
 bool reduce_tallies {true};
 bool res_scat_on {false};
@@ -690,6 +691,15 @@ void read_settings_xml(pugi::xml_node root)
   // Check for atomic relaxation
   if (check_for_node(root, "atomic_relaxation")) {
     atomic_relaxation = get_node_value_bool(root, "atomic_relaxation");
+  }
+  // Check whether only fission may produce secondary photons
+  if (check_for_node(root, "fission_photons_only")) {
+    fission_photons_only = get_node_value_bool(root, "fission_photons_only");
+    if (fission_photons_only && !photon_transport) {
+      fatal_error("Photon transport must be enabled when "
+                  "'fission_photons_only' is set; without it no secondary "
+                  "photons are produced at all.");
+    }
   }
 
   // Number of bins for logarithmic grid

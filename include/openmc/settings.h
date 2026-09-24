@@ -72,6 +72,7 @@ extern bool photon_transport;      //!< photon transport turned on?
 extern bool photonuclear_physics;  //!< photonuclear physics turned on?
 extern bool
   photoneutron_biasing; //!< bias photoneutron production (expected value)?
+extern bool fission_photons_only;    //!< only fission makes secondary photons?
 extern bool atomic_relaxation;       //!< atomic relaxation enabled?
 extern bool reduce_tallies;          //!< reduce tallies at end of batch?
 extern bool res_scat_on;             //!< use resonance upscattering method?

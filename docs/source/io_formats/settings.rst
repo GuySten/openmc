@@ -347,6 +347,15 @@ used for elastic scattering. Values must be positive.
 
   *Default*: 400.0
 
+------------------------------------
+``<fission_photons_only>`` Element
+------------------------------------
+
+The ``<fission_photons_only>`` element, if true, restricts the secondary
+photons of neutron reactions to those of fission. Requires photon transport.
+
+  *Default*: false
+
 -----------------------------------
 ``<generations_per_batch>`` Element
 -----------------------------------

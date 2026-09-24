@@ -1310,9 +1310,16 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     int i_rx;
     int i_product;
     sample_photon_product(i_nuclide, p, &i_rx, &i_product);
+    auto& rx = data::nuclides[i_nuclide]->reactions_[i_rx];
+
+    // A study that only wants fission photons (e.g. to compare with a
+    // fission-gamma photon source) drops the rest. The reaction is drawn in
+    // proportion to its own photon production, so rejecting the non-fission
+    // draws leaves exactly the fission photon yield on average.
+    if (settings::fission_photons_only && !is_fission(rx->mt_))
+      continue;
 
     // Sample the outgoing energy and angle
-    auto& rx = data::nuclides[i_nuclide]->reactions_[i_rx];
     double E;
     double mu;
     rx->products_[i_product].sample(p.E(), E, mu, p.current_seed());

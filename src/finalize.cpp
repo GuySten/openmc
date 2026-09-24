@@ -129,6 +129,7 @@ int openmc_finalize()
   settings::photon_transport = false;
   settings::photonuclear_physics = false;
   settings::photoneutron_biasing = false;
+  settings::fission_photons_only = false;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;

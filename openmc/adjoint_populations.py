@@ -91,6 +91,12 @@ class AdjointPopulations:
         Number of delayed groups found in the data
     n_histories : int
         Number of shadow-tree histories tracked in the whole run
+    photoneutron_energy_bins : numpy.ndarray or None
+        Energy-group edges [eV] of the grouped photoneutron tally, if on
+    photoneutron_energy_variable : str or None
+        'photon_birth' or 'photoneutron': what the groups bin
+    photoneutron_energy_weight : numpy.ndarray or None
+        Summed photoneutron-root weight, indexed [batch, energy group, depth]
 
     """
 
@@ -111,6 +117,19 @@ class AdjointPopulations:
             group['raw_weight_last_generation'][()]
         self.n_histories = int(group['n_histories'][()])
         self.keff = float(keff)
+
+        self.photoneutron_energy_bins = None
+        self.photoneutron_energy_variable = None
+        self.photoneutron_energy_weight = None
+        if 'photoneutron_energy_bins' in group:
+            edges = group['photoneutron_energy_bins'][()]
+            self.photoneutron_energy_bins = edges
+            var = group['photoneutron_energy_variable'][()]
+            self.photoneutron_energy_variable = \
+                var.decode() if isinstance(var, bytes) else str(var)
+            self.photoneutron_energy_weight = \
+                group['photoneutron_energy_weight'][()].reshape(
+                    (self.n_batches, len(edges) - 1, self.n_generation + 1))
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))
@@ -216,6 +235,52 @@ class AdjointPopulations:
         if not self.photoneutrons:
             raise ValueError('The calculation did not take photoneutrons.')
 
+    def _check_energy_groups(self):
+        if self.photoneutron_energy_weight is None:
+            raise ValueError('The calculation did not tally photoneutrons '
+                             'by energy group.')
+
+    def photoneutron_reactivity_by_energy(self, depth=None):
+        """Contribution of each energy group to the photoneutron reactivity,
+        I_pn,e / I_fission; they sum to :meth:`photoneutron_reactivity` when
+        the groups cover every photoneutron.
+
+        Returns
+        -------
+        list of uncertainties.UFloat
+        """
+        self._check_photoneutrons()
+        self._check_energy_groups()
+        d = self._depth(depth)
+        i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        out = []
+        for e in range(self.photoneutron_energy_weight.shape[1]):
+            i_e = self.photoneutron_energy_weight[:, e, d]
+            out.append(_ratio(i_e, i_f))
+        return out
+
+    def photoneutron_importance_by_energy(self, depth=None):
+        """Importance per unit weight of a photoneutron in each energy group
+        relative to a fission neutron's: (I_pn,e(d)/I_pn,e(0)) /
+        (I_fission(d)/I_fission(0)). NaN for an empty group.
+
+        Returns
+        -------
+        list of uncertainties.UFloat
+        """
+        self._check_photoneutrons()
+        self._check_energy_groups()
+        d = self._depth(depth)
+        w = self.weight[:, CLASS_FISSION].sum(axis=1)
+        out = []
+        for e in range(self.photoneutron_energy_weight.shape[1]):
+            x = self.photoneutron_energy_weight[:, e]
+            if not x[:, 0].any():
+                out.append(ufloat(np.nan, np.nan))
+                continue
+            out.append(_double_ratio(x[:, d], x[:, 0], w[:, d], w[:, 0]))
+        return out
+
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""
         self._check_photoneutrons()
@@ -308,3 +373,28 @@ class AdjointPopulations:
         method = getattr(self, quantity)
         return [method(depth=d, **kwargs)
                 for d in range(1, self.n_generation + 1)]
+
+
+def _ratio(a, b):
+    """mean(a)/mean(b) over batches with a delta-method sigma."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    n = len(a)
+    ma, mb = a.mean(), b.mean()
+    r = ma / mb
+    if n < 2:
+        return ufloat(r, np.nan)
+    z = (a - ma) / mb - r * (b - mb) / mb
+    return ufloat(r, z.std(ddof=1) / np.sqrt(n))
+
+
+def _double_ratio(a, b, c, d):
+    """(mean a / mean b) / (mean c / mean d) with a delta-method sigma."""
+    x = np.stack([np.asarray(v, float) for v in (a, b, c, d)])
+    m = x.mean(axis=1)
+    r = (m[0] / m[1]) / (m[2] / m[3])
+    n = x.shape[1]
+    if n < 2:
+        return ufloat(r, np.nan)
+    g = np.array([1 / m[0], -1 / m[1], -1 / m[2], 1 / m[3]]) * r
+    z = g @ (x - m[:, None])
+    return ufloat(r, z.std(ddof=1) / np.sqrt(n))

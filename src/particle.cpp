@@ -212,6 +212,7 @@ void Particle::from_source(const SourceSite* src)
   }
 
   wgt_born() = src->wgt_born;
+  E_born() = src->E;
   wgt_ww_born() = src->wgt_ww_born;
   n_split() = src->n_split;
   shadow_depth() = src->shadow_depth;

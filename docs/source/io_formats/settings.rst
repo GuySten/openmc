@@ -41,6 +41,22 @@ sub-elements:
 
     *Default*: false
 
+  :photoneutron_energy_bins:
+    Energy-group edges [eV], strictly increasing, by which the photoneutron
+    roots' summed weight is also recorded at every depth. The ungrouped sums
+    are unchanged; photoneutrons outside the edges are left out of the grouped
+    record only. Requires ``photoneutrons``.
+
+    *Default*: none
+
+  :photoneutron_energy_variable:
+    What ``photoneutron_energy_bins`` bins: ``photon_birth``, the energy at
+    which the photon that made the photoneutron was born (the variable a
+    photon source spectrum is folded with), or ``photoneutron``, the
+    photoneutron's own energy.
+
+    *Default*: photon_birth
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

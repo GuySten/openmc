@@ -43,6 +43,16 @@ size_t bin(int cls, int tag, int depth)
 {
   return (static_cast<size_t>(cls) * N_TAG + tag) * n_depth() + depth;
 }
+int n_ebins()
+{
+  return settings::adjpop_energy_bins.empty()
+           ? 0
+           : static_cast<int>(settings::adjpop_energy_bins.size()) - 1;
+}
+int n_ebin_bins()
+{
+  return n_ebins() * n_depth();
+}
 
 // Roots and fission events recorded by the driver this generation
 vector<vector<Root>> thread_roots;
@@ -60,6 +70,12 @@ vector<int64_t> thread_branch_n;
 // Per-thread scoring slabs: summed weight, and weight times lifetime stamp
 vector<double> thread_w;
 vector<double> thread_wt;
+
+// Photoneutron-root weight per energy group and depth: per thread, this
+// batch, every finished batch
+vector<double> thread_ew;
+vector<double> batch_ew;
+vector<double> batches_ew;
 
 // This batch's sums, and every finished batch's
 vector<double> batch_w;
@@ -96,6 +112,29 @@ void score(int cls, int tag, int depth, double w, double t0)
   thread_wt[i] += w * t0;
 }
 
+void score_ebin(int ebin, int depth, double w)
+{
+  if (ebin < 0)
+    return;
+  const size_t i = static_cast<size_t>(thread_num()) * n_ebin_bins() +
+                   static_cast<size_t>(ebin) * n_depth() + depth;
+  thread_ew[i] += w;
+}
+
+//! Energy group of a photoneutron: the photon's birth energy or its own
+int energy_group(const Particle& photon, double E_neutron)
+{
+  const auto& e = settings::adjpop_energy_bins;
+  if (e.empty())
+    return -1;
+  const double x =
+    (settings::adjpop_energy_variable == 0) ? photon.E_born() : E_neutron;
+  if (x < e.front() || x >= e.back())
+    return -1;
+  return static_cast<int>(std::upper_bound(e.begin(), e.end(), x) - e.begin()) -
+         1;
+}
+
 //! Russian roulette of a root to its population's target weight, drawn on
 //! its own key so that no tree replays the number deciding its existence.
 //! \return the weight the root is grown with, or 0 if it is killed
@@ -121,7 +160,8 @@ void run_one_tree(const Root& root, double w)
   site.wgt = w;
   site.particle = ParticleType::neutron();
   site.shadow_depth = 0;
-  site.shadow_tag = root.cls * N_TAG + root.tag;
+  site.shadow_tag =
+    root.cls * N_TAG + root.tag + (root.ebin + 1) * N_TAG * N_SCORE_CLASS;
   site.shadow_t0 = 0.0;
   site.wgt_born = w;
 
@@ -140,6 +180,7 @@ void run_one_tree(const Root& root, double w)
   p.stream() = STREAM_TRACKING;
 
   score(root.cls, root.tag, 0, w, 0.0);
+  score_ebin(root.ebin, 0, w);
   transport_history_based_single_particle(p);
 #pragma omp atomic
   n_histories += p.n_tracks();
@@ -234,6 +275,12 @@ void init()
   thread_fissions.assign(n_threads, {});
   thread_w.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   thread_wt.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
+  if (n_ebins() > 0 && !settings::adjpop_photoneutrons)
+    fatal_error("<adjoint_populations> photoneutron_energy_bins require "
+                "photoneutrons to be on.");
+  thread_ew.assign(static_cast<size_t>(n_threads) * n_ebin_bins(), 0.0);
+  batch_ew.assign(n_ebin_bins(), 0.0);
+  batches_ew.clear();
   thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
   thread_branch_n.assign(static_cast<size_t>(n_threads) * 2, 0);
   batch_w.assign(n_bins(), 0.0);
@@ -256,6 +303,7 @@ void reset_generation()
     v.clear();
   std::fill(thread_w.begin(), thread_w.end(), 0.0);
   std::fill(thread_wt.begin(), thread_wt.end(), 0.0);
+  std::fill(thread_ew.begin(), thread_ew.end(), 0.0);
   std::fill(thread_branch_raw.begin(), thread_branch_raw.end(), 0.0);
   std::fill(thread_branch_n.begin(), thread_branch_n.end(), 0);
 }
@@ -301,6 +349,7 @@ bool record_photoneutron(
   r.wgt = wgt / simulation::keff;
   r.cls = CLASS_PHOTONEUTRON;
   r.tag = std::clamp(delayed_group, 0, N_TAG - 1);
+  r.ebin = energy_group(p, E);
   r.seed_id = combine_ids(
     {generation_key(), p.id(), p.n_tracks(), p.n_event(), bits(E), 202});
   thread_roots[thread_num()].push_back(r);
@@ -309,8 +358,9 @@ bool record_photoneutron(
 
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
 {
-  const int cls = p.shadow_tag() / N_TAG;
+  const int cls = tag_class(p.shadow_tag());
   const int tag = p.shadow_tag() % N_TAG;
+  const int ebin = tag_ebin(p.shadow_tag());
   const double w_site = site_w[cls];
 
   // Expected sites of weight w_site: the same expected banked weight as the
@@ -344,6 +394,7 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
       continue;
 
     score(cls, tag, depth, w_site, t0);
+    score_ebin(ebin, depth, w_site);
     if (depth < settings::adjpop_n_generation) {
       site.shadow_depth = depth;
       site.shadow_tag = p.shadow_tag();
@@ -360,13 +411,13 @@ bool tree_makes_photons(const Particle& p)
 {
   if (!settings::adjpop_perturbed_importance || p.shadow_depth() < 1)
     return false;
-  const int cls = p.shadow_tag() / N_TAG;
+  const int cls = tag_class(p.shadow_tag());
   return cls == CLASS_FISSION || cls == CLASS_DELAYED;
 }
 
 bool branch_photoneutron(Particle& p, double& wgt, int& tag)
 {
-  const int cls = p.shadow_tag() / N_TAG;
+  const int cls = tag_class(p.shadow_tag());
   // Only fission- and delayed-root trees make photons (tree_makes_photons)
   if (cls != CLASS_FISSION && cls != CLASS_DELAYED)
     return false;
@@ -518,6 +569,10 @@ void run_shadow_pass()
       batch_wt[i] += thread_wt[static_cast<size_t>(t) * nb + i];
     }
   }
+  const int ne = n_ebin_bins();
+  for (int t = 0; t < num_threads(); ++t)
+    for (int i = 0; i < ne; ++i)
+      batch_ew[i] += thread_ew[static_cast<size_t>(t) * ne + i];
 }
 
 void finalize_batch()
@@ -536,15 +591,24 @@ void finalize_batch()
       batch_w.swap(rw);
       batch_wt.swap(rwt);
     }
+    if (!batch_ew.empty()) {
+      vector<double> rew(batch_ew.size());
+      mpi::reduce<double>(batch_ew.data(), rew.data(), batch_ew.size(), MPI_SUM,
+        0, mpi::intracomm);
+      if (mpi::master)
+        batch_ew.swap(rew);
+    }
   }
 #endif
   if (mpi::master) {
     batches_w.insert(batches_w.end(), batch_w.begin(), batch_w.end());
     batches_wt.insert(batches_wt.end(), batch_wt.begin(), batch_wt.end());
+    batches_ew.insert(batches_ew.end(), batch_ew.begin(), batch_ew.end());
     ++n_batches_recorded;
   }
   std::fill(batch_w.begin(), batch_w.end(), 0.0);
   std::fill(batch_wt.begin(), batch_wt.end(), 0.0);
+  std::fill(batch_ew.begin(), batch_ew.end(), 0.0);
 }
 
 void write_results(hid_t file_id)
@@ -570,6 +634,15 @@ void write_results(hid_t file_id)
   vector<double> rw(last_raw_weight, last_raw_weight + N_SCORE_CLASS);
   write_dataset(group, "raw_weight_last_generation", rw);
   write_dataset(group, "n_histories", n_histories);
+  if (n_ebins() > 0) {
+    // [batch][energy group][depth], flattened
+    write_dataset(
+      group, "photoneutron_energy_bins", settings::adjpop_energy_bins);
+    write_dataset(group, "photoneutron_energy_variable",
+      std::string(settings::adjpop_energy_variable == 0 ? "photon_birth"
+                                                        : "photoneutron"));
+    write_dataset(group, "photoneutron_energy_weight", batches_ew);
+  }
   close_group(group);
 }
 
@@ -585,6 +658,9 @@ void clear()
   batch_wt.clear();
   batches_w.clear();
   batches_wt.clear();
+  thread_ew.clear();
+  batch_ew.clear();
+  batches_ew.clear();
   n_batches_recorded = 0;
   n_histories = 0;
   simulation::adjpop_on = false;

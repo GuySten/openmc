@@ -138,3 +138,65 @@ def test_uncertainty_matches_delta_method(run_in_tmpdir):
     assert b.s == pytest.approx(z.std(ddof=1) / np.sqrt(n), rel=1e-4)
     with pytest.raises(ValueError):
         ap.photoneutron_reactivity()
+
+
+def test_energy_group_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_energy_bins': [2.2246e6, 3.0e6, 2.0e7],
+             'photoneutron_energy_variable': 'photoneutron'}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+
+
+def test_energy_group_settings_checks():
+    s = openmc.Settings()
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_energy_bins': [3.0e6]}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_energy_bins': [3.0e6, 3.0e6]}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_energy_variable': 'gamma'}
+
+
+def test_energy_group_estimators(run_in_tmpdir):
+    """Grouped photoneutron sums: their reactivity contributions add up to
+    the ungrouped one, and each group's importance per weight is its own
+    growth over the fission roots'."""
+    L, k, n_b = 2, 1.0, 5
+    rng = np.random.default_rng(1)
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = [100.0, 90.0, 80.0]
+    # Two groups of photoneutron roots, growing differently with depth
+    ew = np.zeros((n_b, 2, L + 1))
+    ew[:, 0] = [1.0, 0.5, 0.25]
+    ew[:, 1] = [2.0, 2.0, 2.0]
+    ew *= rng.uniform(0.9, 1.1, size=(n_b, 1, 1))
+    w[:, CLASS_PHOTONEUTRON, 0] = ew.sum(axis=1)
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['photoneutron_energy_bins'] = [2.2246e6, 3.0e6, 2.0e7]
+        g['photoneutron_energy_variable'] = 'photon_birth'
+        g['photoneutron_energy_weight'] = ew.ravel()
+    ap = _read('ap.h5', k)
+    assert ap.photoneutron_energy_variable == 'photon_birth'
+    by_e = ap.photoneutron_reactivity_by_energy(depth=2)
+    total = ap.photoneutron_reactivity(depth=2)
+    assert sum(x.n for x in by_e) == pytest.approx(total.n)
+    imp = ap.photoneutron_importance_by_energy(depth=2)
+    fis = 80.0 / 100.0
+    assert imp[0].n == pytest.approx((0.25 / 1.0) / fis, rel=1e-9)
+    assert imp[1].n == pytest.approx(1.0 / fis, rel=1e-9)
+
+
+def test_energy_group_estimators_need_the_tally(run_in_tmpdir):
+    w = np.ones((3, 5, 9, 3))
+    _write('ap.h5', w, np.zeros_like(w))
+    ap = _read('ap.h5', 1.0)
+    with pytest.raises(ValueError):
+        ap.photoneutron_reactivity_by_energy()

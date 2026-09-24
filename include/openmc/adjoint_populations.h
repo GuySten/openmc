@@ -82,8 +82,21 @@ struct Root {
   double wgt; //!< raw weight, before the roulette
   int cls;
   int tag;
+  int ebin {-1}; //!< photoneutron energy group, -1 if none
   int64_t seed_id;
 };
+
+//! A shadow tag packs the class, the delayed-group tag and, for photoneutron
+//! roots with energy groups on, the energy group + 1 (0: none), so that the
+//! group rides down the whole tree. With groups off the tag is unchanged.
+inline int tag_class(int shadow_tag)
+{
+  return (shadow_tag / N_TAG) % N_SCORE_CLASS;
+}
+inline int tag_ebin(int shadow_tag)
+{
+  return shadow_tag / (N_TAG * N_SCORE_CLASS) - 1;
+}
 
 //! A driver fission-site creation, from which delayed roots are emitted in
 //! the shadow pass (so that the driver draws no extra random numbers)

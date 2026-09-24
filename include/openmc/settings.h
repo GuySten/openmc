@@ -141,6 +141,11 @@ extern int adjpop_n_generation; //!< Depth of the adjoint side populations
 extern bool
   adjpop_photoneutrons; //!< divert photoneutrons into a side population?
 extern bool adjpop_perturbed_importance; //!< grow photoneutron branches?
+//! Energy-group edges [eV] for the photoneutron-root importance (empty: off)
+extern vector<double> adjpop_energy_bins;
+//! What adjpop_energy_bins bins: 0 = the birth energy of the photon that made
+//! the photoneutron, 1 = the photoneutron's own birth energy
+extern int adjpop_energy_variable;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

@@ -141,6 +141,14 @@ class Settings:
             branches, giving the change of the importance function that the
             change of beta_eff and of the generation time need (bool,
             requires photoneutrons). Default is False.
+        :photoneutron_energy_bins: Energy-group edges [eV] by which the
+            photoneutron roots' importance is also tallied (sequence of
+            floats, requires photoneutrons). Photoneutrons outside the edges
+            are left out of the grouped tally only.
+        :photoneutron_energy_variable: What the groups bin: 'photon_birth'
+            (default), the energy at which the photon that made the
+            photoneutron was born, which is what a photon source spectrum is
+            folded with; or 'photoneutron', the photoneutron's own energy.
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1166,12 +1174,26 @@ class Settings:
         for key, value in adjoint_populations.items():
             cv.check_value('adjoint populations key', key,
                            ('n_generation', 'photoneutrons',
-                            'perturbed_importance'))
+                            'perturbed_importance',
+                            'photoneutron_energy_bins',
+                            'photoneutron_energy_variable'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
                 cv.check_greater_than('adjoint populations n_generation',
                                       value, 0)
+            elif key == 'photoneutron_energy_bins':
+                cv.check_type('adjoint populations photoneutron_energy_bins',
+                              value, Iterable, Real)
+                edges = [float(e) for e in value]
+                if len(edges) < 2 or any(b <= a for a, b in
+                                         zip(edges[:-1], edges[1:])):
+                    raise ValueError('photoneutron_energy_bins must be at '
+                                     'least two strictly increasing edges.')
+            elif key == 'photoneutron_energy_variable':
+                cv.check_value('adjoint populations '
+                               'photoneutron_energy_variable', value,
+                               ('photon_birth', 'photoneutron'))
             else:
                 cv.check_type(f'adjoint populations {key}', value, bool)
         if adjoint_populations and 'n_generation' not in adjoint_populations:
@@ -1969,6 +1991,8 @@ class Settings:
                 subelement = ET.SubElement(element, key)
                 if isinstance(value, bool):
                     subelement.text = str(value).lower()
+                elif key == 'photoneutron_energy_bins':
+                    subelement.text = ' '.join(str(float(e)) for e in value)
                 else:
                     subelement.text = str(value)
 
@@ -2536,6 +2560,12 @@ class Settings:
             text = get_text(elem, 'perturbed_importance')
             if text is not None:
                 value['perturbed_importance'] = text in ('true', '1')
+            text = get_text(elem, 'photoneutron_energy_bins')
+            if text is not None:
+                value['photoneutron_energy_bins'] = [float(x) for x in text.split()]
+            text = get_text(elem, 'photoneutron_energy_variable')
+            if text is not None:
+                value['photoneutron_energy_variable'] = text.strip()
             self.adjoint_populations = value
 
     def _tabular_legendre_from_xml_element(self, root):

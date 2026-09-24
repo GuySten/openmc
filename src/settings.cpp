@@ -1,9 +1,11 @@
 #include "openmc/settings.h"
 #include "openmc/random_ray/flat_source_domain.h"
 
-#include <cmath>   // for ceil, pow
-#include <cstring> // for strcmp
-#include <limits>  // for numeric_limits
+#include <algorithm>  // for is_sorted
+#include <cmath>      // for ceil, pow
+#include <cstring>    // for strcmp
+#include <functional> // for less_equal
+#include <limits>     // for numeric_limits
 #include <stdexcept>
 #include <string>
 
@@ -123,6 +125,8 @@ int ifp_n_generation {-1};
 int adjpop_n_generation {0};
 bool adjpop_photoneutrons {false};
 bool adjpop_perturbed_importance {false};
+vector<double> adjpop_energy_bins;
+int adjpop_energy_variable {0};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -624,6 +628,27 @@ void read_settings_xml(pugi::xml_node root)
       if (check_for_node(node, "perturbed_importance")) {
         adjpop_perturbed_importance =
           get_node_value_bool(node, "perturbed_importance");
+      }
+      if (check_for_node(node, "photoneutron_energy_bins")) {
+        adjpop_energy_bins =
+          get_node_array<double>(node, "photoneutron_energy_bins");
+        if (adjpop_energy_bins.size() < 2 ||
+            !std::is_sorted(adjpop_energy_bins.begin(),
+              adjpop_energy_bins.end(), std::less_equal<double>())) {
+          fatal_error("<adjoint_populations> 'photoneutron_energy_bins' must "
+                      "be at least two strictly increasing edges.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_energy_variable")) {
+        std::string v = get_node_value(node, "photoneutron_energy_variable");
+        if (v == "photon_birth") {
+          adjpop_energy_variable = 0;
+        } else if (v == "photoneutron") {
+          adjpop_energy_variable = 1;
+        } else {
+          fatal_error("<adjoint_populations> 'photoneutron_energy_variable' "
+                      "must be 'photon_birth' or 'photoneutron'.");
+        }
       }
     }
   }

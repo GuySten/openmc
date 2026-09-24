@@ -197,6 +197,14 @@ Present only if adjoint side populations were requested.
              class in the last generation, before roulette.
            - **n_histories** (*int8_t*) -- Number of side-population histories
              tracked.
+           - **photoneutron_energy_bins** (*double[]*) -- Energy-group edges
+             [eV] of the grouped photoneutron record. Present only if
+             requested.
+           - **photoneutron_energy_variable** (*char[]*) -- ``photon_birth``
+             or ``photoneutron``. Present only with the bins.
+           - **photoneutron_energy_weight** (*double[]*) -- Summed
+             photoneutron-root weight per batch, energy group and depth, in
+             that order. Present only with the bins.
 
 **/runtime/**
 

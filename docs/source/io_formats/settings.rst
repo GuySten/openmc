@@ -111,6 +111,26 @@ sub-elements:
 
     *Default*: none
 
+  :photoneutron_ray_comb_points:
+    Number of energies of the ray probes' neutron comb, built by the code
+    instead of given: spaced evenly in lethargy between the lowest and the
+    highest laboratory photoneutron energy of the ray lines, over every
+    photonuclear channel of the problem (sampled; a centre-of-mass channel's
+    forward and backward extremes), not below 1 eV. A coarse comb lets every
+    line share most trees; the comb's linear interpolation is checked with
+    :meth:`openmc.AdjointPopulations.ray_comb_importance`. Turns on ray
+    probes, as an alternative to ``photoneutron_ray_neutron_energies``.
+
+    *Default*: none
+
+  :photoneutron_ray_refinement:
+    The rays' photon lines are the probe lines with every interval
+    subdivided this many times, linearly in energy. The rays give every ray
+    line's uncollided photoneutrons exactly and cost little per line; the
+    probes' collided photoneutrons stay on the probe lines.
+
+    *Default*: 1
+
   :photoneutron_ray_fraction:
     Rays per generation, as a fraction of the particles per rank. A fission
     event may be split into several rays (at most 64).
@@ -140,9 +160,10 @@ sub-elements:
     Relative standard deviation the probe importance must reach before the
     run's triggers are met (``<trigger>`` must be active). At depth
     ``n_generation``, per listed fissioning nuclide (or the single bin) and
-    per line, the importance is the rays' and every probe label's
-    photoneutron weight over the fission roots' (a ratio of batch means with
-    a delta-method standard deviation), and its standard deviation must be
+    per ray line (per probe line without rays), the importance is the
+    rays' and every probe label's photoneutron weight over the fission
+    roots' (a ratio of batch means with a delta-method standard deviation;
+    the probes' part interpolated per batch between the probe lines), and its standard deviation must be
     below the threshold times the larger of the importance and
     ``photoneutron_probe_trigger_floor`` times its peak. The refined table
     between two lines combines their parts with weights in [0, 1], so it is

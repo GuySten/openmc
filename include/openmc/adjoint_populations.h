@@ -194,11 +194,12 @@ void run_shadow_pass();
 void finalize_batch();
 
 //! The probe-importance trigger: the largest, over the listed fissioning
-//! nuclides (or the single bin) and the probe lines, of the importance's
-//! standard deviation over threshold * max(importance, floor * peak). Below
-//! 1 the trigger is met. 0 if the trigger is off, INFTY with fewer than two
-//! batches or an empty bin. Sets the worst bin and line.
-double probe_trigger_ratio(int& worst_bin, int& worst_line);
+//! nuclides (or the single bin) and the ray lines (the probe lines without
+//! rays), of the importance's standard deviation over threshold *
+//! max(importance, floor * peak). Below 1 the trigger is met. 0 if the
+//! trigger is off, INFTY with fewer than two batches or an empty bin. Sets
+//! the worst bin and line energy.
+double probe_trigger_ratio(int& worst_bin, double& worst_energy);
 
 //! Write the per-batch sums to a statepoint
 void write_results(hid_t file_id);

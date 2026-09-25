@@ -179,8 +179,9 @@ void check_triggers()
   double tally_ratio;
   int tally_id, score;
   check_tally_triggers(tally_ratio, tally_id, score);
-  int probe_bin, probe_line;
-  double probe_ratio = adjpop::probe_trigger_ratio(probe_bin, probe_line);
+  int probe_bin;
+  double probe_energy;
+  double probe_ratio = adjpop::probe_trigger_ratio(probe_bin, probe_energy);
 
   // If all the triggers are satisfied, alert the user and return.
   if (std::max({keff_ratio, tally_ratio, probe_ratio}) <= 1.) {
@@ -198,8 +199,7 @@ void check_triggers()
     } else {
       msg = fmt::format("Triggers unsatisfied, max unc./thresh. is {} for the "
                         "probe importance (nuclide bin {}, line {:.6g} eV)",
-        probe_ratio, probe_bin,
-        settings::adjpop_probe_energies[probe_line]);
+        probe_ratio, probe_bin, probe_energy);
     }
   } else if (keff_ratio >= tally_ratio) {
     msg = fmt::format("Triggers unsatisfied, max unc./thresh. is {} for "

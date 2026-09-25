@@ -99,19 +99,32 @@ int n_probe_depth_bins()
 {
   return n_probe_bins() * n_depth();
 }
+// The rays' photon lines (the probe lines subdivided) and their neutron comb,
+// set by init()
+vector<double> ray_lines;
+vector<double> ray_comb;
+int n_ray_lines()
+{
+  return static_cast<int>(ray_lines.size());
+}
 int n_comb()
 {
-  return static_cast<int>(settings::adjpop_ray_neutron_energies.size());
+  return static_cast<int>(ray_comb.size());
 }
 bool rays_on()
 {
   return probes_on() && n_comb() > 1;
 }
+bool rays_requested()
+{
+  return !settings::adjpop_ray_neutron_energies.empty() ||
+         settings::adjpop_ray_comb_points > 0;
+}
 //! Ray scores: per line (nuclide bin x line) and per comb energy (nuclide
 //! bin x comb energy), each by depth
 int n_ray_line_bins()
 {
-  return rays_on() ? n_nbins() * n_lines() * n_depth() : 0;
+  return rays_on() ? n_nbins() * n_ray_lines() * n_depth() : 0;
 }
 int n_ray_comb_bins()
 {
@@ -535,7 +548,7 @@ void walk_ray(Position r0, Direction u, uint64_t* seed, vector<RaySeg>& seg)
   Particle p;
   p.type() = ParticleType::photon();
   p.wgt() = 1.0;
-  p.E() = settings::adjpop_probe_energies.back();
+  p.E() = ray_lines.back();
   p.shadow_depth() = 0;
   p.r() = r0;
   p.u() = u;
@@ -569,7 +582,7 @@ void walk_ray(Position r0, Direction u, uint64_t* seed, vector<RaySeg>& seg)
 //! Build the per-material, per-line cross sections of the ray probes
 void init_rays()
 {
-  const int K = n_lines();
+  const int K = n_ray_lines();
   const size_t nm = model::materials.size();
   ray_sigt.assign(nm * K, 0.0);
   ray_sign.assign(nm * K, 0.0);
@@ -581,7 +594,7 @@ void init_rays()
     const auto& mat = *model::materials[m];
     double tmin = INFTY;
     for (int k = 0; k < K; ++k) {
-      p.E() = settings::adjpop_probe_energies[k];
+      p.E() = ray_lines[k];
       mat.calculate_xs(p);
       ray_sigt[m * K + k] = p.macro_xs().total;
       tmin = std::min(tmin, p.macro_xs().total);
@@ -619,11 +632,59 @@ void init_rays()
   }
 }
 
+//! The neutron comb when it is not given: n energies spaced evenly in
+//! lethargy between the lowest and highest laboratory photoneutron energy of
+//! the ray lines, over every photonuclear channel of every material. A
+//! centre-of-mass channel's outgoing energies are sampled and turned into
+//! the laboratory extremes (b -/+ a)^2 of forward and backward emission; a
+//! laboratory channel's are sampled as they are. Not below 1 eV.
+void build_ray_comb(int n)
+{
+  const int K = n_ray_lines();
+  double lo = INFTY, hi = 0.0;
+  uint64_t s = init_seed(combine_ids({4242, 17}), STREAM_TRACKING);
+  for (size_t m = 0; m < model::materials.size(); ++m) {
+    for (int k = 0; k < K; ++k) {
+      const double Ek = ray_lines[k];
+      for (const auto& c : ray_channels[m * K + k]) {
+        const auto& nuc = *data::photonuclears[c.i_pn];
+        const auto& rx = *nuc.reactions_[c.i_rx];
+        const auto& prod = rx.products_[c.i_prod];
+        const double b = Ek / (nuc.awr_ * std::sqrt(2.0 * MASS_NEUTRON_EV));
+        for (int i = 0; i < 64; ++i) {
+          double E_out;
+          prod.sample_energy_and_pdf(Ek, 2.0 * prn(&s) - 1.0, E_out, &s);
+          if (!(E_out > 0.0))
+            continue;
+          if (rx.scatter_in_cm_) {
+            const double a = std::sqrt(E_out);
+            lo = std::min(lo, (b - a) * (b - a));
+            hi = std::max(hi, (b + a) * (b + a));
+          } else {
+            lo = std::min(lo, E_out);
+            hi = std::max(hi, E_out);
+          }
+        }
+      }
+    }
+  }
+  if (!(hi > 0.0))
+    fatal_error("<adjoint_populations> no photoneutron channel is open at "
+                "the ray lines: the neutron comb cannot be built.");
+  lo = std::max(0.95 * lo, 1.0);
+  hi = 1.05 * hi;
+  if (!(hi > lo))
+    hi = 2.0 * lo;
+  ray_comb.resize(n);
+  for (int j = 0; j < n; ++j)
+    ray_comb[j] = lo * std::pow(hi / lo, static_cast<double>(j) / (n - 1));
+}
+
 //! Linear-interpolation weights in lethargy of a photoneutron energy on the
 //! comb, held at the ends
 void comb_weights(double E, int& j0, double& w0)
 {
-  const auto& c = settings::adjpop_ray_neutron_energies;
+  const auto& c = ray_comb;
   const int M = static_cast<int>(c.size());
   if (E <= c.front()) {
     j0 = 0;
@@ -693,7 +754,7 @@ int lab_density(const ReactionProduct& prod, bool in_cm, double E_in,
 bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   int64_t& n_seg)
 {
-  const int K = n_lines();
+  const int K = n_ray_lines();
   const int M = n_comb();
   uint64_t s = init_seed(combine_ids({sid, 3}), STREAM_TRACKING);
   const double ct = 2.0 * prn(&s) - 1.0;
@@ -786,7 +847,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   for (int k = 0; k < K; ++k) {
     if (!(pk[k] > 0.0))
       continue;
-    const double Ek = settings::adjpop_probe_energies[k];
+    const double Ek = ray_lines[k];
     double fsum = 0.0, ssum = 0.0;
     for (const auto& c : ray_channels[mb * K + k]) {
       const auto& nuc = *data::photonuclears[c.i_pn];
@@ -869,7 +930,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   Root& r = out.root;
   r.r = rb;
   r.u = un;
-  r.E = settings::adjpop_ray_neutron_energies[jc];
+  r.E = ray_comb[jc];
   r.time = f.time;
   r.wgt = R;
   r.cls = CLASS_RAY;
@@ -955,7 +1016,7 @@ void run_one_ray_tree(const RayRoot& rr, double w)
   auto& buf = thread_tree_buf[t];
   std::fill(buf.begin(), buf.end(), 0.0);
   run_one_tree(rr.root, w);
-  const int K = n_lines();
+  const int K = n_ray_lines();
   const size_t nd = n_depth();
   const size_t lines = static_cast<size_t>(t) * n_ray_line_bins();
   const size_t comb = static_cast<size_t>(t) * n_ray_comb_bins();
@@ -1055,11 +1116,28 @@ void init()
   batch_pf.assign(probes_on() ? n_nbins() : 0, 0.0);
   batches_pf.clear();
   thread_probe_roots.assign(n_threads, {});
-  if (!settings::adjpop_ray_neutron_energies.empty() && !probes_on())
-    fatal_error("<adjoint_populations> photoneutron_ray_neutron_energies "
-                "require photoneutron_probe_energies.");
-  if (rays_on())
+  if (rays_requested() && !probes_on())
+    fatal_error("<adjoint_populations> ray probes require "
+                "photoneutron_probe_energies.");
+  ray_lines.clear();
+  ray_comb.clear();
+  if (rays_requested()) {
+    // The probe lines, each interval subdivided linearly in energy
+    const auto& e = settings::adjpop_probe_energies;
+    const int r = settings::adjpop_ray_refinement;
+    for (size_t k = 0; k + 1 < e.size(); ++k)
+      for (int i = 0; i < r; ++i)
+        ray_lines.push_back(e[k] + (e[k + 1] - e[k]) * i / r);
+    ray_lines.push_back(e.back());
+    // The comb needs the lines' channels, which init_rays() builds; its
+    // first dimension does not depend on the comb
+    ray_comb = settings::adjpop_ray_neutron_energies;
+    if (ray_comb.empty())
+      ray_comb.assign(2, 1.0); // placeholder so that rays_on() holds
     init_rays();
+    if (settings::adjpop_ray_neutron_energies.empty())
+      build_ray_comb(settings::adjpop_ray_comb_points);
+  }
   ray_cast_target.assign(n_nbins(), 0.0);
   ray_root_target.assign(n_nbins(), 0.0);
   ray_site_w.assign(n_nbins(), 1.0);
@@ -1629,10 +1707,11 @@ void finalize_batch()
   std::fill(batch_rf.begin(), batch_rf.end(), 0.0);
 }
 
-double probe_trigger_ratio(int& worst_bin, int& worst_line)
+double probe_trigger_ratio(int& worst_bin, double& worst_energy)
 {
   worst_bin = -1;
-  worst_line = -1;
+  worst_energy = 0.0;
+  int worst_line = -1;
   if (!(settings::adjpop_probe_trigger > 0.0) || !probes_on())
     return 0.0;
   const int nb = n_batches_recorded;
@@ -1640,6 +1719,10 @@ double probe_trigger_ratio(int& worst_bin, int& worst_line)
     return INFTY;
   const int L = settings::adjpop_n_generation;
   const size_t nd = n_depth(), K = n_lines(), nn = n_nbins();
+  // The trigger is checked at every ray line (the probe lines if no rays),
+  // the probes' collided part interpolated per batch from the probe lines
+  const int r = rays_on() ? settings::adjpop_ray_refinement : 1;
+  const size_t KR = rays_on() ? static_cast<size_t>(n_ray_lines()) : K;
 
   // I_F per batch at depth L
   vector<double> y(nb, 0.0);
@@ -1661,48 +1744,59 @@ double probe_trigger_ratio(int& worst_bin, int& worst_line)
       : static_cast<int>(settings::adjpop_fission_nuclides.size());
   double worst = 0.0;
   vector<double> x(nb);
-  vector<double> r(K), s(K);
+  vector<double> rr(KR), s(KR);
+  auto probe_sum = [&](size_t jb, size_t k) {
+    double v = 0.0;
+    for (int l = 0; l < N_PROBE_LABEL; ++l)
+      v += batches_pw[((jb * K + k) * N_PROBE_LABEL + l) * nd + L];
+    return v;
+  };
   for (int j = 0; j < n_check; ++j) {
     double peak = 0.0;
-    for (size_t k = 0; k < K; ++k) {
+    for (size_t i = 0; i < KR; ++i) {
       // Direct + scattered: the rays (if on) and every probe label
+      const size_t k = i / r;
+      const double t = static_cast<double>(i % r) / r;
       double mx = 0.0;
       for (int b = 0; b < nb; ++b) {
         const size_t jb = static_cast<size_t>(b) * nn + j;
-        double v = 0.0;
-        for (int l = 0; l < N_PROBE_LABEL; ++l)
-          v += batches_pw[((jb * K + k) * N_PROBE_LABEL + l) * nd + L];
+        double v = probe_sum(jb, k) * (1.0 - t);
+        if (t > 0.0)
+          v += probe_sum(jb, k + 1) * t;
         if (rays_on())
-          v += batches_rw[(jb * K + k) * nd + L];
+          v += batches_rw[(jb * KR + i) * nd + L];
         x[b] = v;
         mx += v;
       }
       mx /= nb;
-      r[k] = mx / my;
+      rr[i] = mx / my;
       // Delta method for the ratio of means
       double ss = 0.0;
       for (int b = 0; b < nb; ++b) {
-        const double z = (x[b] - r[k] * y[b]) / my;
+        const double z = (x[b] - rr[i] * y[b]) / my;
         ss += z * z;
       }
-      s[k] = std::sqrt(ss / (nb - 1) / nb);
-      peak = std::max(peak, r[k]);
+      s[i] = std::sqrt(ss / (nb - 1) / nb);
+      peak = std::max(peak, rr[i]);
     }
     if (!(peak > 0.0)) {
       worst_bin = j;
       return INFTY;
     }
-    for (size_t k = 0; k < K; ++k) {
+    for (size_t i = 0; i < KR; ++i) {
       const double ref =
-        std::max(r[k], settings::adjpop_probe_trigger_floor * peak);
-      const double ratio = s[k] / (settings::adjpop_probe_trigger * ref);
+        std::max(rr[i], settings::adjpop_probe_trigger_floor * peak);
+      const double ratio = s[i] / (settings::adjpop_probe_trigger * ref);
       if (ratio > worst) {
         worst = ratio;
         worst_bin = j;
-        worst_line = static_cast<int>(k);
+        worst_line = static_cast<int>(i);
       }
     }
   }
+  if (worst_line >= 0)
+    worst_energy = rays_on() ? ray_lines[worst_line]
+                             : settings::adjpop_probe_energies[worst_line];
   return worst;
 }
 
@@ -1790,8 +1884,9 @@ void write_results(hid_t file_id)
           settings::adjpop_probe_trigger_floor});
   }
   if (rays_on()) {
-    write_dataset(
-      group, "ray_neutron_energies", settings::adjpop_ray_neutron_energies);
+    write_dataset(group, "ray_neutron_energies", ray_comb);
+    write_dataset(group, "ray_photon_energies", ray_lines);
+    write_dataset(group, "ray_refinement", settings::adjpop_ray_refinement);
     // [batch][nuclide bin][line][depth]: uncollided photoneutron importance
     write_dataset(group, "ray_weight", batches_rw);
     // [batch][nuclide bin][comb energy][depth]: the trees by comb energy
@@ -1840,6 +1935,8 @@ void clear()
   last_probe_photons = 0;
   last_probe_roots = 0;
   n_probe_histories = 0;
+  ray_lines.clear();
+  ray_comb.clear();
   ray_sigt.clear();
   ray_sign.clear();
   ray_sigt_min.clear();

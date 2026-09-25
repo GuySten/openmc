@@ -125,6 +125,13 @@ int openmc_finalize()
   settings::adjpop_ray_neutron_energies.clear();
   settings::adjpop_ray_fraction = 1.0;
   settings::adjpop_ray_allocation = 0;
+  settings::adjpop_ray_comb_points = 0;
+  settings::adjpop_ray_refinement = 1;
+  settings::adjpop_root_fraction = 0.1;
+  settings::adjpop_probe_root_fraction = 0.0;
+  settings::adjpop_ray_root_fraction = 0.0;
+  settings::adjpop_probe_trigger = 0.0;
+  settings::adjpop_probe_trigger_floor = 0.1;
   settings::output_summary = true;
   settings::output_tallies = true;
   settings::particle_restart_run = false;

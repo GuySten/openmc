@@ -205,7 +205,10 @@ class ProbeImportance:
     lines : numpy.ndarray
         Probe line energies [eV]
     direct, scattered : numpy.ndarray
-        Summed probe-root weight per batch and line, [batch, line]
+        Summed probe-root weight per batch and line, [batch, line]: the
+        photoneutrons made at the line energy and after an energy-changing
+        collision. With ray_lines, direct holds only the probes' part (after
+        coherent scattering) and the rays' part is given separately.
     fission_importance : numpy.ndarray
         Summed fission-root weight per batch at the same depth, [batch]
     target : PhotoneutronTarget
@@ -220,6 +223,12 @@ class ProbeImportance:
         Top of the table [eV]; the highest line if None
     name : str, optional
         Name of the fissioning-nuclide bin
+    ray_lines : numpy.ndarray, optional
+        The rays' line energies [eV], if the rays were evaluated on lines of
+        their own
+    ray_direct : numpy.ndarray, optional
+        The rays' uncollided photoneutron weight per batch and ray line,
+        [batch, ray line]; interpolated like the direct part, on ray_lines
 
     Attributes
     ----------
@@ -233,28 +242,33 @@ class ProbeImportance:
     """
 
     def __init__(self, lines, direct, scattered, fission_importance, target,
-                 rtol=0.01, floor=1.0e-3, e_max=None, name=None):
+                 rtol=0.01, floor=1.0e-3, e_max=None, name=None,
+                 ray_lines=None, ray_direct=None):
         self.lines = np.asarray(lines, float)
-        self._direct = np.atleast_2d(np.asarray(direct, float))
-        self._scattered = np.atleast_2d(np.asarray(scattered, float))
         self._fission = np.asarray(fission_importance, float)
         self.target = target
         self.rtol = float(rtol)
         self.floor = float(floor)
         self.name = name
-        if self.lines[0] <= target.threshold:
+        self.ray_lines = None if ray_lines is None else \
+            np.asarray(ray_lines, float)
+        grids = [self.lines] + ([] if ray_lines is None else [self.ray_lines])
+        if min(g[0] for g in grids) <= target.threshold:
             raise ValueError('Every probe line must lie above the target '
                              'threshold.')
-        self.e_max = float(self.lines[-1] if e_max is None else e_max)
+        self.e_max = float(max(g[-1] for g in grids) if e_max is None
+                           else e_max)
 
-        # Node values of the smooth functions, per batch: A = I_d Sigma'/sigma,
-        # B = I_s Sigma'. A line where sigma vanishes carries no direct part.
-        s = target.sigma_at(self.lines)
-        r = target.sigma_removal_at(self.lines)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            self._a_scale = np.where(s > 0.0, r / s, 0.0)
-        self._b_scale = r
-        self._u = np.log(self.lines - target.threshold)
+        # The parts, each on its own lines, as node values per batch of a
+        # smooth function: 'A' = I Sigma'/sigma for the photoneutrons made at
+        # the line energy, 'B' = I Sigma' for those made after an
+        # energy-changing collision. A line where sigma vanishes carries no
+        # 'A' part.
+        self._parts = []
+        self._add_part('A', self.lines, direct)
+        self._add_part('B', self.lines, scattered)
+        if ray_lines is not None:
+            self._add_part('A', self.ray_lines, ray_direct)
 
         self.energy = self._refine()
         self.mean, self.std_dev = self._statistics(self.energy)
@@ -262,39 +276,53 @@ class ProbeImportance:
     # ------------------------------------------------------------------------
     # The rebuilt function
 
+    def _add_part(self, kind, lines, data):
+        t = self.target
+        s = t.sigma_at(lines)
+        r = t.sigma_removal_at(lines)
+        if kind == 'A':
+            with np.errstate(divide='ignore', invalid='ignore'):
+                scale = np.where(s > 0.0, r / s, 0.0)
+        else:
+            scale = r
+        self._parts.append((kind, lines, np.log(lines - t.threshold), scale,
+                            np.atleast_2d(np.asarray(data, float))))
+
     def _coefficients(self, E):
-        """Matrices Cd, Cs such that the importance at E, per batch, is
-        (Cd @ I_d + Cs @ I_s) / I_F."""
+        """One matrix C per part such that the importance at E, per batch,
+        is sum(C @ I_part) / I_F."""
         E = np.atleast_1d(np.asarray(E, float))
         thr = self.target.threshold
-        K = self.lines.size
         above = E > thr
         u = np.log(np.where(above, E - thr, 1.0))
-        # Linear interpolation weights in lethargy, held flat above the last
-        # line; below the first line A is held and B falls linearly in E to
-        # zero at the threshold
-        j = np.clip(np.searchsorted(self._u, u) - 1, 0, K - 2)
-        t = np.clip((u - self._u[j]) / (self._u[j + 1] - self._u[j]), 0.0, 1.0)
-        W = np.zeros((E.size, K))
-        rows = np.arange(E.size)
-        W[rows, j] = 1.0 - t
-        W[rows, j + 1] += t
-        Wb = W.copy()
-        low = above & (E < self.lines[0])
-        if np.any(low):
-            Wb[low] = 0.0
-            Wb[low, 0] = (E[low] - thr) / (self.lines[0] - thr)
-
         s = self.target.sigma_at(E)
         r = self.target.sigma_removal_at(E)
         inv = np.where(above & (r > 0.0), 1.0 / np.where(r > 0.0, r, 1.0), 0.0)
-        Cd = (s * inv)[:, None] * W * self._a_scale[None, :]
-        Cs = inv[:, None] * Wb * self._b_scale[None, :]
-        return Cd, Cs
+        rows = np.arange(E.size)
+        out = []
+        for kind, lines, lu, scale, _ in self._parts:
+            # Linear interpolation weights in lethargy, held flat above the
+            # last line; below the first line A is held and B falls linearly
+            # in E to zero at the threshold
+            K = lines.size
+            j = np.clip(np.searchsorted(lu, u) - 1, 0, K - 2)
+            t = np.clip((u - lu[j]) / (lu[j + 1] - lu[j]), 0.0, 1.0)
+            W = np.zeros((E.size, K))
+            W[rows, j] = 1.0 - t
+            W[rows, j + 1] += t
+            if kind == 'A':
+                out.append((s * inv)[:, None] * W * scale[None, :])
+            else:
+                low = above & (E < lines[0])
+                if np.any(low):
+                    W[low] = 0.0
+                    W[low, 0] = (E[low] - thr) / (lines[0] - thr)
+                out.append(inv[:, None] * W * scale[None, :])
+        return out
 
     def _batch_numerators(self, E):
-        Cd, Cs = self._coefficients(E)
-        return self._direct @ Cd.T + self._scattered @ Cs.T   # [batch, E]
+        C = self._coefficients(E)
+        return sum(part[4] @ c.T for part, c in zip(self._parts, C))
 
     def rebuilt(self, E):
         """The rebuilt importance at energies E (batch means), exact in the
@@ -323,8 +351,8 @@ class ProbeImportance:
         t = self.target
         lo = t.threshold
         hi = self.e_max
-        seeds = [t.energy[(t.energy > lo) & (t.energy < hi)], self.lines,
-                 [lo, hi]]
+        seeds = [t.energy[(t.energy > lo) & (t.energy < hi)], [lo, hi]] + \
+            [part[1] for part in self._parts]
         grid = np.unique(np.concatenate(seeds))
         grid = grid[(grid >= lo) & (grid <= hi)]
         scale = np.max(np.abs(self.rebuilt(grid)))

@@ -175,6 +175,18 @@ class Settings:
             line's uncollided photoneutrons exactly and shares one tree
             among all lines; the probes keep only their collided
             photoneutrons.
+        :photoneutron_ray_comb_points: Number of photoneutron birth energies
+            of the ray probes' comb, built by the code (int, at least 2):
+            spaced evenly in lethargy between the lowest and highest
+            laboratory photoneutron energy of the ray lines over every
+            photonuclear channel of the problem, not below 1 eV. Turns on
+            ray probes as ``photoneutron_ray_neutron_energies`` does, which
+            it is an alternative to.
+        :photoneutron_ray_refinement: The rays' photon lines are the probe
+            lines with each interval subdivided this many times, linearly in
+            energy (int, default 1). The rays give the uncollided part
+            exactly at every ray line; the probes' collided part stays on the
+            probe lines.
         :photoneutron_ray_fraction: Rays per generation, as a fraction of
             the particles (float, default 1.0); a fission event may be split
             into several.
@@ -1242,7 +1254,9 @@ class Settings:
                             'photoneutron_probe_root_fraction',
                             'photoneutron_ray_root_fraction',
                             'photoneutron_probe_trigger',
-                            'photoneutron_probe_trigger_floor'))
+                            'photoneutron_probe_trigger_floor',
+                            'photoneutron_ray_comb_points',
+                            'photoneutron_ray_refinement'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1294,6 +1308,13 @@ class Settings:
                          'photoneutron_probe_trigger'):
                 cv.check_type(f'adjoint populations {key}', value, Real)
                 cv.check_greater_than(f'adjoint populations {key}', value, 0.0)
+            elif key in ('photoneutron_ray_comb_points',
+                         'photoneutron_ray_refinement'):
+                cv.check_type(f'adjoint populations {key}', value, Integral)
+                cv.check_greater_than(
+                    f'adjoint populations {key}', value,
+                    2 if key == 'photoneutron_ray_comb_points' else 1,
+                    equality=True)
             elif key == 'photoneutron_probe_trigger_floor':
                 cv.check_type(f'adjoint populations {key}', value, Real)
                 cv.check_greater_than(f'adjoint populations {key}', value,
@@ -2714,6 +2735,11 @@ class Settings:
                 text = get_text(elem, key)
                 if text is not None:
                     value[key] = float(text)
+            for key in ('photoneutron_ray_comb_points',
+                        'photoneutron_ray_refinement'):
+                text = get_text(elem, key)
+                if text is not None:
+                    value[key] = int(text)
             text = get_text(elem, 'photoneutron_probe_energies')
             if text is not None:
                 value['photoneutron_probe_energies'] = [

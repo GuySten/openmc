@@ -587,3 +587,94 @@ def test_probe_relative_error(run_in_tmpdir):
     assert err[2] < s[2] / r[2]
     # an empty bin cannot meet a trigger
     assert np.all(np.isinf(ap.probe_relative_error('other')))
+
+
+def test_ray_grid_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_probe_energies': [2.3e6, 3e6, 5e6],
+             'photoneutron_ray_comb_points': 6,
+             'photoneutron_ray_refinement': 4}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_ray_comb_points': 1}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_ray_refinement': 0}
+
+
+def test_ray_lines_as_a_separate_part():
+    """Rays on the probe lines given as a part of their own rebuild the same
+    function as when they are added to the probes' direct part."""
+    t = _resonant_target()
+    K, n_b = 12, 3
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, K)
+    d, sc = _smooth_parts(t, lines)
+    rng = np.random.default_rng(3)
+    ray = d[None, :] * rng.uniform(0.9, 1.1, (n_b, K))
+    coh = 0.05 * d[None, :] * rng.uniform(0.9, 1.1, (n_b, K))
+    scat = sc[None, :] * rng.uniform(0.9, 1.1, (n_b, K))
+    f = np.array([1.0, 1.1, 0.9])
+    one = openmc.ProbeImportance(lines, ray + coh, scat, f, t)
+    two = openmc.ProbeImportance(lines, coh, scat, f, t, ray_lines=lines,
+                                 ray_direct=ray)
+    E = np.linspace(lines[0], lines[-1], 400)
+    assert np.allclose(one.rebuilt(E), two.rebuilt(E), rtol=1e-12)
+    assert one.fold([3e6, 7e6], [0.5, 0.2]).s == pytest.approx(
+        two.fold([3e6, 7e6], [0.5, 0.2]).s, rel=1e-10)
+
+
+def test_refined_ray_lines(run_in_tmpdir):
+    """With the ray lines refined, the probe lines are every r-th ray line;
+    the trigger's quantity is taken at every ray line, the probes' collided
+    part interpolated per batch."""
+    L, n_b, K, r, M = 2, 4, 3, 2, 3
+    lines = np.array([2.3e6, 3e6, 5e6])
+    rlines = np.array([2.3e6, 2.65e6, 3e6, 4e6, 5e6])
+    w = np.zeros((n_b, 5, 9, L + 1))
+    i_f = np.array([100.0, 110.0, 90.0, 100.0])
+    w[:, CLASS_FISSION, 0, L] = i_f
+    w[:, CLASS_FISSION, 0, 0] = 50.0
+    rng = np.random.default_rng(5)
+    pw = np.zeros((n_b, 2, K, 3, L + 1))
+    pw[:, 0, :, 1, L] = rng.uniform(0.1, 0.2, (n_b, K))
+    pw[:, 0, :, 2, L] = rng.uniform(1.0, 2.0, (n_b, K))
+    rw = np.zeros((n_b, 2, rlines.size, L + 1))
+    rw[:, 0, :, L] = rng.uniform(5.0, 6.0, (n_b, rlines.size))
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = lines
+        g['probe_fission_nuclides'] = 'U235 other'
+        g['probe_n_labels'] = 3
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = np.ones((n_b, 2)).ravel()
+        g['ray_neutron_energies'] = np.geomspace(1e3, 6e6, M)
+        g['ray_photon_energies'] = rlines
+        g['ray_refinement'] = r
+        g['ray_weight'] = rw.ravel()
+        g['ray_comb_weight'] = np.ones((n_b, 2, M, L + 1)).ravel()
+        g['ray_fission_weight'] = np.ones((n_b, 2)).ravel()
+    ap = _read('ap.h5', 1.0)
+    assert ap.ray_refinement == r and ap.ray_weight.shape[2] == rlines.size
+    d, s = ap.probe_reactivity('U235', depth=L)
+    assert d[1].n == pytest.approx(
+        (rw[:, 0, 2, L].mean() + pw[:, 0, 1, 1, L].mean()) / i_f.mean())
+    # trigger quantity at ray line 3 (between probe lines 1 and 2)
+    c = pw[:, 0, :, 1, L] + pw[:, 0, :, 2, L]
+    x = rw[:, 0, :, L] + np.column_stack(
+        [c[:, 0], 0.5 * (c[:, 0] + c[:, 1]), c[:, 1], 0.5 * (c[:, 1] + c[:, 2]),
+         c[:, 2]])
+    rr = x.mean(0) / i_f.mean()
+    z = (x - np.outer(i_f, rr)) / i_f.mean()
+    sd = z.std(0, ddof=1) / np.sqrt(n_b)
+    err = ap.probe_relative_error('U235', floor=0.1)
+    assert np.allclose(err, sd / np.maximum(rr, 0.1 * rr.max()))
+    # the comb importance: the trees' depth-L over depth-0 weight, per the
+    # fission roots' (here 1 against I_F(L)/I_F(0))
+    comb = ap.ray_comb_importance(depth=L)
+    assert len(comb) == M
+    assert comb[0].n == pytest.approx(50.0 / i_f.mean())

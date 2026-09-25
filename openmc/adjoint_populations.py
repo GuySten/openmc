@@ -119,7 +119,13 @@ class AdjointPopulations:
         Number of probe labels (2 or 3)
     ray_weight : numpy.ndarray or None
         Summed uncollided photoneutron-root weight of the ray probes,
-        indexed [batch, nuclide bin, line, depth], if rays were on
+        indexed [batch, nuclide bin, ray line, depth], if rays were on
+    ray_photon_energies : numpy.ndarray or None
+        The rays' line energies [eV]: the probe lines, each interval
+        subdivided ray_refinement times
+    ray_refinement : int
+        Subdivisions of each probe-line interval on the ray lines (1: the ray
+        lines are the probe lines)
     ray_comb_weight : numpy.ndarray or None
         The ray trees' summed weight by photoneutron comb energy, indexed
         [batch, nuclide bin, comb energy, depth]
@@ -205,12 +211,18 @@ class AdjointPopulations:
         self.ray_comb_weight = None
         self.ray_neutron_energies = None
         self.ray_fission_weight = None
+        self.ray_photon_energies = None
+        self.ray_refinement = 1
         if 'ray_weight' in group:
             nn = len(self.probe_fission_nuclides)
             nd = self.n_generation + 1
             self.ray_neutron_energies = group['ray_neutron_energies'][()]
+            self.ray_photon_energies = group['ray_photon_energies'][()] \
+                if 'ray_photon_energies' in group else self.probe_energies
+            self.ray_refinement = int(group['ray_refinement'][()]) \
+                if 'ray_refinement' in group else 1
             self.ray_weight = group['ray_weight'][()].reshape(
-                (self.n_batches, nn, len(self.probe_energies), nd))
+                (self.n_batches, nn, len(self.ray_photon_energies), nd))
             self.ray_comb_weight = group['ray_comb_weight'][()].reshape(
                 (self.n_batches, nn, len(self.ray_neutron_energies), nd))
             self.ray_fission_weight = \
@@ -439,7 +451,9 @@ class AdjointPopulations:
             return w[:, :, 0], w[:, :, 1]
         direct = w[:, :, 0] + w[:, :, 1]
         if self.ray_weight is not None:
-            direct = self.ray_weight[:, j, :, d] + w[:, :, 1]
+            # The probe lines are every ray_refinement-th ray line
+            direct = self.ray_weight[:, j, ::self.ray_refinement, d] + \
+                w[:, :, 1]
         return direct, w[:, :, 2]
 
     def probe_photoneutron_yield(self, nuclide=None):
@@ -469,7 +483,8 @@ class AdjointPopulations:
         scale = (self.probe_fission_weight[:, j] /
                  np.where(self.ray_fission_weight[:, j] > 0,
                           self.ray_fission_weight[:, j], 1.0))[:, None]
-        return self.ray_weight[:, j, :, 0] * scale + w[:, :, 1], w[:, :, 2]
+        ray = self.ray_weight[:, j, ::self.ray_refinement, 0]
+        return ray * scale + w[:, :, 1], w[:, :, 2]
 
     def probe_reactivity(self, nuclide=None, depth=None):
         """Photoneutron reactivity of each probe line of unit intensity per
@@ -489,25 +504,70 @@ class AdjointPopulations:
         return tuple([_ratio(part[:, k], i_f) for k in range(part.shape[1])]
                      for part in self._probe_parts(j, d))
 
+    def _line_totals(self, j, d):
+        """Direct plus scattered weight per batch at the trigger's lines: the
+        ray lines, the probes' parts interpolated per batch from the probe
+        lines with the subdivision weights; the probe lines without rays."""
+        direct, scattered = self._probe_parts(j, d)
+        if self.ray_weight is None or self.probe_n_labels == 2:
+            return direct + scattered
+        w = self.probe_weight[:, j, :, :, d]
+        collided = w[:, :, 1] + w[:, :, 2]
+        r = self.ray_refinement
+        n = self.ray_photon_energies.size
+        i = np.arange(n)
+        k = i // r
+        t = (i % r) / r
+        k1 = np.minimum(k + 1, collided.shape[1] - 1)
+        return (self.ray_weight[:, j, :, d] + collided[:, k] * (1.0 - t) +
+                collided[:, k1] * t)
+
+    def ray_comb_importance(self, nuclide=None, depth=None):
+        """Importance per unit weight of a photoneutron started at each
+        energy of the rays' neutron comb, relative to a fission neutron's:
+        (I_c(d)/I_c(0)) / (I_F(d)/I_F(0)), pooled over the nuclide bins if
+        none is named. The comb's linear interpolation is checked against it.
+
+        Returns
+        -------
+        list of uncertainties.UFloat
+            One entry per comb energy (NaN where no tree started)
+        """
+        if self.ray_comb_weight is None:
+            raise ValueError('The calculation did not use ray probes.')
+        d = self._depth(depth)
+        w = self.weight[:, CLASS_FISSION].sum(axis=1)
+        if nuclide is None:
+            c = self.ray_comb_weight.sum(axis=1)
+        else:
+            c = self.ray_comb_weight[:, self._probe_bin(nuclide)]
+        out = []
+        for m in range(c.shape[1]):
+            if not c[:, m, 0].any():
+                out.append(ufloat(np.nan, np.nan))
+                continue
+            out.append(_double_ratio(c[:, m, d], c[:, m, 0], w[:, d], w[:, 0]))
+        return out
+
     def probe_relative_error(self, nuclide=None, depth=None, floor=0.1):
         """Standard deviation of each line's importance (direct plus
         scattered, per unit fission-neutron importance) over
         max(importance, floor * peak): the relative error where the
         importance is at least floor of its peak, the error relative to
         floor of the peak below. The probe trigger holds this below its
-        threshold at every line.
+        threshold at every line. With rays the lines are the ray lines, the
+        probes' collided part interpolated per batch from the probe lines.
 
         Returns
         -------
         numpy.ndarray
-            One value per line
+            One value per line (ray line with rays)
         """
         self._check_probes()
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
-        direct, scattered = self._probe_parts(j, d)
-        r = [_ratio(x, i_f) for x in (direct + scattered).T]
+        r = [_ratio(x, i_f) for x in self._line_totals(j, d).T]
         mean = np.array([x.n for x in r])
         std = np.array([x.s for x in r])
         peak = mean.max()
@@ -570,11 +630,19 @@ class AdjointPopulations:
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        name = self.probe_fission_nuclides[j]
+        if self.ray_weight is not None and self.probe_n_labels == 3:
+            # The rays on their own lines, the probes' parts on theirs
+            w = self.probe_weight[:, j, :, :, d]
+            return ProbeImportance(self.probe_energies, w[:, :, 1], w[:, :, 2],
+                                   i_f, target, rtol=rtol, floor=floor,
+                                   e_max=e_max, name=name,
+                                   ray_lines=self.ray_photon_energies,
+                                   ray_direct=self.ray_weight[:, j, :, d])
         direct, scattered = self._probe_parts(j, d)
         return ProbeImportance(self.probe_energies, direct, scattered,
                                i_f, target, rtol=rtol, floor=floor,
-                               e_max=e_max,
-                               name=self.probe_fission_nuclides[j])
+                               e_max=e_max, name=name)
 
     def probe_importances(self, target, depth=None, rtol=0.01, floor=1.0e-3,
                           e_max=None, cross_sections=None):

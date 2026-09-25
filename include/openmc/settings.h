@@ -172,6 +172,12 @@ extern double adjpop_probe_trigger_floor;
 extern vector<double> adjpop_ray_neutron_energies;
 //! Rays per generation, as a fraction of the particles per rank
 extern double adjpop_ray_fraction;
+//! Neutron-comb energies built by the code when the comb is not given (0:
+//! rays only with a given comb)
+extern int adjpop_ray_comb_points;
+//! The rays' photon lines: the probe lines, each interval subdivided this
+//! many times
+extern int adjpop_ray_refinement;
 //! How rays and ray roots are shared among the fissioning-nuclide bins:
 //! 0 equally (a bin capped at what it has), 1 in proportion to fission weight
 extern int adjpop_ray_allocation;

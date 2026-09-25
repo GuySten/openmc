@@ -243,10 +243,14 @@ Present only if adjoint side populations were requested.
            - **probe_trigger** (*double[2]*) -- Threshold and floor of the
              probe-importance trigger. Present only if one was set.
            - **ray_neutron_energies** (*double[]*) -- The ray probes'
-             photoneutron comb [eV]. Present only with rays, as are the
+             photoneutron comb [eV], given or built. Present only with rays, as are the
              datasets below.
+           - **ray_photon_energies** (*double[]*) -- The rays' line
+             energies [eV]: the probe lines, each interval subdivided
+             **ray_refinement** (*int*) times.
            - **ray_weight** (*double[]*) -- Summed uncollided photoneutron
-             importance per batch, fissioning-nuclide bin, line and depth.
+             importance per batch, fissioning-nuclide bin, ray line and
+             depth.
            - **ray_comb_weight** (*double[]*) -- The ray trees' summed
              weight per batch, fissioning-nuclide bin, comb energy and depth.
            - **ray_fission_weight** (*double[]*) -- Fission weight of the

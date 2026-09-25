@@ -213,6 +213,26 @@ Present only if adjoint side populations were requested.
              photoneutron-root weight per batch, fissioning-nuclide bin,
              energy group (one if no edges were given) and depth, in that
              order. Present only with the nuclides.
+           - **probe_energies** (*double[]*) -- Probe photon line energies
+             [eV]. Present only with probes, as are the datasets below.
+           - **probe_fission_nuclides** (*char[]*) -- Space-separated names
+             of the probes' fissioning-nuclide bins: the listed nuclides and
+             ``other``, or ``all``.
+           - **probe_weight** (*double[]*) -- Summed probe-root weight per
+             batch, fissioning-nuclide bin, line, flag (0: photoneutron made
+             at the line energy, 1: after scattering) and depth, in that
+             order.
+           - **probe_fission_weight** (*double[]*) -- Probed fission weight,
+             the sum of w/k sigma_f/sigma_t over the recorded fission events,
+             per batch and fissioning-nuclide bin: the probe photon weight
+             emitted per line.
+           - **probe_site_weight** (*double[2]*) -- Target weights of the
+             probe photons and of the probe roots in the last generation.
+           - **n_probe_photons_last_generation**,
+             **n_probe_roots_last_generation** (*int8_t*) -- Probe photons
+             and probe roots in the last generation, after roulette.
+           - **n_probe_histories** (*int8_t*) -- Number of probe-photon
+             histories tracked.
 
 **/runtime/**
 

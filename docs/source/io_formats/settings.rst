@@ -67,6 +67,31 @@ sub-elements:
 
     *Default*: none
 
+  :photoneutron_probe_energies:
+    Space-separated energies [eV], strictly increasing, of a comb of probe
+    photon lines. At every recorded fission event the shadow pass emits one
+    probe photon at a line picked uniformly, with unit intensity per line per
+    fission, as a shadow particle that changes no other result. It carries a
+    flag that is set at its first Compton scattering and on every secondary
+    photon it makes (coherent scattering keeps the energy and does not set
+    it). Its photoneutrons become probe roots, rouletted and grown like the
+    other roots, and are recorded by fissioning-nuclide bin (those of
+    ``photoneutron_fission_nuclides``, or one bin), line and flag. From these
+    the importance of a photon of any energy can be rebuilt
+    (:class:`openmc.ProbeImportance`). Requires ``photoneutrons`` and photon
+    transport, and every line must lie between the photon energy cutoff and
+    the highest photon energy.
+
+    *Default*: none
+
+  :photoneutron_probe_fraction:
+    Probe photons per generation, as a fraction of the particles per rank.
+    Probe photons are cheap next to the trees their photoneutrons grow,
+    which are rouletted to the same number of roots as every other
+    population.
+
+    *Default*: 1.0
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

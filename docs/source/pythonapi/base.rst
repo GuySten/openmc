@@ -209,6 +209,8 @@ Post-processing
    :template: myclass.rst
 
    openmc.AdjointPopulations
+   openmc.PhotoneutronTarget
+   openmc.ProbeImportance
    openmc.Particle
    openmc.ParticleList
    openmc.ParticleTrack
@@ -222,6 +224,7 @@ Post-processing
    :nosignatures:
    :template: myfunction.rst
 
+   openmc.probe_line_energies
    openmc.read_collision_track_file
    openmc.read_collision_track_hdf5
    openmc.read_collision_track_mcpl

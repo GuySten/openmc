@@ -1275,8 +1275,10 @@ bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
   const int neutron = ParticleType::neutron().transport_index();
   if (E < settings::energy_cutoff[neutron] || E > settings::energy_max[neutron])
     return true;
-  // With rays on, the uncollided photoneutrons are the rays'
-  if (rays_on() && p.shadow_tag() % N_TAG == 0)
+  // With rays on, the uncollided photoneutrons are the rays' (kept in label
+  // 0 as well for checking the rays against them, if asked)
+  if (rays_on() && p.shadow_tag() % N_TAG == 0 &&
+      !settings::adjpop_ray_probe_check)
     return true;
   Root r;
   r.r = p.r();
@@ -1803,7 +1805,8 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
   vector<double> rr(KR), s(KR);
   auto probe_sum = [&](size_t jb, size_t k) {
     double v = 0.0;
-    for (int l = 0; l < N_PROBE_LABEL; ++l)
+    // With rays, label 0 is theirs (or a check of them)
+    for (int l = rays_on() ? 1 : 0; l < N_PROBE_LABEL; ++l)
       v += batches_pw[((jb * K + k) * N_PROBE_LABEL + l) * nd + L];
     return v;
   };

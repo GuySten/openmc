@@ -187,6 +187,9 @@ class Settings:
             energy (int, default 1). The rays give the uncollided part
             exactly at every ray line; the probes' collided part stays on the
             probe lines.
+        :photoneutron_ray_probe_check: With rays on, keep the probes'
+            uncollided photoneutrons as well (probe label 0), to check the
+            rays against them; they enter no result (bool, default False).
         :photoneutron_ray_fraction: Rays per generation, as a fraction of
             the particles (float, default 1.0); a fission event may be split
             into several.
@@ -1257,7 +1260,8 @@ class Settings:
                             'photoneutron_probe_trigger',
                             'photoneutron_probe_trigger_floor',
                             'photoneutron_ray_comb_points',
-                            'photoneutron_ray_refinement'))
+                            'photoneutron_ray_refinement',
+                            'photoneutron_ray_probe_check'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -2720,6 +2724,9 @@ class Settings:
             if text is not None:
                 value['photoneutron_ray_neutron_energies'] = [
                     float(x) for x in text.split()]
+            text = get_text(elem, 'photoneutron_ray_probe_check')
+            if text is not None:
+                value['photoneutron_ray_probe_check'] = text in ('true', '1')
             text = get_text(elem, 'photoneutron_ray_allocation')
             if text is not None:
                 value['photoneutron_ray_allocation'] = text.strip()

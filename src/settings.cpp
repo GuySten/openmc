@@ -139,6 +139,7 @@ vector<double> adjpop_ray_neutron_energies;
 double adjpop_ray_fraction {1.0};
 int adjpop_ray_comb_points {0};
 int adjpop_ray_refinement {1};
+bool adjpop_ray_probe_check {false};
 int adjpop_ray_allocation {0};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
@@ -721,6 +722,9 @@ void read_settings_xml(pugi::xml_node root)
           fatal_error("<adjoint_populations> 'photoneutron_ray_comb_points' "
                       "must be at least 2.");
       }
+      if (check_for_node(node, "photoneutron_ray_probe_check"))
+        adjpop_ray_probe_check =
+          get_node_value_bool(node, "photoneutron_ray_probe_check");
       if (check_for_node(node, "photoneutron_ray_refinement")) {
         adjpop_ray_refinement =
           std::stoi(get_node_value(node, "photoneutron_ray_refinement"));

@@ -178,6 +178,9 @@ extern int adjpop_ray_comb_points;
 //! The rays' photon lines: the probe lines, each interval subdivided this
 //! many times
 extern int adjpop_ray_refinement;
+//! With rays on, keep the probes' uncollided photoneutrons too (label 0), to
+//! check the rays against them; they enter no result
+extern bool adjpop_ray_probe_check;
 //! How rays and ray roots are shared among the fissioning-nuclide bins:
 //! 0 equally (a bin capped at what it has), 1 in proportion to fission weight
 extern int adjpop_ray_allocation;

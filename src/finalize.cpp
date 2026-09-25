@@ -127,6 +127,7 @@ int openmc_finalize()
   settings::adjpop_ray_allocation = 0;
   settings::adjpop_ray_comb_points = 0;
   settings::adjpop_ray_refinement = 1;
+  settings::adjpop_ray_probe_check = false;
   settings::adjpop_root_fraction = 0.1;
   settings::adjpop_probe_root_fraction = 0.0;
   settings::adjpop_ray_root_fraction = 0.0;

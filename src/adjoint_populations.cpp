@@ -19,7 +19,6 @@
 #include "openmc/particle.h"
 #include "openmc/photonuclear.h"
 #include "openmc/physics.h"
-#include "openmc/ray.h"
 #include "openmc/random_lcg.h"
 #include "openmc/reaction.h"
 #include "openmc/settings.h"
@@ -88,10 +87,13 @@ bool probes_on()
 {
   return n_lines() > 0;
 }
-//! Probe bins: nuclide bin x line x scattered flag
+//! Probe labels: 0 uncollided, 1 after coherent scattering only, 2 after an
+//! energy-changing collision (or a secondary photon)
+constexpr int N_PROBE_LABEL = 3;
+//! Probe bins: nuclide bin x line x label
 int n_probe_bins()
 {
-  return n_nbins() * n_lines() * 2;
+  return n_nbins() * n_lines() * N_PROBE_LABEL;
 }
 int n_probe_depth_bins()
 {
@@ -236,7 +238,8 @@ void score_ebin(int ebin, int depth, double w)
 void score_probe(int ebin, int flag, int depth, double w)
 {
   const size_t i = static_cast<size_t>(thread_num()) * n_probe_depth_bins() +
-                   (static_cast<size_t>(ebin) * 2 + flag) * n_depth() + depth;
+                   (static_cast<size_t>(ebin) * N_PROBE_LABEL + flag) * n_depth() +
+                   depth;
   thread_pw[i] += w;
 }
 
@@ -469,38 +472,54 @@ struct RayRoot {
   vector<double> factor;
 };
 
-//! Straight-line walk through the geometry, recording (material, length)
-class ProbeRay : public Ray {
-public:
-  ProbeRay(Position r, Direction u, vector<std::pair<int, double>>& seg)
-    : Ray(r, u), seg_(seg)
-  {}
-  bool start()
-  {
-    if (!exhaustive_find_cell(*this, false))
-      return false;
-    mat_ = material();
-    return true;
-  }
-  void on_intersection() override
-  {
-    const double len = traversal_distance_ - s_prev_;
-    seg_.emplace_back(mat_, len);
-    if (mat_ >= 0)
-      tau_min_ += ray_sigt_min[mat_] * len;
-    s_prev_ = traversal_distance_;
-    mat_ = material();
-    // Every line is attenuated beyond any contribution
-    if (tau_min_ > 50.0)
-      stop();
-  }
-
-private:
-  vector<std::pair<int, double>>& seg_;
-  int mat_ {C_NONE};
-  double s_prev_ {0.0};
-  double tau_min_ {0.0};
+//! One straight segment of a ray: material, length, start and direction
+struct RaySeg {
+  int mat;
+  double len;
+  Position r;
+  Direction u;
 };
+
+//! Straight-line walk of an uncollided photon through the geometry,
+//! recording (material, length) of every segment. Surfaces are crossed as
+//! in transport, so reflective and periodic boundaries continue the walk and
+//! a vacuum boundary ends it; so does an optical depth beyond any line's
+//! contribution.
+void walk_ray(Position r0, Direction u, uint64_t* seed, vector<RaySeg>& seg)
+{
+  Particle p;
+  p.type() = ParticleType::photon();
+  p.wgt() = 1.0;
+  p.E() = settings::adjpop_probe_energies.back();
+  p.shadow_depth() = 0;
+  p.r() = r0;
+  p.u() = u;
+  p.r_last() = r0;
+  p.u_last() = u;
+  // White boundaries sample a direction
+  p.seeds(0) = *seed;
+  p.stream() = 0;
+  if (!exhaustive_find_cell(p, false))
+    return;
+  double tau_min = 0.0;
+  for (int n = 0; n < 1000000; ++n) {
+    const int mat = p.material();
+    p.boundary() = distance_to_boundary(p);
+    const double d = p.boundary().distance();
+    if (!(d < INFTY) || d < 0.0)
+      return;
+    seg.push_back({mat, d, p.r(), p.u()});
+    if (mat >= 0)
+      tau_min += ray_sigt_min[mat] * d;
+    if (tau_min > 50.0)
+      return;
+    for (int lev = 0; lev < p.n_coord(); ++lev)
+      p.coord(lev).r() += d * p.coord(lev).u();
+    p.event_cross_surface();
+    if (p.wgt() == 0.0 || p.lowest_coord().cell() == C_NONE)
+      return;
+  }
+}
 
 //! Build the per-material, per-line cross sections of the ray probes
 void init_rays()
@@ -596,11 +615,8 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   const double st = std::sqrt(1.0 - ct * ct);
   const Direction u {st * std::cos(ph), st * std::sin(ph), ct};
 
-  vector<std::pair<int, double>> seg;
-  ProbeRay ray(f.r, u, seg);
-  if (!ray.start())
-    return false;
-  ray.trace();
+  vector<RaySeg> seg;
+  walk_ray(f.r, u, &s, seg);
   n_seg += static_cast<int64_t>(seg.size());
   const int ns = static_cast<int>(seg.size());
   if (ns == 0)
@@ -610,8 +626,8 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   vector<double> tau((ns + 1) * K, 0.0);
   vector<double> cum((ns + 1) * K, 0.0);
   for (int i = 0; i < ns; ++i) {
-    const int m = seg[i].first;
-    const double L = seg[i].second;
+    const int m = seg[i].mat;
+    const double L = seg[i].len;
     for (int k = 0; k < K; ++k) {
       const double t0 = tau[i * K + k];
       double st_ = 0.0, sn = 0.0;
@@ -648,7 +664,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   int ib = 0;
   while (ib < ns - 1 && cum[(ib + 1) * K + ks] < target_c)
     ++ib;
-  const int mb = seg[ib].first;
+  const int mb = seg[ib].mat;
   const double stb = ray_sigt[mb * K + ks];
   const double snb = ray_sign[mb * K + ks];
   // Within the segment: e^{-tau} falls by (c - cum_start) st/sn
@@ -656,11 +672,9 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   double e = e0 - (target_c - cum[ib * K + ks]) * stb / snb;
   e = std::max(e, 1e-300);
   double ds = (-std::log(e) - tau[ib * K + ks]) / stb;
-  ds = std::clamp(ds, 0.0, seg[ib].second);
-  double s_start = 0.0;
-  for (int i = 0; i < ib; ++i)
-    s_start += seg[i].second;
-  const Position rb = f.r + (s_start + ds) * u;
+  ds = std::clamp(ds, 0.0, seg[ib].len);
+  const Position rb = seg[ib].r + ds * seg[ib].u;
+  const Direction ub = seg[ib].u;
 
   // Every line's production density there
   vector<double> pk(K);
@@ -703,7 +717,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
     ->products_[cd->i_prod]
     .sample(settings::adjpop_probe_energies[kd], E_dummy, mu, &s);
   mu = std::clamp(mu, -1.0, 1.0);
-  const Direction un = rotate_angle(u, mu, nullptr, &s);
+  const Direction un = rotate_angle(ub, mu, nullptr, &s);
 
   // Per line: the angular density at mu and the comb weights of its
   // photoneutron energy, over its channels
@@ -1006,6 +1020,9 @@ bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
   const int neutron = ParticleType::neutron().transport_index();
   if (E < settings::energy_cutoff[neutron] || E > settings::energy_max[neutron])
     return true;
+  // With rays on, the uncollided photoneutrons are the rays'
+  if (rays_on() && p.shadow_tag() % N_TAG == 0)
+    return true;
   Root r;
   r.r = p.r();
   r.u = u;
@@ -1028,11 +1045,18 @@ void mark_scattered(Particle& p)
     p.shadow_tag() = secondary_photon_tag(p.shadow_tag());
 }
 
+void mark_coherent(Particle& p)
+{
+  if (p.shadow_depth() >= 0 && tag_class(p.shadow_tag()) == CLASS_PROBE &&
+      p.shadow_tag() % N_TAG == 0)
+    p.shadow_tag() += 1;
+}
+
 int secondary_photon_tag(int shadow_tag)
 {
-  if (tag_class(shadow_tag) != CLASS_PROBE || shadow_tag % N_TAG != 0)
+  if (tag_class(shadow_tag) != CLASS_PROBE)
     return shadow_tag;
-  return shadow_tag + 1;
+  return shadow_tag - shadow_tag % N_TAG + 2;
 }
 
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
@@ -1487,7 +1511,10 @@ void write_results(hid_t file_id)
     names += settings::adjpop_fission_nuclides.empty() ? "all" : "other";
     write_dataset(group, "probe_fission_nuclides", names);
     write_dataset(group, "probe_energies", settings::adjpop_probe_energies);
-    // [batch][nuclide bin][line][scattered][depth], flattened
+    // [batch][nuclide bin][line][label][depth], flattened; label 0
+    // uncollided (empty with rays on: see ray_weight), 1 after coherent
+    // scattering only, 2 after an energy-changing collision
+    write_dataset(group, "probe_n_labels", N_PROBE_LABEL);
     write_dataset(group, "probe_weight", batches_pw);
     // [batch][nuclide bin]: the probed fission weight, sum of w/k
     // sigma_f/sigma_t over the recorded fission events

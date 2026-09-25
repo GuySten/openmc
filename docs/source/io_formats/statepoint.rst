@@ -218,9 +218,11 @@ Present only if adjoint side populations were requested.
            - **probe_fission_nuclides** (*char[]*) -- Space-separated names
              of the probes' fissioning-nuclide bins: the listed nuclides and
              ``other``, or ``all``.
+           - **probe_n_labels** (*int*) -- Number of probe labels: 0
+             uncollided (empty with rays on), 1 after coherent scattering
+             only, 2 after an energy-changing collision.
            - **probe_weight** (*double[]*) -- Summed probe-root weight per
-             batch, fissioning-nuclide bin, line, flag (0: photoneutron made
-             at the line energy, 1: after scattering) and depth, in that
+             batch, fissioning-nuclide bin, line, label and depth, in that
              order.
            - **probe_fission_weight** (*double[]*) -- Probed fission weight,
              the sum of w/k sigma_f/sigma_t over the recorded fission events,
@@ -233,6 +235,19 @@ Present only if adjoint side populations were requested.
              and probe roots in the last generation, after roulette.
            - **n_probe_histories** (*int8_t*) -- Number of probe-photon
              histories tracked.
+           - **ray_neutron_energies** (*double[]*) -- The ray probes'
+             photoneutron comb [eV]. Present only with rays, as are the
+             datasets below.
+           - **ray_weight** (*double[]*) -- Summed uncollided photoneutron
+             importance per batch, fissioning-nuclide bin, line and depth.
+           - **ray_comb_weight** (*double[]*) -- The ray trees' summed
+             weight per batch, fissioning-nuclide bin, comb energy and depth.
+           - **ray_fission_weight** (*double[]*) -- Fission weight of the
+             events the rays were cast from, per batch and nuclide bin.
+           - **ray_site_weight** (*double[2]*),
+             **n_rays_last_generation**, **n_ray_roots_last_generation**,
+             **n_ray_segments** -- Target weights, counts and the number of
+             ray segments walked.
 
 **/runtime/**
 

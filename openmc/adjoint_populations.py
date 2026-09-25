@@ -110,9 +110,24 @@ class AdjointPopulations:
         Names of the probes' fissioning-nuclide bins ('other' last, or a
         single 'all')
     probe_weight : numpy.ndarray or None
-        Summed probe-root weight, indexed [batch, nuclide bin, line,
-        scattered, depth]; scattered is 0 for photoneutrons made at the line
-        energy and 1 for those made after scattering
+        Summed probe-root weight, indexed [batch, nuclide bin, line, label,
+        depth]. With three labels: 0 uncollided (empty when rays were on),
+        1 after coherent scattering only, 2 after an energy-changing
+        collision. Files written before the labels have two: 0 at the line
+        energy (uncollided or coherent), 1 after an energy-changing collision
+    probe_n_labels : int or None
+        Number of probe labels (2 or 3)
+    ray_weight : numpy.ndarray or None
+        Summed uncollided photoneutron-root weight of the ray probes,
+        indexed [batch, nuclide bin, line, depth], if rays were on
+    ray_comb_weight : numpy.ndarray or None
+        The ray trees' summed weight by photoneutron comb energy, indexed
+        [batch, nuclide bin, comb energy, depth]
+    ray_neutron_energies : numpy.ndarray or None
+        The photoneutron comb [eV]
+    ray_fission_weight : numpy.ndarray or None
+        Fission weight of the events the rays were cast from, [batch,
+        nuclide bin]
     probe_fission_weight : numpy.ndarray or None
         Probed fission weight (sum of w/k sigma_f/sigma_t over the recorded
         fission events), indexed [batch, nuclide bin]: the weight of probe
@@ -165,6 +180,7 @@ class AdjointPopulations:
                      n_group, self.n_generation + 1))
 
         self.probe_energies = None
+        self.probe_n_labels = None
         self.probe_fission_nuclides = None
         self.probe_weight = None
         self.probe_fission_weight = None
@@ -174,11 +190,27 @@ class AdjointPopulations:
             names = names.decode() if isinstance(names, bytes) else str(names)
             self.probe_fission_nuclides = names.split()
             nn = len(self.probe_fission_nuclides)
+            self.probe_n_labels = int(group['probe_n_labels'][()]) \
+                if 'probe_n_labels' in group else 2
             self.probe_weight = group['probe_weight'][()].reshape(
-                (self.n_batches, nn, len(self.probe_energies), 2,
-                 self.n_generation + 1))
+                (self.n_batches, nn, len(self.probe_energies),
+                 self.probe_n_labels, self.n_generation + 1))
             self.probe_fission_weight = \
                 group['probe_fission_weight'][()].reshape(self.n_batches, nn)
+        self.ray_weight = None
+        self.ray_comb_weight = None
+        self.ray_neutron_energies = None
+        self.ray_fission_weight = None
+        if 'ray_weight' in group:
+            nn = len(self.probe_fission_nuclides)
+            nd = self.n_generation + 1
+            self.ray_neutron_energies = group['ray_neutron_energies'][()]
+            self.ray_weight = group['ray_weight'][()].reshape(
+                (self.n_batches, nn, len(self.probe_energies), nd))
+            self.ray_comb_weight = group['ray_comb_weight'][()].reshape(
+                (self.n_batches, nn, len(self.ray_neutron_energies), nd))
+            self.ray_fission_weight = \
+                group['ray_fission_weight'][()].reshape(self.n_batches, nn)
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))
@@ -395,6 +427,17 @@ class AdjointPopulations:
             raise ValueError(f'No probe nuclide bin {nuclide!r}: {names}.')
         return names.index(nuclide)
 
+    def _probe_parts(self, j, d):
+        """Direct and scattered probe-root weight per batch and line at
+        depth d: with rays, direct = rays + coherent-only probes."""
+        w = self.probe_weight[:, j, :, :, d]
+        if self.probe_n_labels == 2:
+            return w[:, :, 0], w[:, :, 1]
+        direct = w[:, :, 0] + w[:, :, 1]
+        if self.ray_weight is not None:
+            direct = self.ray_weight[:, j, :, d] + w[:, :, 1]
+        return direct, w[:, :, 2]
+
     def probe_photoneutron_yield(self, nuclide=None):
         """Photoneutrons made per probe photon of each line (depth 0), split
         into those made at the line energy and after scattering.
@@ -408,9 +451,21 @@ class AdjointPopulations:
         self._check_probes()
         j = self._probe_bin(nuclide)
         f = self.probe_fission_weight[:, j]
+        out = []
+        for part in self._probe_parts_yield(j):
+            out.append([_ratio(part[:, k], f) for k in range(part.shape[1])])
+        return tuple(out)
+
+    def _probe_parts_yield(self, j):
+        """As _probe_parts at depth 0, per unit fission weight of the probes;
+        the rays' part is rescaled from their own fission weight."""
+        if self.ray_weight is None or self.probe_n_labels == 2:
+            return self._probe_parts(j, 0)
         w = self.probe_weight[:, j, :, :, 0]
-        return tuple([_ratio(w[:, k, s], f) for k in range(w.shape[1])]
-                     for s in (0, 1))
+        scale = (self.probe_fission_weight[:, j] /
+                 np.where(self.ray_fission_weight[:, j] > 0,
+                          self.ray_fission_weight[:, j], 1.0))[:, None]
+        return self.ray_weight[:, j, :, 0] * scale + w[:, :, 1], w[:, :, 2]
 
     def probe_reactivity(self, nuclide=None, depth=None):
         """Photoneutron reactivity of each probe line of unit intensity per
@@ -427,15 +482,19 @@ class AdjointPopulations:
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
-        w = self.probe_weight[:, j, :, :, d]
-        return tuple([_ratio(w[:, k, s], i_f) for k in range(w.shape[1])]
-                     for s in (0, 1))
+        return tuple([_ratio(part[:, k], i_f) for k in range(part.shape[1])]
+                     for part in self._probe_parts(j, d))
 
     def probe_importance(self, target, nuclide=None, depth=None, rtol=0.01,
                          floor=1.0e-3, e_max=None):
         """Importance of a photon born at a fission of a nuclide, rebuilt at
         every energy from the probe lines and refined for linear
         interpolation.
+
+        With ray probes on, the direct part is the rays' uncollided
+        photoneutrons (one shared tree for every line) plus the probes'
+        coherently scattered ones, and the scattered part the probes'
+        photoneutrons after an energy-changing collision.
 
         The direct part of each line is interpolated divided by the target's
         photoneutron production over its removal cross section, and the
@@ -471,8 +530,8 @@ class AdjointPopulations:
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
-        w = self.probe_weight[:, j, :, :, d]
-        return ProbeImportance(self.probe_energies, w[:, :, 0], w[:, :, 1],
+        direct, scattered = self._probe_parts(j, d)
+        return ProbeImportance(self.probe_energies, direct, scattered,
                                i_f, target, rtol=rtol, floor=floor,
                                e_max=e_max,
                                name=self.probe_fission_nuclides[j])

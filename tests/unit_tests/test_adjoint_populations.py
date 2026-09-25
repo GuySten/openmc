@@ -426,3 +426,57 @@ def test_probe_importance_empty_bin():
     assert not imp.mean.any()
     assert imp.interpolation_error() == 0.0
     assert imp.fold([3.0e6], [1.0]).n == 0.0
+
+
+def test_probe_labels_and_rays(run_in_tmpdir):
+    """Three probe labels, with rays: direct = rays + coherent-only probes,
+    scattered = energy-changed probes; the depth-0 yield rescales the rays by
+    their own fission weight."""
+    L, n_b, K, M = 2, 3, 4, 5
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = [100.0, 90.0, 80.0]
+    pw = np.zeros((n_b, 1, K, 3, L + 1))
+    pw[:, 0, :, 1, :] = 0.1          # coherent only
+    pw[:, 0, :, 2, :] = 0.3          # energy-changed
+    rw = np.zeros((n_b, 1, K, L + 1))
+    rw[:, 0, :, :] = 2.0
+    pf = np.full((n_b, 1), 40.0)
+    rf = np.full((n_b, 1), 20.0)
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = np.linspace(2.3e6, 5e6, K)
+        g['probe_fission_nuclides'] = 'all'
+        g['probe_n_labels'] = 3
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = pf.ravel()
+        g['ray_neutron_energies'] = np.geomspace(1e3, 6e6, M)
+        g['ray_weight'] = rw.ravel()
+        g['ray_comb_weight'] = np.zeros((n_b, 1, M, L + 1)).ravel()
+        g['ray_fission_weight'] = rf.ravel()
+    ap = _read('ap.h5', 1.0)
+    assert ap.probe_n_labels == 3
+    d, s = ap.probe_reactivity(depth=2)
+    assert d[0].n == pytest.approx((2.0 + 0.1) / 80.0)
+    assert s[0].n == pytest.approx(0.3 / 80.0)
+    d, s = ap.probe_photoneutron_yield()
+    # rays per their own fission weight, coherent probes per the probes'
+    assert d[0].n == pytest.approx(2.0 / 20.0 + 0.1 / 40.0)
+    assert s[0].n == pytest.approx(0.3 / 40.0)
+
+
+def test_ray_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_probe_energies': [2.3e6, 3e6, 5e6],
+             'photoneutron_ray_neutron_energies': [1e3, 1e5, 6e6],
+             'photoneutron_ray_fraction': 0.5}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_ray_neutron_energies': [1e3]}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_ray_fraction': -1.0}

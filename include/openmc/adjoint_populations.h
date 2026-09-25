@@ -18,11 +18,16 @@
 //!  - probe roots (optional): at every recorded fission event the shadow pass
 //!    emits one probe photon, at one of a comb of line energies picked
 //!    uniformly, with unit intensity per line per fission. It is a shadow
-//!    particle, and it carries a flag that is set at its first
-//!    energy-changing collision and on every secondary photon it makes. Its
-//!    photoneutrons become probe roots, tagged by fissioning nuclide, line and
-//!    that flag (0: made at the line energy, 1: after scattering), so that the
-//!    importance of a photon of any energy can be rebuilt from the lines.
+//!    particle, labelled 0 while uncollided, 1 after coherent scattering
+//!    only, and 2 after an energy-changing collision (and on every secondary
+//!    photon it makes). Its photoneutrons become probe roots, tagged by
+//!    fissioning nuclide, line and label, so that the importance of a photon
+//!    of any energy can be rebuilt from the lines.
+//!  - ray probes (optional, with probes): at every recorded fission event
+//!    (rouletted) an uncollided ray is walked through the geometry; every
+//!    line's uncollided photoneutron production along it is exact, and one
+//!    tree, started at a comb energy of photoneutron birth energies, is
+//!    shared by every line with its weight. Label 0 is then the rays'.
 //!
 //! With perturbed importance on, fission- and delayed-root trees also
 //! transport photons below their root, and every photoneutron those photons
@@ -155,11 +160,14 @@ bool record_photoneutron(
 //! banked as a secondary
 bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E);
 
-//! Probe-photon hook after an energy-changing scattering: set the flag
+//! Probe-photon hook after an energy-changing scattering: label 2
 void mark_scattered(Particle& p);
 
+//! Probe-photon hook after a coherent scattering: label 1 if uncollided
+void mark_coherent(Particle& p);
+
 //! Shadow tag of a secondary photon made by a particle with this tag: a
-//! probe's secondary photons carry the scattered flag
+//! probe's secondary photons carry label 2
 int secondary_photon_tag(int shadow_tag);
 
 //! Shadow-tree hook in create_fission_sites(): bank this tree's fission

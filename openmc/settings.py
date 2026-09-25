@@ -168,6 +168,15 @@ class Settings:
             (:meth:`openmc.AdjointPopulations.probe_importance`).
             :func:`openmc.probe_line_energies` makes a comb spaced evenly in
             photoneutron lethargy.
+        :photoneutron_ray_neutron_energies: Photoneutron birth energies
+            [eV] of the ray probes' comb (sequence of floats, strictly
+            increasing, requires photoneutron_probe_energies). Turns on ray
+            probes: an uncollided ray per recorded fission event gives every
+            line's uncollided photoneutrons exactly and shares one tree
+            among all lines; the probes keep only their collided
+            photoneutrons.
+        :photoneutron_ray_fraction: Rays per generation, as a fraction of
+            the particles (float, default 1.0).
         :photoneutron_probe_fraction: Probe photons per generation, as a
             fraction of the particles (float, default 1.0). Their
             photoneutrons are rouletted to the same number of roots as the

@@ -359,6 +359,8 @@ void sample_photon_reaction(Particle& p)
     p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = COHERENT;
+    // A probe photon keeps its energy but is no longer uncollided
+    adjpop::mark_coherent(p);
     return;
   }
 

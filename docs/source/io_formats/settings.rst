@@ -92,6 +92,26 @@ sub-elements:
 
     *Default*: 1.0
 
+  :photoneutron_ray_neutron_energies:
+    Space-separated photoneutron birth energies [eV], strictly increasing, of
+    the ray probes' comb. With it, at every recorded fission event (rouletted
+    to a target number) a ray is cast in a random direction and walked
+    through the geometry as an uncollided photon (reflective and periodic
+    boundaries continue it). Along it every probe line's uncollided
+    photoneutron production is known exactly; one birth point and direction
+    are sampled for all lines, each line weighted exactly, and one tree is
+    grown from a comb energy sampled with the lines' interpolation weights in
+    photoneutron lethargy, its score shared by every line. The probes then
+    keep only their collided photoneutrons. Requires
+    ``photoneutron_probe_energies``.
+
+    *Default*: none
+
+  :photoneutron_ray_fraction:
+    Rays per generation, as a fraction of the particles per rank.
+
+    *Default*: 1.0
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

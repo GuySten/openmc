@@ -678,3 +678,25 @@ def test_refined_ray_lines(run_in_tmpdir):
     comb = ap.ray_comb_importance(depth=L)
     assert len(comb) == M
     assert comb[0].n == pytest.approx(50.0 / i_f.mean())
+
+
+def test_fold_batches():
+    """fold() is the mean of fold_batches() over the fission importance's,
+    so a resample of the batches can be folded from the per-batch values."""
+    t = _resonant_target()
+    K, n_b = 12, 5
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, K)
+    d, sc = _smooth_parts(t, lines)
+    rng = np.random.default_rng(11)
+    f = rng.uniform(0.9, 1.1, n_b)
+    imp = openmc.ProbeImportance(lines, d[None, :] * rng.uniform(0.9, 1.1, (n_b, K)),
+                                 sc[None, :] * rng.uniform(0.9, 1.1, (n_b, K)), f, t)
+    grid = np.linspace(t.threshold + 1.0, 12e6, 500)
+    src = ([3e6, 7e6], [0.5, 0.2], (grid, np.full(grid.size, 1e-7)))
+    num = imp.fold_batches(*src)
+    assert num.shape == (n_b,)
+    assert imp.fold(*src).n == pytest.approx(num.mean() / f.mean(), rel=1e-12)
+    idx = np.array([0, 0, 3, 4, 2])
+    sub = openmc.ProbeImportance(lines, imp._parts[0][4][idx], imp._parts[1][4][idx],
+                                 f[idx], t)
+    assert sub.fold(*src).n == pytest.approx(num[idx].mean() / f[idx].mean(), rel=1e-12)

@@ -407,21 +407,20 @@ class ProbeImportance:
     # ------------------------------------------------------------------------
     # Folding a photon source
 
-    def fold(self, line_energies=(), line_intensities=(), continuum=None):
-        """Photoneutron reactivity of a photon source per fission of this
-        nuclide, with the rebuilt function and batch statistics.
+    def fold_batches(self, line_energies=(), line_intensities=(),
+                     continuum=None):
+        """Per-batch numerator of :meth:`fold`: the photon source folded
+        with each batch's rebuilt photoneutron weight, before division by
+        the fission-root importance. The fold of any subset or resample of
+        the batches is the mean of these over it divided by the mean of
+        ``fission_importance`` over it.
 
-        Parameters
-        ----------
-        line_energies, line_intensities : Iterable of float
-            Discrete lines [eV] and their intensities per fission
-        continuum : tuple of numpy.ndarray, optional
-            (energy [eV], intensity per fission per eV), integrated with the
-            trapezoidal rule on the union of its grid and the target's
+        Parameters are as for :meth:`fold`.
 
         Returns
         -------
-        uncertainties.UFloat
+        numpy.ndarray
+            One value per batch
 
         """
         n = self._fission.size
@@ -443,7 +442,28 @@ class ProbeImportance:
                 w[:-1] += 0.5 * dx
                 w[1:] += 0.5 * dx
                 num += self._batch_numerators(x) @ (w * p)
+        return num
+
+    def fold(self, line_energies=(), line_intensities=(), continuum=None):
+        """Photoneutron reactivity of a photon source per fission of this
+        nuclide, with the rebuilt function and batch statistics.
+
+        Parameters
+        ----------
+        line_energies, line_intensities : Iterable of float
+            Discrete lines [eV] and their intensities per fission
+        continuum : tuple of numpy.ndarray, optional
+            (energy [eV], intensity per fission per eV), integrated with the
+            trapezoidal rule on the union of its grid and the target's
+
+        Returns
+        -------
+        uncertainties.UFloat
+
+        """
+        num = self.fold_batches(line_energies, line_intensities, continuum)
         f = self._fission
+        n = f.size
         mf, mn = f.mean(), num.mean()
         r = mn / mf
         if n < 2:

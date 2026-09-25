@@ -814,6 +814,22 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
+  // In an eigenvalue calculation photoneutrons must not join the fission
+  // chain. The k-eigenvalue estimators accumulate nu-fission from neutron
+  // cross sections only: photofission multiplicity counts in none of them, and
+  // that photoneutrons banked as secondaries change k correctly has not been
+  // validated. Photonuclear physics is allowed only when the adjoint side
+  // populations take every photoneutron (photofission neutrons included) out
+  // of the transport; they are then never banked, and the eigenvalue is that
+  // of the system without them.
+  if (photonuclear_physics && run_mode == RunMode::EIGENVALUE &&
+      !(adjpop_n_generation > 0 && adjpop_photoneutrons)) {
+    fatal_error("Photonuclear physics in an eigenvalue calculation requires "
+                "<adjoint_populations> with <photoneutrons> on, so that "
+                "photoneutrons are taken as side populations and do not change "
+                "k. Transporting them in the fission chain is not validated.");
+  }
+
   // Check for photoneutron biasing
   if (check_for_node(root, "photoneutron_biasing")) {
     photoneutron_biasing = get_node_value_bool(root, "photoneutron_biasing");

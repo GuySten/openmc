@@ -1693,6 +1693,15 @@ double emit_photonuclear_product(Particle& p,
       p.bank_second_E() += E;
       return E;
     }
+    // In an eigenvalue calculation a driver photoneutron never joins the
+    // fission chain (read_settings_xml() requires the side populations to take
+    // them). Before they are on, in the inactive batches, or outside the
+    // neutron energy range, it is dropped: its energy leaves the collision as
+    // it would have.
+    if (settings::run_mode == RunMode::EIGENVALUE && p.shadow_depth() < 0) {
+      p.bank_second_E() += E;
+      return E;
+    }
   }
 
   // A photoneutron made inside a shadow tree grows on as a branch of it

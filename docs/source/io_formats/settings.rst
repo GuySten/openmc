@@ -26,9 +26,11 @@ sub-elements:
   :photoneutrons:
     If true, photoneutrons are taken out of the transport and grown as their
     own population instead of being banked as secondaries, so that they never
-    enter the fission chain. Requires ``<photonuclear_physics>``. With this
-    option, photonuclear data containing photofission may be used in an
-    eigenvalue calculation.
+    enter the fission chain. Requires ``<photonuclear_physics>``. An
+    eigenvalue calculation with photonuclear physics requires this option:
+    photoneutrons (photofission neutrons included) never change k, and their
+    effect is given by the side populations. In the inactive batches, before
+    the side populations start, they are dropped.
 
     *Default*: false
 
@@ -789,7 +791,10 @@ Photonuclear physics must be enabled when this element is set to "true".
 
 The ``<photonuclear_physics>`` element determines whether photonuclear physics is
 enabled. This element has no attributes or sub-elements and can be set to
-either "false" or "true". Photon transport must be enabled as well.
+either "false" or "true". Photon transport must be enabled as well. In an
+eigenvalue calculation it also requires ``<adjoint_populations>`` with
+``<photoneutrons>`` on: photoneutrons are then taken out of the transport and
+never change k. Transporting them in the fission chain is not supported.
 
 Enabling photonuclear physics may lower the maximum photon energy of the
 problem, and with thick-target bremsstrahlung the maximum electron and positron

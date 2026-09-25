@@ -526,3 +526,64 @@ def test_probe_importances_per_nuclide(run_in_tmpdir):
     x = np.linspace(lines[0], lines[-1], 50)
     assert np.allclose(tables['other'](x) * (1 / 0.3), tables['U235'](x),
                        rtol=0.03, atol=1e-12)
+
+
+def test_budget_and_trigger_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_probe_energies': [2.3e6, 3e6, 5e6],
+             'root_fraction': 0.3,
+             'photoneutron_probe_root_fraction': 0.2,
+             'photoneutron_ray_root_fraction': 2.0,
+             'photoneutron_probe_trigger': 0.01,
+             'photoneutron_probe_trigger_floor': 0.1}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+    for key, bad in (('root_fraction', 0.0),
+                     ('photoneutron_ray_root_fraction', -1.0),
+                     ('photoneutron_probe_trigger', 0.0),
+                     ('photoneutron_probe_trigger_floor', 1.5)):
+        with pytest.raises(ValueError):
+            s.adjoint_populations = {'n_generation': 3, key: bad}
+
+
+def test_probe_relative_error(run_in_tmpdir):
+    """The trigger's quantity: each line's standard deviation over
+    max(importance, floor * peak), with rays and all labels, per unit I_F."""
+    L, n_b, K = 2, 4, 3
+    w = np.zeros((n_b, 5, 9, L + 1))
+    i_f = np.array([100.0, 110.0, 90.0, 100.0])
+    w[:, CLASS_FISSION, 0, L] = i_f
+    pw = np.zeros((n_b, 2, K, 3, L + 1))
+    rw = np.zeros((n_b, 2, K, L + 1))
+    x = np.array([[10.0, 1.0, 0.01], [12.0, 1.2, 0.02],
+                  [8.0, 0.9, 0.00], [10.0, 0.9, 0.01]])
+    rw[:, 0, :, L] = 0.5 * x
+    pw[:, 0, :, 1, L] = 0.2 * x
+    pw[:, 0, :, 2, L] = 0.3 * x
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = np.array([2.3e6, 3e6, 5e6])
+        g['probe_fission_nuclides'] = 'U235 other'
+        g['probe_n_labels'] = 3
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = np.ones((n_b, 2)).ravel()
+        g['ray_neutron_energies'] = np.geomspace(1e3, 6e6, 3)
+        g['ray_weight'] = rw.ravel()
+        g['ray_comb_weight'] = np.zeros((n_b, 2, 3, L + 1)).ravel()
+        g['ray_fission_weight'] = np.ones((n_b, 2)).ravel()
+        g['probe_trigger'] = [0.01, 0.1]
+    ap = _read('ap.h5', 1.0)
+    assert ap.probe_trigger == (0.01, 0.1)
+    err = ap.probe_relative_error('U235', floor=0.1)
+    r = x.mean(axis=0) / i_f.mean()
+    z = (x - np.outer(i_f, r)) / i_f.mean()
+    s = z.std(axis=0, ddof=1) / np.sqrt(n_b)
+    ref = np.maximum(r, 0.1 * r.max())
+    assert np.allclose(err, s / ref)
+    # the smallest line is held to a tenth of the peak, not its own value
+    assert err[2] < s[2] / r[2]
+    # an empty bin cannot meet a trigger
+    assert np.all(np.isinf(ap.probe_relative_error('other')))

@@ -101,7 +101,9 @@ sub-elements:
     photoneutron production is known exactly; one birth point and direction
     are sampled for all lines, each line weighted exactly, and one tree is
     grown from a comb energy sampled with the lines' interpolation weights in
-    photoneutron lethargy, its score shared by every line. The probes then
+    photoneutron lethargy (half by each line's share of the ray, half equally
+    per line, so that weak lines get trees of their own), its score shared by
+    every line with the weight of its energy. The probes then
     keep only their collided photoneutrons. Requires
     ``photoneutron_probe_energies``.
 
@@ -111,6 +113,45 @@ sub-elements:
     Rays per generation, as a fraction of the particles per rank.
 
     *Default*: 1.0
+
+  :root_fraction:
+    Roots per generation of each side population, as a fraction of the
+    particles per rank. Every population then costs about this fraction of a
+    driver generation per tree generation.
+
+    *Default*: 0.1
+
+  :photoneutron_probe_root_fraction:
+    Probe photoneutron roots per generation, as a fraction of the particles
+    per rank.
+
+    *Default*: ``root_fraction``
+
+  :photoneutron_ray_root_fraction:
+    Ray roots per generation, as a fraction of the particles per rank, shared
+    among the fissioning-nuclide bins as ``photoneutron_ray_allocation`` says.
+
+    *Default*: ``root_fraction``
+
+  :photoneutron_probe_trigger:
+    Relative standard deviation the probe importance must reach before the
+    run's triggers are met (``<trigger>`` must be active). At depth
+    ``n_generation``, per listed fissioning nuclide (or the single bin) and
+    per line, the importance is the rays' and every probe label's
+    photoneutron weight over the fission roots' (a ratio of batch means with
+    a delta-method standard deviation), and its standard deviation must be
+    below the threshold times the larger of the importance and
+    ``photoneutron_probe_trigger_floor`` times its peak. The refined table
+    between two lines combines their parts with weights in [0, 1], so it is
+    held by them.
+
+    *Default*: none
+
+  :photoneutron_probe_trigger_floor:
+    Fraction of the peak importance below which the trigger's threshold
+    applies to the peak instead of the line's own value.
+
+    *Default*: 0.1
 
   :photoneutron_ray_allocation:
     How rays and ray roots are shared among the fissioning-nuclide bins:

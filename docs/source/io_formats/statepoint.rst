@@ -197,6 +197,8 @@ Present only if adjoint side populations were requested.
              class in the last generation, before roulette.
            - **n_histories** (*int8_t*) -- Number of side-population histories
              tracked.
+           - **root_fraction** (*double*) -- Roots per generation of each
+             population as a fraction of the particles.
            - **photoneutron_energy_bins** (*double[]*) -- Energy-group edges
              [eV] of the grouped photoneutron record. Present only if
              requested.
@@ -235,6 +237,10 @@ Present only if adjoint side populations were requested.
              and probe roots in the last generation, after roulette.
            - **n_probe_histories** (*int8_t*) -- Number of probe-photon
              histories tracked.
+           - **probe_root_fraction** (*double*) -- Probe roots per generation
+             as a fraction of the particles.
+           - **probe_trigger** (*double[2]*) -- Threshold and floor of the
+             probe-importance trigger. Present only if one was set.
            - **ray_neutron_energies** (*double[]*) -- The ray probes'
              photoneutron comb [eV]. Present only with rays, as are the
              datasets below.
@@ -248,6 +254,8 @@ Present only if adjoint side populations were requested.
              **n_rays_last_generation**, **n_ray_roots_last_generation**,
              **n_ray_segments** -- Target weights, counts and the number of
              ray segments walked.
+           - **ray_root_fraction** (*double*) -- Ray roots per generation as
+             a fraction of the particles.
 
 **/runtime/**
 

@@ -774,19 +774,30 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
 
   // Line weights: the birth point was drawn from the lines' mixture,
   // Ysum^-1 sum_k p_k(s), and the cosine from 1/2, so line k's weight is its
-  // density p_k(s) f_k(mu) over theirs. Then one comb energy for all lines.
+  // density p_k(s) f_k(mu) over theirs. Then one comb energy for all lines,
+  // drawn from an even mixture of the lines' comb weights taken by their
+  // share of the ray and taken equally, so that a line that makes few
+  // photoneutrons still gets trees of its own. Each line's factor divides by
+  // the probability of the energy drawn, so every line stays unbiased.
   vector<double> b(K, 0.0);
   double bsum = 0.0;
+  int n_live = 0;
   for (int k = 0; k < K; ++k) {
     b[k] = w_ray * Ysum * pk[k] * fk[k] * 2.0 / psum;
     bsum += b[k];
+    if (b[k] > 0.0)
+      ++n_live;
   }
   if (!(bsum > 0.0))
     return false;
   vector<double> q(M, 0.0);
-  for (int k = 0; k < K; ++k)
+  for (int k = 0; k < K; ++k) {
+    if (!(b[k] > 0.0))
+      continue;
+    const double share = 0.5 * b[k] / bsum + 0.5 / n_live;
     for (int j = 0; j < M; ++j)
-      q[j] += b[k] * wc[static_cast<size_t>(k) * M + j];
+      q[j] += share * wc[static_cast<size_t>(k) * M + j];
+  }
   double qs = 0.0;
   for (int j = 0; j < M; ++j)
     qs += q[j];
@@ -824,6 +835,12 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   r.ebin = out.nbin * M + jc;
   r.seed_id = combine_ids({sid, 606});
   return true;
+}
+
+//! A population's root fraction: its own if set (positive), else the common
+double root_fraction_or_default(double f)
+{
+  return (f > 0.0) ? f : settings::adjpop_root_fraction;
 }
 
 //! Share a budget of m roots among nuclide bins with raw weights and counts:
@@ -1225,7 +1242,7 @@ void run_shadow_pass()
     [](const Root& a, const Root& b) { return a.seed_id < b.seed_id; });
 
   // Each population's raw weight this generation, and from it the target
-  // weight that leaves about ROOT_FRACTION * n_particles roots
+  // weight that leaves about root_fraction * n_particles roots
   double raw[N_CLASS] {0.0, 0.0, 0.0};
   for (int64_t i = 0; i < simulation::fission_bank.size(); ++i)
     raw[CLASS_FISSION] += simulation::fission_bank[i].wgt;
@@ -1236,8 +1253,12 @@ void run_shadow_pass()
   }
   for (const auto& r : photo)
     raw[CLASS_PHOTONEUTRON] += r.wgt;
-  const double m_target = std::max(
-    1.0, ROOT_FRACTION * static_cast<double>(simulation::work_per_rank));
+  const double n_work = static_cast<double>(simulation::work_per_rank);
+  const double m_target = std::max(1.0, settings::adjpop_root_fraction * n_work);
+  const double m_probe_root =
+    std::max(1.0, root_fraction_or_default(settings::adjpop_probe_root_fraction) * n_work);
+  const double m_ray_root =
+    std::max(1.0, root_fraction_or_default(settings::adjpop_ray_root_fraction) * n_work);
   for (int c = 0; c < N_CLASS; ++c) {
     last_raw_weight[c] = raw[c];
     if (raw[c] > 0.0)
@@ -1346,7 +1367,7 @@ void run_shadow_pass()
     for (const auto& r : probe_roots)
       raw_probe += r.wgt;
     if (raw_probe > 0.0)
-      site_w_probe = raw_probe / m_target;
+      site_w_probe = raw_probe / m_probe_root;
     vector<std::pair<Root, double>> kept;
     for (const auto& r : probe_roots) {
       const double w = roulette(r.wgt, CLASS_PROBE, r.seed_id);
@@ -1404,7 +1425,7 @@ void run_shadow_pass()
         raw_r[rroots[i].nbin] += rroots[i].root.wgt;
         ++n_r[rroots[i].nbin];
       }
-    ray_root_target = share_targets(raw_r, n_r, m_target);
+    ray_root_target = share_targets(raw_r, n_r, m_ray_root);
     // A bin's trees bank at its target, or at its mean root weight if it
     // keeps all its roots
     for (int b = 0; b < nb; ++b)
@@ -1532,6 +1553,83 @@ void finalize_batch()
   std::fill(batch_rf.begin(), batch_rf.end(), 0.0);
 }
 
+double probe_trigger_ratio(int& worst_bin, int& worst_line)
+{
+  worst_bin = -1;
+  worst_line = -1;
+  if (!(settings::adjpop_probe_trigger > 0.0) || !probes_on())
+    return 0.0;
+  const int nb = n_batches_recorded;
+  if (nb < 2)
+    return INFTY;
+  const int L = settings::adjpop_n_generation;
+  const size_t nd = n_depth(), K = n_lines(), nn = n_nbins();
+
+  // I_F per batch at depth L
+  vector<double> y(nb, 0.0);
+  for (int b = 0; b < nb; ++b)
+    for (int t = 0; t < N_TAG; ++t)
+      y[b] +=
+        batches_w[static_cast<size_t>(b) * n_bins() + bin(CLASS_FISSION, t, L)];
+  double my = 0.0;
+  for (double v : y)
+    my += v;
+  my /= nb;
+  if (!(my > 0.0))
+    return INFTY;
+
+  // The listed nuclides, or the single bin if none is listed
+  const int n_check =
+    settings::adjpop_fission_nuclides.empty()
+      ? 1
+      : static_cast<int>(settings::adjpop_fission_nuclides.size());
+  double worst = 0.0;
+  vector<double> x(nb);
+  vector<double> r(K), s(K);
+  for (int j = 0; j < n_check; ++j) {
+    double peak = 0.0;
+    for (size_t k = 0; k < K; ++k) {
+      // Direct + scattered: the rays (if on) and every probe label
+      double mx = 0.0;
+      for (int b = 0; b < nb; ++b) {
+        const size_t jb = static_cast<size_t>(b) * nn + j;
+        double v = 0.0;
+        for (int l = 0; l < N_PROBE_LABEL; ++l)
+          v += batches_pw[((jb * K + k) * N_PROBE_LABEL + l) * nd + L];
+        if (rays_on())
+          v += batches_rw[(jb * K + k) * nd + L];
+        x[b] = v;
+        mx += v;
+      }
+      mx /= nb;
+      r[k] = mx / my;
+      // Delta method for the ratio of means
+      double ss = 0.0;
+      for (int b = 0; b < nb; ++b) {
+        const double z = (x[b] - r[k] * y[b]) / my;
+        ss += z * z;
+      }
+      s[k] = std::sqrt(ss / (nb - 1) / nb);
+      peak = std::max(peak, r[k]);
+    }
+    if (!(peak > 0.0)) {
+      worst_bin = j;
+      return INFTY;
+    }
+    for (size_t k = 0; k < K; ++k) {
+      const double ref =
+        std::max(r[k], settings::adjpop_probe_trigger_floor * peak);
+      const double ratio = s[k] / (settings::adjpop_probe_trigger * ref);
+      if (ratio > worst) {
+        worst = ratio;
+        worst_bin = j;
+        worst_line = static_cast<int>(k);
+      }
+    }
+  }
+  return worst;
+}
+
 void write_results(hid_t file_id)
 {
   if (settings::adjpop_n_generation <= 0 || n_batches_recorded == 0)
@@ -1555,6 +1653,7 @@ void write_results(hid_t file_id)
   vector<double> rw(last_raw_weight, last_raw_weight + N_SCORE_CLASS);
   write_dataset(group, "raw_weight_last_generation", rw);
   write_dataset(group, "n_histories", n_histories);
+  write_dataset(group, "root_fraction", settings::adjpop_root_fraction);
   if (tagging_on()) {
     const size_t nd = n_depth(), ne = n_egroups(), nn = n_nbins();
     const size_t per_batch = nn * ne * nd;
@@ -1605,6 +1704,12 @@ void write_results(hid_t file_id)
     write_dataset(group, "n_probe_photons_last_generation", last_probe_photons);
     write_dataset(group, "n_probe_roots_last_generation", last_probe_roots);
     write_dataset(group, "n_probe_histories", n_probe_histories);
+    write_dataset(group, "probe_root_fraction",
+      root_fraction_or_default(settings::adjpop_probe_root_fraction));
+    if (settings::adjpop_probe_trigger > 0.0)
+      write_dataset(group, "probe_trigger",
+        vector<double> {settings::adjpop_probe_trigger,
+          settings::adjpop_probe_trigger_floor});
   }
   if (rays_on()) {
     write_dataset(
@@ -1624,6 +1729,8 @@ void write_results(hid_t file_id)
     write_dataset(group, "n_rays_last_generation", last_rays);
     write_dataset(group, "n_ray_roots_last_generation", last_ray_roots);
     write_dataset(group, "n_ray_segments", n_ray_segments);
+    write_dataset(group, "ray_root_fraction",
+      root_fraction_or_default(settings::adjpop_ray_root_fraction));
   }
   close_group(group);
 }

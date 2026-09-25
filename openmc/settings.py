@@ -182,9 +182,26 @@ class Settings:
             what it has, the rest to the others) or 'fission' (in proportion
             to fission weight).
         :photoneutron_probe_fraction: Probe photons per generation, as a
-            fraction of the particles (float, default 1.0). Their
-            photoneutrons are rouletted to the same number of roots as the
-            other populations.
+            fraction of the particles (float, default 1.0).
+        :root_fraction: Roots per generation of each side population, as a
+            fraction of the particles (float, default 0.1). Each population
+            costs about this fraction of a driver generation per tree
+            generation.
+        :photoneutron_probe_root_fraction: Probe photoneutron roots per
+            generation, as a fraction of the particles (float, default
+            root_fraction).
+        :photoneutron_ray_root_fraction: Ray roots per generation, as a
+            fraction of the particles (float, default root_fraction).
+        :photoneutron_probe_trigger: Relative standard deviation the probe
+            importance must reach, at every line and for every listed
+            fissioning nuclide, before the run's triggers are met (float;
+            needs ``trigger_active``). Checked on the importance at depth
+            n_generation, with the rays' and every probe label's
+            photoneutrons, per unit fission-neutron importance
+            (:meth:`openmc.AdjointPopulations.probe_relative_error`).
+        :photoneutron_probe_trigger_floor: Fraction of the peak importance
+            below which the trigger's threshold applies to the peak instead
+            of the line's own value (float in [0, 1], default 0.1).
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1218,7 +1235,12 @@ class Settings:
                             'photoneutron_probe_fraction',
                             'photoneutron_ray_neutron_energies',
                             'photoneutron_ray_fraction',
-                            'photoneutron_ray_allocation'))
+                            'photoneutron_ray_allocation',
+                            'root_fraction',
+                            'photoneutron_probe_root_fraction',
+                            'photoneutron_ray_root_fraction',
+                            'photoneutron_probe_trigger',
+                            'photoneutron_probe_trigger_floor'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1265,6 +1287,17 @@ class Settings:
                               'photoneutron_probe_fraction', value, Real)
                 cv.check_greater_than('adjoint populations '
                                       'photoneutron_probe_fraction', value, 0.0)
+            elif key in ('root_fraction', 'photoneutron_probe_root_fraction',
+                         'photoneutron_ray_root_fraction',
+                         'photoneutron_probe_trigger'):
+                cv.check_type(f'adjoint populations {key}', value, Real)
+                cv.check_greater_than(f'adjoint populations {key}', value, 0.0)
+            elif key == 'photoneutron_probe_trigger_floor':
+                cv.check_type(f'adjoint populations {key}', value, Real)
+                cv.check_greater_than(f'adjoint populations {key}', value,
+                                      0.0, equality=True)
+                cv.check_less_than(f'adjoint populations {key}', value, 1.0,
+                                   equality=True)
             elif key == 'photoneutron_energy_variable':
                 cv.check_value('adjoint populations '
                                'photoneutron_energy_variable', value,
@@ -2672,6 +2705,13 @@ class Settings:
             text = get_text(elem, 'photoneutron_probe_fraction')
             if text is not None:
                 value['photoneutron_probe_fraction'] = float(text)
+            for key in ('root_fraction', 'photoneutron_probe_root_fraction',
+                        'photoneutron_ray_root_fraction',
+                        'photoneutron_probe_trigger',
+                        'photoneutron_probe_trigger_floor'):
+                text = get_text(elem, key)
+                if text is not None:
+                    value[key] = float(text)
             text = get_text(elem, 'photoneutron_probe_energies')
             if text is not None:
                 value['photoneutron_probe_energies'] = [

@@ -86,11 +86,6 @@ constexpr int N_PACK_CLASS = 7;
 //! Tags are 0 (prompt) or a delayed group 1..N_TAG-1
 constexpr int N_TAG = 9;
 
-//! Fraction of the particles per rank each population is rouletted down to per
-//! generation. Every population then costs about this fraction of a driver
-//! generation per tree generation.
-constexpr double ROOT_FRACTION = 0.1;
-
 //! A root waiting to be grown
 struct Root {
   Position r;
@@ -193,6 +188,13 @@ void run_shadow_pass();
 
 //! Fold this batch's sums into the per-batch record
 void finalize_batch();
+
+//! The probe-importance trigger: the largest, over the listed fissioning
+//! nuclides (or the single bin) and the probe lines, of the importance's
+//! standard deviation over threshold * max(importance, floor * peak). Below
+//! 1 the trigger is met. 0 if the trigger is off, INFTY with fewer than two
+//! batches or an empty bin. Sets the worst bin and line.
+double probe_trigger_ratio(int& worst_bin, int& worst_line);
 
 //! Write the per-batch sums to a statepoint
 void write_results(hid_t file_id);

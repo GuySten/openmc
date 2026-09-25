@@ -132,6 +132,8 @@ class AdjointPopulations:
         Probed fission weight (sum of w/k sigma_f/sigma_t over the recorded
         fission events), indexed [batch, nuclide bin]: the weight of probe
         photons emitted per line
+    probe_trigger : tuple of float or None
+        (threshold, floor) of the probe-importance trigger, if one was set
 
     """
 
@@ -197,6 +199,8 @@ class AdjointPopulations:
                  self.probe_n_labels, self.n_generation + 1))
             self.probe_fission_weight = \
                 group['probe_fission_weight'][()].reshape(self.n_batches, nn)
+        self.probe_trigger = tuple(float(x) for x in group['probe_trigger'][()]) \
+            if 'probe_trigger' in group else None
         self.ray_weight = None
         self.ray_comb_weight = None
         self.ray_neutron_energies = None
@@ -484,6 +488,32 @@ class AdjointPopulations:
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
         return tuple([_ratio(part[:, k], i_f) for k in range(part.shape[1])]
                      for part in self._probe_parts(j, d))
+
+    def probe_relative_error(self, nuclide=None, depth=None, floor=0.1):
+        """Standard deviation of each line's importance (direct plus
+        scattered, per unit fission-neutron importance) over
+        max(importance, floor * peak): the relative error where the
+        importance is at least floor of its peak, the error relative to
+        floor of the peak below. The probe trigger holds this below its
+        threshold at every line.
+
+        Returns
+        -------
+        numpy.ndarray
+            One value per line
+        """
+        self._check_probes()
+        j = self._probe_bin(nuclide)
+        d = self._depth(depth)
+        i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        direct, scattered = self._probe_parts(j, d)
+        r = [_ratio(x, i_f) for x in (direct + scattered).T]
+        mean = np.array([x.n for x in r])
+        std = np.array([x.s for x in r])
+        peak = mean.max()
+        if not peak > 0.0:
+            return np.full(mean.shape, np.inf)
+        return std / np.maximum(mean, floor * peak)
 
     def probe_importance(self, target, nuclide=None, depth=None, rtol=0.01,
                          floor=1.0e-3, e_max=None, cross_sections=None):

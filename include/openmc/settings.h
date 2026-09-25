@@ -152,8 +152,21 @@ extern vector<std::string> adjpop_fission_nuclides;
 //! Energies [eV] of the probe photon lines emitted at every driver fission
 //! event in the shadow pass (empty: no probes)
 extern vector<double> adjpop_probe_energies;
+//! Roots per generation of each side population, as a fraction of the
+//! particles per rank. Every population then costs about this fraction of a
+//! driver generation per tree generation.
+extern double adjpop_root_fraction;
 //! Probe photons per generation, as a fraction of the particles per rank
 extern double adjpop_probe_fraction;
+//! Probe roots per generation (0: adjpop_root_fraction)
+extern double adjpop_probe_root_fraction;
+//! Ray roots per generation (0: adjpop_root_fraction)
+extern double adjpop_ray_root_fraction;
+//! Relative standard deviation the probe importance must reach for the run's
+//! triggers to be met (0: no trigger), and the fraction of its peak below
+//! which the threshold applies to the peak instead
+extern double adjpop_probe_trigger;
+extern double adjpop_probe_trigger_floor;
 //! Photoneutron birth energies [eV] of the ray probes' tree comb (empty: no
 //! ray probes)
 extern vector<double> adjpop_ray_neutron_energies;

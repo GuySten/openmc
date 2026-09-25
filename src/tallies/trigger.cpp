@@ -1,10 +1,12 @@
 #include "openmc/tallies/trigger.h"
 
+#include <algorithm>
 #include <cmath>
 #include <utility> // for std::pair
 
 #include <fmt/core.h>
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/capi.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
@@ -177,9 +179,11 @@ void check_triggers()
   double tally_ratio;
   int tally_id, score;
   check_tally_triggers(tally_ratio, tally_id, score);
+  int probe_bin, probe_line;
+  double probe_ratio = adjpop::probe_trigger_ratio(probe_bin, probe_line);
 
   // If all the triggers are satisfied, alert the user and return.
-  if (std::max(keff_ratio, tally_ratio) <= 1.) {
+  if (std::max({keff_ratio, tally_ratio, probe_ratio}) <= 1.) {
     simulation::satisfy_triggers = true;
     write_message(7, "Triggers satisfied for batch {}", current_batch);
     return;
@@ -188,7 +192,16 @@ void check_triggers()
   // At least one trigger is unsatisfied.  Let the user know which one.
   simulation::satisfy_triggers = false;
   std::string msg;
-  if (keff_ratio >= tally_ratio) {
+  if (probe_ratio > std::max(keff_ratio, tally_ratio)) {
+    if (probe_ratio == INFINITY) {
+      msg = "Triggers unsatisfied, no probe importance yet";
+    } else {
+      msg = fmt::format("Triggers unsatisfied, max unc./thresh. is {} for the "
+                        "probe importance (nuclide bin {}, line {:.6g} eV)",
+        probe_ratio, probe_bin,
+        settings::adjpop_probe_energies[probe_line]);
+    }
+  } else if (keff_ratio >= tally_ratio) {
     msg = fmt::format("Triggers unsatisfied, max unc./thresh. is {} for "
                       "eigenvalue",
       keff_ratio);
@@ -209,7 +222,7 @@ void check_triggers()
   if (settings::trigger_predict) {
     // This calculation assumes tally variance is proportional to 1/N where N is
     // the number of batches.
-    auto max_ratio = std::max(keff_ratio, tally_ratio);
+    auto max_ratio = std::max({keff_ratio, tally_ratio, probe_ratio});
     auto n_active = current_batch - settings::n_inactive;
     auto n_pred_batches = static_cast<int>(n_active * max_ratio * max_ratio) +
                           settings::n_inactive + 1;

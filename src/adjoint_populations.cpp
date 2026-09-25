@@ -75,6 +75,23 @@ int n_ebin_bins()
 {
   return n_tbins() * n_depth();
 }
+int n_lines()
+{
+  return static_cast<int>(settings::adjpop_probe_energies.size());
+}
+bool probes_on()
+{
+  return n_lines() > 0;
+}
+//! Probe bins: nuclide bin x line x scattered flag
+int n_probe_bins()
+{
+  return n_nbins() * n_lines() * 2;
+}
+int n_probe_depth_bins()
+{
+  return n_probe_bins() * n_depth();
+}
 
 // Bin of each nuclide in data::nuclides (the "rest" bin if not listed)
 vector<int> nuclide_bin;
@@ -102,6 +119,22 @@ vector<double> thread_ew;
 vector<double> batch_ew;
 vector<double> batches_ew;
 
+// Probe-root weight per probe bin and depth, and the probed fission weight
+// (sum of w/k sigma_f/sigma_t) per nuclide bin: per thread, this batch, every
+// finished batch
+vector<double> thread_pw;
+vector<double> batch_pw;
+vector<double> batches_pw;
+vector<double> batch_pf;
+vector<double> batches_pf;
+
+// Probe roots recorded by the probe photons of this shadow pass
+vector<vector<Root>> thread_probe_roots;
+
+// Target weights of the probe photons and of the probe roots
+double site_w_probe_photon {1.0};
+double site_w_probe {1.0};
+
 // This batch's sums, and every finished batch's
 vector<double> batch_w;
 vector<double> batch_wt;
@@ -113,6 +146,9 @@ int n_batches_recorded {0};
 int64_t last_roots[N_SCORE_CLASS] {0, 0, 0, 0, 0};
 double last_raw_weight[N_SCORE_CLASS] {0.0, 0.0, 0.0, 0.0, 0.0};
 int64_t n_histories {0};
+int64_t last_probe_photons {0};
+int64_t last_probe_roots {0};
+int64_t n_probe_histories {0};
 
 int64_t generation_key()
 {
@@ -146,6 +182,42 @@ void score_ebin(int ebin, int depth, double w)
   thread_ew[i] += w;
 }
 
+//! A probe tree's score: its bin is (nuclide bin x line) in the ebin field of
+//! the tag and the scattered flag in its tag field
+void score_probe(int ebin, int flag, int depth, double w)
+{
+  const size_t i = static_cast<size_t>(thread_num()) * n_probe_depth_bins() +
+                   (static_cast<size_t>(ebin) * 2 + flag) * n_depth() + depth;
+  thread_pw[i] += w;
+}
+
+//! Every score of a tree at one depth, by its class
+void score_tree(int cls, int tag, int ebin, int depth, double w, double t0)
+{
+  if (cls == CLASS_PROBE) {
+    score_probe(ebin, tag, depth, w);
+  } else {
+    score(cls, tag, depth, w, t0);
+    score_ebin(ebin, depth, w);
+  }
+}
+
+//! Nuclide bin of a nuclide in data::nuclides
+int nuclide_bin_of(int i_nuclide)
+{
+  if (settings::adjpop_fission_nuclides.empty())
+    return 0;
+  return (i_nuclide >= 0 && i_nuclide < static_cast<int>(nuclide_bin.size()))
+           ? nuclide_bin[i_nuclide]
+           : n_nbins() - 1;
+}
+
+//! Target (site) weight of a class
+double target_weight(int cls)
+{
+  return (cls == CLASS_PROBE) ? site_w_probe : site_w[cls];
+}
+
 //! Combined bin of a photoneutron, nuclide bin x n_egroups + energy group:
 //! the nuclide whose fission made the photon, and the photon's birth energy
 //! or the photoneutron's own. -1 if tagging is off or the energy is outside
@@ -164,28 +236,25 @@ int energy_group(const Particle& photon, double E_neutron)
     group =
       static_cast<int>(std::upper_bound(e.begin(), e.end(), x) - e.begin()) - 1;
   }
-  int nbin = 0;
-  if (!settings::adjpop_fission_nuclides.empty()) {
-    const int i = photon.fission_nuclide();
-    nbin = (i >= 0 && i < static_cast<int>(nuclide_bin.size()))
-             ? nuclide_bin[i]
-             : n_nbins() - 1;
-  }
-  return nbin * n_egroups() + group;
+  return nuclide_bin_of(photon.fission_nuclide()) * n_egroups() + group;
 }
 
 //! Russian roulette of a root to its population's target weight, drawn on
 //! its own key so that no tree replays the number deciding its existence.
 //! \return the weight the root is grown with, or 0 if it is killed
-double roulette(double w_raw, int cls, int64_t seed_id)
+double roulette_to(double w_raw, double target, int64_t seed_id)
 {
-  const double target = site_w[cls];
   if (!(w_raw > 0.0))
     return 0.0;
   if (w_raw >= target)
     return w_raw;
   uint64_t s = init_seed(combine_ids({seed_id, 1}), STREAM_TRACKING);
   return (prn(&s) < w_raw / target) ? target : 0.0;
+}
+
+double roulette(double w_raw, int cls, int64_t seed_id)
+{
+  return roulette_to(w_raw, target_weight(cls), seed_id);
 }
 
 //! Grow one root n_generation generations in the unperturbed physics
@@ -199,8 +268,7 @@ void run_one_tree(const Root& root, double w)
   site.wgt = w;
   site.particle = ParticleType::neutron();
   site.shadow_depth = 0;
-  site.shadow_tag =
-    root.cls * N_TAG + root.tag + (root.ebin + 1) * N_TAG * N_SCORE_CLASS;
+  site.shadow_tag = pack_tag(root.cls, root.tag, root.ebin);
   site.shadow_t0 = 0.0;
   site.wgt_born = w;
 
@@ -218,11 +286,77 @@ void run_one_tree(const Root& root, double w)
   init_particle_seeds(combine_ids({root.seed_id, 2}), p.seeds());
   p.stream() = STREAM_TRACKING;
 
-  score(root.cls, root.tag, 0, w, 0.0);
-  score_ebin(root.ebin, 0, w);
+  score_tree(root.cls, root.tag, root.ebin, 0, w, 0.0);
   transport_history_based_single_particle(p);
 #pragma omp atomic
   n_histories += p.n_tracks();
+}
+
+//! A probe photon waiting to be transported
+struct Probe {
+  Position r;
+  double time;
+  double wgt; //!< weight after the roulette
+  int line;
+  int nbin;
+  int64_t seed_id;
+};
+
+//! The probe photon of one driver fission event. Decided first (roulette on
+//! its own key), sampled second, as for the delayed roots.
+void emit_probe(const FissionRecord& f, vector<Probe>& out)
+{
+  const double w_raw = f.wgt * f.sigma_f_to_t * n_lines();
+  const int64_t sid = combine_ids({f.seed_id, 404});
+  const double w = roulette_to(w_raw, site_w_probe_photon, sid);
+  if (w == 0.0)
+    return;
+  uint64_t s = init_seed(combine_ids({sid, 3}), STREAM_TRACKING);
+  Probe q;
+  q.r = f.r;
+  q.time = f.time;
+  q.wgt = w;
+  q.line = std::min(static_cast<int>(prn(&s) * n_lines()), n_lines() - 1);
+  q.nbin = nuclide_bin_of(f.i_nuclide);
+  q.seed_id = sid;
+  out.push_back(q);
+}
+
+//! Transport one probe photon; its photoneutrons are recorded as probe roots
+//! by record_probe_photoneutron()
+void run_one_probe(const Probe& q)
+{
+  uint64_t s = init_seed(combine_ids({q.seed_id, 5}), STREAM_TRACKING);
+  const double cos_theta = 2.0 * prn(&s) - 1.0;
+  const double phi = 2.0 * PI * prn(&s);
+  const double sin_theta = std::sqrt(1.0 - cos_theta * cos_theta);
+
+  SourceSite site;
+  site.r = q.r;
+  site.u = {sin_theta * std::cos(phi), sin_theta * std::sin(phi), cos_theta};
+  site.E = settings::adjpop_probe_energies[q.line];
+  site.time = q.time;
+  site.wgt = q.wgt;
+  site.particle = ParticleType::photon();
+  site.shadow_depth = 0;
+  site.shadow_tag = pack_tag(CLASS_PROBE, 0, q.nbin * n_lines() + q.line);
+  site.shadow_t0 = 0.0;
+  site.wgt_born = q.wgt;
+
+  Particle p;
+  p.from_source(&site);
+  p.id() = q.seed_id;
+  p.n_progeny() = 0;
+  p.n_event() = 0;
+  p.n_tracks() = 1;
+  p.n_split() = 0;
+  p.write_track() = false;
+  p.current_work() = 1;
+  init_particle_seeds(combine_ids({q.seed_id, 2}), p.seeds());
+  p.stream() = STREAM_TRACKING;
+  transport_history_based_single_particle(p);
+#pragma omp atomic
+  n_probe_histories += p.n_tracks();
 }
 
 //! Delayed roots of one driver fission event, one per group
@@ -331,6 +465,32 @@ void init()
   thread_ew.assign(static_cast<size_t>(n_threads) * n_ebin_bins(), 0.0);
   batch_ew.assign(n_ebin_bins(), 0.0);
   batches_ew.clear();
+  if (probes_on()) {
+    if (!settings::adjpop_photoneutrons)
+      fatal_error("<adjoint_populations> photoneutron_probe_energies require "
+                  "photoneutrons to be on.");
+    if (!settings::photon_transport)
+      fatal_error("<adjoint_populations> photoneutron_probe_energies require "
+                  "photon transport.");
+    const int photon = ParticleType::photon().transport_index();
+    const double e_max =
+      std::min(data::energy_max[photon], settings::energy_max[photon]);
+    if (settings::adjpop_probe_energies.front() <
+          settings::energy_cutoff[photon] ||
+        settings::adjpop_probe_energies.back() > e_max) {
+      fatal_error(fmt::format("<adjoint_populations> photoneutron probe "
+                              "energies must lie between the photon energy "
+                              "cutoff and {:.6g} eV.",
+        e_max));
+    }
+  }
+  thread_pw.assign(
+    static_cast<size_t>(n_threads) * n_probe_depth_bins(), 0.0);
+  batch_pw.assign(n_probe_depth_bins(), 0.0);
+  batches_pw.clear();
+  batch_pf.assign(probes_on() ? n_nbins() : 0, 0.0);
+  batches_pf.clear();
+  thread_probe_roots.assign(n_threads, {});
   thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
   thread_branch_n.assign(static_cast<size_t>(n_threads) * 2, 0);
   batch_w.assign(n_bins(), 0.0);
@@ -354,6 +514,9 @@ void reset_generation()
   std::fill(thread_w.begin(), thread_w.end(), 0.0);
   std::fill(thread_wt.begin(), thread_wt.end(), 0.0);
   std::fill(thread_ew.begin(), thread_ew.end(), 0.0);
+  std::fill(thread_pw.begin(), thread_pw.end(), 0.0);
+  for (auto& v : thread_probe_roots)
+    v.clear();
   std::fill(thread_branch_raw.begin(), thread_branch_raw.end(), 0.0);
   std::fill(thread_branch_n.begin(), thread_branch_n.end(), 0);
 }
@@ -406,12 +569,51 @@ bool record_photoneutron(
   return true;
 }
 
+bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
+{
+  if (p.shadow_depth() < 0 || !p.type().is_photon() ||
+      tag_class(p.shadow_tag()) != CLASS_PROBE)
+    return false;
+  // Kept or dropped as record_photoneutron() keeps or drops a driver
+  // photoneutron
+  const int neutron = ParticleType::neutron().transport_index();
+  if (E < settings::energy_cutoff[neutron] || E > settings::energy_max[neutron])
+    return true;
+  Root r;
+  r.r = p.r();
+  r.u = u;
+  r.E = E;
+  r.time = p.time();
+  // The probe's weight already carries 1/k
+  r.wgt = wgt;
+  r.cls = CLASS_PROBE;
+  r.tag = p.shadow_tag() % N_TAG;
+  r.ebin = tag_ebin(p.shadow_tag());
+  r.seed_id =
+    combine_ids({p.id(), p.n_tracks(), p.n_event(), bits(E), bits(wgt), 505});
+  thread_probe_roots[thread_num()].push_back(r);
+  return true;
+}
+
+void mark_scattered(Particle& p)
+{
+  if (p.shadow_depth() >= 0)
+    p.shadow_tag() = secondary_photon_tag(p.shadow_tag());
+}
+
+int secondary_photon_tag(int shadow_tag)
+{
+  if (tag_class(shadow_tag) != CLASS_PROBE || shadow_tag % N_TAG != 0)
+    return shadow_tag;
+  return shadow_tag + 1;
+}
+
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
 {
   const int cls = tag_class(p.shadow_tag());
   const int tag = p.shadow_tag() % N_TAG;
   const int ebin = tag_ebin(p.shadow_tag());
-  const double w_site = site_w[cls];
+  const double w_site = target_weight(cls);
 
   // Expected sites of weight w_site: the same expected banked weight as the
   // driver's unit-weight sites, carried by proportionally fewer sites
@@ -443,8 +645,7 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
     if (site.delayed_group > 0 && site.time > settings::time_cutoff[neutron])
       continue;
 
-    score(cls, tag, depth, w_site, t0);
-    score_ebin(ebin, depth, w_site);
+    score_tree(cls, tag, ebin, depth, w_site, t0);
     if (depth < settings::adjpop_n_generation) {
       site.shadow_depth = depth;
       site.shadow_tag = p.shadow_tag();
@@ -591,6 +792,55 @@ void run_shadow_pass()
   for (int64_t i = 0; i < n; ++i)
     run_one_tree(roots[i].first, roots[i].second);
 
+  // Probes, after every other tree and in loops of their own, so that the
+  // other populations are grown and summed exactly as without them
+  if (probes_on()) {
+    double raw_photon = 0.0;
+    for (const auto& f : fissions) {
+      const double wf = f.wgt * f.sigma_f_to_t;
+      raw_photon += wf * n_lines();
+      batch_pf[nuclide_bin_of(f.i_nuclide)] += wf;
+    }
+    // Probe photons are cheap next to the trees their photoneutrons grow,
+    // which are rouletted to m_target like every other population's
+    const double m_photon =
+      std::max(1.0, settings::adjpop_probe_fraction *
+                      static_cast<double>(simulation::work_per_rank));
+    if (raw_photon > 0.0)
+      site_w_probe_photon = raw_photon / m_photon;
+    vector<Probe> probes;
+    for (const auto& f : fissions)
+      emit_probe(f, probes);
+    last_probe_photons = static_cast<int64_t>(probes.size());
+
+    const auto n_probes = static_cast<int64_t>(probes.size());
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n_probes; ++i)
+      run_one_probe(probes[i]);
+
+    vector<Root> probe_roots;
+    for (const auto& v : thread_probe_roots)
+      probe_roots.insert(probe_roots.end(), v.begin(), v.end());
+    std::sort(probe_roots.begin(), probe_roots.end(),
+      [](const Root& a, const Root& b) { return a.seed_id < b.seed_id; });
+    double raw_probe = 0.0;
+    for (const auto& r : probe_roots)
+      raw_probe += r.wgt;
+    if (raw_probe > 0.0)
+      site_w_probe = raw_probe / m_target;
+    vector<std::pair<Root, double>> kept;
+    for (const auto& r : probe_roots) {
+      const double w = roulette(r.wgt, CLASS_PROBE, r.seed_id);
+      if (w > 0.0)
+        kept.emplace_back(r, w);
+    }
+    last_probe_roots = static_cast<int64_t>(kept.size());
+    const auto n_kept = static_cast<int64_t>(kept.size());
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n_kept; ++i)
+      run_one_tree(kept[i].first, kept[i].second);
+  }
+
   for (int i = 0; i < 8; ++i)
     saved[i].swap(*lists[i]);
 
@@ -623,6 +873,10 @@ void run_shadow_pass()
   for (int t = 0; t < num_threads(); ++t)
     for (int i = 0; i < ne; ++i)
       batch_ew[i] += thread_ew[static_cast<size_t>(t) * ne + i];
+  const int np = n_probe_depth_bins();
+  for (int t = 0; t < num_threads(); ++t)
+    for (int i = 0; i < np; ++i)
+      batch_pw[i] += thread_pw[static_cast<size_t>(t) * np + i];
 }
 
 void finalize_batch()
@@ -648,17 +902,32 @@ void finalize_batch()
       if (mpi::master)
         batch_ew.swap(rew);
     }
+    if (!batch_pw.empty()) {
+      vector<double> rpw(batch_pw.size()), rpf(batch_pf.size());
+      mpi::reduce<double>(batch_pw.data(), rpw.data(), batch_pw.size(), MPI_SUM,
+        0, mpi::intracomm);
+      mpi::reduce<double>(batch_pf.data(), rpf.data(), batch_pf.size(), MPI_SUM,
+        0, mpi::intracomm);
+      if (mpi::master) {
+        batch_pw.swap(rpw);
+        batch_pf.swap(rpf);
+      }
+    }
   }
 #endif
   if (mpi::master) {
     batches_w.insert(batches_w.end(), batch_w.begin(), batch_w.end());
     batches_wt.insert(batches_wt.end(), batch_wt.begin(), batch_wt.end());
     batches_ew.insert(batches_ew.end(), batch_ew.begin(), batch_ew.end());
+    batches_pw.insert(batches_pw.end(), batch_pw.begin(), batch_pw.end());
+    batches_pf.insert(batches_pf.end(), batch_pf.begin(), batch_pf.end());
     ++n_batches_recorded;
   }
   std::fill(batch_w.begin(), batch_w.end(), 0.0);
   std::fill(batch_wt.begin(), batch_wt.end(), 0.0);
   std::fill(batch_ew.begin(), batch_ew.end(), 0.0);
+  std::fill(batch_pw.begin(), batch_pw.end(), 0.0);
+  std::fill(batch_pf.begin(), batch_pf.end(), 0.0);
 }
 
 void write_results(hid_t file_id)
@@ -712,6 +981,26 @@ void write_results(hid_t file_id)
       write_dataset(group, "photoneutron_nuclide_weight", batches_ew);
     }
   }
+  if (probes_on()) {
+    // Nuclide bins as for the photoneutron roots: the listed nuclides and
+    // "other", or "all" if none is listed
+    std::string names;
+    for (const auto& n : settings::adjpop_fission_nuclides)
+      names += n + " ";
+    names += settings::adjpop_fission_nuclides.empty() ? "all" : "other";
+    write_dataset(group, "probe_fission_nuclides", names);
+    write_dataset(group, "probe_energies", settings::adjpop_probe_energies);
+    // [batch][nuclide bin][line][scattered][depth], flattened
+    write_dataset(group, "probe_weight", batches_pw);
+    // [batch][nuclide bin]: the probed fission weight, sum of w/k
+    // sigma_f/sigma_t over the recorded fission events
+    write_dataset(group, "probe_fission_weight", batches_pf);
+    write_dataset(group, "probe_site_weight",
+      vector<double> {site_w_probe_photon, site_w_probe});
+    write_dataset(group, "n_probe_photons_last_generation", last_probe_photons);
+    write_dataset(group, "n_probe_roots_last_generation", last_probe_roots);
+    write_dataset(group, "n_probe_histories", n_probe_histories);
+  }
   close_group(group);
 }
 
@@ -730,6 +1019,17 @@ void clear()
   thread_ew.clear();
   batch_ew.clear();
   batches_ew.clear();
+  thread_pw.clear();
+  batch_pw.clear();
+  batches_pw.clear();
+  batch_pf.clear();
+  batches_pf.clear();
+  thread_probe_roots.clear();
+  site_w_probe_photon = 1.0;
+  site_w_probe = 1.0;
+  last_probe_photons = 0;
+  last_probe_roots = 0;
+  n_probe_histories = 0;
   nuclide_bin.clear();
   n_batches_recorded = 0;
   n_histories = 0;

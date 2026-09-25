@@ -272,3 +272,146 @@ def test_fission_nuclide_estimators_need_the_tally(run_in_tmpdir):
     ap = _read('ap.h5', 1.0)
     with pytest.raises(ValueError):
         ap.photoneutron_reactivity_by_nuclide()
+
+
+def test_probe_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    lines = list(openmc.probe_line_energies(2.2246e6, 12.6e6, 7))
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_fission_nuclides': ['U235', 'U238'],
+             'photoneutron_probe_energies': lines,
+             'photoneutron_probe_fraction': 0.5}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+
+
+def test_probe_settings_checks():
+    s = openmc.Settings()
+    for bad in ([], [3.0e6, 2.5e6], [0.0, 3.0e6], [3.0e6, 3.0e6]):
+        with pytest.raises(ValueError):
+            s.adjoint_populations = {'n_generation': 3,
+                                     'photoneutron_probe_energies': bad}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_probe_fraction': 0.0}
+
+
+def test_probe_line_energies():
+    e = openmc.probe_line_energies(2.2246e6, 12.6e6, 11, first=1.0e3)
+    assert e[0] == pytest.approx(2.2246e6 + 1.0e3)
+    assert e[-1] == pytest.approx(12.6e6)
+    # Evenly spaced in photoneutron lethargy
+    du = np.diff(np.log(e - 2.2246e6))
+    assert np.allclose(du, du[0])
+
+
+def _resonant_target():
+    """A target with a smooth production cross section and a narrow
+    resonance, on a grid that resolves it."""
+    thr = 1.6647e6
+    e = np.unique(np.concatenate([
+        np.linspace(thr, 12.6e6, 400),
+        2.431e6 + np.linspace(-5e3, 5e3, 201)]))
+    smooth = 1e-3 * np.clip(e - thr, 0.0, None) / 1e6
+    res = 0.08 / (1.0 + ((e - 2.431e6) / 390.0) ** 2)
+    sigma = np.where(e > thr, smooth + res, 0.0)
+    removal = 0.08 * (e / 2e6) ** -0.5 + sigma
+    return openmc.PhotoneutronTarget(e, sigma, removal)
+
+
+def _smooth_parts(target, E):
+    """Direct and scattered importance whose smooth factors A, B are linear
+    in photoneutron lethargy, so the rebuilding is exact."""
+    u = np.log(E - target.threshold)
+    a = 2.0 + 0.1 * u
+    b = 1e-4 * (u - np.log(1e3)) + 1e-6
+    s, r = target.sigma_at(E), target.sigma_removal_at(E)
+    return s * a / r, b / r
+
+
+def test_probe_importance_rebuilds_resonance():
+    """The direct part follows the resonance, the scattered part does not:
+    rebuilt from lines that miss the resonance, the importance matches the
+    true function at the resonance, and the refined table interpolates it
+    within the tolerance."""
+    t = _resonant_target()
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, 30)
+    d, s = _smooth_parts(t, lines)
+    n_b = 4
+    imp = openmc.ProbeImportance(lines, np.tile(d, (n_b, 1)),
+                                 np.tile(s, (n_b, 1)), np.ones(n_b), t,
+                                 rtol=0.01)
+    E = np.concatenate([np.linspace(lines[0], lines[-1], 3000),
+                        2.431e6 + np.linspace(-2e3, 2e3, 101)])
+    dt, st = _smooth_parts(t, E)
+    assert np.allclose(imp.rebuilt(E), dt + st, rtol=1e-9)
+    assert imp.interpolation_error(n_points=20) < 0.01
+    assert imp.interpolation_error(energies=E) < 0.01
+    # The resonance peak is in the refined grid's reach
+    peak = imp(np.array([2.431e6]))[0]
+    assert peak == pytest.approx((dt + st)[np.argmin(abs(E - 2.431e6))],
+                                 rel=0.01)
+    # Folding lines and a continuum uses the rebuilt function
+    y = np.array([1e-3, 2e-3])
+    el = np.array([2.4308e6, 5.0e6])
+    dl, sl = _smooth_parts(t, el)
+    assert imp.fold(el, y).n == pytest.approx((y * (dl + sl)).sum(), rel=1e-9)
+    ce = np.linspace(3.0e6, 4.0e6, 11)
+    cp = np.full_like(ce, 1e-9)
+    x = np.unique(np.concatenate([ce, t.energy[(t.energy >= 3e6) &
+                                               (t.energy <= 4e6)]]))
+    dx, sx = _smooth_parts(t, x)
+    ref = np.trapezoid(1e-9 * (dx + sx), x)
+    assert imp.fold(continuum=(ce, cp)).n == pytest.approx(ref, rel=1e-9)
+
+
+def test_probe_importance_statistics():
+    """Batch statistics of the table and of a fold are the ratio of batch
+    means with a delta-method sigma, like every other estimator."""
+    t = _resonant_target()
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, 10)
+    d, s = _smooth_parts(t, lines)
+    rng = np.random.default_rng(4)
+    f = rng.uniform(0.9, 1.1, 6)
+    noise = rng.uniform(0.8, 1.2, (6, 1))
+    imp = openmc.ProbeImportance(lines, d * noise, s * noise, f, t)
+    k = 3
+    ref = openmc.adjoint_populations._ratio((d[k] + s[k]) * noise[:, 0], f)
+    got = imp.fold([lines[k]], [1.0])
+    assert got.n == pytest.approx(ref.n, rel=1e-12)
+    assert got.s == pytest.approx(ref.s, rel=1e-9)
+
+
+def test_probe_estimators(run_in_tmpdir):
+    L, n_b, K = 2, 3, 4
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = [100.0, 90.0, 80.0]
+    pw = np.zeros((n_b, 2, K, 2, L + 1))
+    pw[:, 0, :, 0, 0] = 2.0
+    pw[:, 0, :, 1, 0] = 1.0
+    pw[:, 0, :, 0, 2] = 0.5
+    pw[:, 0, :, 1, 2] = 0.25
+    pf = np.zeros((n_b, 2))
+    pf[:, 0] = 40.0
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = np.linspace(2.3e6, 5e6, K)
+        g['probe_fission_nuclides'] = 'U235 other'
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = pf.ravel()
+    ap = _read('ap.h5', 1.0)
+    assert ap.probe_fission_nuclides == ['U235', 'other']
+    d, s = ap.probe_photoneutron_yield('U235')
+    assert d[0].n == pytest.approx(2.0 / 40.0)
+    assert s[3].n == pytest.approx(1.0 / 40.0)
+    d, s = ap.probe_reactivity('U235', depth=2)
+    assert d[1].n == pytest.approx(0.5 / 80.0)
+    assert s[1].n == pytest.approx(0.25 / 80.0)
+    with pytest.raises(ValueError):
+        ap.probe_reactivity()          # two bins: one must be named
+    w2 = np.ones((3, 5, 9, 3))
+    _write('ap2.h5', w2, np.zeros_like(w2))
+    with pytest.raises(ValueError):
+        _read('ap2.h5', 1.0).probe_reactivity()

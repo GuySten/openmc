@@ -104,6 +104,19 @@ class AdjointPopulations:
     photoneutron_nuclide_weight : numpy.ndarray or None
         Summed photoneutron-root weight, indexed [batch, nuclide bin, energy
         group, depth]; one energy group if no energy edges were given
+    probe_energies : numpy.ndarray or None
+        Probe photon line energies [eV], if probes were on
+    probe_fission_nuclides : list of str or None
+        Names of the probes' fissioning-nuclide bins ('other' last, or a
+        single 'all')
+    probe_weight : numpy.ndarray or None
+        Summed probe-root weight, indexed [batch, nuclide bin, line,
+        scattered, depth]; scattered is 0 for photoneutrons made at the line
+        energy and 1 for those made after scattering
+    probe_fission_weight : numpy.ndarray or None
+        Probed fission weight (sum of w/k sigma_f/sigma_t over the recorded
+        fission events), indexed [batch, nuclide bin]: the weight of probe
+        photons emitted per line
 
     """
 
@@ -150,6 +163,22 @@ class AdjointPopulations:
                 group['photoneutron_nuclide_weight'][()].reshape(
                     (self.n_batches, len(self.photoneutron_fission_nuclides),
                      n_group, self.n_generation + 1))
+
+        self.probe_energies = None
+        self.probe_fission_nuclides = None
+        self.probe_weight = None
+        self.probe_fission_weight = None
+        if 'probe_energies' in group:
+            self.probe_energies = group['probe_energies'][()]
+            names = group['probe_fission_nuclides'][()]
+            names = names.decode() if isinstance(names, bytes) else str(names)
+            self.probe_fission_nuclides = names.split()
+            nn = len(self.probe_fission_nuclides)
+            self.probe_weight = group['probe_weight'][()].reshape(
+                (self.n_batches, nn, len(self.probe_energies), 2,
+                 self.n_generation + 1))
+            self.probe_fission_weight = \
+                group['probe_fission_weight'][()].reshape(self.n_batches, nn)
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))
@@ -349,6 +378,104 @@ class AdjointPopulations:
                 row.append(_double_ratio(x[:, d], x[:, 0], wf[:, d], wf[:, 0]))
             out[name] = row
         return out
+
+    def _check_probes(self):
+        if self.probe_weight is None:
+            raise ValueError('The calculation did not emit probe photons: '
+                             "set adjoint_populations"
+                             "['photoneutron_probe_energies'].")
+
+    def _probe_bin(self, nuclide):
+        names = self.probe_fission_nuclides
+        if nuclide is None:
+            if len(names) != 1:
+                raise ValueError(f'Name a probe nuclide bin: {names}.')
+            return 0
+        if nuclide not in names:
+            raise ValueError(f'No probe nuclide bin {nuclide!r}: {names}.')
+        return names.index(nuclide)
+
+    def probe_photoneutron_yield(self, nuclide=None):
+        """Photoneutrons made per probe photon of each line (depth 0), split
+        into those made at the line energy and after scattering.
+
+        Returns
+        -------
+        tuple of list of uncertainties.UFloat
+            (direct, scattered), one entry per line
+
+        """
+        self._check_probes()
+        j = self._probe_bin(nuclide)
+        f = self.probe_fission_weight[:, j]
+        w = self.probe_weight[:, j, :, :, 0]
+        return tuple([_ratio(w[:, k, s], f) for k in range(w.shape[1])]
+                     for s in (0, 1))
+
+    def probe_reactivity(self, nuclide=None, depth=None):
+        """Photoneutron reactivity of each probe line of unit intensity per
+        fission of a nuclide, I_probe / I_fission, split into direct and
+        scattered parts.
+
+        Returns
+        -------
+        tuple of list of uncertainties.UFloat
+            (direct, scattered), one entry per line
+
+        """
+        self._check_probes()
+        j = self._probe_bin(nuclide)
+        d = self._depth(depth)
+        i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        w = self.probe_weight[:, j, :, :, d]
+        return tuple([_ratio(w[:, k, s], i_f) for k in range(w.shape[1])]
+                     for s in (0, 1))
+
+    def probe_importance(self, target, nuclide=None, depth=None, rtol=0.01,
+                         floor=1.0e-3, e_max=None):
+        """Importance of a photon born at a fission of a nuclide, rebuilt at
+        every energy from the probe lines and refined for linear
+        interpolation.
+
+        The direct part of each line is interpolated divided by the target's
+        photoneutron production over its removal cross section, and the
+        scattered part times the removal cross section, both linearly in
+        photoneutron lethargy; the two are recombined with the exact cross
+        sections (:mod:`openmc.photoneutron_probes`). The result is tabulated
+        on a grid on which linear interpolation is within rtol of the rebuilt
+        function.
+
+        Parameters
+        ----------
+        target : openmc.PhotoneutronTarget
+            Cross sections of the medium that makes the photoneutrons
+        nuclide : str, optional
+            Fissioning-nuclide bin; may be omitted if there is only one
+        depth : int, optional
+            Depth at which the importance is read; n_generation if None
+        rtol : float
+            Tolerance of linear interpolation of the table
+        floor : float
+            Fraction of the largest importance below which the tolerance is
+            absolute
+        e_max : float, optional
+            Top of the table [eV]; the highest line if None
+
+        Returns
+        -------
+        openmc.ProbeImportance
+
+        """
+        from openmc.photoneutron_probes import ProbeImportance
+        self._check_probes()
+        j = self._probe_bin(nuclide)
+        d = self._depth(depth)
+        i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        w = self.probe_weight[:, j, :, :, d]
+        return ProbeImportance(self.probe_energies, w[:, :, 0], w[:, :, 1],
+                               i_f, target, rtol=rtol, floor=floor,
+                               e_max=e_max,
+                               name=self.probe_fission_nuclides[j])
 
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""

@@ -404,6 +404,8 @@ void sample_photon_reaction(Particle& p)
     p.u() = rotate_angle(p.u(), p.mu(), &phi, p.current_seed());
     p.event() = TallyEvent::SCATTER;
     p.event_mt() = INCOHERENT;
+    // A probe photon is no longer at its line energy
+    adjpop::mark_scattered(p);
     return;
   }
 
@@ -1684,7 +1686,8 @@ double emit_photonuclear_product(Particle& p,
       if (idx > 0 && idx < static_cast<long>(rx.products_.size()))
         group = static_cast<int>(idx);
     }
-    if (adjpop::record_photoneutron(p, wgt, u, E, group)) {
+    if (adjpop::record_photoneutron(p, wgt, u, E, group) ||
+        adjpop::record_probe_photoneutron(p, wgt, u, E)) {
       p.bank_second_E() += E;
       return E;
     }

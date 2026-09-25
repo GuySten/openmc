@@ -15,6 +15,14 @@
 //!    diverted here instead of being banked as secondaries, so they never
 //!    enter the fission chain. Tagged with the photofission delayed group
 //!    (0 = prompt).
+//!  - probe roots (optional): at every recorded fission event the shadow pass
+//!    emits one probe photon, at one of a comb of line energies picked
+//!    uniformly, with unit intensity per line per fission. It is a shadow
+//!    particle, and it carries a flag that is set at its first
+//!    energy-changing collision and on every secondary photon it makes. Its
+//!    photoneutrons become probe roots, tagged by fissioning nuclide, line and
+//!    that flag (0: made at the line energy, 1: after scattering), so that the
+//!    importance of a photon of any energy can be rebuilt from the lines.
 //!
 //! With perturbed importance on, fission- and delayed-root trees also
 //! transport photons below their root, and every photoneutron those photons
@@ -60,10 +68,14 @@ enum RootClass : int {
   CLASS_DELAYED = 1,        //!< forced expected-value delayed neutrons
   CLASS_PHOTONEUTRON = 2,   //!< photoneutrons diverted from the driver
   CLASS_FISSION_BRANCH = 3, //!< photoneutron branches of fission-root trees
-  CLASS_DELAYED_BRANCH = 4  //!< photoneutron branches of delayed-root trees
+  CLASS_DELAYED_BRANCH = 4, //!< photoneutron branches of delayed-root trees
+  CLASS_PROBE = 5           //!< photoneutrons of probe photons
 };
-constexpr int N_CLASS = 3;       //!< root populations
-constexpr int N_SCORE_CLASS = 5; //!< root populations and branches
+constexpr int N_CLASS = 3;       //!< root populations with class targets
+constexpr int N_SCORE_CLASS = 5; //!< classes in the weight arrays
+//! Classes a shadow tag can carry. Probe trees score in arrays of their own,
+//! so the weight arrays keep N_SCORE_CLASS classes.
+constexpr int N_PACK_CLASS = 6;
 
 //! Tags are 0 (prompt) or a delayed group 1..N_TAG-1
 constexpr int N_TAG = 9;
@@ -91,11 +103,15 @@ struct Root {
 //! group rides down the whole tree. With groups off the tag is unchanged.
 inline int tag_class(int shadow_tag)
 {
-  return (shadow_tag / N_TAG) % N_SCORE_CLASS;
+  return (shadow_tag / N_TAG) % N_PACK_CLASS;
 }
 inline int tag_ebin(int shadow_tag)
 {
-  return shadow_tag / (N_TAG * N_SCORE_CLASS) - 1;
+  return shadow_tag / (N_TAG * N_PACK_CLASS) - 1;
+}
+inline int pack_tag(int cls, int tag, int ebin)
+{
+  return cls * N_TAG + tag + (ebin + 1) * N_TAG * N_PACK_CLASS;
 }
 
 //! A driver fission-site creation, from which delayed roots are emitted in
@@ -131,6 +147,19 @@ void record_fission(Particle& p, int i_nuclide, const Reaction& rx);
 //! banked as a secondary
 bool record_photoneutron(
   Particle& p, double wgt, Direction u, double E, int delayed_group);
+
+//! Probe-photon hook for a photoneutron leaving a probe photon (or one of its
+//! secondary photons): record it as a probe root.
+//! \return true if the photoneutron was taken as a root and must not be
+//! banked as a secondary
+bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E);
+
+//! Probe-photon hook after an energy-changing scattering: set the flag
+void mark_scattered(Particle& p);
+
+//! Shadow tag of a secondary photon made by a particle with this tag: a
+//! probe's secondary photons carry the scattered flag
+int secondary_photon_tag(int shadow_tag);
 
 //! Shadow-tree hook in create_fission_sites(): bank this tree's fission
 //! sites at its population's target weight and score them by depth

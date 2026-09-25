@@ -5,6 +5,7 @@
 
 #include <fmt/core.h>
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/cell.h"
@@ -123,7 +124,10 @@ bool Particle::create_secondary(
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
   bank.shadow_depth = shadow_depth();
-  bank.shadow_tag = shadow_tag();
+  // A probe photon's secondary photons are not at its line energy
+  bank.shadow_tag = (shadow_depth() >= 0 && type.is_photon())
+                      ? adjpop::secondary_photon_tag(shadow_tag())
+                      : shadow_tag();
   bank.shadow_t0 = shadow_t0();
   bank.fission_nuclide = fission_nuclide();
 

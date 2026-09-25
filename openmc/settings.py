@@ -156,6 +156,22 @@ class Settings:
             share one more bin, 'other' (sequence of str, requires
             photoneutrons). Combined with the energy groups if both are
             given.
+        :photoneutron_probe_energies: Energies [eV] of a comb of probe photon
+            lines (sequence of floats, strictly increasing, requires
+            photoneutrons and photon transport). At every recorded fission
+            event one probe photon is emitted, at a line picked uniformly,
+            as a shadow particle that changes no other result. Its
+            photoneutrons are tallied by fissioning nuclide (the bins of
+            ``photoneutron_fission_nuclides``), line, and whether the probe
+            had scattered before making them, so that the importance of a
+            photon of any energy can be rebuilt
+            (:meth:`openmc.AdjointPopulations.probe_importance`).
+            :func:`openmc.probe_line_energies` makes a comb spaced evenly in
+            photoneutron lethargy.
+        :photoneutron_probe_fraction: Probe photons per generation, as a
+            fraction of the particles (float, default 1.0). Their
+            photoneutrons are rouletted to the same number of roots as the
+            other populations.
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1184,7 +1200,9 @@ class Settings:
                             'perturbed_importance',
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
-                            'photoneutron_fission_nuclides'))
+                            'photoneutron_fission_nuclides',
+                            'photoneutron_probe_energies',
+                            'photoneutron_probe_fraction'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1198,6 +1216,20 @@ class Settings:
                                          zip(edges[:-1], edges[1:])):
                     raise ValueError('photoneutron_energy_bins must be at '
                                      'least two strictly increasing edges.')
+            elif key == 'photoneutron_probe_energies':
+                cv.check_type('adjoint populations '
+                              'photoneutron_probe_energies', value,
+                              Iterable, Real)
+                lines = [float(e) for e in value]
+                if (not lines or lines[0] <= 0.0 or
+                        any(b <= a for a, b in zip(lines[:-1], lines[1:]))):
+                    raise ValueError('photoneutron_probe_energies must be '
+                                     'positive and strictly increasing.')
+            elif key == 'photoneutron_probe_fraction':
+                cv.check_type('adjoint populations '
+                              'photoneutron_probe_fraction', value, Real)
+                cv.check_greater_than('adjoint populations '
+                                      'photoneutron_probe_fraction', value, 0.0)
             elif key == 'photoneutron_energy_variable':
                 cv.check_value('adjoint populations '
                                'photoneutron_energy_variable', value,
@@ -2010,8 +2042,9 @@ class Settings:
                 subelement = ET.SubElement(element, key)
                 if isinstance(value, bool):
                     subelement.text = str(value).lower()
-                elif key == 'photoneutron_energy_bins':
-                    subelement.text = ' '.join(str(float(e)) for e in value)
+                elif key in ('photoneutron_energy_bins',
+                             'photoneutron_probe_energies'):
+                    subelement.text = ' '.join(repr(float(e)) for e in value)
                 elif key == 'photoneutron_fission_nuclides':
                     subelement.text = ' '.join(value)
                 else:
@@ -2590,6 +2623,13 @@ class Settings:
             text = get_text(elem, 'photoneutron_fission_nuclides')
             if text is not None:
                 value['photoneutron_fission_nuclides'] = text.split()
+            text = get_text(elem, 'photoneutron_probe_fraction')
+            if text is not None:
+                value['photoneutron_probe_fraction'] = float(text)
+            text = get_text(elem, 'photoneutron_probe_energies')
+            if text is not None:
+                value['photoneutron_probe_energies'] = [
+                    float(x) for x in text.split()]
             self.adjoint_populations = value
 
     def _tabular_legendre_from_xml_element(self, root):

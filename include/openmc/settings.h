@@ -149,6 +149,11 @@ extern int adjpop_energy_variable;
 //! Nuclides by whose fission the photoneutron roots are also tallied (the
 //! nuclide that fissioned to make the photon); the rest share one more bin
 extern vector<std::string> adjpop_fission_nuclides;
+//! Energies [eV] of the probe photon lines emitted at every driver fission
+//! event in the shadow pass (empty: no probes)
+extern vector<double> adjpop_probe_energies;
+//! Probe photons per generation, as a fraction of the particles per rank
+extern double adjpop_probe_fraction;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

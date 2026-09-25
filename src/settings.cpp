@@ -128,6 +128,8 @@ bool adjpop_perturbed_importance {false};
 vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
 vector<std::string> adjpop_fission_nuclides;
+vector<double> adjpop_probe_energies;
+double adjpop_probe_fraction {1.0};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -646,6 +648,25 @@ void read_settings_xml(pugi::xml_node root)
         if (adjpop_fission_nuclides.empty()) {
           fatal_error("<adjoint_populations> 'photoneutron_fission_nuclides' "
                       "must name at least one nuclide.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_probe_energies")) {
+        adjpop_probe_energies =
+          get_node_array<double>(node, "photoneutron_probe_energies");
+        if (adjpop_probe_energies.empty() ||
+            !(adjpop_probe_energies.front() > 0.0) ||
+            !std::is_sorted(adjpop_probe_energies.begin(),
+              adjpop_probe_energies.end(), std::less_equal<double>())) {
+          fatal_error("<adjoint_populations> 'photoneutron_probe_energies' "
+                      "must be positive and strictly increasing.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_probe_fraction")) {
+        adjpop_probe_fraction =
+          std::stod(get_node_value(node, "photoneutron_probe_fraction"));
+        if (!(adjpop_probe_fraction > 0.0)) {
+          fatal_error("<adjoint_populations> 'photoneutron_probe_fraction' "
+                      "must be positive.");
         }
       }
       if (check_for_node(node, "photoneutron_energy_variable")) {

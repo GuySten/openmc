@@ -132,6 +132,7 @@ vector<double> adjpop_probe_energies;
 double adjpop_probe_fraction {1.0};
 vector<double> adjpop_ray_neutron_energies;
 double adjpop_ray_fraction {1.0};
+int adjpop_ray_allocation {0};
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -689,6 +690,17 @@ void read_settings_xml(pugi::xml_node root)
         if (!(adjpop_ray_fraction > 0.0))
           fatal_error("<adjoint_populations> 'photoneutron_ray_fraction' must "
                       "be positive.");
+      }
+      if (check_for_node(node, "photoneutron_ray_allocation")) {
+        std::string v = get_node_value(node, "photoneutron_ray_allocation");
+        if (v == "equal") {
+          adjpop_ray_allocation = 0;
+        } else if (v == "fission") {
+          adjpop_ray_allocation = 1;
+        } else {
+          fatal_error("<adjoint_populations> 'photoneutron_ray_allocation' "
+                      "must be 'equal' or 'fission'.");
+        }
       }
       if (check_for_node(node, "photoneutron_energy_variable")) {
         std::string v = get_node_value(node, "photoneutron_energy_variable");

@@ -177,6 +177,10 @@ class Settings:
             photoneutrons.
         :photoneutron_ray_fraction: Rays per generation, as a fraction of
             the particles (float, default 1.0).
+        :photoneutron_ray_allocation: How rays and ray roots are shared among
+            the fissioning-nuclide bins: 'equal' (default; each bin capped at
+            what it has, the rest to the others) or 'fission' (in proportion
+            to fission weight).
         :photoneutron_probe_fraction: Probe photons per generation, as a
             fraction of the particles (float, default 1.0). Their
             photoneutrons are rouletted to the same number of roots as the
@@ -1213,7 +1217,8 @@ class Settings:
                             'photoneutron_probe_energies',
                             'photoneutron_probe_fraction',
                             'photoneutron_ray_neutron_energies',
-                            'photoneutron_ray_fraction'))
+                            'photoneutron_ray_fraction',
+                            'photoneutron_ray_allocation'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1246,6 +1251,10 @@ class Settings:
                     raise ValueError('photoneutron_ray_neutron_energies must '
                                      'be at least two positive, strictly '
                                      'increasing energies.')
+            elif key == 'photoneutron_ray_allocation':
+                cv.check_value('adjoint populations '
+                               'photoneutron_ray_allocation', value,
+                               ('equal', 'fission'))
             elif key == 'photoneutron_ray_fraction':
                 cv.check_type('adjoint populations photoneutron_ray_fraction',
                               value, Real)
@@ -2654,6 +2663,9 @@ class Settings:
             if text is not None:
                 value['photoneutron_ray_neutron_energies'] = [
                     float(x) for x in text.split()]
+            text = get_text(elem, 'photoneutron_ray_allocation')
+            if text is not None:
+                value['photoneutron_ray_allocation'] = text.strip()
             text = get_text(elem, 'photoneutron_ray_fraction')
             if text is not None:
                 value['photoneutron_ray_fraction'] = float(text)

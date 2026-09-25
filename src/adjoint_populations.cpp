@@ -172,8 +172,11 @@ vector<vector<Channel>> ray_channels; // [material][line]
 vector<double> thread_rw, batch_rw, batches_rw;
 vector<double> thread_rj, batch_rj, batches_rj;
 vector<double> batch_rf, batches_rf;
-double site_w_ray {1.0};
-double site_w_ray_cast {1.0};
+// Per fissioning-nuclide bin: the ray roulette targets (0: keep all) and the
+// site weight the bin's ray trees bank at
+vector<double> ray_cast_target;
+vector<double> ray_root_target;
+vector<double> ray_site_w;
 int64_t last_rays {0};
 int64_t last_ray_roots {0};
 int64_t n_ray_segments {0};
@@ -267,10 +270,10 @@ int nuclide_bin_of(int i_nuclide)
 }
 
 //! Target (site) weight of a class
-double target_weight(int cls)
+double target_weight(int cls, int ebin = -1)
 {
   if (cls == CLASS_RAY)
-    return site_w_ray;
+    return ray_site_w[ebin / std::max(n_comb(), 1)];
   return (cls == CLASS_PROBE) ? site_w_probe : site_w[cls];
 }
 
@@ -594,12 +597,53 @@ void comb_weights(double E, int& j0, double& w0)
   w0 = std::log(c[j0 + 1] / E) / std::log(c[j0 + 1] / c[j0]);
 }
 
-//! Laboratory energy of a photoneutron given its centre-of-mass energy and
-//! cosine (as emit_photonuclear_product() transforms it)
-double lab_energy(double E_cm, double mu_cm, double E_in, double awr)
+//! Laboratory angular density of one photoneutron channel at the laboratory
+//! cosine mu (about the photon's direction), and the photoneutron's laboratory
+//! energy, for a photon of energy E_in. A distribution given in the
+//! laboratory is evaluated as it is. One given in the centre of mass is
+//! transformed: its outgoing energy is drawn, the two-body kinematics solved
+//! for the centre-of-mass cosine (two roots when the centre of mass outruns
+//! the neutron), and the density carries the Jacobian. The energy draw is
+//! replayed from the same seed when the density is evaluated, so energy and
+//! angle belong to one sample; the result is an unbiased estimate of the
+//! laboratory density (exact for two-body reactions). Returns the number of
+//! roots, each with its density contribution and laboratory energy.
+int lab_density(const ReactionProduct& prod, bool in_cm, double E_in,
+  double awr, double mu, uint64_t* seed, double dens[2], double E_lab[2])
 {
-  return E_cm + 1.0 / awr * std::sqrt(2.0 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
-         (E_in * E_in) / (2.0 * MASS_NEUTRON_EV * awr * awr);
+  if (!in_cm) {
+    double E_out;
+    dens[0] = prod.sample_energy_and_pdf(E_in, mu, E_out, seed);
+    E_lab[0] = E_out;
+    return 1;
+  }
+  const uint64_t s0 = *seed;
+  uint64_t s1 = s0;
+  double E_cm;
+  prod.sample_energy_and_pdf(E_in, 0.0, E_cm, &s1);
+  *seed = s1;
+  if (!(E_cm > 0.0))
+    return 0;
+  const double a = std::sqrt(E_cm);
+  const double b = E_in / (awr * std::sqrt(2.0 * MASS_NEUTRON_EV));
+  const double D2 = a * a - b * b * (1.0 - mu * mu);
+  if (D2 <= 0.0)
+    return 0;
+  const double D = std::sqrt(D2);
+  int n = 0;
+  for (double sg : {1.0, -1.0}) {
+    const double sp = b * mu + sg * D;
+    if (!(sp > 0.0))
+      continue;
+    const double mu_cm = std::clamp((sp * mu - b) / a, -1.0, 1.0);
+    uint64_t s2 = s0;
+    double E_cm2;
+    const double pdf = prod.sample_energy_and_pdf(E_in, mu_cm, E_cm2, &s2);
+    dens[n] = pdf * sp * sp / (a * D);
+    E_lab[n] = sp * sp;
+    ++n;
+  }
+  return n;
 }
 
 //! Cast the ray of one driver fission event and turn it into one shared
@@ -688,42 +732,15 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   if (!(psum > 0.0))
     return false;
 
-  // Direction: a line in proportion to p_k, a channel in proportion to its
-  // production, and that channel's sampled cosine (taken as the laboratory
-  // cosine about the ray)
-  double xl = prn(&s) * psum;
-  int kd = 0;
-  for (; kd < K - 1; ++kd) {
-    if (xl < pk[kd])
-      break;
-    xl -= pk[kd];
-  }
-  const auto& chs = ray_channels[mb * K + kd];
-  double cs = 0.0;
-  for (const auto& c : chs)
-    cs += c.share;
-  double xc = prn(&s) * cs;
-  const Channel* cd = &chs.back();
-  for (const auto& c : chs) {
-    if (xc < c.share) {
-      cd = &c;
-      break;
-    }
-    xc -= c.share;
-  }
-  double E_dummy, mu;
-  data::photonuclears[cd->i_pn]
-    ->reactions_[cd->i_rx]
-    ->products_[cd->i_prod]
-    .sample(settings::adjpop_probe_energies[kd], E_dummy, mu, &s);
-  mu = std::clamp(mu, -1.0, 1.0);
+  // Direction: isotropic in the laboratory about the photon, a density known
+  // exactly (1/2 in the cosine) whatever the reactions' distributions
+  const double mu = 2.0 * prn(&s) - 1.0;
   const Direction un = rotate_angle(ub, mu, nullptr, &s);
 
   // Per line: the angular density at mu and the comb weights of its
   // photoneutron energy, over its channels
   vector<double> fk(K, 0.0);
   vector<double> wc(static_cast<size_t>(K) * M, 0.0);
-  double den = 0.0;
   for (int k = 0; k < K; ++k) {
     if (!(pk[k] > 0.0))
       continue;
@@ -732,39 +749,40 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
     for (const auto& c : ray_channels[mb * K + k]) {
       const auto& nuc = *data::photonuclears[c.i_pn];
       const auto& rx = *nuc.reactions_[c.i_rx];
-      double E_out;
-      const double pdf =
-        rx.products_[c.i_prod].sample_energy_and_pdf(Ek, mu, E_out, &s);
-      if (rx.scatter_in_cm_)
-        E_out = lab_energy(E_out, mu, Ek, nuc.awr_);
+      double dens[2], E_lab[2];
+      const int nr = lab_density(rx.products_[c.i_prod], rx.scatter_in_cm_, Ek,
+        nuc.awr_, mu, &s, dens, E_lab);
       ssum += c.share;
-      if (!(pdf > 0.0))
-        continue;
-      fsum += c.share * pdf;
-      int j0;
-      double w0;
-      comb_weights(E_out, j0, w0);
-      wc[static_cast<size_t>(k) * M + j0] += c.share * pdf * w0;
-      wc[static_cast<size_t>(k) * M + j0 + 1] += c.share * pdf * (1.0 - w0);
+      for (int q = 0; q < nr; ++q) {
+        if (!(dens[q] > 0.0))
+          continue;
+        fsum += c.share * dens[q];
+        int j0;
+        double w0;
+        comb_weights(E_lab[q], j0, w0);
+        wc[static_cast<size_t>(k) * M + j0] += c.share * dens[q] * w0;
+        wc[static_cast<size_t>(k) * M + j0 + 1] +=
+          c.share * dens[q] * (1.0 - w0);
+      }
     }
     if (!(ssum > 0.0) || !(fsum > 0.0))
       continue;
     for (int j = 0; j < M; ++j)
       wc[static_cast<size_t>(k) * M + j] /= fsum;
     fk[k] = fsum / ssum;
-    den += pk[k] * fk[k];
   }
-  if (!(den > 0.0))
-    return false;
 
-  // Line weights (balance heuristic over the lines' joint densities of the
-  // birth point and the cosine), then one comb energy for all of them
+  // Line weights: the birth point was drawn from the lines' mixture,
+  // Ysum^-1 sum_k p_k(s), and the cosine from 1/2, so line k's weight is its
+  // density p_k(s) f_k(mu) over theirs. Then one comb energy for all lines.
   vector<double> b(K, 0.0);
   double bsum = 0.0;
   for (int k = 0; k < K; ++k) {
-    b[k] = w_ray * Ysum * pk[k] * fk[k] / den;
+    b[k] = w_ray * Ysum * pk[k] * fk[k] * 2.0 / psum;
     bsum += b[k];
   }
+  if (!(bsum > 0.0))
+    return false;
   vector<double> q(M, 0.0);
   for (int k = 0; k < K; ++k)
     for (int j = 0; j < M; ++j)
@@ -806,6 +824,53 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   r.ebin = out.nbin * M + jc;
   r.seed_id = combine_ids({sid, 606});
   return true;
+}
+
+//! Share a budget of m roots among nuclide bins with raw weights and counts:
+//! equally, each bin capped at its count (then it keeps all, target 0), the
+//! rest to the others; or in proportion to the weights. Returns the targets.
+vector<double> share_targets(
+  const vector<double>& raw, const vector<int64_t>& count, double m)
+{
+  const int nb = static_cast<int>(raw.size());
+  vector<double> target(nb, 0.0);
+  double raw_sum = 0.0;
+  for (double r : raw)
+    raw_sum += r;
+  if (settings::adjpop_ray_allocation == 1) {
+    for (int b = 0; b < nb; ++b)
+      target[b] = raw_sum / m;
+    return target;
+  }
+  vector<char> left(nb, 0);
+  int n_left = 0;
+  for (int b = 0; b < nb; ++b)
+    if (raw[b] > 0.0 && count[b] > 0) {
+      left[b] = 1;
+      ++n_left;
+    }
+  double remaining = m;
+  bool changed = true;
+  while (changed && n_left > 0) {
+    changed = false;
+    const double share = remaining / n_left;
+    for (int b = 0; b < nb; ++b) {
+      if (left[b] && static_cast<double>(count[b]) <= share) {
+        target[b] = 0.0;
+        remaining -= static_cast<double>(count[b]);
+        left[b] = 0;
+        --n_left;
+        changed = true;
+      }
+    }
+  }
+  if (n_left > 0) {
+    const double share = std::max(remaining, 1.0) / n_left;
+    for (int b = 0; b < nb; ++b)
+      if (left[b])
+        target[b] = raw[b] / share;
+  }
+  return target;
 }
 
 //! Grow a ray root and share its depth scores among the lines
@@ -920,6 +985,9 @@ void init()
                 "require photoneutron_probe_energies.");
   if (rays_on())
     init_rays();
+  ray_cast_target.assign(n_nbins(), 0.0);
+  ray_root_target.assign(n_nbins(), 0.0);
+  ray_site_w.assign(n_nbins(), 1.0);
   thread_rw.assign(static_cast<size_t>(n_threads) * n_ray_line_bins(), 0.0);
   thread_rj.assign(static_cast<size_t>(n_threads) * n_ray_comb_bins(), 0.0);
   batch_rw.assign(n_ray_line_bins(), 0.0);
@@ -1064,7 +1132,7 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
   const int cls = tag_class(p.shadow_tag());
   const int tag = p.shadow_tag() % N_TAG;
   const int ebin = tag_ebin(p.shadow_tag());
-  const double w_site = target_weight(cls);
+  const double w_site = target_weight(cls, ebin);
 
   // Expected sites of weight w_site: the same expected banked weight as the
   // driver's unit-weight sites, carried by proportionally fewer sites
@@ -1294,22 +1362,26 @@ void run_shadow_pass()
 
   // Ray probes, after everything else
   if (rays_on()) {
-    double raw_ray = 0.0;
+    const int nb = n_nbins();
+    vector<double> raw_cast(nb, 0.0);
+    vector<int64_t> n_cast(nb, 0);
     for (const auto& f : fissions) {
       const double wf = f.wgt * f.sigma_f_to_t;
-      raw_ray += wf;
-      batch_rf[nuclide_bin_of(f.i_nuclide)] += wf;
+      const int b = nuclide_bin_of(f.i_nuclide);
+      raw_cast[b] += wf;
+      ++n_cast[b];
+      batch_rf[b] += wf;
     }
     const double m_ray = std::max(1.0,
       settings::adjpop_ray_fraction * static_cast<double>(simulation::work_per_rank));
-    if (raw_ray > 0.0)
-      site_w_ray_cast = raw_ray / m_ray;
+    ray_cast_target = share_targets(raw_cast, n_cast, m_ray);
     // Which events cast a ray, and with what weight (decided in order)
     vector<std::pair<int64_t, double>> casts;
     for (int64_t i = 0; i < static_cast<int64_t>(fissions.size()); ++i) {
       const auto& f = fissions[i];
       const int64_t sid = combine_ids({f.seed_id, 707});
-      const double w = roulette_to(f.wgt * f.sigma_f_to_t, site_w_ray_cast, sid);
+      const double w = roulette_to(f.wgt * f.sigma_f_to_t,
+        ray_cast_target[nuclide_bin_of(f.i_nuclide)], sid);
       if (w > 0.0)
         casts.emplace_back(i, w);
     }
@@ -1325,17 +1397,26 @@ void run_shadow_pass()
         f, casts[i].second, combine_ids({f.seed_id, 707}), rroots[i], n_seg);
     }
     n_ray_segments += n_seg;
-    double raw_r = 0.0;
+    vector<double> raw_r(nb, 0.0);
+    vector<int64_t> n_r(nb, 0);
     for (int64_t i = 0; i < n_casts; ++i)
-      if (made[i])
-        raw_r += rroots[i].root.wgt;
-    if (raw_r > 0.0)
-      site_w_ray = raw_r / m_target;
+      if (made[i]) {
+        raw_r[rroots[i].nbin] += rroots[i].root.wgt;
+        ++n_r[rroots[i].nbin];
+      }
+    ray_root_target = share_targets(raw_r, n_r, m_target);
+    // A bin's trees bank at its target, or at its mean root weight if it
+    // keeps all its roots
+    for (int b = 0; b < nb; ++b)
+      ray_site_w[b] = (ray_root_target[b] > 0.0) ? ray_root_target[b]
+                      : (n_r[b] > 0)            ? raw_r[b] / n_r[b]
+                                                : 1.0;
     vector<std::pair<int64_t, double>> grow;
     for (int64_t i = 0; i < n_casts; ++i) {
       if (!made[i])
         continue;
-      const double w = roulette(rroots[i].root.wgt, CLASS_RAY, rroots[i].root.seed_id);
+      const double w = roulette_to(rroots[i].root.wgt,
+        ray_root_target[rroots[i].nbin], rroots[i].root.seed_id);
       if (w > 0.0)
         grow.emplace_back(i, w);
     }
@@ -1534,8 +1615,12 @@ void write_results(hid_t file_id)
     write_dataset(group, "ray_comb_weight", batches_rj);
     // [batch][nuclide bin]: sum of w/k sigma_f/sigma_t over the events
     write_dataset(group, "ray_fission_weight", batches_rf);
-    write_dataset(group, "ray_site_weight",
-      vector<double> {site_w_ray_cast, site_w_ray});
+    // [2][nuclide bin]: the rays' and the ray roots' roulette targets
+    vector<double> tw(ray_cast_target);
+    tw.insert(tw.end(), ray_root_target.begin(), ray_root_target.end());
+    write_dataset(group, "ray_site_weight", tw);
+    write_dataset(group, "ray_allocation",
+      std::string(settings::adjpop_ray_allocation == 0 ? "equal" : "fission"));
     write_dataset(group, "n_rays_last_generation", last_rays);
     write_dataset(group, "n_ray_roots_last_generation", last_ray_roots);
     write_dataset(group, "n_ray_segments", n_ray_segments);
@@ -1583,7 +1668,9 @@ void clear()
   batches_rf.clear();
   thread_tree_buf.clear();
   thread_tree_active.clear();
-  site_w_ray = site_w_ray_cast = 1.0;
+  ray_cast_target.clear();
+  ray_root_target.clear();
+  ray_site_w.clear();
   last_rays = last_ray_roots = n_ray_segments = 0;
   nuclide_bin.clear();
   n_batches_recorded = 0;

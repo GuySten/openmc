@@ -470,7 +470,8 @@ def test_ray_settings_roundtrip(run_in_tmpdir):
     value = {'n_generation': 5, 'photoneutrons': True,
              'photoneutron_probe_energies': [2.3e6, 3e6, 5e6],
              'photoneutron_ray_neutron_energies': [1e3, 1e5, 6e6],
-             'photoneutron_ray_fraction': 0.5}
+             'photoneutron_ray_fraction': 0.5,
+             'photoneutron_ray_allocation': 'fission'}
     s.adjoint_populations = value
     s.export_to_xml()
     assert openmc.Settings.from_xml().adjoint_populations == value
@@ -480,3 +481,48 @@ def test_ray_settings_roundtrip(run_in_tmpdir):
     with pytest.raises(ValueError):
         s.adjoint_populations = {'n_generation': 3,
                                  'photoneutron_ray_fraction': -1.0}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_ray_allocation': 'rank'}
+
+
+def test_probe_importances_per_nuclide(run_in_tmpdir):
+    """With rays and labels, every nuclide bin's table is linearly
+    interpolable within the tolerance, including at a narrow resonance."""
+    t = _resonant_target()
+    K, M, L, n_b = 30, 6, 2, 4
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, K)
+    d, sc = _smooth_parts(t, lines)
+    rng = np.random.default_rng(7)
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = 100.0
+    pw = np.zeros((n_b, 2, K, 3, L + 1))
+    rw = np.zeros((n_b, 2, K, L + 1))
+    noise = rng.uniform(0.9, 1.1, (n_b, K))
+    for j, scale in enumerate((1.0, 0.3)):
+        rw[:, j, :, L] = 100.0 * scale * d * noise
+        pw[:, j, :, 2, L] = 100.0 * scale * sc * noise
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = lines
+        g['probe_fission_nuclides'] = 'U235 other'
+        g['probe_n_labels'] = 3
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = np.ones((n_b, 2)).ravel()
+        g['ray_neutron_energies'] = np.geomspace(1e3, 6e6, M)
+        g['ray_weight'] = rw.ravel()
+        g['ray_comb_weight'] = np.zeros((n_b, 2, M, L + 1)).ravel()
+        g['ray_fission_weight'] = np.ones((n_b, 2)).ravel()
+    ap = _read('ap.h5', 1.0)
+    tables = ap.probe_importances(t, depth=L, rtol=0.01)
+    assert set(tables) == {'U235', 'other'}
+    E = 2.431e6 + np.linspace(-3e3, 3e3, 301)
+    for name, imp in tables.items():
+        assert imp.interpolation_error(n_points=20, energies=E) < 0.01
+        assert np.all(np.diff(imp.energy) > 0)
+        assert imp.mean.shape == imp.energy.shape == imp.std_dev.shape
+    # the U235 bin is 1/0.3 of the other at every energy
+    x = np.linspace(lines[0], lines[-1], 50)
+    assert np.allclose(tables['other'](x) * (1 / 0.3), tables['U235'](x),
+                       rtol=0.03, atol=1e-12)

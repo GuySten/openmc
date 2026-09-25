@@ -112,6 +112,13 @@ sub-elements:
 
     *Default*: 1.0
 
+  :photoneutron_ray_allocation:
+    How rays and ray roots are shared among the fissioning-nuclide bins:
+    ``equal`` (each bin capped at what it has, the rest to the others) or
+    ``fission`` (in proportion to fission weight). Either is unbiased.
+
+    *Default*: equal
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

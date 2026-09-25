@@ -486,7 +486,7 @@ class AdjointPopulations:
                      for part in self._probe_parts(j, d))
 
     def probe_importance(self, target, nuclide=None, depth=None, rtol=0.01,
-                         floor=1.0e-3, e_max=None):
+                         floor=1.0e-3, e_max=None, cross_sections=None):
         """Importance of a photon born at a fission of a nuclide, rebuilt at
         every energy from the probe lines and refined for linear
         interpolation.
@@ -506,8 +506,10 @@ class AdjointPopulations:
 
         Parameters
         ----------
-        target : openmc.PhotoneutronTarget
-            Cross sections of the medium that makes the photoneutrons
+        target : openmc.PhotoneutronTarget or openmc.Material
+            Cross sections of the medium that makes the photoneutrons, or the
+            material itself (its cross sections are then formed with
+            :meth:`openmc.PhotoneutronTarget.from_material`)
         nuclide : str, optional
             Fissioning-nuclide bin; may be omitted if there is only one
         depth : int, optional
@@ -519,13 +521,21 @@ class AdjointPopulations:
             absolute
         e_max : float, optional
             Top of the table [eV]; the highest line if None
+        cross_sections : str or os.PathLike, optional
+            cross_sections.xml for a material target;
+            openmc.config['cross_sections'] if None
 
         Returns
         -------
         openmc.ProbeImportance
+            Its table (``energy``, ``mean``, ``std_dev``) is linearly
+            interpolable within rtol; calling it interpolates the table
 
         """
-        from openmc.photoneutron_probes import ProbeImportance
+        from openmc.photoneutron_probes import (ProbeImportance,
+                                                 PhotoneutronTarget)
+        if not isinstance(target, PhotoneutronTarget):
+            target = PhotoneutronTarget.from_material(target, cross_sections)
         self._check_probes()
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
@@ -535,6 +545,24 @@ class AdjointPopulations:
                                i_f, target, rtol=rtol, floor=floor,
                                e_max=e_max,
                                name=self.probe_fission_nuclides[j])
+
+    def probe_importances(self, target, depth=None, rtol=0.01, floor=1.0e-3,
+                          e_max=None, cross_sections=None):
+        """:meth:`probe_importance` for every fissioning-nuclide bin.
+
+        Returns
+        -------
+        dict of str to openmc.ProbeImportance
+            One linearly interpolable table per nuclide bin
+
+        """
+        from openmc.photoneutron_probes import PhotoneutronTarget
+        self._check_probes()
+        if not isinstance(target, PhotoneutronTarget):
+            target = PhotoneutronTarget.from_material(target, cross_sections)
+        return {n: self.probe_importance(target, nuclide=n, depth=depth,
+                                         rtol=rtol, floor=floor, e_max=e_max)
+                for n in self.probe_fission_nuclides}
 
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""

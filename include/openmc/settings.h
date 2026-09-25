@@ -159,6 +159,9 @@ extern double adjpop_probe_fraction;
 extern vector<double> adjpop_ray_neutron_energies;
 //! Rays per generation, as a fraction of the particles per rank
 extern double adjpop_ray_fraction;
+//! How rays and ray roots are shared among the fissioning-nuclide bins:
+//! 0 equally (a bin capped at what it has), 1 in proportion to fission weight
+extern int adjpop_ray_allocation;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

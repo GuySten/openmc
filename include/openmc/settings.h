@@ -154,6 +154,11 @@ extern vector<std::string> adjpop_fission_nuclides;
 extern vector<double> adjpop_probe_energies;
 //! Probe photons per generation, as a fraction of the particles per rank
 extern double adjpop_probe_fraction;
+//! Photoneutron birth energies [eV] of the ray probes' tree comb (empty: no
+//! ray probes)
+extern vector<double> adjpop_ray_neutron_energies;
+//! Rays per generation, as a fraction of the particles per rank
+extern double adjpop_ray_fraction;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

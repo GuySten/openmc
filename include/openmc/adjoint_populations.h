@@ -69,13 +69,14 @@ enum RootClass : int {
   CLASS_PHOTONEUTRON = 2,   //!< photoneutrons diverted from the driver
   CLASS_FISSION_BRANCH = 3, //!< photoneutron branches of fission-root trees
   CLASS_DELAYED_BRANCH = 4, //!< photoneutron branches of delayed-root trees
-  CLASS_PROBE = 5           //!< photoneutrons of probe photons
+  CLASS_PROBE = 5,          //!< photoneutrons of probe photons
+  CLASS_RAY = 6             //!< shared photoneutrons of ray probes
 };
 constexpr int N_CLASS = 3;       //!< root populations with class targets
 constexpr int N_SCORE_CLASS = 5; //!< classes in the weight arrays
 //! Classes a shadow tag can carry. Probe trees score in arrays of their own,
 //! so the weight arrays keep N_SCORE_CLASS classes.
-constexpr int N_PACK_CLASS = 6;
+constexpr int N_PACK_CLASS = 7;
 
 //! Tags are 0 (prompt) or a delayed group 1..N_TAG-1
 constexpr int N_TAG = 9;

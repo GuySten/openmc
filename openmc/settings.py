@@ -1202,7 +1202,9 @@ class Settings:
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
                             'photoneutron_probe_energies',
-                            'photoneutron_probe_fraction'))
+                            'photoneutron_probe_fraction',
+                            'photoneutron_ray_neutron_energies',
+                            'photoneutron_ray_fraction'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1225,6 +1227,21 @@ class Settings:
                         any(b <= a for a, b in zip(lines[:-1], lines[1:]))):
                     raise ValueError('photoneutron_probe_energies must be '
                                      'positive and strictly increasing.')
+            elif key == 'photoneutron_ray_neutron_energies':
+                cv.check_type('adjoint populations '
+                              'photoneutron_ray_neutron_energies', value,
+                              Iterable, Real)
+                comb = [float(e) for e in value]
+                if (len(comb) < 2 or comb[0] <= 0.0 or
+                        any(b <= a for a, b in zip(comb[:-1], comb[1:]))):
+                    raise ValueError('photoneutron_ray_neutron_energies must '
+                                     'be at least two positive, strictly '
+                                     'increasing energies.')
+            elif key == 'photoneutron_ray_fraction':
+                cv.check_type('adjoint populations photoneutron_ray_fraction',
+                              value, Real)
+                cv.check_greater_than('adjoint populations '
+                                      'photoneutron_ray_fraction', value, 0.0)
             elif key == 'photoneutron_probe_fraction':
                 cv.check_type('adjoint populations '
                               'photoneutron_probe_fraction', value, Real)
@@ -2043,7 +2060,8 @@ class Settings:
                 if isinstance(value, bool):
                     subelement.text = str(value).lower()
                 elif key in ('photoneutron_energy_bins',
-                             'photoneutron_probe_energies'):
+                             'photoneutron_probe_energies',
+                             'photoneutron_ray_neutron_energies'):
                     subelement.text = ' '.join(repr(float(e)) for e in value)
                 elif key == 'photoneutron_fission_nuclides':
                     subelement.text = ' '.join(value)
@@ -2623,6 +2641,13 @@ class Settings:
             text = get_text(elem, 'photoneutron_fission_nuclides')
             if text is not None:
                 value['photoneutron_fission_nuclides'] = text.split()
+            text = get_text(elem, 'photoneutron_ray_neutron_energies')
+            if text is not None:
+                value['photoneutron_ray_neutron_energies'] = [
+                    float(x) for x in text.split()]
+            text = get_text(elem, 'photoneutron_ray_fraction')
+            if text is not None:
+                value['photoneutron_ray_fraction'] = float(text)
             text = get_text(elem, 'photoneutron_probe_fraction')
             if text is not None:
                 value['photoneutron_probe_fraction'] = float(text)

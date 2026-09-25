@@ -9,12 +9,17 @@
 #include "openmc/bank.h"
 #include "openmc/constants.h"
 #include "openmc/error.h"
+#include "openmc/geometry.h"
 #include "openmc/hdf5_interface.h"
+#include "openmc/material.h"
+#include "openmc/math_functions.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
 #include "openmc/openmp_interface.h"
 #include "openmc/particle.h"
+#include "openmc/photonuclear.h"
 #include "openmc/physics.h"
+#include "openmc/ray.h"
 #include "openmc/random_lcg.h"
 #include "openmc/reaction.h"
 #include "openmc/settings.h"
@@ -92,6 +97,24 @@ int n_probe_depth_bins()
 {
   return n_probe_bins() * n_depth();
 }
+int n_comb()
+{
+  return static_cast<int>(settings::adjpop_ray_neutron_energies.size());
+}
+bool rays_on()
+{
+  return probes_on() && n_comb() > 1;
+}
+//! Ray scores: per line (nuclide bin x line) and per comb energy (nuclide
+//! bin x comb energy), each by depth
+int n_ray_line_bins()
+{
+  return rays_on() ? n_nbins() * n_lines() * n_depth() : 0;
+}
+int n_ray_comb_bins()
+{
+  return rays_on() ? n_nbins() * n_comb() * n_depth() : 0;
+}
 
 // Bin of each nuclide in data::nuclides (the "rest" bin if not listed)
 vector<int> nuclide_bin;
@@ -130,6 +153,32 @@ vector<double> batches_pf;
 
 // Probe roots recorded by the probe photons of this shadow pass
 vector<vector<Root>> thread_probe_roots;
+
+// Ray probes: per material and line, the total photon cross section and the
+// photoneutron channels (photonuclear nuclide, reaction, product, and its
+// production N sigma y); their scores per line and per comb energy
+struct Channel {
+  int i_pn;
+  int i_rx;
+  int i_prod;
+  double share;
+};
+vector<double> ray_sigt;              // [material][line]
+vector<double> ray_sign;              // [material][line]
+vector<double> ray_sigt_min;          // [material], smallest over lines
+vector<vector<Channel>> ray_channels; // [material][line]
+vector<double> thread_rw, batch_rw, batches_rw;
+vector<double> thread_rj, batch_rj, batches_rj;
+vector<double> batch_rf, batches_rf;
+double site_w_ray {1.0};
+double site_w_ray_cast {1.0};
+int64_t last_rays {0};
+int64_t last_ray_roots {0};
+int64_t n_ray_segments {0};
+// The depth scores of the tree being grown on this thread, when it is a ray
+// tree (shared by every line with its own factor)
+vector<vector<double>> thread_tree_buf;
+vector<char> thread_tree_active;
 
 // Target weights of the probe photons and of the probe roots
 double site_w_probe_photon {1.0};
@@ -194,7 +243,9 @@ void score_probe(int ebin, int flag, int depth, double w)
 //! Every score of a tree at one depth, by its class
 void score_tree(int cls, int tag, int ebin, int depth, double w, double t0)
 {
-  if (cls == CLASS_PROBE) {
+  if (cls == CLASS_RAY) {
+    thread_tree_buf[thread_num()][depth] += w;
+  } else if (cls == CLASS_PROBE) {
     score_probe(ebin, tag, depth, w);
   } else {
     score(cls, tag, depth, w, t0);
@@ -215,6 +266,8 @@ int nuclide_bin_of(int i_nuclide)
 //! Target (site) weight of a class
 double target_weight(int cls)
 {
+  if (cls == CLASS_RAY)
+    return site_w_ray;
   return (cls == CLASS_PROBE) ? site_w_probe : site_w[cls];
 }
 
@@ -408,6 +461,363 @@ void emit_delayed(const FissionRecord& f, vector<std::pair<Root, double>>& out,
   }
 }
 
+//! A ray probe's photoneutron root: the root, the nuclide bin, and every
+//! line's factor on the tree's score (divided by the root's raw weight)
+struct RayRoot {
+  Root root;
+  int nbin;
+  vector<double> factor;
+};
+
+//! Straight-line walk through the geometry, recording (material, length)
+class ProbeRay : public Ray {
+public:
+  ProbeRay(Position r, Direction u, vector<std::pair<int, double>>& seg)
+    : Ray(r, u), seg_(seg)
+  {}
+  bool start()
+  {
+    if (!exhaustive_find_cell(*this, false))
+      return false;
+    mat_ = material();
+    return true;
+  }
+  void on_intersection() override
+  {
+    const double len = traversal_distance_ - s_prev_;
+    seg_.emplace_back(mat_, len);
+    if (mat_ >= 0)
+      tau_min_ += ray_sigt_min[mat_] * len;
+    s_prev_ = traversal_distance_;
+    mat_ = material();
+    // Every line is attenuated beyond any contribution
+    if (tau_min_ > 50.0)
+      stop();
+  }
+
+private:
+  vector<std::pair<int, double>>& seg_;
+  int mat_ {C_NONE};
+  double s_prev_ {0.0};
+  double tau_min_ {0.0};
+};
+
+//! Build the per-material, per-line cross sections of the ray probes
+void init_rays()
+{
+  const int K = n_lines();
+  const size_t nm = model::materials.size();
+  ray_sigt.assign(nm * K, 0.0);
+  ray_sign.assign(nm * K, 0.0);
+  ray_sigt_min.assign(nm, 0.0);
+  ray_channels.assign(nm * K, {});
+  Particle p;
+  p.type() = ParticleType::photon();
+  for (size_t m = 0; m < nm; ++m) {
+    const auto& mat = *model::materials[m];
+    double tmin = INFTY;
+    for (int k = 0; k < K; ++k) {
+      p.E() = settings::adjpop_probe_energies[k];
+      mat.calculate_xs(p);
+      ray_sigt[m * K + k] = p.macro_xs().total;
+      tmin = std::min(tmin, p.macro_xs().total);
+      double sn = 0.0;
+      for (int i = 0; i < static_cast<int>(mat.nuclide_.size()); ++i) {
+        const auto& name = data::nuclides[mat.nuclide_[i]]->name_;
+        auto it = data::photonuclear_map.find(name);
+        if (it == data::photonuclear_map.end())
+          continue;
+        const int i_pn = it->second;
+        const auto& micro = p.photonuclear_xs(i_pn);
+        const auto& nuc = *data::photonuclears[i_pn];
+        // As emit_forced_photoneutron() samples them: every reaction's cross
+        // section once per neutron product, times that product's yield
+        for (int r = 0; r < static_cast<int>(nuc.reactions_.size()); ++r) {
+          const auto& rx = *nuc.reactions_[r];
+          const double xs = rx.xs(micro);
+          if (!(xs > 0.0))
+            continue;
+          for (int q = 0; q < static_cast<int>(rx.products_.size()); ++q) {
+            if (rx.products_[q].particle_ != ParticleType::neutron())
+              continue;
+            const double y = (*rx.products_[q].yield_)(p.E());
+            if (!(y > 0.0))
+              continue;
+            const double share = mat.atom_density_(i) * xs * y;
+            ray_channels[m * K + k].push_back({i_pn, r, q, share});
+            sn += share;
+          }
+        }
+      }
+      ray_sign[m * K + k] = sn;
+    }
+    ray_sigt_min[m] = (tmin < INFTY) ? tmin : 0.0;
+  }
+}
+
+//! Linear-interpolation weights in lethargy of a photoneutron energy on the
+//! comb, held at the ends
+void comb_weights(double E, int& j0, double& w0)
+{
+  const auto& c = settings::adjpop_ray_neutron_energies;
+  const int M = static_cast<int>(c.size());
+  if (E <= c.front()) {
+    j0 = 0;
+    w0 = 1.0;
+    return;
+  }
+  if (E >= c.back()) {
+    j0 = M - 2;
+    w0 = 0.0;
+    return;
+  }
+  j0 = static_cast<int>(std::upper_bound(c.begin(), c.end(), E) - c.begin()) - 1;
+  w0 = std::log(c[j0 + 1] / E) / std::log(c[j0 + 1] / c[j0]);
+}
+
+//! Laboratory energy of a photoneutron given its centre-of-mass energy and
+//! cosine (as emit_photonuclear_product() transforms it)
+double lab_energy(double E_cm, double mu_cm, double E_in, double awr)
+{
+  return E_cm + 1.0 / awr * std::sqrt(2.0 * E_cm / MASS_NEUTRON_EV) * E_in * mu_cm +
+         (E_in * E_in) / (2.0 * MASS_NEUTRON_EV * awr * awr);
+}
+
+//! Cast the ray of one driver fission event and turn it into one shared
+//! photoneutron root. Returns false if the ray makes no photoneutron.
+bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
+  int64_t& n_seg)
+{
+  const int K = n_lines();
+  const int M = n_comb();
+  uint64_t s = init_seed(combine_ids({sid, 3}), STREAM_TRACKING);
+  const double ct = 2.0 * prn(&s) - 1.0;
+  const double ph = 2.0 * PI * prn(&s);
+  const double st = std::sqrt(1.0 - ct * ct);
+  const Direction u {st * std::cos(ph), st * std::sin(ph), ct};
+
+  vector<std::pair<int, double>> seg;
+  ProbeRay ray(f.r, u, seg);
+  if (!ray.start())
+    return false;
+  ray.trace();
+  n_seg += static_cast<int64_t>(seg.size());
+  const int ns = static_cast<int>(seg.size());
+  if (ns == 0)
+    return false;
+
+  // Optical depth at each segment's start and each line's production
+  vector<double> tau((ns + 1) * K, 0.0);
+  vector<double> cum((ns + 1) * K, 0.0);
+  for (int i = 0; i < ns; ++i) {
+    const int m = seg[i].first;
+    const double L = seg[i].second;
+    for (int k = 0; k < K; ++k) {
+      const double t0 = tau[i * K + k];
+      double st_ = 0.0, sn = 0.0;
+      if (m >= 0) {
+        st_ = ray_sigt[m * K + k];
+        sn = ray_sign[m * K + k];
+      }
+      tau[(i + 1) * K + k] = t0 + st_ * L;
+      const double add = (st_ > 0.0 && sn > 0.0)
+                           ? sn / st_ * std::exp(-t0) * (-std::expm1(-st_ * L))
+                           : 0.0;
+      cum[(i + 1) * K + k] = cum[i * K + k] + add;
+    }
+  }
+  vector<double> Y(K);
+  double Ysum = 0.0;
+  for (int k = 0; k < K; ++k) {
+    Y[k] = cum[ns * K + k];
+    Ysum += Y[k];
+  }
+  if (!(Ysum > 0.0))
+    return false;
+
+  // Birth point: a line in proportion to its production, then a point from
+  // that line's production density along the ray
+  double xi = prn(&s) * Ysum;
+  int ks = 0;
+  for (; ks < K - 1; ++ks) {
+    if (xi < Y[ks])
+      break;
+    xi -= Y[ks];
+  }
+  const double target_c = prn(&s) * Y[ks];
+  int ib = 0;
+  while (ib < ns - 1 && cum[(ib + 1) * K + ks] < target_c)
+    ++ib;
+  const int mb = seg[ib].first;
+  const double stb = ray_sigt[mb * K + ks];
+  const double snb = ray_sign[mb * K + ks];
+  // Within the segment: e^{-tau} falls by (c - cum_start) st/sn
+  const double e0 = std::exp(-tau[ib * K + ks]);
+  double e = e0 - (target_c - cum[ib * K + ks]) * stb / snb;
+  e = std::max(e, 1e-300);
+  double ds = (-std::log(e) - tau[ib * K + ks]) / stb;
+  ds = std::clamp(ds, 0.0, seg[ib].second);
+  double s_start = 0.0;
+  for (int i = 0; i < ib; ++i)
+    s_start += seg[i].second;
+  const Position rb = f.r + (s_start + ds) * u;
+
+  // Every line's production density there
+  vector<double> pk(K);
+  double psum = 0.0;
+  for (int k = 0; k < K; ++k) {
+    const double sn = ray_sign[mb * K + k];
+    const double tk = tau[ib * K + k] + ray_sigt[mb * K + k] * ds;
+    pk[k] = sn * std::exp(-tk);
+    psum += pk[k];
+  }
+  if (!(psum > 0.0))
+    return false;
+
+  // Direction: a line in proportion to p_k, a channel in proportion to its
+  // production, and that channel's sampled cosine (taken as the laboratory
+  // cosine about the ray)
+  double xl = prn(&s) * psum;
+  int kd = 0;
+  for (; kd < K - 1; ++kd) {
+    if (xl < pk[kd])
+      break;
+    xl -= pk[kd];
+  }
+  const auto& chs = ray_channels[mb * K + kd];
+  double cs = 0.0;
+  for (const auto& c : chs)
+    cs += c.share;
+  double xc = prn(&s) * cs;
+  const Channel* cd = &chs.back();
+  for (const auto& c : chs) {
+    if (xc < c.share) {
+      cd = &c;
+      break;
+    }
+    xc -= c.share;
+  }
+  double E_dummy, mu;
+  data::photonuclears[cd->i_pn]
+    ->reactions_[cd->i_rx]
+    ->products_[cd->i_prod]
+    .sample(settings::adjpop_probe_energies[kd], E_dummy, mu, &s);
+  mu = std::clamp(mu, -1.0, 1.0);
+  const Direction un = rotate_angle(u, mu, nullptr, &s);
+
+  // Per line: the angular density at mu and the comb weights of its
+  // photoneutron energy, over its channels
+  vector<double> fk(K, 0.0);
+  vector<double> wc(static_cast<size_t>(K) * M, 0.0);
+  double den = 0.0;
+  for (int k = 0; k < K; ++k) {
+    if (!(pk[k] > 0.0))
+      continue;
+    const double Ek = settings::adjpop_probe_energies[k];
+    double fsum = 0.0, ssum = 0.0;
+    for (const auto& c : ray_channels[mb * K + k]) {
+      const auto& nuc = *data::photonuclears[c.i_pn];
+      const auto& rx = *nuc.reactions_[c.i_rx];
+      double E_out;
+      const double pdf =
+        rx.products_[c.i_prod].sample_energy_and_pdf(Ek, mu, E_out, &s);
+      if (rx.scatter_in_cm_)
+        E_out = lab_energy(E_out, mu, Ek, nuc.awr_);
+      ssum += c.share;
+      if (!(pdf > 0.0))
+        continue;
+      fsum += c.share * pdf;
+      int j0;
+      double w0;
+      comb_weights(E_out, j0, w0);
+      wc[static_cast<size_t>(k) * M + j0] += c.share * pdf * w0;
+      wc[static_cast<size_t>(k) * M + j0 + 1] += c.share * pdf * (1.0 - w0);
+    }
+    if (!(ssum > 0.0) || !(fsum > 0.0))
+      continue;
+    for (int j = 0; j < M; ++j)
+      wc[static_cast<size_t>(k) * M + j] /= fsum;
+    fk[k] = fsum / ssum;
+    den += pk[k] * fk[k];
+  }
+  if (!(den > 0.0))
+    return false;
+
+  // Line weights (balance heuristic over the lines' joint densities of the
+  // birth point and the cosine), then one comb energy for all of them
+  vector<double> b(K, 0.0);
+  double bsum = 0.0;
+  for (int k = 0; k < K; ++k) {
+    b[k] = w_ray * Ysum * pk[k] * fk[k] / den;
+    bsum += b[k];
+  }
+  vector<double> q(M, 0.0);
+  for (int k = 0; k < K; ++k)
+    for (int j = 0; j < M; ++j)
+      q[j] += b[k] * wc[static_cast<size_t>(k) * M + j];
+  double qs = 0.0;
+  for (int j = 0; j < M; ++j)
+    qs += q[j];
+  if (!(qs > 0.0))
+    return false;
+  double xj = prn(&s) * qs;
+  int jc = 0;
+  for (; jc < M - 1; ++jc) {
+    if (xj < q[jc])
+      break;
+    xj -= q[jc];
+  }
+  const double qj = q[jc] / qs;
+
+  out.factor.assign(K, 0.0);
+  double R = 0.0;
+  for (int k = 0; k < K; ++k) {
+    out.factor[k] = b[k] * wc[static_cast<size_t>(k) * M + jc] / qj;
+    R += out.factor[k];
+  }
+  R /= K;
+  if (!(R > 0.0))
+    return false;
+  for (auto& a : out.factor)
+    a /= R;
+  out.nbin = nuclide_bin_of(f.i_nuclide);
+  Root& r = out.root;
+  r.r = rb;
+  r.u = un;
+  r.E = settings::adjpop_ray_neutron_energies[jc];
+  r.time = f.time;
+  r.wgt = R;
+  r.cls = CLASS_RAY;
+  r.tag = 0;
+  r.ebin = out.nbin * M + jc;
+  r.seed_id = combine_ids({sid, 606});
+  return true;
+}
+
+//! Grow a ray root and share its depth scores among the lines
+void run_one_ray_tree(const RayRoot& rr, double w)
+{
+  const int t = thread_num();
+  auto& buf = thread_tree_buf[t];
+  std::fill(buf.begin(), buf.end(), 0.0);
+  run_one_tree(rr.root, w);
+  const int K = n_lines();
+  const size_t nd = n_depth();
+  const size_t lines = static_cast<size_t>(t) * n_ray_line_bins();
+  const size_t comb = static_cast<size_t>(t) * n_ray_comb_bins();
+  for (int k = 0; k < K; ++k) {
+    const double a = rr.factor[k];
+    if (a == 0.0)
+      continue;
+    const size_t base = lines + (static_cast<size_t>(rr.nbin) * K + k) * nd;
+    for (size_t d = 0; d < nd; ++d)
+      thread_rw[base + d] += buf[d] * a;
+  }
+  const size_t cb = comb + static_cast<size_t>(rr.root.ebin) * nd;
+  for (size_t d = 0; d < nd; ++d)
+    thread_rj[cb + d] += buf[d];
+}
+
 } // namespace
 
 //==============================================================================
@@ -491,6 +901,21 @@ void init()
   batch_pf.assign(probes_on() ? n_nbins() : 0, 0.0);
   batches_pf.clear();
   thread_probe_roots.assign(n_threads, {});
+  if (!settings::adjpop_ray_neutron_energies.empty() && !probes_on())
+    fatal_error("<adjoint_populations> photoneutron_ray_neutron_energies "
+                "require photoneutron_probe_energies.");
+  if (rays_on())
+    init_rays();
+  thread_rw.assign(static_cast<size_t>(n_threads) * n_ray_line_bins(), 0.0);
+  thread_rj.assign(static_cast<size_t>(n_threads) * n_ray_comb_bins(), 0.0);
+  batch_rw.assign(n_ray_line_bins(), 0.0);
+  batch_rj.assign(n_ray_comb_bins(), 0.0);
+  batches_rw.clear();
+  batches_rj.clear();
+  batch_rf.assign(rays_on() ? n_nbins() : 0, 0.0);
+  batches_rf.clear();
+  thread_tree_buf.assign(n_threads, vector<double>(n_depth(), 0.0));
+  thread_tree_active.assign(n_threads, 0);
   thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
   thread_branch_n.assign(static_cast<size_t>(n_threads) * 2, 0);
   batch_w.assign(n_bins(), 0.0);
@@ -515,6 +940,8 @@ void reset_generation()
   std::fill(thread_wt.begin(), thread_wt.end(), 0.0);
   std::fill(thread_ew.begin(), thread_ew.end(), 0.0);
   std::fill(thread_pw.begin(), thread_pw.end(), 0.0);
+  std::fill(thread_rw.begin(), thread_rw.end(), 0.0);
+  std::fill(thread_rj.begin(), thread_rj.end(), 0.0);
   for (auto& v : thread_probe_roots)
     v.clear();
   std::fill(thread_branch_raw.begin(), thread_branch_raw.end(), 0.0);
@@ -841,6 +1268,63 @@ void run_shadow_pass()
       run_one_tree(kept[i].first, kept[i].second);
   }
 
+  // Ray probes, after everything else
+  if (rays_on()) {
+    double raw_ray = 0.0;
+    for (const auto& f : fissions) {
+      const double wf = f.wgt * f.sigma_f_to_t;
+      raw_ray += wf;
+      batch_rf[nuclide_bin_of(f.i_nuclide)] += wf;
+    }
+    const double m_ray = std::max(1.0,
+      settings::adjpop_ray_fraction * static_cast<double>(simulation::work_per_rank));
+    if (raw_ray > 0.0)
+      site_w_ray_cast = raw_ray / m_ray;
+    // Which events cast a ray, and with what weight (decided in order)
+    vector<std::pair<int64_t, double>> casts;
+    for (int64_t i = 0; i < static_cast<int64_t>(fissions.size()); ++i) {
+      const auto& f = fissions[i];
+      const int64_t sid = combine_ids({f.seed_id, 707});
+      const double w = roulette_to(f.wgt * f.sigma_f_to_t, site_w_ray_cast, sid);
+      if (w > 0.0)
+        casts.emplace_back(i, w);
+    }
+    last_rays = static_cast<int64_t>(casts.size());
+    const auto n_casts = static_cast<int64_t>(casts.size());
+    vector<RayRoot> rroots(n_casts);
+    vector<char> made(n_casts, 0);
+    int64_t n_seg = 0;
+#pragma omp parallel for schedule(static) reduction(+ : n_seg)
+    for (int64_t i = 0; i < n_casts; ++i) {
+      const auto& f = fissions[casts[i].first];
+      made[i] = cast_ray(
+        f, casts[i].second, combine_ids({f.seed_id, 707}), rroots[i], n_seg);
+    }
+    n_ray_segments += n_seg;
+    double raw_r = 0.0;
+    for (int64_t i = 0; i < n_casts; ++i)
+      if (made[i])
+        raw_r += rroots[i].root.wgt;
+    if (raw_r > 0.0)
+      site_w_ray = raw_r / m_target;
+    vector<std::pair<int64_t, double>> grow;
+    for (int64_t i = 0; i < n_casts; ++i) {
+      if (!made[i])
+        continue;
+      const double w = roulette(rroots[i].root.wgt, CLASS_RAY, rroots[i].root.seed_id);
+      if (w > 0.0)
+        grow.emplace_back(i, w);
+    }
+    last_ray_roots = static_cast<int64_t>(grow.size());
+    const auto n_grow = static_cast<int64_t>(grow.size());
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n_grow; ++i) {
+      // The factors are per unit raw weight; the tree carries its rouletted
+      // weight, whose expected value is the raw weight
+      run_one_ray_tree(rroots[grow[i].first], grow[i].second);
+    }
+  }
+
   for (int i = 0; i < 8; ++i)
     saved[i].swap(*lists[i]);
 
@@ -877,6 +1361,13 @@ void run_shadow_pass()
   for (int t = 0; t < num_threads(); ++t)
     for (int i = 0; i < np; ++i)
       batch_pw[i] += thread_pw[static_cast<size_t>(t) * np + i];
+  const int nrl = n_ray_line_bins(), nrc = n_ray_comb_bins();
+  for (int t = 0; t < num_threads(); ++t) {
+    for (int i = 0; i < nrl; ++i)
+      batch_rw[i] += thread_rw[static_cast<size_t>(t) * nrl + i];
+    for (int i = 0; i < nrc; ++i)
+      batch_rj[i] += thread_rj[static_cast<size_t>(t) * nrc + i];
+  }
 }
 
 void finalize_batch()
@@ -921,6 +1412,9 @@ void finalize_batch()
     batches_ew.insert(batches_ew.end(), batch_ew.begin(), batch_ew.end());
     batches_pw.insert(batches_pw.end(), batch_pw.begin(), batch_pw.end());
     batches_pf.insert(batches_pf.end(), batch_pf.begin(), batch_pf.end());
+    batches_rw.insert(batches_rw.end(), batch_rw.begin(), batch_rw.end());
+    batches_rj.insert(batches_rj.end(), batch_rj.begin(), batch_rj.end());
+    batches_rf.insert(batches_rf.end(), batch_rf.begin(), batch_rf.end());
     ++n_batches_recorded;
   }
   std::fill(batch_w.begin(), batch_w.end(), 0.0);
@@ -928,6 +1422,9 @@ void finalize_batch()
   std::fill(batch_ew.begin(), batch_ew.end(), 0.0);
   std::fill(batch_pw.begin(), batch_pw.end(), 0.0);
   std::fill(batch_pf.begin(), batch_pf.end(), 0.0);
+  std::fill(batch_rw.begin(), batch_rw.end(), 0.0);
+  std::fill(batch_rj.begin(), batch_rj.end(), 0.0);
+  std::fill(batch_rf.begin(), batch_rf.end(), 0.0);
 }
 
 void write_results(hid_t file_id)
@@ -1001,6 +1498,21 @@ void write_results(hid_t file_id)
     write_dataset(group, "n_probe_roots_last_generation", last_probe_roots);
     write_dataset(group, "n_probe_histories", n_probe_histories);
   }
+  if (rays_on()) {
+    write_dataset(
+      group, "ray_neutron_energies", settings::adjpop_ray_neutron_energies);
+    // [batch][nuclide bin][line][depth]: uncollided photoneutron importance
+    write_dataset(group, "ray_weight", batches_rw);
+    // [batch][nuclide bin][comb energy][depth]: the trees by comb energy
+    write_dataset(group, "ray_comb_weight", batches_rj);
+    // [batch][nuclide bin]: sum of w/k sigma_f/sigma_t over the events
+    write_dataset(group, "ray_fission_weight", batches_rf);
+    write_dataset(group, "ray_site_weight",
+      vector<double> {site_w_ray_cast, site_w_ray});
+    write_dataset(group, "n_rays_last_generation", last_rays);
+    write_dataset(group, "n_ray_roots_last_generation", last_ray_roots);
+    write_dataset(group, "n_ray_segments", n_ray_segments);
+  }
   close_group(group);
 }
 
@@ -1030,6 +1542,22 @@ void clear()
   last_probe_photons = 0;
   last_probe_roots = 0;
   n_probe_histories = 0;
+  ray_sigt.clear();
+  ray_sign.clear();
+  ray_sigt_min.clear();
+  ray_channels.clear();
+  thread_rw.clear();
+  batch_rw.clear();
+  batches_rw.clear();
+  thread_rj.clear();
+  batch_rj.clear();
+  batches_rj.clear();
+  batch_rf.clear();
+  batches_rf.clear();
+  thread_tree_buf.clear();
+  thread_tree_active.clear();
+  site_w_ray = site_w_ray_cast = 1.0;
+  last_rays = last_ray_roots = n_ray_segments = 0;
   nuclide_bin.clear();
   n_batches_recorded = 0;
   n_histories = 0;

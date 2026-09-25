@@ -1351,6 +1351,12 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
       }
     }
 
+    // A fission photon remembers the nuclide that fissioned (adjoint side
+    // populations tally photoneutrons by it)
+    if (created_photon && is_fission(rx->mt_)) {
+      p.local_secondary_bank().back().fission_nuclide = i_nuclide;
+    }
+
     // Tag secondary particle with parent nuclide
     if (created_photon && settings::use_decay_photons) {
       p.local_secondary_bank().back().parent_nuclide =

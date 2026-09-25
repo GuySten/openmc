@@ -200,3 +200,75 @@ def test_energy_group_estimators_need_the_tally(run_in_tmpdir):
     ap = _read('ap.h5', 1.0)
     with pytest.raises(ValueError):
         ap.photoneutron_reactivity_by_energy()
+
+
+def test_fission_nuclide_settings_roundtrip(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_energy_bins': [2.2246e6, 3.0e6, 2.0e7],
+             'photoneutron_fission_nuclides': ['U235', 'U238']}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+
+
+def test_fission_nuclide_settings_checks():
+    s = openmc.Settings()
+    with pytest.raises(TypeError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_fission_nuclides': 'U235'}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_fission_nuclides': []}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3,
+                                 'photoneutron_fission_nuclides':
+                                 ['U235', 'U235']}
+
+
+def test_fission_nuclide_estimators(run_in_tmpdir):
+    """Photoneutron sums by fissioning nuclide and energy group: they add up
+    to the energy-group sums and to the ungrouped reactivity, and each bin's
+    importance is its own growth over the fission roots'."""
+    L, k, n_b = 2, 1.0, 5
+    rng = np.random.default_rng(2)
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = [100.0, 90.0, 80.0]
+    # [batch, nuclide bin (U235, U238, other), energy group, depth]
+    nw = np.zeros((n_b, 3, 2, L + 1))
+    nw[:, 0, 0] = [1.0, 0.5, 0.25]
+    nw[:, 0, 1] = [2.0, 2.0, 2.0]
+    nw[:, 1, 0] = [0.5, 0.4, 0.3]
+    nw[:, 1, 1] = [0.2, 0.1, 0.05]
+    nw *= rng.uniform(0.9, 1.1, size=(n_b, 1, 1, 1))
+    ew = nw.sum(axis=1)
+    w[:, CLASS_PHOTONEUTRON, 0] = ew.sum(axis=1)
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['photoneutron_energy_bins'] = [2.2246e6, 3.0e6, 2.0e7]
+        g['photoneutron_energy_variable'] = 'photon_birth'
+        g['photoneutron_energy_weight'] = ew.ravel()
+        g['photoneutron_fission_nuclides'] = 'U235 U238 other'
+        g['photoneutron_nuclide_weight'] = nw.ravel()
+    ap = _read('ap.h5', k)
+    assert ap.photoneutron_fission_nuclides == ['U235', 'U238', 'other']
+    by_n = ap.photoneutron_reactivity_by_nuclide(depth=2)
+    by_e = ap.photoneutron_reactivity_by_energy(depth=2)
+    for e in range(2):
+        assert sum(by_n[j][e].n for j in by_n) == pytest.approx(by_e[e].n)
+    total = ap.photoneutron_reactivity(depth=2)
+    assert sum(x.n for row in by_n.values() for x in row) == \
+        pytest.approx(total.n)
+    imp = ap.photoneutron_importance_by_nuclide(depth=2)
+    fis = 80.0 / 100.0
+    assert imp['U238'][0].n == pytest.approx((0.3 / 0.5) / fis, rel=1e-9)
+    assert np.isnan(imp['other'][0].n)
+
+
+def test_fission_nuclide_estimators_need_the_tally(run_in_tmpdir):
+    w = np.ones((3, 5, 9, 3))
+    _write('ap.h5', w, np.zeros_like(w))
+    ap = _read('ap.h5', 1.0)
+    with pytest.raises(ValueError):
+        ap.photoneutron_reactivity_by_nuclide()

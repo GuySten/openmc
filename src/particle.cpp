@@ -125,6 +125,7 @@ bool Particle::create_secondary(
   bank.shadow_depth = shadow_depth();
   bank.shadow_tag = shadow_tag();
   bank.shadow_t0 = shadow_t0();
+  bank.fission_nuclide = fission_nuclide();
 
   local_secondary_bank().emplace_back(bank);
   return true;
@@ -159,6 +160,7 @@ void Particle::split(double wgt)
   bank.shadow_depth = shadow_depth();
   bank.shadow_tag = shadow_tag();
   bank.shadow_t0 = shadow_t0();
+  bank.fission_nuclide = fission_nuclide();
 
   local_secondary_bank().emplace_back(bank);
 }
@@ -218,6 +220,7 @@ void Particle::from_source(const SourceSite* src)
   shadow_depth() = src->shadow_depth;
   shadow_tag() = src->shadow_tag;
   shadow_t0() = src->shadow_t0;
+  fission_nuclide() = src->fission_nuclide;
 }
 
 void Particle::event_calculate_xs()

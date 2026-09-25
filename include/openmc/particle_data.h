@@ -64,6 +64,10 @@ struct SourceSite {
   int shadow_depth {-1};
   int shadow_tag {-1};
   double shadow_t0 {0.0};
+
+  // Index in data::nuclides of the nuclide whose fission made this photon,
+  // inherited by its secondaries; -1 otherwise
+  int fission_nuclide {-1};
 };
 
 struct CollisionTrackSite {
@@ -533,6 +537,7 @@ private:
   double wgt_ {1.0};
   double wgt_born_ {1.0};
   double E_born_ {0.0}; //!< energy at which this particle was started
+  int fission_nuclide_ {-1}; //!< nuclide whose fission made this photon
   double wgt_ww_born_ {-1.0};
   double mu_;
   double time_ {0.0};
@@ -658,6 +663,8 @@ public:
   double& wgt_born() { return wgt_born_; }
   double& E_born() { return E_born_; }
   double E_born() const { return E_born_; }
+  int& fission_nuclide() { return fission_nuclide_; }
+  int fission_nuclide() const { return fission_nuclide_; }
   double wgt_born() const { return wgt_born_; }
 
   // Weight window value at birth

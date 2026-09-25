@@ -97,6 +97,13 @@ class AdjointPopulations:
         'photon_birth' or 'photoneutron': what the groups bin
     photoneutron_energy_weight : numpy.ndarray or None
         Summed photoneutron-root weight, indexed [batch, energy group, depth]
+    photoneutron_fission_nuclides : list of str or None
+        Names of the fissioning-nuclide bins, the last being 'other', if the
+        photoneutron roots were also tallied by the nuclide whose fission
+        made the photon
+    photoneutron_nuclide_weight : numpy.ndarray or None
+        Summed photoneutron-root weight, indexed [batch, nuclide bin, energy
+        group, depth]; one energy group if no energy edges were given
 
     """
 
@@ -130,6 +137,19 @@ class AdjointPopulations:
             self.photoneutron_energy_weight = \
                 group['photoneutron_energy_weight'][()].reshape(
                     (self.n_batches, len(edges) - 1, self.n_generation + 1))
+
+        self.photoneutron_fission_nuclides = None
+        self.photoneutron_nuclide_weight = None
+        if 'photoneutron_fission_nuclides' in group:
+            names = group['photoneutron_fission_nuclides'][()]
+            names = names.decode() if isinstance(names, bytes) else str(names)
+            self.photoneutron_fission_nuclides = names.split()
+            n_group = 1 if self.photoneutron_energy_bins is None else \
+                len(self.photoneutron_energy_bins) - 1
+            self.photoneutron_nuclide_weight = \
+                group['photoneutron_nuclide_weight'][()].reshape(
+                    (self.n_batches, len(self.photoneutron_fission_nuclides),
+                     n_group, self.n_generation + 1))
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))
@@ -279,6 +299,55 @@ class AdjointPopulations:
                 out.append(ufloat(np.nan, np.nan))
                 continue
             out.append(_double_ratio(x[:, d], x[:, 0], w[:, d], w[:, 0]))
+        return out
+
+    def _check_nuclides(self):
+        if self.photoneutron_nuclide_weight is None:
+            raise ValueError('The calculation did not tally photoneutrons by '
+                             'fissioning nuclide.')
+
+    def photoneutron_reactivity_by_nuclide(self, depth=None):
+        """Contribution of the photons from each fissioning nuclide (and
+        energy group) to the photoneutron reactivity, I_pn,j,e / I_fission.
+
+        Returns
+        -------
+        dict of str to list of uncertainties.UFloat
+            One list per nuclide bin (the last is 'other'), one entry per
+            energy group (a single entry if no energy edges were given)
+        """
+        self._check_photoneutrons()
+        self._check_nuclides()
+        d = self._depth(depth)
+        i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
+        w = self.photoneutron_nuclide_weight
+        return {name: [_ratio(w[:, j, e, d], i_f) for e in range(w.shape[2])]
+                for j, name in enumerate(self.photoneutron_fission_nuclides)}
+
+    def photoneutron_importance_by_nuclide(self, depth=None):
+        """Importance per unit weight of a photoneutron from each fissioning
+        nuclide's photons (and energy group), relative to a fission
+        neutron's. NaN for an empty bin.
+
+        Returns
+        -------
+        dict of str to list of uncertainties.UFloat
+        """
+        self._check_photoneutrons()
+        self._check_nuclides()
+        d = self._depth(depth)
+        wf = self.weight[:, CLASS_FISSION].sum(axis=1)
+        w = self.photoneutron_nuclide_weight
+        out = {}
+        for j, name in enumerate(self.photoneutron_fission_nuclides):
+            row = []
+            for e in range(w.shape[2]):
+                x = w[:, j, e]
+                if not x[:, 0].any():
+                    row.append(ufloat(np.nan, np.nan))
+                    continue
+                row.append(_double_ratio(x[:, d], x[:, 0], wf[:, d], wf[:, 0]))
+            out[name] = row
         return out
 
     def photoneutron_reactivity(self, depth=None):

@@ -57,6 +57,16 @@ sub-elements:
 
     *Default*: photon_birth
 
+  :photoneutron_fission_nuclides:
+    Space-separated nuclide names by whose fission the photoneutron roots'
+    summed weight is also recorded at every depth: the nuclide that fissioned
+    to make the photon. Photoneutrons made by photons from the fission of any
+    other nuclide, or from non-fission reactions, share one more bin,
+    ``other``. With ``photoneutron_energy_bins`` the record is split by both.
+    Requires ``photoneutrons``.
+
+    *Default*: none
+
 -------------------------------
 ``<atomic_relaxation>`` Element
 -------------------------------

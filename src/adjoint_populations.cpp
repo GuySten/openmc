@@ -49,10 +49,35 @@ int n_ebins()
            ? 0
            : static_cast<int>(settings::adjpop_energy_bins.size()) - 1;
 }
+//! Fissioning-nuclide bins: one per listed nuclide and one for the rest;
+//! 1 (no split) if none are listed
+int n_nbins()
+{
+  return settings::adjpop_fission_nuclides.empty()
+           ? 1
+           : static_cast<int>(settings::adjpop_fission_nuclides.size()) + 1;
+}
+//! Energy groups of the combined tally: 1 (no split) if no edges are given
+int n_egroups()
+{
+  return std::max(n_ebins(), 1);
+}
+bool tagging_on()
+{
+  return n_ebins() > 0 || !settings::adjpop_fission_nuclides.empty();
+}
+//! Combined bins (nuclide bin x energy group), 0 if neither split is on
+int n_tbins()
+{
+  return tagging_on() ? n_nbins() * n_egroups() : 0;
+}
 int n_ebin_bins()
 {
-  return n_ebins() * n_depth();
+  return n_tbins() * n_depth();
 }
+
+// Bin of each nuclide in data::nuclides (the "rest" bin if not listed)
+vector<int> nuclide_bin;
 
 // Roots and fission events recorded by the driver this generation
 vector<vector<Root>> thread_roots;
@@ -121,18 +146,32 @@ void score_ebin(int ebin, int depth, double w)
   thread_ew[i] += w;
 }
 
-//! Energy group of a photoneutron: the photon's birth energy or its own
+//! Combined bin of a photoneutron, nuclide bin x n_egroups + energy group:
+//! the nuclide whose fission made the photon, and the photon's birth energy
+//! or the photoneutron's own. -1 if tagging is off or the energy is outside
+//! the edges. With the nuclide split off it is the energy group alone.
 int energy_group(const Particle& photon, double E_neutron)
 {
+  if (!tagging_on())
+    return -1;
+  int group = 0;
   const auto& e = settings::adjpop_energy_bins;
-  if (e.empty())
-    return -1;
-  const double x =
-    (settings::adjpop_energy_variable == 0) ? photon.E_born() : E_neutron;
-  if (x < e.front() || x >= e.back())
-    return -1;
-  return static_cast<int>(std::upper_bound(e.begin(), e.end(), x) - e.begin()) -
-         1;
+  if (!e.empty()) {
+    const double x =
+      (settings::adjpop_energy_variable == 0) ? photon.E_born() : E_neutron;
+    if (x < e.front() || x >= e.back())
+      return -1;
+    group =
+      static_cast<int>(std::upper_bound(e.begin(), e.end(), x) - e.begin()) - 1;
+  }
+  int nbin = 0;
+  if (!settings::adjpop_fission_nuclides.empty()) {
+    const int i = photon.fission_nuclide();
+    nbin = (i >= 0 && i < static_cast<int>(nuclide_bin.size()))
+             ? nuclide_bin[i]
+             : n_nbins() - 1;
+  }
+  return nbin * n_egroups() + group;
 }
 
 //! Russian roulette of a root to its population's target weight, drawn on
@@ -275,9 +314,20 @@ void init()
   thread_fissions.assign(n_threads, {});
   thread_w.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   thread_wt.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
-  if (n_ebins() > 0 && !settings::adjpop_photoneutrons)
-    fatal_error("<adjoint_populations> photoneutron_energy_bins require "
-                "photoneutrons to be on.");
+  if (tagging_on() && !settings::adjpop_photoneutrons)
+    fatal_error("<adjoint_populations> photoneutron_energy_bins and "
+                "photoneutron_fission_nuclides require photoneutrons to be on.");
+  nuclide_bin.assign(data::nuclides.size(), n_nbins() - 1);
+  for (int k = 0; k < static_cast<int>(settings::adjpop_fission_nuclides.size());
+       ++k) {
+    const auto& name = settings::adjpop_fission_nuclides[k];
+    auto it = data::nuclide_map.find(name);
+    if (it == data::nuclide_map.end())
+      fatal_error(fmt::format("<adjoint_populations> photoneutron fission "
+                              "nuclide {} is not in the model.",
+        name));
+    nuclide_bin[it->second] = k;
+  }
   thread_ew.assign(static_cast<size_t>(n_threads) * n_ebin_bins(), 0.0);
   batch_ew.assign(n_ebin_bins(), 0.0);
   batches_ew.clear();
@@ -634,14 +684,33 @@ void write_results(hid_t file_id)
   vector<double> rw(last_raw_weight, last_raw_weight + N_SCORE_CLASS);
   write_dataset(group, "raw_weight_last_generation", rw);
   write_dataset(group, "n_histories", n_histories);
-  if (n_ebins() > 0) {
-    // [batch][energy group][depth], flattened
-    write_dataset(
-      group, "photoneutron_energy_bins", settings::adjpop_energy_bins);
-    write_dataset(group, "photoneutron_energy_variable",
-      std::string(settings::adjpop_energy_variable == 0 ? "photon_birth"
-                                                        : "photoneutron"));
-    write_dataset(group, "photoneutron_energy_weight", batches_ew);
+  if (tagging_on()) {
+    const size_t nd = n_depth(), ne = n_egroups(), nn = n_nbins();
+    const size_t per_batch = nn * ne * nd;
+    if (n_ebins() > 0) {
+      // [batch][energy group][depth], flattened: summed over nuclide bins
+      vector<double> ew(static_cast<size_t>(n_batches_recorded) * ne * nd, 0.0);
+      for (size_t b = 0; b < static_cast<size_t>(n_batches_recorded); ++b)
+        for (size_t n = 0; n < nn; ++n)
+          for (size_t i = 0; i < ne * nd; ++i)
+            ew[b * ne * nd + i] += batches_ew[b * per_batch + n * ne * nd + i];
+      write_dataset(
+        group, "photoneutron_energy_bins", settings::adjpop_energy_bins);
+      write_dataset(group, "photoneutron_energy_variable",
+        std::string(settings::adjpop_energy_variable == 0 ? "photon_birth"
+                                                          : "photoneutron"));
+      write_dataset(group, "photoneutron_energy_weight", ew);
+    }
+    if (!settings::adjpop_fission_nuclides.empty()) {
+      // [batch][nuclide bin][energy group][depth], flattened; the last
+      // nuclide bin holds every other nuclide (and non-fission photons)
+      std::string names;
+      for (const auto& n : settings::adjpop_fission_nuclides)
+        names += n + " ";
+      names += "other";
+      write_dataset(group, "photoneutron_fission_nuclides", names);
+      write_dataset(group, "photoneutron_nuclide_weight", batches_ew);
+    }
   }
   close_group(group);
 }
@@ -661,6 +730,7 @@ void clear()
   thread_ew.clear();
   batch_ew.clear();
   batches_ew.clear();
+  nuclide_bin.clear();
   n_batches_recorded = 0;
   n_histories = 0;
   simulation::adjpop_on = false;

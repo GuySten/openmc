@@ -146,6 +146,9 @@ extern vector<double> adjpop_energy_bins;
 //! What adjpop_energy_bins bins: 0 = the birth energy of the photon that made
 //! the photoneutron, 1 = the photoneutron's own birth energy
 extern int adjpop_energy_variable;
+//! Nuclides by whose fission the photoneutron roots are also tallied (the
+//! nuclide that fissioned to make the photon); the rest share one more bin
+extern vector<std::string> adjpop_fission_nuclides;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

@@ -127,6 +127,7 @@ bool adjpop_photoneutrons {false};
 bool adjpop_perturbed_importance {false};
 vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
+vector<std::string> adjpop_fission_nuclides;
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -637,6 +638,14 @@ void read_settings_xml(pugi::xml_node root)
               adjpop_energy_bins.end(), std::less_equal<double>())) {
           fatal_error("<adjoint_populations> 'photoneutron_energy_bins' must "
                       "be at least two strictly increasing edges.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_fission_nuclides")) {
+        adjpop_fission_nuclides =
+          get_node_array<std::string>(node, "photoneutron_fission_nuclides");
+        if (adjpop_fission_nuclides.empty()) {
+          fatal_error("<adjoint_populations> 'photoneutron_fission_nuclides' "
+                      "must name at least one nuclide.");
         }
       }
       if (check_for_node(node, "photoneutron_energy_variable")) {

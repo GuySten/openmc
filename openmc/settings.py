@@ -149,6 +149,13 @@ class Settings:
             (default), the energy at which the photon that made the
             photoneutron was born, which is what a photon source spectrum is
             folded with; or 'photoneutron', the photoneutron's own energy.
+        :photoneutron_fission_nuclides: Nuclides (e.g. ['U235', 'U238']) by
+            whose fission the photoneutron roots' importance is also tallied:
+            the nuclide that fissioned to make the photon. Photoneutrons from
+            other nuclides' fission photons, or from non-fission photons,
+            share one more bin, 'other' (sequence of str, requires
+            photoneutrons). Combined with the energy groups if both are
+            given.
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1176,7 +1183,8 @@ class Settings:
                            ('n_generation', 'photoneutrons',
                             'perturbed_importance',
                             'photoneutron_energy_bins',
-                            'photoneutron_energy_variable'))
+                            'photoneutron_energy_variable',
+                            'photoneutron_fission_nuclides'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1194,6 +1202,17 @@ class Settings:
                 cv.check_value('adjoint populations '
                                'photoneutron_energy_variable', value,
                                ('photon_birth', 'photoneutron'))
+            elif key == 'photoneutron_fission_nuclides':
+                if isinstance(value, str):
+                    raise TypeError('photoneutron_fission_nuclides must be a '
+                                    'sequence of nuclide names.')
+                cv.check_type('adjoint populations '
+                              'photoneutron_fission_nuclides', value,
+                              Iterable, str)
+                names = list(value)
+                if not names or len(set(names)) != len(names):
+                    raise ValueError('photoneutron_fission_nuclides must name '
+                                     'at least one nuclide, each once.')
             else:
                 cv.check_type(f'adjoint populations {key}', value, bool)
         if adjoint_populations and 'n_generation' not in adjoint_populations:
@@ -1993,6 +2012,8 @@ class Settings:
                     subelement.text = str(value).lower()
                 elif key == 'photoneutron_energy_bins':
                     subelement.text = ' '.join(str(float(e)) for e in value)
+                elif key == 'photoneutron_fission_nuclides':
+                    subelement.text = ' '.join(value)
                 else:
                     subelement.text = str(value)
 
@@ -2566,6 +2587,9 @@ class Settings:
             text = get_text(elem, 'photoneutron_energy_variable')
             if text is not None:
                 value['photoneutron_energy_variable'] = text.strip()
+            text = get_text(elem, 'photoneutron_fission_nuclides')
+            if text is not None:
+                value['photoneutron_fission_nuclides'] = text.split()
             self.adjoint_populations = value
 
     def _tabular_legendre_from_xml_element(self, root):

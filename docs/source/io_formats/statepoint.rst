@@ -204,7 +204,15 @@ Present only if adjoint side populations were requested.
              or ``photoneutron``. Present only with the bins.
            - **photoneutron_energy_weight** (*double[]*) -- Summed
              photoneutron-root weight per batch, energy group and depth, in
-             that order. Present only with the bins.
+             that order, summed over fissioning nuclides. Present only with
+             the bins.
+           - **photoneutron_fission_nuclides** (*char[]*) -- Space-separated
+             names of the fissioning-nuclide bins, the last being ``other``.
+             Present only if requested.
+           - **photoneutron_nuclide_weight** (*double[]*) -- Summed
+             photoneutron-root weight per batch, fissioning-nuclide bin,
+             energy group (one if no edges were given) and depth, in that
+             order. Present only with the nuclides.
 
 **/runtime/**
 

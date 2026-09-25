@@ -230,8 +230,9 @@ Present only if adjoint side populations were requested.
              the sum of w/k sigma_f/sigma_t over the recorded fission events,
              per batch and fissioning-nuclide bin: the probe photon weight
              emitted per line.
-           - **probe_site_weight** (*double[2]*) -- Target weights of the
-             probe photons and of the probe roots in the last generation.
+           - **probe_site_weight** (*double[]*) -- Target weights of the
+             probe photons and of the probe roots per fissioning-nuclide
+             bin in the last generation (two rows of one entry per bin).
            - **n_probe_photons_last_generation**,
              **n_probe_roots_last_generation** (*int8_t*) -- Probe photons
              and probe roots in the last generation, after roulette.

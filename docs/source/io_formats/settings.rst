@@ -86,9 +86,11 @@ sub-elements:
 
   :photoneutron_probe_fraction:
     Probe photons per generation, as a fraction of the particles per rank.
-    Probe photons are cheap next to the trees their photoneutrons grow,
-    which are rouletted to the same number of roots as every other
-    population.
+    A fission event may be split into several probe photons (at most 64,
+    their lines stratified over the comb), so the number is not capped by
+    the fission events. Probe photons are cheap next to the trees their
+    photoneutrons grow, which are rouletted to
+    ``photoneutron_probe_root_fraction``.
 
     *Default*: 1.0
 
@@ -110,7 +112,8 @@ sub-elements:
     *Default*: none
 
   :photoneutron_ray_fraction:
-    Rays per generation, as a fraction of the particles per rank.
+    Rays per generation, as a fraction of the particles per rank. A fission
+    event may be split into several rays (at most 64).
 
     *Default*: 1.0
 
@@ -154,7 +157,8 @@ sub-elements:
     *Default*: 0.1
 
   :photoneutron_ray_allocation:
-    How rays and ray roots are shared among the fissioning-nuclide bins:
+    How rays, probe photons and their roots are shared among the
+    fissioning-nuclide bins:
     ``equal`` (each bin capped at what it has, the rest to the others) or
     ``fission`` (in proportion to fission weight). Either is unbiased.
 

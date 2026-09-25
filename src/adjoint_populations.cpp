@@ -185,9 +185,11 @@ int64_t n_ray_segments {0};
 vector<vector<double>> thread_tree_buf;
 vector<char> thread_tree_active;
 
-// Target weights of the probe photons and of the probe roots
-double site_w_probe_photon {1.0};
-double site_w_probe {1.0};
+// Per fissioning-nuclide bin: the probe photons' and the probe roots'
+// targets, and the site weight the bin's probe trees bank at
+vector<double> probe_photon_target;
+vector<double> probe_root_target;
+vector<double> probe_site_w;
 
 // This batch's sums, and every finished batch's
 vector<double> batch_w;
@@ -274,7 +276,9 @@ double target_weight(int cls, int ebin = -1)
 {
   if (cls == CLASS_RAY)
     return ray_site_w[ebin / std::max(n_comb(), 1)];
-  return (cls == CLASS_PROBE) ? site_w_probe : site_w[cls];
+  if (cls == CLASS_PROBE)
+    return probe_site_w[ebin / std::max(n_lines(), 1)];
+  return site_w[cls];
 }
 
 //! Combined bin of a photoneutron, nuclide bin x n_egroups + energy group:
@@ -314,6 +318,36 @@ double roulette_to(double w_raw, double target, int64_t seed_id)
 double roulette(double w_raw, int cls, int64_t seed_id)
 {
   return roulette_to(w_raw, target_weight(cls), seed_id);
+}
+
+//! Split or roulette a weight to copies of the target weight: floor(w/t)
+//! copies and one more with probability the remainder, so that the expected
+//! weight is kept. A target of 0 keeps one copy of the raw weight. The draw
+//! is roulette_to()'s, so a weight below the target meets the same fate.
+//! \return the number of copies; w_copy is set to their weight
+int split_to(double w_raw, double target, int64_t seed_id, double& w_copy)
+{
+  w_copy = 0.0;
+  if (!(w_raw > 0.0))
+    return 0;
+  if (!(target > 0.0)) {
+    w_copy = w_raw;
+    return 1;
+  }
+  const double x = std::min(w_raw / target, static_cast<double>(MAX_SPLIT));
+  int n = static_cast<int>(x);
+  uint64_t s = init_seed(combine_ids({seed_id, 1}), STREAM_TRACKING);
+  if (prn(&s) < x - n)
+    ++n;
+  // Beyond MAX_SPLIT copies the copies share the whole weight
+  w_copy = (w_raw / target > MAX_SPLIT) ? w_raw / MAX_SPLIT : target;
+  return n;
+}
+
+//! The seed key of copy c of a split event (copy 0 keeps the event's own)
+int64_t copy_id(int64_t id, int c)
+{
+  return (c == 0) ? id : combine_ids({id, c, 808});
 }
 
 //! Grow one root n_generation generations in the unperturbed physics
@@ -367,18 +401,26 @@ void emit_probe(const FissionRecord& f, vector<Probe>& out)
 {
   const double w_raw = f.wgt * f.sigma_f_to_t * n_lines();
   const int64_t sid = combine_ids({f.seed_id, 404});
-  const double w = roulette_to(w_raw, site_w_probe_photon, sid);
-  if (w == 0.0)
+  const int nbin = nuclide_bin_of(f.i_nuclide);
+  double w;
+  const int n = split_to(w_raw, probe_photon_target[nbin], sid, w);
+  if (n == 0)
     return;
+  // The copies' lines are stratified: each is uniform over the lines, and
+  // together they spread over the comb
   uint64_t s = init_seed(combine_ids({sid, 3}), STREAM_TRACKING);
-  Probe q;
-  q.r = f.r;
-  q.time = f.time;
-  q.wgt = w;
-  q.line = std::min(static_cast<int>(prn(&s) * n_lines()), n_lines() - 1);
-  q.nbin = nuclide_bin_of(f.i_nuclide);
-  q.seed_id = sid;
-  out.push_back(q);
+  const double u = prn(&s);
+  for (int c = 0; c < n; ++c) {
+    Probe q;
+    q.r = f.r;
+    q.time = f.time;
+    q.wgt = w;
+    q.line = std::min(
+      static_cast<int>((u + c) / n * n_lines()), n_lines() - 1);
+    q.nbin = nbin;
+    q.seed_id = copy_id(sid, c);
+    out.push_back(q);
+  }
 }
 
 //! Transport one probe photon; its photoneutrons are recorded as probe roots
@@ -890,6 +932,22 @@ vector<double> share_targets(
   return target;
 }
 
+//! share_targets() for events that may be split: a bin holds up to MAX_SPLIT
+//! copies of each of its events, and a bin that gets all it can hold splits
+//! every event MAX_SPLIT-fold
+vector<double> split_targets(
+  const vector<double>& raw, const vector<int64_t>& count, double m)
+{
+  vector<int64_t> cap(count.size());
+  for (size_t b = 0; b < count.size(); ++b)
+    cap[b] = count[b] * MAX_SPLIT;
+  vector<double> target = share_targets(raw, cap, m);
+  for (size_t b = 0; b < count.size(); ++b)
+    if (target[b] == 0.0 && cap[b] > 0)
+      target[b] = raw[b] / static_cast<double>(cap[b]);
+  return target;
+}
+
 //! Grow a ray root and share its depth scores among the lines
 void run_one_ray_tree(const RayRoot& rr, double w)
 {
@@ -1005,6 +1063,9 @@ void init()
   ray_cast_target.assign(n_nbins(), 0.0);
   ray_root_target.assign(n_nbins(), 0.0);
   ray_site_w.assign(n_nbins(), 1.0);
+  probe_photon_target.assign(n_nbins(), 0.0);
+  probe_root_target.assign(n_nbins(), 0.0);
+  probe_site_w.assign(n_nbins(), 1.0);
   thread_rw.assign(static_cast<size_t>(n_threads) * n_ray_line_bins(), 0.0);
   thread_rj.assign(static_cast<size_t>(n_threads) * n_ray_comb_bins(), 0.0);
   batch_rw.assign(n_ray_line_bins(), 0.0);
@@ -1335,19 +1396,21 @@ void run_shadow_pass()
   // Probes, after every other tree and in loops of their own, so that the
   // other populations are grown and summed exactly as without them
   if (probes_on()) {
-    double raw_photon = 0.0;
+    const int nb = n_nbins();
+    vector<double> raw_photon(nb, 0.0);
+    vector<int64_t> n_event(nb, 0);
     for (const auto& f : fissions) {
       const double wf = f.wgt * f.sigma_f_to_t;
-      raw_photon += wf * n_lines();
-      batch_pf[nuclide_bin_of(f.i_nuclide)] += wf;
+      const int b = nuclide_bin_of(f.i_nuclide);
+      raw_photon[b] += wf * n_lines();
+      ++n_event[b];
+      batch_pf[b] += wf;
     }
     // Probe photons are cheap next to the trees their photoneutrons grow,
-    // which are rouletted to m_target like every other population's
-    const double m_photon =
-      std::max(1.0, settings::adjpop_probe_fraction *
-                      static_cast<double>(simulation::work_per_rank));
-    if (raw_photon > 0.0)
-      site_w_probe_photon = raw_photon / m_photon;
+    // which are rouletted to their own budget. Both are shared among the
+    // nuclide bins; an event may be split into several photons.
+    const double m_photon = std::max(1.0, settings::adjpop_probe_fraction * n_work);
+    probe_photon_target = split_targets(raw_photon, n_event, m_photon);
     vector<Probe> probes;
     for (const auto& f : fissions)
       emit_probe(f, probes);
@@ -1363,14 +1426,21 @@ void run_shadow_pass()
       probe_roots.insert(probe_roots.end(), v.begin(), v.end());
     std::sort(probe_roots.begin(), probe_roots.end(),
       [](const Root& a, const Root& b) { return a.seed_id < b.seed_id; });
-    double raw_probe = 0.0;
-    for (const auto& r : probe_roots)
-      raw_probe += r.wgt;
-    if (raw_probe > 0.0)
-      site_w_probe = raw_probe / m_probe_root;
+    vector<double> raw_probe(nb, 0.0);
+    vector<int64_t> n_probe(nb, 0);
+    for (const auto& r : probe_roots) {
+      raw_probe[r.ebin / n_lines()] += r.wgt;
+      ++n_probe[r.ebin / n_lines()];
+    }
+    probe_root_target = share_targets(raw_probe, n_probe, m_probe_root);
+    for (int b = 0; b < nb; ++b)
+      probe_site_w[b] = (probe_root_target[b] > 0.0) ? probe_root_target[b]
+                        : (n_probe[b] > 0)            ? raw_probe[b] / n_probe[b]
+                                                      : 1.0;
     vector<std::pair<Root, double>> kept;
     for (const auto& r : probe_roots) {
-      const double w = roulette(r.wgt, CLASS_PROBE, r.seed_id);
+      const double w = roulette_to(
+        r.wgt, probe_root_target[r.ebin / n_lines()], r.seed_id);
       if (w > 0.0)
         kept.emplace_back(r, w);
     }
@@ -1395,16 +1465,23 @@ void run_shadow_pass()
     }
     const double m_ray = std::max(1.0,
       settings::adjpop_ray_fraction * static_cast<double>(simulation::work_per_rank));
-    ray_cast_target = share_targets(raw_cast, n_cast, m_ray);
-    // Which events cast a ray, and with what weight (decided in order)
-    vector<std::pair<int64_t, double>> casts;
+    ray_cast_target = split_targets(raw_cast, n_cast, m_ray);
+    // Which events cast rays, how many and with what weight (decided in
+    // order)
+    struct Cast {
+      int64_t i;
+      int64_t sid;
+      double w;
+    };
+    vector<Cast> casts;
     for (int64_t i = 0; i < static_cast<int64_t>(fissions.size()); ++i) {
       const auto& f = fissions[i];
       const int64_t sid = combine_ids({f.seed_id, 707});
-      const double w = roulette_to(f.wgt * f.sigma_f_to_t,
-        ray_cast_target[nuclide_bin_of(f.i_nuclide)], sid);
-      if (w > 0.0)
-        casts.emplace_back(i, w);
+      double w;
+      const int n = split_to(f.wgt * f.sigma_f_to_t,
+        ray_cast_target[nuclide_bin_of(f.i_nuclide)], sid, w);
+      for (int c = 0; c < n; ++c)
+        casts.push_back({i, copy_id(sid, c), w});
     }
     last_rays = static_cast<int64_t>(casts.size());
     const auto n_casts = static_cast<int64_t>(casts.size());
@@ -1413,9 +1490,8 @@ void run_shadow_pass()
     int64_t n_seg = 0;
 #pragma omp parallel for schedule(static) reduction(+ : n_seg)
     for (int64_t i = 0; i < n_casts; ++i) {
-      const auto& f = fissions[casts[i].first];
-      made[i] = cast_ray(
-        f, casts[i].second, combine_ids({f.seed_id, 707}), rroots[i], n_seg);
+      const auto& f = fissions[casts[i].i];
+      made[i] = cast_ray(f, casts[i].w, casts[i].sid, rroots[i], n_seg);
     }
     n_ray_segments += n_seg;
     vector<double> raw_r(nb, 0.0);
@@ -1699,8 +1775,10 @@ void write_results(hid_t file_id)
     // [batch][nuclide bin]: the probed fission weight, sum of w/k
     // sigma_f/sigma_t over the recorded fission events
     write_dataset(group, "probe_fission_weight", batches_pf);
-    write_dataset(group, "probe_site_weight",
-      vector<double> {site_w_probe_photon, site_w_probe});
+    // [2][nuclide bin]: the probe photons' and probe roots' targets
+    vector<double> pt(probe_photon_target);
+    pt.insert(pt.end(), probe_root_target.begin(), probe_root_target.end());
+    write_dataset(group, "probe_site_weight", pt);
     write_dataset(group, "n_probe_photons_last_generation", last_probe_photons);
     write_dataset(group, "n_probe_roots_last_generation", last_probe_roots);
     write_dataset(group, "n_probe_histories", n_probe_histories);
@@ -1756,8 +1834,9 @@ void clear()
   batch_pf.clear();
   batches_pf.clear();
   thread_probe_roots.clear();
-  site_w_probe_photon = 1.0;
-  site_w_probe = 1.0;
+  probe_photon_target.clear();
+  probe_root_target.clear();
+  probe_site_w.clear();
   last_probe_photons = 0;
   last_probe_roots = 0;
   n_probe_histories = 0;

@@ -176,13 +176,15 @@ class Settings:
             among all lines; the probes keep only their collided
             photoneutrons.
         :photoneutron_ray_fraction: Rays per generation, as a fraction of
-            the particles (float, default 1.0).
-        :photoneutron_ray_allocation: How rays and ray roots are shared among
-            the fissioning-nuclide bins: 'equal' (default; each bin capped at
+            the particles (float, default 1.0); a fission event may be split
+            into several.
+        :photoneutron_ray_allocation: How rays, probe photons and their roots
+            are shared among the fissioning-nuclide bins: 'equal' (default; each bin capped at
             what it has, the rest to the others) or 'fission' (in proportion
             to fission weight).
         :photoneutron_probe_fraction: Probe photons per generation, as a
-            fraction of the particles (float, default 1.0).
+            fraction of the particles (float, default 1.0); a fission event
+            may be split into several, their lines stratified.
         :root_fraction: Roots per generation of each side population, as a
             fraction of the particles (float, default 0.1). Each population
             costs about this fraction of a driver generation per tree

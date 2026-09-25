@@ -86,6 +86,10 @@ constexpr int N_PACK_CLASS = 7;
 //! Tags are 0 (prompt) or a delayed group 1..N_TAG-1
 constexpr int N_TAG = 9;
 
+//! Most rays or probe photons one fission event is split into, so that a
+//! fissioning-nuclide bin with few events can still get its share
+constexpr int MAX_SPLIT = 64;
+
 //! A root waiting to be grown
 struct Root {
   Position r;

@@ -113,11 +113,11 @@ sub-elements:
 
   :photoneutron_ray_comb_points:
     Number of energies of the ray probes' neutron comb, built by the code
-    instead of given: spaced evenly in lethargy between the lowest and the
-    highest laboratory photoneutron energy of the ray lines, over every
-    photonuclear channel of the problem (sampled; a centre-of-mass channel's
-    forward and backward extremes), not below 1 eV. A coarse comb lets every
-    line share most trees; the comb's linear interpolation is checked with
+    instead of given: at equally spaced quantiles (0.1 % to 99.9 %) of the
+    laboratory photoneutron energies the rays make (sampled over every
+    photonuclear channel, the lines weighted as the comb draw weights them),
+    so that every comb energy gets about the same share of the trees; not
+    below 1 eV. A coarse comb lets every line share most trees; the comb's linear interpolation is checked with
     :meth:`openmc.AdjointPopulations.ray_comb_importance`. Turns on ray
     probes, as an alternative to ``photoneutron_ray_neutron_energies``.
 
@@ -146,7 +146,8 @@ sub-elements:
 
   :photoneutron_probe_root_fraction:
     Probe photoneutron roots per generation, as a fraction of the particles
-    per rank.
+    per rank. They are shared among the fissioning-nuclide bins, then within
+    a bin among its lines, half by photoneutron weight and half equally.
 
     *Default*: ``root_fraction``
 

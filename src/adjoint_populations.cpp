@@ -198,8 +198,8 @@ int64_t n_ray_segments {0};
 vector<vector<double>> thread_tree_buf;
 vector<char> thread_tree_active;
 
-// Per fissioning-nuclide bin: the probe photons' and the probe roots'
-// targets, and the site weight the bin's probe trees bank at
+// The probe photons' targets per fissioning-nuclide bin; the probe roots'
+// targets and the site weight their trees bank at per bin and line
 vector<double> probe_photon_target;
 vector<double> probe_root_target;
 vector<double> probe_site_w;
@@ -290,7 +290,7 @@ double target_weight(int cls, int ebin = -1)
   if (cls == CLASS_RAY)
     return ray_site_w[ebin / std::max(n_comb(), 1)];
   if (cls == CLASS_PROBE)
-    return probe_site_w[ebin / std::max(n_lines(), 1)];
+    return probe_site_w[ebin];
   return site_w[cls];
 }
 
@@ -632,52 +632,83 @@ void init_rays()
   }
 }
 
-//! The neutron comb when it is not given: n energies spaced evenly in
-//! lethargy between the lowest and highest laboratory photoneutron energy of
-//! the ray lines, over every photonuclear channel of every material. A
-//! centre-of-mass channel's outgoing energies are sampled and turned into
-//! the laboratory extremes (b -/+ a)^2 of forward and backward emission; a
-//! laboratory channel's are sampled as they are. Not below 1 eV.
+//! The neutron comb when it is not given: n energies at equally spaced
+//! quantiles (0.1 % to 99.9 %) of the laboratory photoneutron energies the
+//! rays make, so that every comb energy gets about the same share of the
+//! trees. The lines are weighted as the ray's comb draw weights them, half
+//! by their photoneutron production and half equally; each line's
+//! photoneutrons are sampled over its channels (a centre-of-mass channel
+//! isotropic there and moved to the laboratory). Not below 1 eV.
 void build_ray_comb(int n)
 {
   const int K = n_ray_lines();
-  double lo = INFTY, hi = 0.0;
+  vector<std::pair<double, double>> sample; // (lethargy, weight)
   uint64_t s = init_seed(combine_ids({4242, 17}), STREAM_TRACKING);
+  constexpr int N_SAMPLE = 256;
   for (size_t m = 0; m < model::materials.size(); ++m) {
+    double sn_sum = 0.0;
+    int live = 0;
     for (int k = 0; k < K; ++k) {
+      sn_sum += ray_sign[m * K + k];
+      live += ray_sign[m * K + k] > 0.0;
+    }
+    if (!(sn_sum > 0.0))
+      continue;
+    for (int k = 0; k < K; ++k) {
+      const double sn = ray_sign[m * K + k];
+      if (!(sn > 0.0))
+        continue;
+      const double w_line = 0.5 * sn / sn_sum + 0.5 / live;
       const double Ek = ray_lines[k];
-      for (const auto& c : ray_channels[m * K + k]) {
-        const auto& nuc = *data::photonuclears[c.i_pn];
-        const auto& rx = *nuc.reactions_[c.i_rx];
-        const auto& prod = rx.products_[c.i_prod];
-        const double b = Ek / (nuc.awr_ * std::sqrt(2.0 * MASS_NEUTRON_EV));
-        for (int i = 0; i < 64; ++i) {
-          double E_out;
-          prod.sample_energy_and_pdf(Ek, 2.0 * prn(&s) - 1.0, E_out, &s);
-          if (!(E_out > 0.0))
-            continue;
-          if (rx.scatter_in_cm_) {
-            const double a = std::sqrt(E_out);
-            lo = std::min(lo, (b - a) * (b - a));
-            hi = std::max(hi, (b + a) * (b + a));
-          } else {
-            lo = std::min(lo, E_out);
-            hi = std::max(hi, E_out);
-          }
+      const auto& ch = ray_channels[m * K + k];
+      for (int i = 0; i < N_SAMPLE; ++i) {
+        // A channel in proportion to its share
+        double xi = prn(&s) * sn;
+        size_t c = 0;
+        for (; c + 1 < ch.size(); ++c) {
+          if (xi < ch[c].share)
+            break;
+          xi -= ch[c].share;
         }
+        const auto& nuc = *data::photonuclears[ch[c].i_pn];
+        const auto& rx = *nuc.reactions_[ch[c].i_rx];
+        double E_out;
+        rx.products_[ch[c].i_prod].sample_energy_and_pdf(
+          Ek, 2.0 * prn(&s) - 1.0, E_out, &s);
+        if (!(E_out > 0.0))
+          continue;
+        double E_lab = E_out;
+        if (rx.scatter_in_cm_) {
+          const double a = std::sqrt(E_out);
+          const double b = Ek / (nuc.awr_ * std::sqrt(2.0 * MASS_NEUTRON_EV));
+          E_lab = a * a + b * b + 2.0 * a * b * (2.0 * prn(&s) - 1.0);
+        }
+        sample.emplace_back(
+          std::log(std::max(E_lab, 1.0)), w_line / N_SAMPLE);
       }
     }
   }
-  if (!(hi > 0.0))
+  if (sample.empty())
     fatal_error("<adjoint_populations> no photoneutron channel is open at "
                 "the ray lines: the neutron comb cannot be built.");
-  lo = std::max(0.95 * lo, 1.0);
-  hi = 1.05 * hi;
-  if (!(hi > lo))
-    hi = 2.0 * lo;
-  ray_comb.resize(n);
-  for (int j = 0; j < n; ++j)
-    ray_comb[j] = lo * std::pow(hi / lo, static_cast<double>(j) / (n - 1));
+  std::sort(sample.begin(), sample.end());
+  double total = 0.0;
+  for (const auto& x : sample)
+    total += x.second;
+  ray_comb.assign(n, 0.0);
+  double cum = 0.0;
+  size_t i = 0;
+  for (int j = 0; j < n; ++j) {
+    const double q = (0.001 + 0.998 * j / (n - 1)) * total;
+    while (i + 1 < sample.size() && cum + sample[i].second < q) {
+      cum += sample[i].second;
+      ++i;
+    }
+    ray_comb[j] = std::exp(sample[i].first);
+  }
+  // Strictly increasing
+  for (int j = 1; j < n; ++j)
+    ray_comb[j] = std::max(ray_comb[j], ray_comb[j - 1] * 1.001);
 }
 
 //! Linear-interpolation weights in lethargy of a photoneutron energy on the
@@ -1142,8 +1173,8 @@ void init()
   ray_root_target.assign(n_nbins(), 0.0);
   ray_site_w.assign(n_nbins(), 1.0);
   probe_photon_target.assign(n_nbins(), 0.0);
-  probe_root_target.assign(n_nbins(), 0.0);
-  probe_site_w.assign(n_nbins(), 1.0);
+  probe_root_target.assign(static_cast<size_t>(n_nbins()) * n_lines(), 0.0);
+  probe_site_w.assign(static_cast<size_t>(n_nbins()) * n_lines(), 1.0);
   thread_rw.assign(static_cast<size_t>(n_threads) * n_ray_line_bins(), 0.0);
   thread_rj.assign(static_cast<size_t>(n_threads) * n_ray_comb_bins(), 0.0);
   batch_rw.assign(n_ray_line_bins(), 0.0);
@@ -1504,21 +1535,46 @@ void run_shadow_pass()
       probe_roots.insert(probe_roots.end(), v.begin(), v.end());
     std::sort(probe_roots.begin(), probe_roots.end(),
       [](const Root& a, const Root& b) { return a.seed_id < b.seed_id; });
-    vector<double> raw_probe(nb, 0.0);
-    vector<int64_t> n_probe(nb, 0);
+    // The budget is shared among the nuclide bins, then within a bin among
+    // its lines, half in proportion to their photoneutron weight and half
+    // equally, so that a line that makes few photoneutrons still gets roots
+    // of its own; each root is rouletted to its line's target
+    const int K = n_lines();
+    vector<double> raw_probe(nb, 0.0), raw_line(static_cast<size_t>(nb) * K, 0.0);
+    vector<int64_t> n_probe(nb, 0), n_line(static_cast<size_t>(nb) * K, 0);
     for (const auto& r : probe_roots) {
-      raw_probe[r.ebin / n_lines()] += r.wgt;
-      ++n_probe[r.ebin / n_lines()];
+      raw_probe[r.ebin / K] += r.wgt;
+      ++n_probe[r.ebin / K];
+      raw_line[r.ebin] += r.wgt;
+      ++n_line[r.ebin];
     }
-    probe_root_target = share_targets(raw_probe, n_probe, m_probe_root);
-    for (int b = 0; b < nb; ++b)
-      probe_site_w[b] = (probe_root_target[b] > 0.0) ? probe_root_target[b]
-                        : (n_probe[b] > 0)            ? raw_probe[b] / n_probe[b]
-                                                      : 1.0;
+    const vector<double> bin_target =
+      share_targets(raw_probe, n_probe, m_probe_root);
+    for (int b = 0; b < nb; ++b) {
+      const double m_b = (bin_target[b] > 0.0) ? raw_probe[b] / bin_target[b]
+                                               : static_cast<double>(n_probe[b]);
+      int live = 0;
+      for (int k = 0; k < K; ++k)
+        live += n_line[static_cast<size_t>(b) * K + k] > 0;
+      for (int k = 0; k < K; ++k) {
+        const size_t i = static_cast<size_t>(b) * K + k;
+        double t = 0.0;
+        if (n_line[i] > 0) {
+          const double m_k =
+            m_b * (0.5 * raw_line[i] / raw_probe[b] + 0.5 / live);
+          if (static_cast<double>(n_line[i]) > m_k)
+            t = raw_line[i] / m_k;
+        }
+        probe_root_target[i] = t;
+        probe_site_w[i] = (t > 0.0)         ? t
+                          : (n_line[i] > 0) ? raw_line[i] / n_line[i]
+                                            : 1.0;
+      }
+    }
     vector<std::pair<Root, double>> kept;
     for (const auto& r : probe_roots) {
-      const double w = roulette_to(
-        r.wgt, probe_root_target[r.ebin / n_lines()], r.seed_id);
+      const double w =
+        roulette_to(r.wgt, probe_root_target[r.ebin], r.seed_id);
       if (w > 0.0)
         kept.emplace_back(r, w);
     }
@@ -1869,7 +1925,8 @@ void write_results(hid_t file_id)
     // [batch][nuclide bin]: the probed fission weight, sum of w/k
     // sigma_f/sigma_t over the recorded fission events
     write_dataset(group, "probe_fission_weight", batches_pf);
-    // [2][nuclide bin]: the probe photons' and probe roots' targets
+    // The probe photons' targets [nuclide bin], then the probe roots'
+    // [nuclide bin][line]
     vector<double> pt(probe_photon_target);
     pt.insert(pt.end(), probe_root_target.begin(), probe_root_target.end());
     write_dataset(group, "probe_site_weight", pt);

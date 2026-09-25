@@ -176,10 +176,10 @@ class Settings:
             among all lines; the probes keep only their collided
             photoneutrons.
         :photoneutron_ray_comb_points: Number of photoneutron birth energies
-            of the ray probes' comb, built by the code (int, at least 2):
-            spaced evenly in lethargy between the lowest and highest
-            laboratory photoneutron energy of the ray lines over every
-            photonuclear channel of the problem, not below 1 eV. Turns on
+            of the ray probes' comb, built by the code (int, at least 2): at
+            equally spaced quantiles (0.1 % to 99.9 %) of the laboratory
+            photoneutron energies the rays make, so that every comb energy
+            gets about the same share of the trees; not below 1 eV. Turns on
             ray probes as ``photoneutron_ray_neutron_energies`` does, which
             it is an alternative to.
         :photoneutron_ray_refinement: The rays' photon lines are the probe
@@ -203,7 +203,8 @@ class Settings:
             generation.
         :photoneutron_probe_root_fraction: Probe photoneutron roots per
             generation, as a fraction of the particles (float, default
-            root_fraction).
+            root_fraction), shared among the nuclide bins and within a bin
+            among its lines, half by weight and half equally.
         :photoneutron_ray_root_fraction: Ray roots per generation, as a
             fraction of the particles (float, default root_fraction).
         :photoneutron_probe_trigger: Relative standard deviation the probe

@@ -415,3 +415,14 @@ def test_probe_estimators(run_in_tmpdir):
     _write('ap2.h5', w2, np.zeros_like(w2))
     with pytest.raises(ValueError):
         _read('ap2.h5', 1.0).probe_reactivity()
+
+
+def test_probe_importance_empty_bin():
+    """A nuclide bin no probe reached rebuilds to zero, with no error."""
+    t = _resonant_target()
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, 10)
+    z = np.zeros((3, lines.size))
+    imp = openmc.ProbeImportance(lines, z, z, np.ones(3), t)
+    assert not imp.mean.any()
+    assert imp.interpolation_error() == 0.0
+    assert imp.fold([3.0e6], [1.0]).n == 0.0

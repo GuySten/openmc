@@ -370,6 +370,9 @@ class ProbeImportance:
             pts = np.concatenate([pts, e[(e > a[0]) & (e < b[-1])]])
         exact = self.rebuilt(pts)
         scale = max(self._scale, np.max(np.abs(exact)))
+        if scale == 0.0:
+            # An empty bin (no probe reached it): nothing to interpolate
+            return 0.0
         den = np.maximum(np.abs(exact), self.floor * scale)
         return float(np.max(np.abs(self(pts) - exact) / den))
 

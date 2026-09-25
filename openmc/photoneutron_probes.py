@@ -211,7 +211,8 @@ class ProbeImportance:
     target : PhotoneutronTarget
         Cross sections of the photoneutron target
     rtol : float
-        Tolerance of linear interpolation of the refined table
+        Tolerance of linear interpolation of the refined table (the table is
+        refined to half of it at 20 points per interval, for a margin)
     floor : float
         Fraction of the largest importance below which the tolerance is
         absolute (floor times that maximum)
@@ -318,7 +319,7 @@ class ProbeImportance:
     def _tolerance(self, values, scale):
         return self.rtol * np.maximum(np.abs(values), self.floor * scale)
 
-    def _refine(self, n_check=5, max_rounds=60):
+    def _refine(self, n_check=20, max_rounds=60):
         t = self.target
         lo = t.threshold
         hi = self.e_max
@@ -335,8 +336,10 @@ class ProbeImportance:
             ya, yb = self.rebuilt(a), self.rebuilt(b)
             lin = ya[:, None] + fr[None, :] * (yb - ya)[:, None]
             scale = max(scale, np.max(np.abs(exact)))
-            bad = np.any(np.abs(lin - exact) > self._tolerance(exact, scale),
-                         axis=1)
+            # Refined to half the tolerance, so that the points between
+            # those checked stay within it
+            bad = np.any(np.abs(lin - exact) >
+                         0.5 * self._tolerance(exact, scale), axis=1)
             # Stop splitting at the resolution of double precision
             bad &= (b - a) > 1e-9 * b
             if not np.any(bad):

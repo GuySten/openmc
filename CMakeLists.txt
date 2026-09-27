@@ -334,6 +334,7 @@ list(APPEND libopenmc_SOURCES
   src/chain.cpp
   src/cmfd_solver.cpp
   src/collision_track.cpp
+  src/condensed_history.cpp
   src/cross_sections.cpp
   src/dagmc.cpp
   src/distribution.cpp
@@ -342,6 +343,7 @@ list(APPEND libopenmc_SOURCES
   src/distribution_multi.cpp
   src/distribution_spatial.cpp
   src/eigenvalue.cpp
+  src/electron.cpp
   src/endf.cpp
   src/error.cpp
   src/event.cpp
@@ -349,6 +351,7 @@ list(APPEND libopenmc_SOURCES
   src/finalize.cpp
   src/geometry.cpp
   src/geometry_aux.cpp
+  src/gos.cpp
   src/hdf5_interface.cpp
   src/ifp.cpp
   src/initialize.cpp

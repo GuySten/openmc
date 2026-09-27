@@ -88,6 +88,25 @@ int openmc_simulation_init()
     initialize_data();
   }
 
+  // Say which of the two charged-particle schemes is about to run. The choice
+  // is made by a cutoff that is easy to leave unset, the two differ by more
+  // than an order of magnitude in speed, and nothing else in the output
+  // distinguishes them -- so a run that was meant to be one and was the other
+  // looks exactly like a run that was not.
+  if (settings::electron_transport) {
+    if (settings::deflection_cutoff > 0.0) {
+      write_message(
+        fmt::format("Charged particles: condensed history, "
+                    "deflection {} and energy_loss {} per step.",
+          settings::deflection_cutoff, settings::energy_loss_cutoff),
+        6);
+    } else {
+      write_message("Charged particles: single-event transport, every "
+                    "collision sampled (deflection cutoff is zero).",
+        6);
+    }
+  }
+
   // Determine how much work each process should do
   calculate_work(settings::n_particles);
 
@@ -860,8 +879,65 @@ void initialize_data()
           std::min(data::energy_max[photon], std::exp(elem->energy_(n - 1)));
       }
     }
+    if (settings::electron_transport) {
+      int photon = ParticleType::photon().transport_index();
+      int electron = ParticleType::electron().transport_index();
+      int positron = ParticleType::positron().transport_index();
 
-    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      // Bound the charged particles by the grid their own reactions are
+      // tabulated on. The photoatomic grid above belongs to the photon cross
+      // sections and is stored logarithmically; it says nothing about where
+      // the electron data starts and stops.
+      const std::vector<int> charged = {electron, positron};
+      for (const auto& elem : data::elements) {
+        int n = elem->electron_energy_.size();
+        if (n >= 2) {
+          for (auto t : charged) {
+            data::energy_min[t] =
+              std::max(data::energy_min[t], elem->electron_energy_(0));
+            data::energy_max[t] =
+              std::min(data::energy_max[t], elem->electron_energy_(n - 1));
+            // The partial-wave elastic data stops well below the end of the
+            // evaluated grid, and beyond it the deflection would be frozen
+            // while the true transport cross section keeps falling as 1/E^2.
+            data::energy_min[t] =
+              std::max(data::energy_min[t], elem->elastic_energy_min_);
+            data::energy_max[t] =
+              std::min(data::energy_max[t], elem->elastic_energy_max_);
+          }
+        }
+      }
+      // Bremsstrahlung is sampled from the scaled cross sections of the photon
+      // library, which cover a narrower range again
+      // (see below for the cutoff that follows from these bounds)
+      if (data::brems_e_grid.size() >= 2) {
+        int n = data::brems_e_grid.size();
+        for (auto t : charged) {
+          data::energy_min[t] =
+            std::max(data::energy_min[t], data::brems_e_grid(0));
+          data::energy_max[t] =
+            std::min(data::energy_max[t], data::brems_e_grid(n - 1));
+        }
+      }
+
+      // Electrons make photons and photons make electrons, so neither can be
+      // transported outside the range where both have data.
+      data::energy_min[photon] =
+        std::max(data::energy_min[photon], data::energy_min[electron]);
+
+      data::energy_max[photon] =
+        std::min(data::energy_max[photon], data::energy_max[electron]);
+
+      // A cutoff set below the data would let a particle fall out of the
+      // tabulated range and be transported on clamped cross sections. Raise
+      // it to where the data begins unless the user asked for something
+      // higher; the default of 1 keV is above it for every element.
+      for (auto t : charged) {
+        if (settings::energy_cutoff[t] < data::energy_min[t]) {
+          settings::energy_cutoff[t] = data::energy_min[t];
+        }
+      }
+    } else if (settings::electron_treatment == ElectronTreatment::TTB) {
       // Determine if minimum/maximum energy for bremsstrahlung is greater/less
       // than the current minimum/maximum
       if (data::ttb_e_grid.size() >= 1) {

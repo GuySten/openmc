@@ -324,6 +324,13 @@ class ProbeImportance:
         C = self._coefficients(E)
         return sum(part[4] @ c.T for part, c in zip(self._parts, C))
 
+    def _folded_numerators(self, E, w):
+        """``self._batch_numerators(E) @ w``, contracted over the energies
+        first: each part's coefficients reduce to one weight per line before
+        the per-batch table is applied."""
+        C = self._coefficients(E)
+        return sum(part[4] @ (c.T @ w) for part, c in zip(self._parts, C))
+
     def rebuilt(self, E):
         """The rebuilt importance at energies E (batch means), exact in the
         cross sections; the refined table interpolates it."""
@@ -428,7 +435,7 @@ class ProbeImportance:
         e = np.asarray(line_energies, float)
         y = np.asarray(line_intensities, float)
         if e.size:
-            num += self._batch_numerators(e) @ y
+            num += self._folded_numerators(e, y)
         if continuum is not None:
             ce, cp = (np.asarray(v, float) for v in continuum)
             t = self.target.energy
@@ -441,7 +448,7 @@ class ProbeImportance:
                 dx = np.diff(x)
                 w[:-1] += 0.5 * dx
                 w[1:] += 0.5 * dx
-                num += self._batch_numerators(x) @ (w * p)
+                num += self._folded_numerators(x, w * p)
         return num
 
     def fold(self, line_energies=(), line_intensities=(), continuum=None):

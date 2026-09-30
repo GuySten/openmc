@@ -106,7 +106,9 @@ public:
 
   // Microscopic cross sections
   tensor::Tensor<double> energy_;
-  tensor::Tensor<double> xs_; //!< Cross sections
+  tensor::Tensor<double> xs_;      //!< Cross sections at grid points
+  tensor::Tensor<double> xs_left_; //!< Limits approaching grid points from
+                                   //!< below (excludes thresholds there)
 
   vector<unique_ptr<PhotonuclearReaction>> reactions_; //!< Reactions
 

@@ -1375,6 +1375,12 @@ void sample_photoneutron_product(
       }
     }
   }
+  // The cumulative sum can fall short of the cutoff by round-off, since it is
+  // accumulated in a different order than micro.neutron_prod. In that case
+  // keep the last product found.
+  if (prob > 0.0 && prob >= (1.0 - FP_PRECISION) * micro.neutron_prod)
+    return;
+
   // If we made it here, no product was sampled
   p.write_restart();
   fatal_error("Did not sample any photoneutron product.");
@@ -1395,14 +1401,27 @@ void photonuclear_collision(Particle& p)
   double cutoff = prn(p.current_seed()) * micro.total;
   double prob = 0.0;
   const PhotonuclearReaction* rx = nullptr;
+  const PhotonuclearReaction* rx_last = nullptr;
   for (const auto& r : nuc->reactions_) {
     if (r->redundant_)
       continue;
-    prob += r->xs(micro);
+    double xs = r->xs(micro);
+    if (xs == 0.0)
+      continue;
+    rx_last = r.get();
+    prob += xs;
     if (prob >= cutoff) {
       rx = r.get();
       break;
     }
+  }
+
+  // The cumulative sum can fall short of the cutoff by round-off, since it is
+  // accumulated in a different order than micro.total. In that case take the
+  // last reaction with a nonzero cross section.
+  if (rx == nullptr && rx_last != nullptr &&
+      prob >= (1.0 - FP_PRECISION) * micro.total) {
+    rx = rx_last;
   }
 
   if (rx == nullptr) {

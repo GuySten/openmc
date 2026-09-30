@@ -255,15 +255,30 @@ PhotonuclearInteraction::PhotonuclearInteraction(hid_t group)
 
 void PhotonuclearInteraction::create_derived()
 {
-  // Allocate and initialize cross section
+  // Allocate and initialize cross section. PhotonuclearReaction::xs() treats a
+  // reaction's cross section as zero anywhere below its threshold grid point,
+  // i.e. it switches on as a step at the threshold rather than ramping up from
+  // the previous grid point. Linear interpolation of a single summed table
+  // cannot reproduce that step, so each derived quantity is stored twice: its
+  // value at each grid point (xs_) and its limit when a grid point is
+  // approached from below (xs_left_), which excludes reactions whose threshold
+  // is that point. Interpolating between xs_ at the lower point and xs_left_
+  // at the upper point then equals the sum of the individual reactions.
   this->xs_ = tensor::zeros<double>({energy_.size(), 3});
+  this->xs_left_ = tensor::zeros<double>({energy_.size(), 3});
+
+  auto add = [this](int i, int column, double value, bool at_threshold) {
+    xs_(i, column) += value;
+    if (!at_threshold)
+      xs_left_(i, column) += value;
+  };
 
   for (int i = 0; i < reactions_.size(); ++i) {
 
     const auto& rx {reactions_[i]};
     int n = rx->xs_.value.size();
     int j = rx->xs_.threshold;
-    auto xs = tensor::Tensor<double>(rx->xs_.value.data(), n);
+    const auto& xs = rx->xs_.value;
     // NOTE: a reaction with multiple neutron products contributes its cross
     // section once per product here, and the yield is deliberately not folded
     // in. sample_photoneutron_product() enumerates products the same way, so
@@ -275,19 +290,22 @@ void PhotonuclearInteraction::create_derived()
         for (int k = 0; k < n; ++k) {
           double E = energy_[k + j];
           if ((*p.yield_)(E) > 0.0)
-            xs_(j + k, XS_NEUTRON_PROD) += xs[k];
+            add(j + k, XS_NEUTRON_PROD, xs[k], k == 0);
         }
       }
     }
-    if (rx->mt_ == 301)
-      xs_.slice(tensor::range(j, j + n), XS_HEATING) += xs;
+    if (rx->mt_ == 301) {
+      for (int k = 0; k < n; ++k)
+        add(j + k, XS_HEATING, xs[k], k == 0);
+    }
 
     // Skip redundant reactions
     if (rx->redundant_)
       continue;
 
     // Add contribution to total cross section
-    xs_.slice(tensor::range(j, j + n), XS_TOTAL) += xs;
+    for (int k = 0; k < n; ++k)
+      add(j + k, XS_TOTAL, xs[k], k == 0);
   }
 }
 
@@ -382,16 +400,21 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
   xs.index_grid = i_grid;
   xs.interp_factor = f;
 
+  // Interpolate towards the limit from below at the upper grid point so that
+  // reactions whose threshold is that point do not contribute (see
+  // create_derived())
+
   // Calculate microscopic total cross section
-  xs.total = (1 - f) * xs_(i_grid, XS_TOTAL) + f * xs_(i_grid + 1, XS_TOTAL);
+  xs.total =
+    (1 - f) * xs_(i_grid, XS_TOTAL) + f * xs_left_(i_grid + 1, XS_TOTAL);
 
   // Calculate microscopic heating cross section
   xs.heating =
-    (1 - f) * xs_(i_grid, XS_HEATING) + f * xs_(i_grid + 1, XS_HEATING);
+    (1 - f) * xs_(i_grid, XS_HEATING) + f * xs_left_(i_grid + 1, XS_HEATING);
 
   // Calculate microscopic nuclide neutron production cross section
   xs.neutron_prod = (1 - f) * xs_(i_grid, XS_NEUTRON_PROD) +
-                    f * xs_(i_grid + 1, XS_NEUTRON_PROD);
+                    f * xs_left_(i_grid + 1, XS_NEUTRON_PROD);
 
   xs.last_E = p.E();
 }

@@ -389,9 +389,12 @@ void PhotonuclearInteraction::calculate_xs(Particle& p) const
     i_grid = upper_bound_index(energy_.cbegin(), energy_.cend(), E);
   }
 
-  // check for case where two energy points are the same
-  if (energy_(i_grid) == energy_(i_grid + 1))
-    ++i_grid;
+  // upper_bound_index returns the last grid point at or below E, so the next
+  // point lies strictly above E except when E is exactly the highest grid
+  // point. There is no interval above that point, so evaluate the last interval
+  // of nonzero width at its upper end instead (f = 1).
+  if (i_grid == n_grid - 1)
+    i_grid = lower_bound_index(energy_.cbegin(), energy_.cend(), E);
 
   // calculate interpolation factor
   double f = (E - energy_(i_grid)) / (energy_(i_grid + 1) - energy_(i_grid));

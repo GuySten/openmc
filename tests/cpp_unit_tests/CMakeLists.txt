@@ -8,6 +8,7 @@ set(TEST_NAMES
   test_mcpl_stat_sum
   test_mesh
   test_photon
+  test_photonuclear
   test_ray
   test_region
   test_surface

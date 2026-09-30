@@ -29,6 +29,7 @@ class RunMode(Enum):
 
 
 _RES_SCAT_METHODS = {'dbrc', 'rvs'}
+_ENERGY_MAX_PARTICLES = ('neutron', 'photon', 'electron', 'positron')
 
 
 class Settings:
@@ -97,6 +98,14 @@ class Settings:
     electron_treatment : {'led', 'ttb'}
         Whether to deposit all energy from electrons locally ('led') or create
         secondary bremsstrahlung photons ('ttb').
+    energy_max : dict
+        Dictionary mapping particle names ('neutron', 'photon', 'electron', or
+        'positron') to an energy in [eV] above which particles of that type
+        are killed. Source particles above this energy are killed before being
+        transported and secondary particles above it are never created. The
+        energy of killed particles is not deposited locally.
+
+        .. versionadded:: 0.16.1
     energy_mode : {'continuous-energy', 'multi-group'}
         Set whether the calculation should be continuous-energy or multi-group.
     entropy_mesh : openmc.RegularMesh
@@ -183,6 +192,24 @@ class Settings:
         Number of particles per generation
     photon_transport : bool
         Whether to use photon transport.
+    photoneutron_biasing : bool
+        Whether photoneutron production is biased. If False (default), neutrons
+        are emitted only when a photonuclear absorption occurs, with an integer
+        multiplicity sampled from the yield and each neutron carrying the weight
+        of the incident photon. If True, every photon collision emits a single
+        neutron carrying the expected weight, which reduces the variance of
+        photoneutron tallies but removes the correlation between neutrons
+        emitted in the same event. Requires `photonuclear_physics` to be True.
+
+        .. versionadded:: 0.16.1
+    photonuclear_physics : bool
+        Whether to use photonuclear physics. Requires `photon_transport` to be
+        True. Enabling this may lower the maximum photon energy of the problem,
+        and the maximum electron and positron energy when thick-target
+        bremsstrahlung is used, so that photoneutrons cannot be produced above
+        the range of the neutron transport data.
+
+        .. versionadded:: 0.16.1
     plot_seed : int
        Initial seed for randomly generated plot colors.
     ptables : bool
@@ -421,6 +448,7 @@ class Settings:
         self._max_write_lost_particles = None
         self._particles = None
         self._keff_trigger = None
+        self._energy_max = None
 
         # Energy mode subelement
         self._energy_mode = None
@@ -433,6 +461,8 @@ class Settings:
         self._confidence_intervals = None
         self._electron_treatment = None
         self._photon_transport = None
+        self._photonuclear_physics = None
+        self._photoneutron_biasing = None
         self._atomic_relaxation = None
         self._plot_seed = None
         self._ptables = None
@@ -646,6 +676,23 @@ class Settings:
         self._keff_trigger = keff_trigger
 
     @property
+    def energy_max(self) -> dict[str, float] | None:
+        return self._energy_max
+
+    @energy_max.setter
+    def energy_max(self, energy_max: dict[str, float] | None):
+        if energy_max is not None:
+            cv.check_type('maximum energy', energy_max, Mapping)
+            for particle, energy in energy_max.items():
+                cv.check_value('maximum energy particle', particle,
+                               _ENERGY_MAX_PARTICLES)
+                cv.check_type(f'maximum energy for {particle}', energy, Real)
+                cv.check_greater_than(f'maximum energy for {particle}',
+                                      energy, 0.0)
+            energy_max = dict(energy_max)
+        self._energy_max = energy_max
+
+    @property
     def energy_mode(self) -> str:
         return self._energy_mode
 
@@ -723,6 +770,24 @@ class Settings:
     def photon_transport(self, photon_transport: bool):
         cv.check_type('photon transport', photon_transport, bool)
         self._photon_transport = photon_transport
+        
+    @property
+    def photonuclear_physics(self) -> bool:
+        return self._photonuclear_physics
+
+    @photonuclear_physics.setter
+    def photonuclear_physics(self, photonuclear_physics: bool):
+        cv.check_type('photonuclear physics', photonuclear_physics, bool)
+        self._photonuclear_physics = photonuclear_physics
+
+    @property
+    def photoneutron_biasing(self) -> bool:
+        return self._photoneutron_biasing
+
+    @photoneutron_biasing.setter
+    def photoneutron_biasing(self, photoneutron_biasing: bool):
+        cv.check_type('photoneutron biasing', photoneutron_biasing, bool)
+        self._photoneutron_biasing = photoneutron_biasing
 
     @property
     def uniform_source_sampling(self) -> bool:
@@ -1722,6 +1787,16 @@ class Settings:
         if self._photon_transport is not None:
             element = ET.SubElement(root, "photon_transport")
             element.text = str(self._photon_transport).lower()
+            
+    def _create_photonuclear_physics_subelement(self, root):
+        if self._photonuclear_physics is not None:
+            element = ET.SubElement(root, "photonuclear_physics")
+            element.text = str(self._photonuclear_physics).lower()
+
+    def _create_photoneutron_biasing_subelement(self, root):
+        if self._photoneutron_biasing is not None:
+            element = ET.SubElement(root, "photoneutron_biasing")
+            element.text = str(self._photoneutron_biasing).lower()
 
     def _create_plot_seed_subelement(self, root):
         if self._plot_seed is not None:
@@ -1765,6 +1840,13 @@ class Settings:
                 subelement = ET.SubElement(element, key)
                 subelement.text = str(value) if key != 'survival_normalization' \
                     else str(value).lower()
+
+    def _create_energy_max_subelement(self, root):
+        if self._energy_max is not None:
+            element = ET.SubElement(root, "energy_max")
+            for particle, energy in self._energy_max.items():
+                subelement = ET.SubElement(element, particle)
+                subelement.text = str(energy)
 
     def _create_entropy_mesh_subelement(self, root, mesh_memo=None):
         if self.entropy_mesh is None:
@@ -2259,6 +2341,16 @@ class Settings:
         text = get_text(root, 'photon_transport')
         if text is not None:
             self.photon_transport = text in ('true', '1')
+            
+    def _photoneutron_biasing_from_xml_element(self, root):
+        text = get_text(root, 'photoneutron_biasing')
+        if text is not None:
+            self.photoneutron_biasing = text in ('true', '1')
+
+    def _photonuclear_physics_from_xml_element(self, root):
+        text = get_text(root, 'photonuclear_physics')
+        if text is not None:
+            self.photonuclear_physics = text in ('true', '1')            
 
     def _uniform_source_sampling_from_xml_element(self, root):
         text = get_text(root, 'uniform_source_sampling')
@@ -2314,6 +2406,12 @@ class Settings:
                         self.cutoff[key] = value in ('true', '1')
                     else:
                         self.cutoff[key] = float(value)
+
+    def _energy_max_from_xml_element(self, root):
+        elem = root.find('energy_max')
+        if elem is not None:
+            self.energy_max = {
+                child.tag: float(child.text.strip()) for child in elem}
 
     def _entropy_mesh_from_xml_element(self, root, meshes):
         text = get_text(root, 'entropy_mesh')
@@ -2619,6 +2717,8 @@ class Settings:
         self._create_energy_mode_subelement(element)
         self._create_max_order_subelement(element)
         self._create_photon_transport_subelement(element)
+        self._create_photonuclear_physics_subelement(element)
+        self._create_photoneutron_biasing_subelement(element)
         self._create_uniform_source_sampling_subelement(element)
         self._create_plot_seed_subelement(element)
         self._create_ptables_subelement(element)
@@ -2628,6 +2728,7 @@ class Settings:
         self._create_surface_grazing_ratio_subelement(element)
         self._create_survival_biasing_subelement(element)
         self._create_cutoff_subelement(element)
+        self._create_energy_max_subelement(element)
         self._create_entropy_mesh_subelement(element, mesh_memo)
         self._create_trigger_subelement(element)
         self._create_no_reduce_subelement(element)
@@ -2738,6 +2839,8 @@ class Settings:
         settings._energy_mode_from_xml_element(elem)
         settings._max_order_from_xml_element(elem)
         settings._photon_transport_from_xml_element(elem)
+        settings._photonuclear_physics_from_xml_element(elem)
+        settings._photoneutron_biasing_from_xml_element(elem)
         settings._uniform_source_sampling_from_xml_element(elem)
         settings._plot_seed_from_xml_element(elem)
         settings._ptables_from_xml_element(elem)
@@ -2747,6 +2850,7 @@ class Settings:
         settings._surface_grazing_ratio_from_xml_element(elem)
         settings._survival_biasing_from_xml_element(elem)
         settings._cutoff_from_xml_element(elem)
+        settings._energy_max_from_xml_element(elem)
         settings._entropy_mesh_from_xml_element(elem, meshes)
         settings._trigger_from_xml_element(elem)
         settings._no_reduce_from_xml_element(elem)

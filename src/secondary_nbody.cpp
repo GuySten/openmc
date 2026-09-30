@@ -79,4 +79,11 @@ double NBodyPhaseSpace::sample_energy_and_pdf(
   return 0.5;
 }
 
+double NBodyPhaseSpace::max_energy(double E_in) const
+{
+  // sample_energy() returns E_max * v with v = x/(x+y) in [0,1)
+  double Ap = mass_ratio_;
+  return (Ap - 1.0) / Ap * (A_ / (A_ + 1.0) * E_in + Q_);
+}
+
 } // namespace openmc

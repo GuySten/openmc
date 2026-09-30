@@ -30,6 +30,19 @@ public:
   //! \return Probability density for the scattering cosine
   virtual double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const = 0;
+
+  //! Upper bound on the outgoing energy that sample() can return
+  //!
+  //! Returned in the frame the distribution is tabulated in, so a
+  //! center-of-mass distribution returns a center-of-mass energy. Used to
+  //! decide, before transport begins, whether secondaries can exceed the
+  //! available transport data. Must be an attainable bound, not merely a
+  //! valid one, or the resulting guard is uselessly loose.
+  //!
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \return Maximum outgoing energy in [eV]
+  virtual double max_energy(double E_in) const = 0;
+
   virtual ~AngleEnergy() = default;
 };
 

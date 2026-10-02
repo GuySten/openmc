@@ -12,7 +12,9 @@
 #include <unordered_map>
 #include <utility> // for pair
 
+#include <fmt/compile.h>
 #include <fmt/core.h>
+#include <fmt/format.h>
 #include <fmt/ostream.h>
 #ifdef _OPENMP
 #include <omp.h>
@@ -679,6 +681,22 @@ void write_tallies()
   std::ofstream tallies_out;
   tallies_out.open(filename, std::ios::out | std::ios::trunc);
 
+  // Output is formatted into a buffer that is written to the file in large
+  // chunks. Writing each line through the stream with a runtime format string
+  // is several times slower, which matters for tallies with many bins.
+  fmt::memory_buffer buf;
+  constexpr std::size_t FLUSH_SIZE = 1 << 20;
+  auto out = std::back_inserter(buf);
+  auto flush = [&]() {
+    tallies_out.write(buf.data(), buf.size());
+    buf.clear();
+  };
+  auto write_line = [&](int n_spaces, const std::string& text) {
+    std::fill_n(out, n_spaces, ' ');
+    buf.append(text);
+    buf.push_back('\n');
+  };
+
   // Loop over each tally.
   for (auto i_tally = 0; i_tally < model::tallies.size(); ++i_tally) {
     const auto& tally {*model::tallies[i_tally]};
@@ -687,10 +705,10 @@ void write_tallies()
     std::string tally_header("TALLY " + std::to_string(tally.id_));
     if (!tally.name_.empty())
       tally_header += ": " + tally.name_;
-    fmt::print(tallies_out, "{}\n\n", header(tally_header));
+    fmt::format_to(out, "{}\n\n", header(tally_header));
 
     if (!tally.writable_) {
-      fmt::print(tallies_out, " Internal\n\n");
+      fmt::format_to(out, " Internal\n\n");
       continue;
     }
 
@@ -706,23 +724,43 @@ void write_tallies()
       const auto& deriv {model::tally_derivs[tally.deriv_]};
       switch (deriv.variable) {
       case DerivativeVariable::DENSITY:
-        fmt::print(tallies_out, " Density derivative Material {}\n",
-          deriv.diff_material);
+        fmt::format_to(
+          out, " Density derivative Material {}\n", deriv.diff_material);
         break;
       case DerivativeVariable::NUCLIDE_DENSITY:
-        fmt::print(tallies_out,
+        fmt::format_to(out,
           " Nuclide density derivative Material {} Nuclide {}\n",
           deriv.diff_material, data::nuclides[deriv.diff_nuclide]->name_);
         break;
       case DerivativeVariable::TEMPERATURE:
-        fmt::print(tallies_out, " Temperature derivative Material {}\n",
-          deriv.diff_material);
+        fmt::format_to(
+          out, " Temperature derivative Material {}\n", deriv.diff_material);
         break;
       default:
         fatal_error(fmt::format("Differential tally dependent variable for "
                                 "tally {} not defined in output.cpp",
           tally.id_));
       }
+    }
+
+    // Names of the nuclide and score bins, padded score names
+    vector<std::string> nuclide_names;
+    for (auto i_nuclide : tally.nuclides_) {
+      if (i_nuclide == -1) {
+        nuclide_names.push_back("Total Material");
+      } else if (settings::run_CE) {
+        nuclide_names.push_back(data::nuclides[i_nuclide]->name_);
+      } else {
+        nuclide_names.push_back(data::mg.nuclides_[i_nuclide].name);
+      }
+    }
+    vector<std::string> score_names_padded;
+    for (auto score : tally.scores_) {
+      std::string name =
+        score > 0 ? reaction_name(score) : score_names.at(score);
+      if (name.size() < 36)
+        name.resize(36, ' ');
+      score_names_padded.push_back(name);
     }
 
     // Initialize Filter Matches Object
@@ -744,45 +782,36 @@ void write_tallies()
           auto i_filt = tally.filters(i);
           const auto& filt {*model::tally_filters[i_filt]};
           auto& match {filter_matches[i_filt]};
-          fmt::print(tallies_out, "{0:{1}}{2}\n", "", indent + 1,
-            filt.text_label(match.i_bin_));
+          write_line(indent + 1, filt.text_label(match.i_bin_));
         }
         indent += 2;
       }
 
       // Loop over all nuclide and score combinations.
       int score_index = 0;
-      for (auto i_nuclide : tally.nuclides_) {
+      for (const auto& nuclide_name : nuclide_names) {
         // Write label for this nuclide bin.
-        if (i_nuclide == -1) {
-          fmt::print(tallies_out, "{0:{1}}Total Material\n", "", indent + 1);
-        } else {
-          if (settings::run_CE) {
-            fmt::print(tallies_out, "{0:{1}}{2}\n", "", indent + 1,
-              data::nuclides[i_nuclide]->name_);
-          } else {
-            fmt::print(tallies_out, "{0:{1}}{2}\n", "", indent + 1,
-              data::mg.nuclides_[i_nuclide].name);
-          }
-        }
+        write_line(indent + 1, nuclide_name);
 
         // Write the score, mean, and uncertainty.
-        indent += 2;
-        for (auto score : tally.scores_) {
-          std::string score_name =
-            score > 0 ? reaction_name(score) : score_names.at(score);
+        for (const auto& score_name : score_names_padded) {
           double mean, stdev;
           std::tie(mean, stdev) =
             mean_stdev(&tally.results_(filter_index, score_index, 0),
               tally.n_realizations_);
-          fmt::print(tallies_out, "{0:{1}}{2:<36} {3:.6} +/- {4:.6}\n", "",
-            indent + 1, score_name, mean, t_value * stdev);
+          std::fill_n(out, indent + 3, ' ');
+          buf.append(score_name);
+          fmt::format_to(
+            out, FMT_COMPILE(" {:.6} +/- {:.6}\n"), mean, t_value * stdev);
           score_index += 1;
         }
-        indent -= 2;
       }
+
+      if (buf.size() >= FLUSH_SIZE)
+        flush();
     }
   }
+  flush();
 }
 
 } // namespace openmc

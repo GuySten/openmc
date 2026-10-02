@@ -9,6 +9,7 @@
 #include "openmc/constants.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
+#include "openmc/math_functions.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
 #include "openmc/secondary_correlated.h"
@@ -166,7 +167,8 @@ ThermalScattering::ThermalScattering(
 }
 
 void ThermalScattering::calculate_xs(double E, double sqrtkT, int* i_temp,
-  double* elastic, double* inelastic, uint64_t* seed) const
+  double* elastic, double* inelastic, int* i_grid, double* f,
+  uint64_t* seed) const
 {
   // Determine temperature for S(a,b) table
   double kT = sqrtkT * sqrtkT;
@@ -202,7 +204,7 @@ void ThermalScattering::calculate_xs(double E, double sqrtkT, int* i_temp,
   *i_temp = i;
 
   // Calculate cross sections for ith temperature
-  data_[i].calculate_xs(E, elastic, inelastic);
+  data_[i].calculate_xs(E, elastic, inelastic, i_grid, f);
 }
 
 bool ThermalScattering::has_nuclide(const char* name) const
@@ -269,8 +271,10 @@ ThermalData::ThermalData(hid_t group)
       inelastic_.distribution = make_unique<IncoherentInelasticAE>(dgroup);
     } else if (temp == "incoherent_inelastic_discrete") {
       auto xs = dynamic_cast<Tabulated1D*>(inelastic_.xs.get());
-      inelastic_.distribution =
-        make_unique<IncoherentInelasticAEDiscrete>(dgroup, xs->x());
+      auto dist = make_unique<IncoherentInelasticAEDiscrete>(dgroup, xs->x());
+      inelastic_xs_discrete_ = xs;
+      inelastic_discrete_ = dist.get();
+      inelastic_.distribution = std::move(dist);
     }
 
     close_group(inelastic_group);
@@ -278,7 +282,7 @@ ThermalData::ThermalData(hid_t group)
 }
 
 void ThermalData::calculate_xs(
-  double E, double* elastic, double* inelastic) const
+  double E, double* elastic, double* inelastic, int* i_grid, double* f) const
 {
   // Calculate thermal elastic scattering cross section
   if (elastic_.xs) {
@@ -287,8 +291,22 @@ void ThermalData::calculate_xs(
     *elastic = 0.0;
   }
 
-  // Calculate thermal inelastic scattering cross section
-  *inelastic = (*inelastic_.xs)(E);
+  // Calculate thermal inelastic scattering cross section. Discrete inelastic
+  // distributions are tabulated on the energy grid of the cross section, so
+  // the grid index and interpolation factor are also returned for sampling.
+  if (inelastic_discrete_) {
+    const auto& x = inelastic_xs_discrete_->x();
+    get_energy_index(x, E, *i_grid, *f);
+    if (E < x.front()) {
+      *inelastic = inelastic_xs_discrete_->y().front();
+    } else if (E > x.back()) {
+      *inelastic = inelastic_xs_discrete_->y().back();
+    } else {
+      *inelastic = inelastic_xs_discrete_->evaluate(E, *i_grid);
+    }
+  } else {
+    *inelastic = (*inelastic_.xs)(E);
+  }
 }
 
 AngleEnergy& ThermalData::sample_dist(
@@ -305,7 +323,15 @@ AngleEnergy& ThermalData::sample_dist(
 void ThermalData::sample(const NuclideMicroXS& micro_xs, double E,
   double* E_out, double* mu, uint64_t* seed) const
 {
-  sample_dist(micro_xs, E, seed).sample(E, *E_out, *mu, seed);
+  const auto& dist = sample_dist(micro_xs, E, seed);
+  if (&dist == inelastic_discrete_) {
+    // Reuse the grid index and interpolation factor found when calculating
+    // the cross section at this energy
+    inelastic_discrete_->sample(
+      micro_xs.index_grid_sab, micro_xs.interp_factor_sab, *E_out, *mu, seed);
+  } else {
+    dist.sample(E, *E_out, *mu, seed);
+  }
   // Because of floating-point roundoff, it may be possible for mu to be
   // outside of the range [-1,1). In these cases, we just set mu to exactly
   // -1 or 1

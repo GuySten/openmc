@@ -254,6 +254,11 @@ double Tabulated1D::operator()(double x) const
     i = lower_bound_index(x_.begin(), x_.end(), x);
   }
 
+  return evaluate(x, i);
+}
+
+double Tabulated1D::evaluate(double x, int i) const
+{
   // determine interpolation scheme
   Interpolation interp;
   if (n_regions_ == 0) {

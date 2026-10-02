@@ -20,6 +20,7 @@ namespace openmc {
 // Global variables
 //==============================================================================
 
+class IncoherentInelasticAEDiscrete;
 class ThermalScattering;
 
 namespace data {
@@ -41,7 +42,10 @@ public:
   //! \param[in] E Incident neutron energy in [eV]
   //! \param[out] elastic Elastic scattering cross section in [b]
   //! \param[out] inelastic Inelastic scattering cross section in [b]
-  void calculate_xs(double E, double* elastic, double* inelastic) const;
+  //! \param[out] i_grid Index on the discrete inelastic energy grid
+  //! \param[out] f Interpolation factor on the discrete inelastic energy grid
+  void calculate_xs(
+    double E, double* elastic, double* inelastic, int* i_grid, double* f) const;
 
   //! Sample an outgoing energy and angle
   //
@@ -82,6 +86,11 @@ private:
       distribution; //!< Secondary angle-energy distribution
   };
 
+  // Discrete inelastic cross section and distribution, which share an
+  // incident energy grid (null if the inelastic data is not discrete)
+  const Tabulated1D* inelastic_xs_discrete_ {nullptr};
+  const IncoherentInelasticAEDiscrete* inelastic_discrete_ {nullptr};
+
   // Inelastic scattering data
   Reaction elastic_;
   Reaction inelastic_;
@@ -103,12 +112,15 @@ public:
   //!
   //! \param[in] E incoming energy in [eV]
   //! \param[in] sqrtkT square-root of temperature multipled by Boltzmann's
-  //! constant \param[out] i_temp corresponding temperature index \param[out]
-  //! elastic Thermal elastic scattering cross section \param[out] inelastic
-  //! Thermal inelastic scattering cross section \param[inout] seed Pseudorandom
-  //! seed pointer
+  //!   constant
+  //! \param[out] i_temp corresponding temperature index
+  //! \param[out] elastic Thermal elastic scattering cross section
+  //! \param[out] inelastic Thermal inelastic scattering cross section
+  //! \param[out] i_grid Index on the discrete inelastic energy grid
+  //! \param[out] f Interpolation factor on the discrete inelastic energy grid
+  //! \param[inout] seed Pseudorandom seed pointer
   void calculate_xs(double E, double sqrtkT, int* i_temp, double* elastic,
-    double* inelastic, uint64_t* seed) const;
+    double* inelastic, int* i_grid, double* f, uint64_t* seed) const;
 
   //! Determine whether table applies to a particular nuclide
   //!

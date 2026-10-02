@@ -90,6 +90,12 @@ public:
   //! \return Function evaluated at x
   double operator()(double x) const override;
 
+  //! Evaluate the tabulated function within a known interval
+  //! \param[in] x independent variable, between x()[i] and x()[i + 1]
+  //! \param[in] i index of the interval containing x
+  //! \return Function evaluated at x
+  double evaluate(double x, int i) const;
+
   // Accessors
   const vector<double>& x() const { return x_; }
   const vector<double>& y() const { return y_; }

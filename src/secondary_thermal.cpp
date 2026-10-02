@@ -183,13 +183,8 @@ IncoherentInelasticAEDiscrete::IncoherentInelasticAEDiscrete(
 }
 
 void IncoherentInelasticAEDiscrete::sample_params(
-  double E_in, double& E_out, int& j, uint64_t* seed) const
+  int i, double f, double& E_out, int& j, uint64_t* seed) const
 {
-  // Get index and interpolation factor for inelastic grid
-  int i;
-  double f;
-  get_energy_index(energy_, E_in, i, f);
-
   // Now that we have an incoming energy bin, we need to determine the outgoing
   // energy bin. This will depend on whether the outgoing energy distribution is
   // skewed. If it is skewed, then the first two and last two bins have lower
@@ -237,9 +232,14 @@ void IncoherentInelasticAEDiscrete::sample(
   int i;
   double f;
   get_energy_index(energy_, E_in, i, f);
+  sample(i, f, E_out, mu, seed);
+}
 
+void IncoherentInelasticAEDiscrete::sample(
+  int i, double f, double& E_out, double& mu, uint64_t* seed) const
+{
   int j;
-  sample_params(E_in, E_out, j, seed);
+  sample_params(i, f, E_out, j, seed);
 
   // Sample outgoing cosine bin
   int m = mu_out_.shape(2);
@@ -261,7 +261,7 @@ double IncoherentInelasticAEDiscrete::sample_energy_and_pdf(
   double f;
   get_energy_index(energy_, E_in, i, f);
   int j;
-  sample_params(E_in, E_out, j, seed);
+  sample_params(i, f, E_out, j, seed);
 
   return get_pdf_discrete_interpolated(mu_out_.slice(i, j, tensor::all),
     mu_out_.slice(i + 1, j, tensor::all), f, mu);

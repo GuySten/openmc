@@ -137,12 +137,24 @@ public:
   //! \param[inout] seed Pseudorandom number seed pointer
   void sample(
     double E_in, double& E_out, double& mu, uint64_t* seed) const override;
+
+  //! Sample distribution for an angle and energy given the position of the
+  //! incoming energy on the incident energy grid
+  //! \param[in] i Index on the incident energy grid
+  //! \param[in] f Interpolation factor on the incident energy grid
+  //! \param[out] E_out Outgoing energy in [eV]
+  //! \param[out] mu Outgoing cosine with respect to current direction
+  //! \param[inout] seed Pseudorandom number seed pointer
+  void sample(int i, double f, double& E_out, double& mu, uint64_t* seed) const;
+
   //! Sample outgoing energy bin parameters
-  //! \param[in] E_in Incoming energy in [eV]
+  //! \param[in] i Index on the incident energy grid
+  //! \param[in] f Interpolation factor on the incident energy grid
   //! \param[out] E_out Outgoing energy in [eV]
   //! \param[out] j Sampled outgoing energy bin index
   //! \param[inout] seed Pseudorandom seed pointer
-  void sample_params(double E_in, double& E_out, int& j, uint64_t* seed) const;
+  void sample_params(
+    int i, double f, double& E_out, int& j, uint64_t* seed) const;
 
   //! Sample an outgoing energy and evaluate the angular PDF
   //! \param[in] E_in Incoming energy in [eV]

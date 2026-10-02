@@ -165,13 +165,15 @@ struct NuclideMicroXS {
   double reaction[DEPLETION_RX.size()];
 
   // Indicies and factors needed to compute cross sections from the data tables
-  int index_grid;       //!< Index on nuclide energy grid
-  int index_temp;       //!< Temperature index for nuclide
-  double interp_factor; //!< Interpolation factor on nuc. energy grid
-  int index_sab {-1};   //!< Index in sab_tables
-  int index_temp_sab;   //!< Temperature index for sab_tables
-  double sab_frac;      //!< Fraction of atoms affected by S(a,b)
-  bool use_ptable;      //!< In URR range with probability tables?
+  int index_grid;           //!< Index on nuclide energy grid
+  int index_temp;           //!< Temperature index for nuclide
+  double interp_factor;     //!< Interpolation factor on nuc. energy grid
+  int index_sab {-1};       //!< Index in sab_tables
+  int index_temp_sab;       //!< Temperature index for sab_tables
+  int index_grid_sab;       //!< Index on S(a,b) discrete inelastic energy grid
+  double interp_factor_sab; //!< Interpolation factor on that grid
+  double sab_frac;          //!< Fraction of atoms affected by S(a,b)
+  bool use_ptable;          //!< In URR range with probability tables?
 
   // Energy and temperature last used to evaluate these cross sections.  If
   // these values have changed, then the cross sections must be re-evaluated.

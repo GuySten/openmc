@@ -376,24 +376,21 @@ void sample_photon_reaction(Particle& p)
   double prob_after = prob + micro.photoelectric;
 
   if (prob_after > cutoff) {
-    // Get grid index, interpolation factor, and bounding subshell
-    // cross sections
+    // Get grid index, interpolation factor, and subshell cross sections
     int i_grid = micro.index_grid;
     double f = micro.interp_factor;
-    tensor::View<const double> xs_lower = element.cross_sections_.slice(i_grid);
-    tensor::View<const double> xs_upper =
-      element.cross_sections_.slice(i_grid + 1);
+    const auto& xs = element.cross_sections_;
 
     for (int i_shell = 0; i_shell < element.shells_.size(); ++i_shell) {
       const auto& shell {element.shells_[i_shell]};
 
       // Check threshold of reaction
-      if (xs_lower(i_shell) == 0)
+      double xs_lower = xs(i_grid, i_shell);
+      if (xs_lower == 0)
         continue;
 
       //  Evaluation subshell photoionization cross section
-      prob += std::exp(
-        xs_lower(i_shell) + f * (xs_upper(i_shell) - xs_lower(i_shell)));
+      prob += std::exp(xs_lower + f * (xs(i_grid + 1, i_shell) - xs_lower));
 
       if (prob > cutoff) {
         // Determine binding energy based on whether atomic relaxation data is

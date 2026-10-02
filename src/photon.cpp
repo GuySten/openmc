@@ -540,8 +540,8 @@ double PhotonInteraction::invert_compton_profile_cdf(
   // Invert the piecewise-linear tabulated profile (Kaltiaisenaho Eq. 3.126).
   // The rationalized quadratic root used below is equivalent to that equation
   // but remains well-conditioned when the profile slope is small.
-  tensor::View<const double> cdf_shell = profile_cdf_.slice(i_shell);
-  int i = lower_bound_index(cdf_shell.cbegin(), cdf_shell.cend(), integral);
+  const double* cdf_shell = &profile_cdf_(i_shell, 0);
+  int i = lower_bound_index(cdf_shell, cdf_shell + n, integral);
   double pz_l = data::compton_profile_pz(i);
   double pz_r = data::compton_profile_pz(i + 1);
   double p_l = profile_pdf_(i_shell, i);
@@ -747,13 +747,14 @@ void PhotonInteraction::calculate_xs(Particle& p) const
 
   // Calculate microscopic photoelectric cross section
   xs.photoelectric = 0.0;
-  tensor::View<const double> xs_lower = cross_sections_.slice(i_grid);
-  tensor::View<const double> xs_upper = cross_sections_.slice(i_grid + 1);
-
-  for (int i = 0; i < xs_upper.size(); ++i)
-    if (xs_lower(i) != 0)
+  // The subshell cross sections are indexed directly rather than through row
+  // slices, since creating a slice allocates memory on every call
+  for (int i = 0; i < cross_sections_.shape(1); ++i) {
+    double xs_lower = cross_sections_(i_grid, i);
+    if (xs_lower != 0)
       xs.photoelectric +=
-        std::exp(xs_lower(i) + f * (xs_upper(i) - xs_lower(i)));
+        std::exp(xs_lower + f * (cross_sections_(i_grid + 1, i) - xs_lower));
+  }
 
   // Calculate microscopic pair production cross section
   xs.pair_production = std::exp(

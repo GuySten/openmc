@@ -162,6 +162,10 @@ private:
   //! Position in surfaces_ of each token in the expression of a complex
   //! region, or -1 for operators
   vector<int32_t> token_slots_;
+
+  //! Position of the right parenthesis closing the innermost group containing
+  //! each token in the expression of a complex region, or -1 at the top level
+  vector<int32_t> group_ends_;
 };
 
 //==============================================================================

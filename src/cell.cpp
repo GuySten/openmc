@@ -718,6 +718,22 @@ Region::Region(std::string region_spec, int32_t cell_id)
         if (it == surfaces_.end())
           surfaces_.push_back(std::abs(token));
       }
+
+      // Find the end of the innermost group containing each token so that
+      // short circuiting can skip the rest of a group directly
+      group_ends_.assign(expression_.size(), -1);
+      vector<int32_t> open;
+      for (int i = 0; i < expression_.size(); ++i) {
+        if (expression_[i] == OP_LEFT_PAREN) {
+          open.push_back(i);
+        } else if (expression_[i] == OP_RIGHT_PAREN) {
+          for (int j = open.back() + 1; j < i; ++j) {
+            if (group_ends_[j] == -1)
+              group_ends_[j] = i;
+          }
+          open.pop_back();
+        }
+      }
     }
     expression_.shrink_to_fit();
 
@@ -966,9 +982,12 @@ namespace {
 
 //! Evaluate a complex region expression with short circuiting. The callable
 //! in_halfspace(i) returns whether the point is in the half-space given by the
-//! surface token at position i of the expression.
+//! surface token at position i of the expression, and group_ends gives the
+//! position of the right parenthesis closing the innermost group containing
+//! each token.
 template<typename F>
-bool evaluate_complex(const vector<int32_t>& expression, F&& in_halfspace)
+bool evaluate_complex(const vector<int32_t>& expression,
+  const vector<int32_t>& group_ends, F&& in_halfspace)
 {
   bool in_cell = true;
   int total_depth = 0;
@@ -989,25 +1008,9 @@ bool evaluate_complex(const vector<int32_t>& expression, F&& in_halfspace)
         return in_cell;
       }
 
+      // Skip to the end of the innermost group containing this operator
       total_depth--;
-
-      // While the iterator is within the bounds of the vector
-      int depth = 1;
-      do {
-        // Get next token
-        it++;
-        int32_t next_token = *it;
-
-        // If the token is an a parenthesis
-        if (next_token > OP_COMPLEMENT) {
-          // Adjust depth accordingly
-          if (next_token == OP_RIGHT_PAREN) {
-            depth--;
-          } else {
-            depth++;
-          }
-        }
-      } while (depth > 0);
+      it = expression.begin() + group_ends[it - expression.begin()];
     } else if (token == OP_LEFT_PAREN) {
       total_depth++;
     } else if (token == OP_RIGHT_PAREN) {
@@ -1109,7 +1112,7 @@ std::pair<double, int32_t> Region::distance_complex(
     stale[i] = false;
   };
   auto in_region_now = [&]() {
-    return evaluate_complex(expression_,
+    return evaluate_complex(expression_, group_ends_,
       [&](size_t i) { return sense[token_slots_[i]] == (expression_[i] > 0); });
   };
 
@@ -1218,7 +1221,7 @@ bool Region::contains_simple(Position r, Direction u, int32_t on_surface) const
 
 bool Region::contains_complex(Position r, Direction u, int32_t on_surface) const
 {
-  return evaluate_complex(expression_, [&](size_t i) {
+  return evaluate_complex(expression_, group_ends_, [&](size_t i) {
     int32_t token = expression_[i];
     if (token == on_surface) {
       return true;

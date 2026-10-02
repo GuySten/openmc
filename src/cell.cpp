@@ -12,6 +12,7 @@
 
 #include <fmt/core.h>
 
+#include "openmc/array.h"
 #include "openmc/capi.h"
 #include "openmc/constants.h"
 #include "openmc/dagmc.h"
@@ -703,6 +704,20 @@ Region::Region(std::string region_spec, int32_t cell_id)
                                    token > OP_COMPLEMENT;
                           }),
         expression_.end());
+    } else {
+      // Map each surface token to a slot for its distinct surface so that
+      // distance_complex can cache per-surface quantities
+      token_slots_.assign(expression_.size(), -1);
+      for (int i = 0; i < expression_.size(); ++i) {
+        int32_t token = expression_[i];
+        if (token >= OP_UNION)
+          continue;
+        auto it =
+          std::find(surfaces_.begin(), surfaces_.end(), std::abs(token));
+        token_slots_[i] = it - surfaces_.begin();
+        if (it == surfaces_.end())
+          surfaces_.push_back(std::abs(token));
+      }
     }
     expression_.shrink_to_fit();
 
@@ -947,6 +962,63 @@ std::string Region::str() const
 
 //==============================================================================
 
+namespace {
+
+//! Evaluate a complex region expression with short circuiting. The callable
+//! in_halfspace(i) returns whether the point is in the half-space given by the
+//! surface token at position i of the expression.
+template<typename F>
+bool evaluate_complex(const vector<int32_t>& expression, F&& in_halfspace)
+{
+  bool in_cell = true;
+  int total_depth = 0;
+
+  // For each token
+  for (auto it = expression.begin(); it != expression.end(); it++) {
+    int32_t token = *it;
+
+    // If the token is a surface evaluate the sense
+    // If the token is a union or intersection check to
+    // short circuit
+    if (token < OP_UNION) {
+      in_cell = in_halfspace(it - expression.begin());
+    } else if ((token == OP_UNION && in_cell == true) ||
+               (token == OP_INTERSECTION && in_cell == false)) {
+      // If the total depth is zero return
+      if (total_depth == 0) {
+        return in_cell;
+      }
+
+      total_depth--;
+
+      // While the iterator is within the bounds of the vector
+      int depth = 1;
+      do {
+        // Get next token
+        it++;
+        int32_t next_token = *it;
+
+        // If the token is an a parenthesis
+        if (next_token > OP_COMPLEMENT) {
+          // Adjust depth accordingly
+          if (next_token == OP_RIGHT_PAREN) {
+            depth--;
+          } else {
+            depth++;
+          }
+        }
+      } while (depth > 0);
+    } else if (token == OP_LEFT_PAREN) {
+      total_depth++;
+    } else if (token == OP_RIGHT_PAREN) {
+      total_depth--;
+    }
+  }
+  return in_cell;
+}
+
+} // namespace
+
 std::pair<double, int32_t> Region::distance(
   Position r, Direction u, int32_t on_surface) const
 {
@@ -999,13 +1071,83 @@ std::pair<double, int32_t> Region::distance_to_nearest_surface(Position r,
 std::pair<double, int32_t> Region::distance_complex(
   Position r, Direction u, int32_t on_surface) const
 {
-  const bool in_region = contains_complex(r, u, on_surface);
+  // The boundary is found by moving from one surface crossing to the next
+  // along the ray until crossing a surface changes whether the ray is in the
+  // region. Rather than recomputing the distance to and the sense with respect
+  // to every surface after each crossing, both are computed once and then
+  // updated: the distance to every surface decreases by the distance moved,
+  // and only surfaces at the current position (the surface crossed and any
+  // other surfaces meeting it there) need to be evaluated again.
+  const int n = surfaces_.size();
+  constexpr int N_STACK = 32;
+  array<double, N_STACK> dist_stack;
+  array<char, N_STACK> sense_stack;
+  array<char, N_STACK> stale_stack;
+  vector<double> dist_heap;
+  vector<char> sense_heap;
+  vector<char> stale_heap;
+  double* dist = dist_stack.data();
+  char* sense = sense_stack.data();
+  char* stale = stale_stack.data();
+  if (n > N_STACK) {
+    dist_heap.resize(n);
+    sense_heap.resize(n);
+    stale_heap.resize(n);
+    dist = dist_heap.data();
+    sense = sense_heap.data();
+    stale = stale_heap.data();
+  }
+
+  // Evaluate the distance to and sense with respect to surface slot i. If the
+  // ray is on the surface, its sense is given by on_surface.
+  auto evaluate_surface = [&](int i, int32_t on_surface) {
+    int32_t i_surf = surfaces_[i];
+    const auto& surf {*model::surfaces[i_surf - 1]};
+    bool coincident = i_surf == std::abs(on_surface);
+    sense[i] = coincident ? on_surface > 0 : surf.sense(r, u);
+    dist[i] = surf.distance(r, u, coincident);
+    stale[i] = false;
+  };
+  auto in_region_now = [&]() {
+    return evaluate_complex(expression_,
+      [&](size_t i) { return sense[token_slots_[i]] == (expression_[i] > 0); });
+  };
+
+  for (int i = 0; i < n; ++i) {
+    evaluate_surface(i, on_surface);
+  }
+  const bool in_region = in_region_now();
   double total_distance {0.0};
 
   while (true) {
-    auto [distance, i_surf] =
-      distance_to_nearest_surface(r, u, on_surface, on_surface != 0);
-    if (distance == INFTY) {
+    // Find the nearest surface crossing. When the ray is on a surface,
+    // intersections with other surfaces at the same location are ignored to
+    // avoid repeatedly crossing between them due to roundoff. Distances that
+    // were updated by subtraction are only used to select the candidate; the
+    // distance to the candidate is recomputed from the current position so
+    // that the result does not depend on accumulated roundoff.
+    double min_dist;
+    int i_min;
+    while (true) {
+      min_dist = INFTY;
+      i_min = -1;
+      for (int i = 0; i < n; ++i) {
+        double d = dist[i];
+        if (on_surface != 0 && d < FP_COINCIDENT)
+          continue;
+        if (d < min_dist && min_dist - d >= FP_PRECISION * min_dist) {
+          min_dist = d;
+          i_min = i;
+        }
+      }
+      if (i_min < 0 || !stale[i_min])
+        break;
+      int32_t i_surf = surfaces_[i_min];
+      dist[i_min] = model::surfaces[i_surf - 1]->distance(
+        r, u, i_surf == std::abs(on_surface));
+      stale[i_min] = false;
+    }
+    if (min_dist == INFTY) {
       return {INFTY, std::numeric_limits<int32_t>::max()};
     }
 
@@ -1013,17 +1155,25 @@ std::pair<double, int32_t> Region::distance_complex(
     // entering. The surface normal is used instead of evaluating the surface
     // equation because accumulated roundoff may place the point slightly to
     // the wrong side of a curved surface.
-    r += distance * u;
-    total_distance += distance;
-    i_surf = std::abs(i_surf);
-    const auto& surf {*model::surfaces[i_surf - 1]};
-    if (u.dot(surf.normal(r)) <= 0.0) {
+    r += min_dist * u;
+    total_distance += min_dist;
+    int32_t i_surf = surfaces_[i_min];
+    if (u.dot(model::surfaces[i_surf - 1]->normal(r)) <= 0.0) {
       i_surf = -i_surf;
+    }
+
+    // Update the distances, and reevaluate the surfaces at the new position
+    for (int i = 0; i < n; ++i) {
+      dist[i] -= min_dist;
+      stale[i] = true;
+      if (i == i_min || dist[i] < TINY_BIT) {
+        evaluate_surface(i, i_surf);
+      }
     }
 
     // If crossing the candidate changes the region membership, it is a true
     // boundary. Otherwise, continue the search from the virtual crossing.
-    if (contains_complex(r, u, i_surf) != in_region) {
+    if (in_region_now() != in_region) {
       return {total_distance, i_surf};
     }
     on_surface = i_surf;
@@ -1068,59 +1218,18 @@ bool Region::contains_simple(Position r, Direction u, int32_t on_surface) const
 
 bool Region::contains_complex(Position r, Direction u, int32_t on_surface) const
 {
-  bool in_cell = true;
-  int total_depth = 0;
-
-  // For each token
-  for (auto it = expression_.begin(); it != expression_.end(); it++) {
-    int32_t token = *it;
-
-    // If the token is a surface evaluate the sense
-    // If the token is a union or intersection check to
-    // short circuit
-    if (token < OP_UNION) {
-      if (token == on_surface) {
-        in_cell = true;
-      } else if (-token == on_surface) {
-        in_cell = false;
-      } else {
-        // Note the off-by-one indexing
-        bool sense = model::surfaces[abs(token) - 1]->sense(r, u);
-        in_cell = (sense == (token > 0));
-      }
-    } else if ((token == OP_UNION && in_cell == true) ||
-               (token == OP_INTERSECTION && in_cell == false)) {
-      // If the total depth is zero return
-      if (total_depth == 0) {
-        return in_cell;
-      }
-
-      total_depth--;
-
-      // While the iterator is within the bounds of the vector
-      int depth = 1;
-      do {
-        // Get next token
-        it++;
-        int32_t next_token = *it;
-
-        // If the token is an a parenthesis
-        if (next_token > OP_COMPLEMENT) {
-          // Adjust depth accordingly
-          if (next_token == OP_RIGHT_PAREN) {
-            depth--;
-          } else {
-            depth++;
-          }
-        }
-      } while (depth > 0);
-    } else if (token == OP_LEFT_PAREN) {
-      total_depth++;
-    } else if (token == OP_RIGHT_PAREN) {
-      total_depth--;
+  return evaluate_complex(expression_, [&](size_t i) {
+    int32_t token = expression_[i];
+    if (token == on_surface) {
+      return true;
+    } else if (-token == on_surface) {
+      return false;
+    } else {
+      // Note the off-by-one indexing
+      bool sense = model::surfaces[abs(token) - 1]->sense(r, u);
+      return sense == (token > 0);
     }
-  }
-  return in_cell;
+  });
 }
 
 //==============================================================================

@@ -154,6 +154,14 @@ private:
   // TODO: Should this be a vector of some other type
   vector<int32_t> expression_;
   bool simple_; //!< Does the region contain only intersections?
+
+  //! Distinct surface indices (1-based) in the expression of a complex region,
+  //! in order of first appearance
+  vector<int32_t> surfaces_;
+
+  //! Position in surfaces_ of each token in the expression of a complex
+  //! region, or -1 for operators
+  vector<int32_t> token_slots_;
 };
 
 //==============================================================================

@@ -113,7 +113,7 @@ private:
   struct Node {
     enum class Type : int8_t { HALFSPACE, INTERSECTION, UNION };
     Type type;
-    int32_t halfspace; //!< Signed surface index + 1 for HALFSPACE nodes
+    int32_t halfspace; //!< Signed position + 1 in surfaces_ (HALFSPACE nodes)
     int32_t end;       //!< Index one past the last node of the subtree
     int32_t parent;    //!< Index of the parent node (-1 for the root)
   };
@@ -130,6 +130,22 @@ private:
   //! Evaluates the expression tree, skipping the remaining children of an
   //! operator node as soon as its value is known.
   bool contains_complex(Position r, Direction u, int32_t on_surface) const;
+
+  //! Evaluate the expression tree of a complex region
+  //!
+  //! Operator nodes are evaluated with short circuiting, skipping their
+  //! remaining children as soon as one of them determines their value.
+  //! \param in_halfspace Callable returning whether the point is in the
+  //!   half-space of a HALFSPACE node given its halfspace value
+  template<typename F>
+  bool evaluate(F&& in_halfspace) const;
+
+  //! Signed surface index + 1 of a half-space of the expression tree
+  int32_t surface_token(int32_t halfspace) const
+  {
+    int32_t i_surf = surfaces_[std::abs(halfspace) - 1];
+    return halfspace > 0 ? i_surf : -i_surf;
+  }
 
   //! Find the nearest intersection with any surface in the region expression.
   std::pair<double, int32_t> distance_to_nearest_surface(Position r,
@@ -149,6 +165,10 @@ private:
   //! Expression tree of a complex region in pre-order (empty for a simple
   //! region)
   vector<Node> nodes_;
+
+  //! Distinct surface indices + 1 of the half-spaces of a complex region, in
+  //! order of first appearance
+  vector<int32_t> surfaces_;
 };
 
 //==============================================================================

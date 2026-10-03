@@ -109,9 +109,9 @@ int cell_instance_at_level(const GeometryState& p, int level)
   for (int i = 0; i < level; i++) {
     const auto& c_i {*model::cells[p.coord(i).cell()]};
     if (c_i.type_ == Fill::UNIVERSE) {
-      instance += c_i.offset_[c.distribcell_index_];
+      instance += c_i.offset(c.distribcell_index_);
     } else if (c_i.type_ == Fill::LATTICE) {
-      instance += c_i.offset_[c.distribcell_index_];
+      instance += c_i.offset(c.distribcell_index_);
       auto& lat {*model::lattices[p.coord(i + 1).lattice()]};
       const auto& i_xyz {p.coord(i + 1).lattice_index()};
       if (lat.are_valid_indices(i_xyz)) {

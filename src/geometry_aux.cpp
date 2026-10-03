@@ -329,6 +329,233 @@ int32_t find_root_universe()
 
 //==============================================================================
 
+namespace {
+
+//! Builds the distributed cell offsets.
+//
+//! The offset of a fill cell for a map is the number of instances of the map's
+//! universe in the cells before it in its universe, and the offset of a lattice
+//! tile is the number in the tiles before it. An offset is only read when the
+//! map's universe is in the cell's fill or the tile's universe, so only those
+//! offsets are stored. Each universe and lattice is visited once.
+class DistribcellBuilder {
+public:
+  explicit DistribcellBuilder(const vector<bool>& is_target)
+    : is_target_(is_target), univ_map_(model::universes.size(), C_NONE),
+      univ_state_(model::universes.size(), State::NEW),
+      lat_state_(model::lattices.size(), State::NEW),
+      univ_maps_(model::universes.size()),
+      univ_counts_(model::universes.size()), lat_maps_(model::lattices.size()),
+      lat_counts_(model::lattices.size())
+  {}
+
+  void build()
+  {
+    // Number the maps in post-order so that the maps in a universe are mostly
+    // consecutive, starting from the root universe.
+    visit_universe(model::root_universe);
+    for (int32_t i = 0; i < model::universes.size(); ++i) {
+      visit_universe(i);
+    }
+    for (int32_t i = 0; i < model::lattices.size(); ++i) {
+      visit_lattice(i);
+    }
+
+    for (int32_t i = 0; i < model::universes.size(); ++i) {
+      model::universes[i]->distribcell_layout_.build(univ_maps_[i]);
+    }
+    for (int32_t i = 0; i < model::lattices.size(); ++i) {
+      model::lattices[i]->distribcell_layout_.build(lat_maps_[i]);
+    }
+
+    model::distribcell_offsets.clear();
+    for (int32_t i = 0; i < model::universes.size(); ++i) {
+      fill_universe_offsets(i);
+    }
+    for (int32_t i = 0; i < model::lattices.size(); ++i) {
+      fill_lattice_offsets(i);
+    }
+    model::distribcell_offsets.shrink_to_fit();
+  }
+
+  int32_t map(int32_t univ) const { return univ_map_[univ]; }
+
+private:
+  enum class State { NEW, VISITING, DONE };
+
+  //! Find the maps in a universe and count their instances
+  void visit_universe(int32_t univ)
+  {
+    if (univ_state_[univ] == State::DONE)
+      return;
+    if (univ_state_[univ] == State::VISITING) {
+      fatal_error(fmt::format(
+        "Universe {} contains itself.", model::universes[univ]->id_));
+    }
+    univ_state_[univ] = State::VISITING;
+
+    auto& maps = univ_maps_[univ];
+    for (int32_t cell_indx : model::universes[univ]->cells_) {
+      const Cell& c = *model::cells[cell_indx];
+      if (c.type_ == Fill::UNIVERSE) {
+        visit_universe(c.fill_);
+        const auto& fill_maps = univ_maps_[c.fill_];
+        maps.insert(maps.end(), fill_maps.begin(), fill_maps.end());
+      } else if (c.type_ == Fill::LATTICE) {
+        visit_lattice(c.fill_);
+        const auto& fill_maps = lat_maps_[c.fill_];
+        maps.insert(maps.end(), fill_maps.begin(), fill_maps.end());
+      }
+    }
+    sort_unique(maps);
+
+    // The universe's own map comes after the maps it contains
+    if (is_target_[univ]) {
+      univ_map_[univ] = n_maps_++;
+      maps.push_back(univ_map_[univ]);
+    }
+
+    auto& counts = univ_counts_[univ];
+    counts.assign(maps.size(), 0);
+    for (int32_t cell_indx : model::universes[univ]->cells_) {
+      const Cell& c = *model::cells[cell_indx];
+      if (c.type_ == Fill::UNIVERSE) {
+        add_counts(maps, counts, univ_maps_[c.fill_], univ_counts_[c.fill_]);
+      } else if (c.type_ == Fill::LATTICE) {
+        add_counts(maps, counts, lat_maps_[c.fill_], lat_counts_[c.fill_]);
+      }
+    }
+    if (is_target_[univ])
+      counts.back() = 1;
+
+    univ_state_[univ] = State::DONE;
+  }
+
+  //! Find the maps in a lattice and count their instances. The outer universe
+  //! is not counted, but its maps are included since a lattice cell's offsets
+  //! are read for particles in the outer universe.
+  void visit_lattice(int32_t lat_indx)
+  {
+    if (lat_state_[lat_indx] == State::DONE)
+      return;
+    if (lat_state_[lat_indx] == State::VISITING) {
+      fatal_error(fmt::format(
+        "Lattice {} contains itself.", model::lattices[lat_indx]->id_));
+    }
+    lat_state_[lat_indx] = State::VISITING;
+    Lattice& lat = *model::lattices[lat_indx];
+
+    // Find the distinct universes in the lattice and how many tiles each fills
+    std::unordered_map<int32_t, int32_t> n_tiles;
+    vector<int32_t> univs;
+    for (LatticeIter it = lat.begin(); it != lat.end(); ++it) {
+      if (n_tiles[*it]++ == 0)
+        univs.push_back(*it);
+    }
+
+    auto& maps = lat_maps_[lat_indx];
+    for (int32_t univ : univs) {
+      visit_universe(univ);
+      maps.insert(maps.end(), univ_maps_[univ].begin(), univ_maps_[univ].end());
+    }
+    if (lat.outer_ != NO_OUTER_UNIVERSE) {
+      visit_universe(lat.outer_);
+      const auto& outer_maps = univ_maps_[lat.outer_];
+      maps.insert(maps.end(), outer_maps.begin(), outer_maps.end());
+    }
+    sort_unique(maps);
+
+    auto& counts = lat_counts_[lat_indx];
+    counts.assign(maps.size(), 0);
+    for (int32_t univ : univs) {
+      add_counts(
+        maps, counts, univ_maps_[univ], univ_counts_[univ], n_tiles[univ]);
+    }
+
+    lat_state_[lat_indx] = State::DONE;
+  }
+
+  //! Store the offsets of the fill cells in a universe
+  void fill_universe_offsets(int32_t univ)
+  {
+    const auto& maps = univ_maps_[univ];
+    vector<int32_t> offsets(maps.size(), 0);
+    for (int32_t cell_indx : model::universes[univ]->cells_) {
+      Cell& c = *model::cells[cell_indx];
+      if (c.type_ == Fill::MATERIAL)
+        continue;
+      bool is_univ = c.type_ == Fill::UNIVERSE;
+      const auto& fill_maps =
+        is_univ ? univ_maps_[c.fill_] : lat_maps_[c.fill_];
+      const auto& fill_counts =
+        is_univ ? univ_counts_[c.fill_] : lat_counts_[c.fill_];
+      c.offset_index_ = store_offsets(maps, offsets, fill_maps);
+      add_counts(maps, offsets, fill_maps, fill_counts);
+    }
+  }
+
+  //! Store the offsets of the tiles in a lattice
+  void fill_lattice_offsets(int32_t lat_indx)
+  {
+    Lattice& lat = *model::lattices[lat_indx];
+    const auto& maps = lat_maps_[lat_indx];
+    vector<int32_t> offsets(maps.size(), 0);
+    lat.offset_index_.assign(lat.universes_.size(), C_NONE);
+    for (LatticeIter it = lat.begin(); it != lat.end(); ++it) {
+      lat.offset_index_[it.indx_] =
+        store_offsets(maps, offsets, univ_maps_[*it]);
+      add_counts(maps, offsets, univ_maps_[*it], univ_counts_[*it]);
+    }
+  }
+
+  //! Append the current offsets of a subset of maps to the global offsets
+  //! \return Index of the first appended offset
+  static int64_t store_offsets(const vector<int32_t>& maps,
+    const vector<int32_t>& offsets, const vector<int32_t>& subset)
+  {
+    int64_t start = model::distribcell_offsets.size();
+    for (int32_t m : subset) {
+      model::distribcell_offsets.push_back(offsets[position(maps, m)]);
+    }
+    return start;
+  }
+
+  //! Add the counts of a subset of maps, times a multiplicity, to counts
+  static void add_counts(const vector<int32_t>& maps, vector<int32_t>& counts,
+    const vector<int32_t>& subset, const vector<int32_t>& subset_counts,
+    int32_t multiplicity = 1)
+  {
+    for (int32_t i = 0; i < subset.size(); ++i) {
+      counts[position(maps, subset[i])] += multiplicity * subset_counts[i];
+    }
+  }
+
+  //! Position of a map in a sorted list of maps that contains it
+  static int32_t position(const vector<int32_t>& maps, int32_t map)
+  {
+    return std::lower_bound(maps.begin(), maps.end(), map) - maps.begin();
+  }
+
+  static void sort_unique(vector<int32_t>& v)
+  {
+    std::sort(v.begin(), v.end());
+    v.erase(std::unique(v.begin(), v.end()), v.end());
+  }
+
+  const vector<bool>& is_target_;
+  int32_t n_maps_ {0};
+  vector<int32_t> univ_map_;
+  vector<State> univ_state_;
+  vector<State> lat_state_;
+  // Sorted maps in each universe or lattice and their numbers of instances
+  vector<vector<int32_t>> univ_maps_;
+  vector<vector<int32_t>> univ_counts_;
+  vector<vector<int32_t>> lat_maps_;
+  vector<vector<int32_t>> lat_counts_;
+};
+
+} // namespace
+
 void prepare_distribcell(const std::vector<int32_t>* user_distribcells)
 {
   write_message("Preparing distributed cell instances...", 5);
@@ -404,56 +631,19 @@ void prepare_distribcell(const std::vector<int32_t>* user_distribcells)
     }
   }
 
-  // Search through universes for material cells and assign each one a
-  // distribcell array index according to the containing universe.
-  vector<int32_t> target_univ_ids;
-  for (const auto& u : model::universes) {
-    for (auto idx : u->cells_) {
-      if (distribcells.find(idx) != distribcells.end()) {
-        if (!contains(target_univ_ids, u->id_)) {
-          target_univ_ids.push_back(u->id_);
-        }
-        model::cells[idx]->distribcell_index_ =
-          std::find(target_univ_ids.begin(), target_univ_ids.end(), u->id_) -
-          target_univ_ids.begin();
-      }
-    }
+  // Each universe containing distributed cells gets a map, which numbers the
+  // instances of that universe.
+  vector<bool> is_target(model::universes.size(), false);
+  for (auto idx : distribcells) {
+    is_target[model::cells[idx]->universe_] = true;
   }
 
-  // Allocate the cell and lattice offset tables.
-  int n_maps = target_univ_ids.size();
-  for (auto& c : model::cells) {
-    if (c->type_ != Fill::MATERIAL) {
-      c->offset_.resize(n_maps, C_NONE);
-    }
-  }
-  for (auto& lat : model::lattices) {
-    lat->allocate_offset_table(n_maps);
-  }
+  DistribcellBuilder builder(is_target);
+  builder.build();
 
-// Fill the cell and lattice offset tables.
-#pragma omp parallel for
-  for (int map = 0; map < target_univ_ids.size(); map++) {
-    auto target_univ_id = target_univ_ids[map];
-    std::unordered_map<int32_t, int32_t> univ_count_memo;
-    for (const auto& univ : model::universes) {
-      int32_t offset = 0;
-      for (int32_t cell_indx : univ->cells_) {
-        Cell& c = *model::cells[cell_indx];
-
-        if (c.type_ == Fill::UNIVERSE) {
-          c.offset_[map] = offset;
-          int32_t search_univ = c.fill_;
-          offset += count_universe_instances(
-            search_univ, target_univ_id, univ_count_memo);
-
-        } else if (c.type_ == Fill::LATTICE) {
-          c.offset_[map] = offset;
-          Lattice& lat = *model::lattices[c.fill_];
-          offset += lat.fill_offset_table(target_univ_id, map, univ_count_memo);
-        }
-      }
-    }
+  for (auto idx : distribcells) {
+    Cell& c = *model::cells[idx];
+    c.distribcell_index_ = builder.map(c.universe_);
   }
 }
 
@@ -536,14 +726,10 @@ std::string distribcell_path_inner(int32_t target_cell, int32_t map,
   for (; cell_it != search_univ.cells_.crend(); ++cell_it) {
     Cell& c = *model::cells[*cell_it];
 
-    // Material cells don't contain other cells so ignore them.
-    if (c.type_ != Fill::MATERIAL) {
-      int32_t temp_offset = offset + c.offset_[map];
-      if (c.type_ == Fill::LATTICE) {
-        Lattice& lat = *model::lattices[c.fill_];
-        int32_t indx = lat.universes_.size() * map + lat.begin().indx_;
-        temp_offset += lat.offsets_[indx];
-      }
+    // Material cells don't contain other cells and other cells may not contain
+    // the target's universe, so ignore them.
+    if (c.type_ != Fill::MATERIAL && c.fill_layout().slot(map) != C_NONE) {
+      int32_t temp_offset = offset + c.offset(map);
 
       // The desired cell is the first cell that gives an offset smaller or
       // equal to the target offset.
@@ -567,7 +753,7 @@ std::string distribcell_path_inner(int32_t target_cell, int32_t map,
 
   if (c.type_ == Fill::UNIVERSE) {
     // Recurse into the fill cell.
-    offset += c.offset_[map];
+    offset += c.offset(map);
     path << distribcell_path_inner(
       target_cell, map, target_offset, *model::universes[c.fill_], offset);
     return path.str();
@@ -576,8 +762,9 @@ std::string distribcell_path_inner(int32_t target_cell, int32_t map,
     Lattice& lat = *model::lattices[c.fill_];
     path << "l" << lat.id_;
     for (ReverseLatticeIter it = lat.rbegin(); it != lat.rend(); ++it) {
-      int32_t indx = lat.universes_.size() * map + it.indx_;
-      int32_t temp_offset = offset + lat.offsets_[indx] + c.offset_[map];
+      if (model::universes[*it]->distribcell_layout_.slot(map) == C_NONE)
+        continue;
+      int32_t temp_offset = offset + lat.offset(map, it.indx_) + c.offset(map);
       if (temp_offset <= target_offset) {
         offset = temp_offset;
         path << "(" << lat.index_to_string(it.indx_) << ")->";
@@ -642,6 +829,7 @@ void free_memory_geometry()
 
   model::universes.clear();
   model::universe_map.clear();
+  model::distribcell_offsets.clear();
 
   model::lattices.clear();
   model::lattice_map.clear();

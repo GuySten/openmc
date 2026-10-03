@@ -45,13 +45,13 @@ void DistribcellFilter::get_all_bins(
   for (int i = 0; i < p.n_coord(); i++) {
     auto& c {*model::cells[p.coord(i).cell()]};
     if (c.type_ == Fill::UNIVERSE) {
-      offset += c.offset_[distribcell_index];
+      offset += c.offset(distribcell_index);
     } else if (c.type_ == Fill::LATTICE) {
       auto& lat {*model::lattices[p.coord(i + 1).lattice()]};
       const auto& i_xyz {p.coord(i + 1).lattice_index()};
       if (lat.are_valid_indices(i_xyz)) {
         offset +=
-          lat.offset(distribcell_index, i_xyz) + c.offset_[distribcell_index];
+          lat.offset(distribcell_index, i_xyz) + c.offset(distribcell_index);
       }
     }
     if (cell_ == p.coord(i).cell()) {

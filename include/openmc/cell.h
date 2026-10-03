@@ -39,6 +39,7 @@ constexpr int32_t OP_UNION {std::numeric_limits<int32_t>::max() - 4};
 //==============================================================================
 
 class Cell;
+class DistribcellLayout;
 class GeometryState;
 class ParentCell;
 class CellInstance;
@@ -288,6 +289,15 @@ public:
 
   int32_t n_instances() const;
 
+  //! Get the distributed cell maps that can be reached in a fill cell
+  const DistribcellLayout& fill_layout() const;
+
+  //! Get the distributed cell offset of a fill cell
+  //! \param[in] map Distributed cell map index
+  //! \return Number of instances of the map's universe in the cells before
+  //!   this one in its universe, or 0 if the map's universe isn't in the fill
+  int32_t offset(int32_t map) const;
+
   //! Set the rotation matrix of a cell instance
   //! \param[in] rot The rotation matrix of length 3 or 9
   void set_rotation(const vector<double>& rot);
@@ -410,7 +420,9 @@ public:
   //! also present at the end of the vector, making it of length 12.
   vector<double> rotation_;
 
-  vector<int32_t> offset_; //!< Distribcell offset table
+  //! Start of this cell's offsets in model::distribcell_offsets, with one
+  //! offset per map in the layout of the fill
+  int64_t offset_index_ {C_NONE};
 
   // Right now, either CSG or DAGMC cells are used.
   virtual GeometryType geom_type() const = 0;

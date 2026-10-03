@@ -45,6 +45,20 @@ int32_t Cell::n_instances() const
   return model::universes[universe_]->n_instances_;
 }
 
+const DistribcellLayout& Cell::fill_layout() const
+{
+  return type_ == Fill::UNIVERSE ? model::universes[fill_]->distribcell_layout_
+                                 : model::lattices[fill_]->distribcell_layout_;
+}
+
+int32_t Cell::offset(int32_t map) const
+{
+  int32_t slot = fill_layout().slot(map);
+  if (slot == C_NONE)
+    return 0;
+  return model::distribcell_offsets[offset_index_ + slot];
+}
+
 void Cell::set_rotation(const vector<double>& rot)
 {
   if (fill_ == C_NONE) {
@@ -1544,7 +1558,7 @@ struct ParentCellStack {
     for (const auto& parent_cell : this->parent_cells_) {
       auto& cell = model::cells[parent_cell.cell_index];
       if (cell->type_ == Fill::UNIVERSE) {
-        instance += cell->offset_[distribcell_index];
+        instance += cell->offset(distribcell_index);
       } else if (cell->type_ == Fill::LATTICE) {
         auto& lattice = model::lattices[cell->fill_];
         instance +=
@@ -1742,7 +1756,7 @@ void Cell::get_contained_cells_inner(
       for (auto& parent_cell : parent_cells) {
         auto& cell = model::cells[parent_cell.cell_index];
         if (cell->type_ == Fill::UNIVERSE) {
-          instance += cell->offset_[distribcell_index_];
+          instance += cell->offset(distribcell_index_);
         } else if (cell->type_ == Fill::LATTICE) {
           auto& lattice = model::lattices[cell->fill_];
           instance += lattice->offset(

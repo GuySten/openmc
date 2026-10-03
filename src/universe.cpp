@@ -11,8 +11,26 @@ namespace model {
 
 std::unordered_map<int32_t, int32_t> universe_map;
 vector<unique_ptr<Universe>> universes;
+vector<int32_t> distribcell_offsets;
 
 } // namespace model
+
+//==============================================================================
+// DistribcellLayout implementation
+//==============================================================================
+
+void DistribcellLayout::build(const vector<int32_t>& maps)
+{
+  runs_.clear();
+  for (int32_t i = 0; i < maps.size(); ++i) {
+    if (!runs_.empty() && maps[i] == runs_.back().first + runs_.back().n) {
+      ++runs_.back().n;
+    } else {
+      runs_.push_back({maps[i], 1, i});
+    }
+  }
+  size_ = maps.size();
+}
 
 //==============================================================================
 // Universe implementation

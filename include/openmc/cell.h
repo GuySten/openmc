@@ -135,10 +135,19 @@ private:
   //!
   //! Operator nodes are evaluated with short circuiting, skipping their
   //! remaining children as soon as one of them determines their value.
+  //! \param root Index of the node at the root of the subtree to evaluate
   //! \param in_halfspace Callable returning whether the point is in the
   //!   half-space of a HALFSPACE node given its halfspace value
   template<typename F>
-  bool evaluate(F&& in_halfspace) const;
+  bool evaluate(int32_t root, F&& in_halfspace) const;
+
+  //! Bounding box of the points where a node of the expression tree has the
+  //! given value
+  BoundingBox node_box(int32_t i, bool value) const;
+
+  //! Set up the boxes of the children of a root intersection, if it has
+  //! enough children that are false only within bounded boxes
+  void set_child_boxes();
 
   //! Signed surface index + 1 of a half-space of the expression tree
   int32_t surface_token(int32_t halfspace) const
@@ -155,6 +164,29 @@ private:
   std::pair<double, int32_t> distance_complex(
     Position r, Direction u, int32_t on_surface) const;
 
+  //! Find the first point along a ray where the value of a subtree changes.
+  //!
+  //! \param root Index of the node at the root of the subtree
+  //! \param slots Positions in the list of surfaces of the surfaces of the
+  //!   subtree, or nullptr for all surfaces
+  //! \param n_slots Number of slots
+  //! \param max_distance Distance beyond which the search stops
+  //! \param dist, sense, stale Scratch arrays indexed by slot
+  //! \param value Set to the value of the subtree at the start of the ray
+  //! \return Distance and signed surface index + 1 of the crossing, or INFTY
+  //!   if there is none within max_distance
+  std::pair<double, int32_t> distance_subtree(int32_t root,
+    const int32_t* slots, int n_slots, Position r, Direction u,
+    int32_t on_surface, double max_distance, double* dist, char* sense,
+    char* stale, bool& value) const;
+
+  //! Determine if a point is inside a region with child boxes
+  bool contains_children(Position r, Direction u, int32_t on_surface) const;
+
+  //! Find the oncoming boundary of a region with child boxes
+  std::pair<double, int32_t> distance_children(
+    Position r, Direction u, int32_t on_surface) const;
+
   //----------------------------------------------------------------------------
   // Private Data
 
@@ -169,6 +201,25 @@ private:
     //! Distinct surface indices + 1 of the half-spaces, in order of first
     //! appearance
     vector<int32_t> surfaces;
+
+    // A region that is the intersection of many children, such as the space
+    // outside of many objects, is accelerated using the boxes outside of
+    // which each child is known to be true. Only the children whose boxes
+    // contain a point or are crossed by a ray need to be evaluated. These
+    // vectors are empty for other regions.
+
+    //! Node indices of the children of the root intersection. Children that
+    //! are always evaluated come first, followed by children with boxes.
+    vector<int32_t> children;
+    //! Number of children that are always evaluated
+    int32_t n_unboxed {0};
+    //! Boxes outside of which the children with boxes are true, enlarged
+    //! slightly for roundoff
+    vector<BoundingBox> child_boxes;
+    //! Slots in surfaces of the surfaces of child k are
+    //! child_slots[slot_offsets[k]] to child_slots[slot_offsets[k + 1] - 1]
+    vector<int32_t> slot_offsets;
+    vector<int32_t> child_slots;
   };
 
   //! Data of a complex region (null for a simple region)

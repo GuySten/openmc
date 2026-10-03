@@ -2,9 +2,13 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "openmc/cell.h"
+#include "openmc/constants.h"
 #include "openmc/surface.h"
 
+#include <fmt/core.h>
 #include <pugixml.hpp>
+
+#include <random>
 
 namespace {
 
@@ -98,6 +102,63 @@ public:
     openmc::model::surfaces.clear();
     openmc::model::surface_map.clear();
   }
+};
+
+// Helper class for testing a region outside of many finite rods
+class RodsFixture {
+public:
+  static constexpr int N_RODS = 10;
+
+  RodsFixture()
+  {
+    pugi::xml_document doc;
+    auto add = [&](const char* type, std::string coeffs) {
+      int id = openmc::model::surfaces.size() + 1;
+      auto node = doc.append_child("surface");
+      node.append_attribute("id") = id;
+      node.append_attribute("type") = type;
+      node.append_attribute("coeffs") = coeffs.c_str();
+      if (type[0] == 'x') {
+        openmc::model::surfaces.push_back(
+          std::make_unique<openmc::SurfaceXPlane>(node));
+      } else if (type[0] == 'y') {
+        openmc::model::surfaces.push_back(
+          std::make_unique<openmc::SurfaceYPlane>(node));
+      } else if (type[2] == 'p') {
+        openmc::model::surfaces.push_back(
+          std::make_unique<openmc::SurfaceZPlane>(node));
+      } else {
+        openmc::model::surfaces.push_back(
+          std::make_unique<openmc::SurfaceZCylinder>(node));
+      }
+      openmc::model::surface_map[id] = id - 1;
+      return id;
+    };
+
+    // A box, and finite rods inside it, which may overlap
+    region_spec = fmt::format("{} -{} {} -{} {} -{}", add("x-plane", "-10"),
+      add("x-plane", "10"), add("y-plane", "-10"), add("y-plane", "10"),
+      add("z-plane", "-10"), add("z-plane", "10"));
+    std::mt19937 rng(1);
+    std::uniform_real_distribution<double> center(-7.0, 7.0);
+    for (int i = 0; i < N_RODS; ++i) {
+      double x = center(rng);
+      double y = center(rng);
+      double z = center(rng);
+      int cyl = add("z-cylinder", fmt::format("{} {} 1.5", x, y));
+      int bottom = add("z-plane", fmt::format("{}", z - 2.0));
+      int top = add("z-plane", fmt::format("{}", z + 2.0));
+      region_spec += fmt::format(" ({} | -{} | {})", cyl, bottom, top);
+    }
+  }
+
+  ~RodsFixture()
+  {
+    openmc::model::surfaces.clear();
+    openmc::model::surface_map.clear();
+  }
+
+  std::string region_spec;
 };
 
 } // anonymous namespace
@@ -236,4 +297,44 @@ TEST_CASE("Ignore roundoff-scale virtual surface crossings")
 
   REQUIRE(distance == Catch::Approx(603.9161175466262));
   REQUIRE(surface == 1);
+}
+
+TEST_CASE("Find boundary of a region outside of many objects")
+{
+  // The region is an intersection of enough children with bounded boxes for
+  // the boxes to be used. The boundary found along each ray must be where the
+  // ray leaves the region.
+  RodsFixture fixture;
+  openmc::Region region(fixture.region_spec, 0);
+
+  std::mt19937 rng(2);
+  std::uniform_real_distribution<double> coord(-9.9, 9.9);
+  std::uniform_real_distribution<double> mu(-1.0, 1.0);
+  std::uniform_real_distribution<double> phi(0.0, 2.0 * openmc::PI);
+  int n_inside = 0;
+  for (int i = 0; i < 20000; ++i) {
+    openmc::Position r {coord(rng), coord(rng), coord(rng)};
+    double cos_theta = mu(rng);
+    double sin_theta = std::sqrt(1.0 - cos_theta * cos_theta);
+    double angle = phi(rng);
+    openmc::Direction u {
+      sin_theta * std::cos(angle), sin_theta * std::sin(angle), cos_theta};
+    if (!region.contains(r, u, 0))
+      continue;
+    ++n_inside;
+
+    // The region is inside a box, so a boundary is always found
+    auto [distance, surface] = region.distance(r, u, 0);
+    REQUIRE(distance < openmc::INFTY);
+    REQUIRE(region.contains(r + (distance - 1e-6) * u, u, 0));
+    REQUIRE(!region.contains(r + (distance + 1e-6) * u, u, 0));
+
+    // The surface returned is the one crossed, with the sign of the side
+    // entered
+    openmc::Position hit = r + distance * u;
+    const auto& surf = *openmc::model::surfaces[std::abs(surface) - 1];
+    REQUIRE(std::abs(surf.evaluate(hit)) < 1e-6);
+    REQUIRE((surface > 0) == (u.dot(surf.normal(hit)) > 0.0));
+  }
+  REQUIRE(n_inside > 1000);
 }

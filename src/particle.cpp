@@ -354,6 +354,9 @@ void Particle::event_cross_surface()
     int i_lattice = coord(boundary().coord_level() - 1).lattice();
     bool verbose = settings::verbosity >= 10 || trace();
     cross_lattice(*this, boundary(), verbose);
+    if (settings::weight_window_checkpoint_surface) {
+      apply_weight_windows(*this);
+    }
     event() = TallyEvent::LATTICE;
 
     // Score cell to cell partial currents

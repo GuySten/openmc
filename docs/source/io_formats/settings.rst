@@ -1881,7 +1881,7 @@ following sub-elements/attributes:
 
   :surface:
     If set to "true", weight window checks will be performed at surface
-    crossings.
+    crossings, including crossings from one lattice element to another.
 
     *Default*: False
 

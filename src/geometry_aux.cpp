@@ -170,6 +170,10 @@ void partition_universes()
           }
         }
       }
+
+      // Otherwise, use a tree over the bounding boxes of the cells
+      if (!univ->partitioner_ && univ->geom_type() == GeometryType::CSG)
+        univ->build_cell_tree();
     }
   }
 }

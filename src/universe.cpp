@@ -39,6 +39,25 @@ void Universe::to_hdf5(hid_t universes_group) const
 
 bool Universe::find_cell(GeometryState& p) const
 {
+  if (has_cell_tree()) {
+    Position r {p.r_local()};
+    Position u {p.u_local()};
+    auto surf = p.surface();
+    auto check = [&](int32_t i_cell) {
+      if (model::cells[i_cell]->contains(r, u, surf)) {
+        p.lowest_coord().cell() = i_cell;
+        return true;
+      }
+      return false;
+    };
+    for (auto i_cell : unbounded_cells_) {
+      if (check(i_cell))
+        return true;
+    }
+    return cell_tree_.any_containing(
+      r, [&](int32_t item) { return check(tree_cells_[item]); });
+  }
+
   const auto& cells {
     !partitioner_ ? cells_ : partitioner_->get_cells(p.r_local(), p.u_local())};
 
@@ -57,6 +76,28 @@ bool Universe::find_cell(GeometryState& p) const
     }
   }
   return false;
+}
+
+void Universe::build_cell_tree()
+{
+  constexpr int MIN_BOUNDED_CELLS = 16;
+  vector<BoundingBox> boxes;
+  vector<int32_t> bounded;
+  vector<int32_t> unbounded;
+  for (auto i_cell : cells_) {
+    BoundingBox b = model::cells[i_cell]->bounding_box();
+    if (is_bounded(b)) {
+      bounded.push_back(i_cell);
+      boxes.push_back(b);
+    } else {
+      unbounded.push_back(i_cell);
+    }
+  }
+  if (bounded.size() < MIN_BOUNDED_CELLS)
+    return;
+  cell_tree_ = BoxTree(boxes);
+  tree_cells_ = std::move(bounded);
+  unbounded_cells_ = std::move(unbounded);
 }
 
 BoundingBox Universe::bounding_box() const

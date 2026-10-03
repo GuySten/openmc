@@ -545,6 +545,10 @@ void CSGCell::to_hdf5_inner(hid_t group_id) const
 
 namespace {
 
+//! Minimum number of children of an intersection that are false only within
+//! bounded boxes for the intersection to be searched with a tree
+constexpr int MIN_BOUNDED_CHILDREN = 8;
+
 //! Expression tree node used while parsing a region specification
 struct ParseNode {
   enum class Type { HALFSPACE, INTERSECTION, UNION };
@@ -765,10 +769,20 @@ Region::Region(std::string region_spec, int32_t cell_id)
   append(root, -1, append);
 
   // Store the half-spaces in order. A simple region is just their
-  // intersection, so its expression tree is not needed.
+  // intersection, so its expression tree is not needed unless the region is
+  // the space outside of many bounded objects, which is searched with a tree.
   for (const auto& node : nodes_) {
     if (node.type == Node::Type::HALFSPACE)
       halfspaces_.push_back(node.halfspace);
+  }
+  if (simple) {
+    int n_bounded = 0;
+    for (int32_t token : halfspaces_) {
+      const auto& surf = *model::surfaces[std::abs(token) - 1];
+      if (is_bounded(surf.bounding_box(token < 0)))
+        ++n_bounded;
+    }
+    simple = n_bounded < MIN_BOUNDED_CHILDREN;
   }
   if (simple) {
     nodes_.clear();
@@ -786,8 +800,84 @@ Region::Region(std::string region_spec, int32_t cell_id)
         surfaces_.push_back(i_surf);
       node.halfspace = node.halfspace > 0 ? slot : -slot;
     }
+    build_child_tree();
   }
   nodes_.shrink_to_fit();
+}
+
+//==============================================================================
+
+BoundingBox Region::node_box(int32_t i, bool value) const
+{
+  const Node& node = nodes_[i];
+  if (node.type == Node::Type::HALFSPACE) {
+    int32_t token = surface_token(node.halfspace);
+    return model::surfaces[abs(token) - 1]->bounding_box((token > 0) == value);
+  }
+  // An intersection is true, and a union is false, only where all of its
+  // children are
+  bool all = (node.type == Node::Type::INTERSECTION) == value;
+  BoundingBox bbox = all ? BoundingBox::infinite() : BoundingBox::inverted();
+  for (int32_t j = i + 1; j < node.end; j = nodes_[j].end) {
+    if (all) {
+      bbox &= node_box(j, value);
+    } else {
+      bbox |= node_box(j, value);
+    }
+  }
+  return bbox;
+}
+
+//==============================================================================
+
+void Region::build_child_tree()
+{
+  // Only an intersection with enough children whose false sets are bounded
+  // benefits from a tree
+  if (nodes_[0].type != Node::Type::INTERSECTION)
+    return;
+
+  vector<int32_t> children;
+  vector<BoundingBox> boxes;
+  vector<int32_t> bounded;
+  vector<int32_t> unbounded;
+  for (int32_t j = 1; j < nodes_[0].end; j = nodes_[j].end) {
+    int32_t k = children.size();
+    children.push_back(j);
+    BoundingBox b = node_box(j, false);
+    if (is_bounded(b)) {
+      bounded.push_back(k);
+      boxes.push_back(b);
+    } else if (nodes_[j].type == Node::Type::HALFSPACE) {
+      unbounded_halfspaces_.push_back(j);
+    } else {
+      unbounded.push_back(k);
+    }
+  }
+  if (bounded.size() < MIN_BOUNDED_CHILDREN) {
+    unbounded_halfspaces_.clear();
+    return;
+  }
+
+  children_ = std::move(children);
+  bounded_ = std::move(bounded);
+  unbounded_ = std::move(unbounded);
+  child_tree_ = BoxTree(boxes);
+
+  // Find the distinct surfaces of each child
+  slot_offsets_.push_back(0);
+  for (int32_t j : children_) {
+    int32_t first = child_slots_.size();
+    for (int32_t i = j; i < nodes_[j].end; ++i) {
+      if (nodes_[i].type != Node::Type::HALFSPACE)
+        continue;
+      int32_t slot = std::abs(nodes_[i].halfspace) - 1;
+      if (std::find(child_slots_.begin() + first, child_slots_.end(), slot) ==
+          child_slots_.end())
+        child_slots_.push_back(slot);
+    }
+    slot_offsets_.push_back(child_slots_.size());
+  }
 }
 
 //==============================================================================
@@ -829,12 +919,12 @@ std::string Region::str() const
 //==============================================================================
 
 template<typename F>
-bool Region::evaluate(F&& in_halfspace) const
+bool Region::evaluate(int32_t root, F&& in_halfspace) const
 {
   // Evaluate the expression tree without recursion: descend to the first
   // half-space of each operator node and, after evaluating a half-space, move
   // up the tree until reaching an operator node whose value is not yet known.
-  int32_t i = 0;
+  int32_t i = root;
   while (true) {
     // Descend to the first half-space in this subtree
     while (nodes_[i].type != Node::Type::HALFSPACE)
@@ -843,9 +933,9 @@ bool Region::evaluate(F&& in_halfspace) const
 
     // Move up the tree until reaching a node with children left to evaluate
     while (true) {
-      int32_t i_parent = nodes_[i].parent;
-      if (i_parent < 0)
+      if (i == root)
         return value;
+      int32_t i_parent = nodes_[i].parent;
       const Node& parent = nodes_[i_parent];
       bool intersection = parent.type == Node::Type::INTERSECTION;
       int32_t next = nodes_[i].end;
@@ -863,12 +953,14 @@ bool Region::evaluate(F&& in_halfspace) const
 //==============================================================================
 
 std::pair<double, int32_t> Region::distance(
-  Position r, Direction u, int32_t on_surface) const
+  Position r, Direction u, int32_t on_surface, double max_distance) const
 {
   if (nodes_.empty()) {
     return distance_to_nearest_surface(r, u, on_surface, false);
+  } else if (!children_.empty()) {
+    return distance_tree(r, u, on_surface, max_distance);
   } else {
-    return distance_complex(r, u, on_surface);
+    return distance_complex(r, u, on_surface, max_distance);
   }
 }
 
@@ -908,7 +1000,37 @@ std::pair<double, int32_t> Region::distance_to_nearest_surface(Position r,
 //==============================================================================
 
 std::pair<double, int32_t> Region::distance_complex(
-  Position r, Direction u, int32_t on_surface) const
+  Position r, Direction u, int32_t on_surface, double max_distance) const
+{
+  const int n = surfaces_.size();
+  constexpr int N_STACK = 32;
+  if (n <= N_STACK) {
+    array<double, N_STACK> dist;
+    array<char, N_STACK> sense;
+    array<char, N_STACK> stale;
+    bool value;
+    return distance_subtree(0, nullptr, n, r, u, on_surface, max_distance,
+      dist.data(), sense.data(), stale.data(), value);
+  }
+  thread_local vector<double> dist;
+  thread_local vector<char> sense;
+  thread_local vector<char> stale;
+  if (dist.size() < n) {
+    dist.resize(n);
+    sense.resize(n);
+    stale.resize(n);
+  }
+  bool value;
+  return distance_subtree(0, nullptr, n, r, u, on_surface, max_distance,
+    dist.data(), sense.data(), stale.data(), value);
+}
+
+//==============================================================================
+
+std::pair<double, int32_t> Region::distance_subtree(int32_t root,
+  const int32_t* slots, int n_slots, Position r, Direction u,
+  int32_t on_surface, double max_distance, double* dist, char* sense,
+  char* stale, bool& value) const
 {
   // The boundary is found by moving from one surface crossing to the next
   // along the ray until crossing a surface changes whether the ray is in the
@@ -920,25 +1042,6 @@ std::pair<double, int32_t> Region::distance_complex(
   // Distances updated by subtraction are only used to select the next
   // candidate surface; the distance to the candidate is recomputed from the
   // current position so that the result does not depend on roundoff.
-  const int n = surfaces_.size();
-  constexpr int N_STACK = 32;
-  array<double, N_STACK> dist_stack;
-  array<char, N_STACK> sense_stack;
-  array<char, N_STACK> stale_stack;
-  vector<double> dist_heap;
-  vector<char> sense_heap;
-  vector<char> stale_heap;
-  double* dist = dist_stack.data();
-  char* sense = sense_stack.data();
-  char* stale = stale_stack.data();
-  if (n > N_STACK) {
-    dist_heap.resize(n);
-    sense_heap.resize(n);
-    stale_heap.resize(n);
-    dist = dist_heap.data();
-    sense = sense_heap.data();
-    stale = stale_heap.data();
-  }
 
   // Evaluate the distance to and sense with respect to the surface in slot i.
   // If the ray is on the surface, its sense is given by on_surface.
@@ -951,15 +1054,16 @@ std::pair<double, int32_t> Region::distance_complex(
     stale[i] = false;
   };
   auto in_region_now = [&]() {
-    return evaluate([&](int32_t halfspace) {
+    return evaluate(root, [&](int32_t halfspace) {
       return sense[std::abs(halfspace) - 1] == (halfspace > 0);
     });
   };
 
-  for (int i = 0; i < n; ++i) {
-    evaluate_surface(i, on_surface);
+  for (int k = 0; k < n_slots; ++k) {
+    evaluate_surface(slots ? slots[k] : k, on_surface);
   }
   const bool in_region = in_region_now();
+  value = in_region;
   double total_distance {0.0};
 
   while (true) {
@@ -971,7 +1075,8 @@ std::pair<double, int32_t> Region::distance_complex(
     while (true) {
       min_dist = INFTY;
       i_min = -1;
-      for (int i = 0; i < n; ++i) {
+      for (int k = 0; k < n_slots; ++k) {
+        int i = slots ? slots[k] : k;
         double d = dist[i];
         if (on_surface != 0 && d < FP_COINCIDENT)
           continue;
@@ -997,13 +1102,17 @@ std::pair<double, int32_t> Region::distance_complex(
     // the wrong side of a curved surface.
     r += min_dist * u;
     total_distance += min_dist;
+    if (total_distance >= max_distance) {
+      return {INFTY, std::numeric_limits<int32_t>::max()};
+    }
     int32_t i_surf = surfaces_[i_min];
     if (u.dot(model::surfaces[i_surf - 1]->normal(r)) <= 0.0) {
       i_surf = -i_surf;
     }
 
     // Update the distances, and reevaluate the surfaces at the new position
-    for (int i = 0; i < n; ++i) {
+    for (int k = 0; k < n_slots; ++k) {
+      int i = slots ? slots[k] : k;
       dist[i] -= min_dist;
       stale[i] = true;
       if (i == i_min || dist[i] < TINY_BIT) {
@@ -1022,10 +1131,91 @@ std::pair<double, int32_t> Region::distance_complex(
 
 //==============================================================================
 
+std::pair<double, int32_t> Region::distance_tree(
+  Position r, Direction u, int32_t on_surface, double max_distance) const
+{
+  // The ray is normally in the region, so all children are true and the
+  // boundary is where the first of them becomes false. A child can only
+  // become false inside its box, so only the children whose boxes the ray
+  // enters before the nearest boundary found so far need to be searched.
+  const int n = surfaces_.size();
+  thread_local vector<double> dist;
+  thread_local vector<char> sense_buf;
+  thread_local vector<char> stale;
+  if (dist.size() < n) {
+    dist.resize(n);
+    sense_buf.resize(n);
+    stale.resize(n);
+  }
+
+  double min_dist = max_distance;
+  int32_t i_surf = std::numeric_limits<int32_t>::max();
+  bool all_true = true;
+  auto search = [&](int32_t k) {
+    bool value;
+    auto [d, s] =
+      distance_subtree(children_[k], child_slots_.data() + slot_offsets_[k],
+        slot_offsets_[k + 1] - slot_offsets_[k], r, u, on_surface, min_dist,
+        dist.data(), sense_buf.data(), stale.data(), value);
+    all_true &= value;
+    if (d < min_dist) {
+      min_dist = d;
+      i_surf = s;
+    }
+  };
+  // A half-space child becomes false where the ray crosses its surface
+  for (int32_t j : unbounded_halfspaces_) {
+    int32_t halfspace = nodes_[j].halfspace;
+    int32_t slot = std::abs(halfspace) - 1;
+    int32_t j_surf = surfaces_[slot];
+    const auto& surf {*model::surfaces[j_surf - 1]};
+    bool coincident = j_surf == std::abs(on_surface);
+    bool sense = coincident ? on_surface > 0 : surf.sense(r, u);
+    all_true &= sense == (halfspace > 0);
+    double d = surf.distance(r, u, coincident);
+    if ((on_surface != 0 && d < FP_COINCIDENT) || !(d < min_dist))
+      continue;
+    // Determine which side of the surface the ray enters, as is done for
+    // other children. If that does not show the ray leaving the half-space,
+    // search the child in general.
+    int32_t token = u.dot(surf.normal(r + d * u)) <= 0.0 ? -j_surf : j_surf;
+    if ((token > 0) != (halfspace > 0)) {
+      min_dist = d;
+      i_surf = token;
+    } else {
+      bool value;
+      auto [d_child, s_child] = distance_subtree(j, &slot, 1, r, u, on_surface,
+        min_dist, dist.data(), sense_buf.data(), stale.data(), value);
+      if (d_child < min_dist) {
+        min_dist = d_child;
+        i_surf = s_child;
+      }
+    }
+  }
+  for (int32_t k : unbounded_) {
+    search(k);
+  }
+  child_tree_.visit_ray(
+    r, u, min_dist, [&](int32_t item, double) { search(bounded_[item]); });
+
+  // If the ray does not start in the region, search the whole expression
+  if (!all_true) {
+    return distance_complex(r, u, on_surface, max_distance);
+  }
+  if (i_surf == std::numeric_limits<int32_t>::max()) {
+    return {INFTY, i_surf};
+  }
+  return {min_dist, i_surf};
+}
+
+//==============================================================================
+
 bool Region::contains(Position r, Direction u, int32_t on_surface) const
 {
   if (nodes_.empty()) {
     return contains_simple(r, u, on_surface);
+  } else if (!children_.empty()) {
+    return contains_tree(r, u, on_surface);
   } else {
     return contains_complex(r, u, on_surface);
   }
@@ -1058,7 +1248,7 @@ bool Region::contains_simple(Position r, Direction u, int32_t on_surface) const
 
 bool Region::contains_complex(Position r, Direction u, int32_t on_surface) const
 {
-  return evaluate([&](int32_t halfspace) {
+  return evaluate(0, [&](int32_t halfspace) {
     int32_t token = surface_token(halfspace);
     if (token == on_surface) {
       return true;
@@ -1068,6 +1258,35 @@ bool Region::contains_complex(Position r, Direction u, int32_t on_surface) const
       // Note the off-by-one indexing
       return model::surfaces[abs(token) - 1]->sense(r, u) == (token > 0);
     }
+  });
+}
+
+//==============================================================================
+
+bool Region::contains_tree(Position r, Direction u, int32_t on_surface) const
+{
+  auto in_halfspace = [&](int32_t halfspace) {
+    int32_t token = surface_token(halfspace);
+    if (token == on_surface) {
+      return true;
+    } else if (-token == on_surface) {
+      return false;
+    } else {
+      // Note the off-by-one indexing
+      return model::surfaces[abs(token) - 1]->sense(r, u) == (token > 0);
+    }
+  };
+  for (int32_t j : unbounded_halfspaces_) {
+    if (!in_halfspace(nodes_[j].halfspace))
+      return false;
+  }
+  for (int32_t k : unbounded_) {
+    if (!evaluate(children_[k], in_halfspace))
+      return false;
+  }
+  // Children whose boxes do not contain the point are true
+  return !child_tree_.any_containing(r, [&](int32_t item) {
+    return !evaluate(children_[bounded_[item]], in_halfspace);
   });
 }
 

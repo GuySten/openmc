@@ -301,6 +301,11 @@ bool neighbor_list_find_cell(GeometryState& p, bool verbose)
   auto i_cell = p.coord(coord_lvl).cell();
   Cell& c {*model::cells[i_cell]};
 
+  // In a universe with a tree over its cells, search the tree rather than a
+  // neighbor list, which could grow to include many of the cells
+  if (model::universes[c.universe_]->has_cell_tree())
+    return find_cell_inner(p, nullptr, verbose);
+
   // Search for the particle in that cell's neighbor list.  Return if we
   // found the particle.
   bool found = find_cell_inner(p, &c.neighbors_, verbose);
@@ -426,7 +431,7 @@ void cross_lattice(GeometryState& p, const BoundaryInfo& boundary, bool verbose)
 
 //==============================================================================
 
-BoundaryInfo distance_to_boundary(GeometryState& p)
+BoundaryInfo distance_to_boundary(GeometryState& p, double max_distance)
 {
   BoundaryInfo info;
   double d_lat = INFINITY;
@@ -442,7 +447,7 @@ BoundaryInfo distance_to_boundary(GeometryState& p)
     Cell& c {*model::cells[coord.cell()]};
 
     // Find the oncoming surface in this cell and the distance to it.
-    auto surface_distance = c.distance(r, u, p.surface(), &p);
+    auto surface_distance = c.distance(r, u, p.surface(), &p, max_distance);
     d_surf = surface_distance.first;
     level_surf_cross = surface_distance.second;
 

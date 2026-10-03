@@ -46,6 +46,18 @@ public:
   virtual GeometryType geom_type() const { return GeometryType::CSG; }
 
   unique_ptr<UniversePartitioner> partitioner_;
+
+  //! Build a tree over the bounding boxes of the cells, used to find the
+  //! cell containing a point in a universe with many cells
+  void build_cell_tree();
+
+  //! Whether the universe has a tree over its cells
+  bool has_cell_tree() const { return !cell_tree_.empty(); }
+
+private:
+  BoxTree cell_tree_;               //!< Tree over cells with bounded boxes
+  vector<int32_t> tree_cells_;      //!< Cell indices of the tree items
+  vector<int32_t> unbounded_cells_; //!< Cells not in the tree
 };
 
 //==============================================================================

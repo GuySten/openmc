@@ -12,6 +12,7 @@
 #include "pugixml.hpp"
 
 #include "openmc/bounding_box.h"
+#include "openmc/box_tree.h"
 #include "openmc/constants.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/neighbor_list.h"
@@ -81,8 +82,10 @@ public:
   bool contains(Position r, Direction u, int32_t on_surface) const;
 
   //! Find the oncoming boundary of this cell.
-  std::pair<double, int32_t> distance(
-    Position r, Direction u, int32_t on_surface) const;
+  //! \param max_distance Distance beyond which a boundary is not needed. If
+  //!   the boundary is not nearer, the distance returned may be INFTY.
+  std::pair<double, int32_t> distance(Position r, Direction u,
+    int32_t on_surface, double max_distance = INFTY) const;
 
   //! Get the BoundingBox for this cell.
   BoundingBox bounding_box() const;
@@ -137,8 +140,17 @@ private:
   //! remaining children as soon as one of them determines their value.
   //! \param in_halfspace Callable returning whether the point is in the
   //!   half-space of a HALFSPACE node given its halfspace value
+  //! \param root Index of the node at the root of the subtree to evaluate
   template<typename F>
-  bool evaluate(F&& in_halfspace) const;
+  bool evaluate(int32_t root, F&& in_halfspace) const;
+
+  //! Bounding box of the points where a node of the expression tree has the
+  //! given value
+  BoundingBox node_box(int32_t i, bool value) const;
+
+  //! Build the tree used to find the children of an intersection at the root
+  //! of the expression tree that are false near a point or along a ray.
+  void build_child_tree();
 
   //! Signed surface index + 1 of a half-space of the expression tree
   int32_t surface_token(int32_t halfspace) const
@@ -153,7 +165,28 @@ private:
 
   //! Find the oncoming boundary of this cell for a complex cell.
   std::pair<double, int32_t> distance_complex(
-    Position r, Direction u, int32_t on_surface) const;
+    Position r, Direction u, int32_t on_surface, double max_distance) const;
+
+  //! Find the first point along a ray where the value of a subtree changes.
+  //!
+  //! \param root Index of the node at the root of the subtree
+  //! \param slots Slots in surfaces_ of the surfaces of the subtree, or
+  //!   nullptr for all surfaces
+  //! \param n_slots Number of slots
+  //! \param max_distance Distance beyond which the search stops
+  //! \param dist, sense, stale Scratch arrays indexed by slot
+  //! \param value Set to the value of the subtree at the start of the ray
+  std::pair<double, int32_t> distance_subtree(int32_t root,
+    const int32_t* slots, int n_slots, Position r, Direction u,
+    int32_t on_surface, double max_distance, double* dist, char* sense,
+    char* stale, bool& value) const;
+
+  //! Determine if a point is inside a region with a child tree
+  bool contains_tree(Position r, Direction u, int32_t on_surface) const;
+
+  //! Find the oncoming boundary of a region with a child tree
+  std::pair<double, int32_t> distance_tree(
+    Position r, Direction u, int32_t on_surface, double max_distance) const;
 
   //----------------------------------------------------------------------------
   // Private Data
@@ -169,6 +202,32 @@ private:
   //! Distinct surface indices + 1 of the half-spaces of a complex region, in
   //! order of first appearance
   vector<int32_t> surfaces_;
+
+  // A region that is the intersection of many children, such as the space
+  // outside of many objects, is accelerated with a tree over the boxes outside
+  // of which each child is known to be true. Only the children whose boxes
+  // contain a point or are crossed by a ray need to be evaluated.
+
+  //! Node indices of the children of the root that have a child tree
+  vector<int32_t> children_;
+
+  //! Slots in surfaces_ used by each child are child_slots_[slot_offsets_[k]]
+  //! to child_slots_[slot_offsets_[k + 1]]
+  vector<int32_t> slot_offsets_;
+  vector<int32_t> child_slots_;
+
+  //! Positions in children_ of the children that are always evaluated,
+  //! other than half-spaces
+  vector<int32_t> unbounded_;
+
+  //! Node indices of the half-space children that are always evaluated
+  vector<int32_t> unbounded_halfspaces_;
+
+  //! Positions in children_ of the children in the tree, by tree item
+  vector<int32_t> bounded_;
+
+  //! Tree over the boxes of the bounded children
+  BoxTree child_tree_;
 };
 
 //==============================================================================
@@ -231,8 +290,11 @@ public:
   virtual bool contains(Position r, Direction u, int32_t on_surface) const = 0;
 
   //! Find the oncoming boundary of this cell.
-  virtual std::pair<double, int32_t> distance(
-    Position r, Direction u, int32_t on_surface, GeometryState* p) const = 0;
+  //! \param max_distance Distance beyond which a boundary is not needed. If
+  //!   the boundary is not nearer, the distance returned may be INFTY.
+  virtual std::pair<double, int32_t> distance(Position r, Direction u,
+    int32_t on_surface, GeometryState* p,
+    double max_distance = INFTY) const = 0;
 
   //! Write all information needed to reconstruct the cell to an HDF5 group.
   //! \param group_id An HDF5 group id.
@@ -452,9 +514,10 @@ public:
   int n_surfaces() const override { return region_.n_surfaces(); }
 
   std::pair<double, int32_t> distance(Position r, Direction u,
-    int32_t on_surface, GeometryState* p) const override
+    int32_t on_surface, GeometryState* p,
+    double max_distance = INFTY) const override
   {
-    return region_.distance(r, u, on_surface);
+    return region_.distance(r, u, on_surface, max_distance);
   }
 
   bool contains(Position r, Direction u, int32_t on_surface) const override

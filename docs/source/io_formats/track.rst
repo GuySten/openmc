@@ -4,7 +4,7 @@
 Track File Format
 =================
 
-The current revision of the particle track file format is 3.1.
+The current revision of the particle track file format is 3.2.
 
 **/**
 
@@ -34,3 +34,9 @@ The current revision of the particle track file format is 3.1.
                             array.
                           - **particles** (*int32_t[]*) -- Particle type for
                             each primary/secondary particle (PDG number).
+                          - **root_id** (*int64_t*) -- Particle number of the
+                            source particle at the root of the history. Only
+                            present when the dataset holds a secondary particle
+                            that is stored separately from that source
+                            particle, which happens when transporting with the
+                            shared secondary bank.

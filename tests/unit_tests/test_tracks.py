@@ -192,3 +192,110 @@ def test_restart_track(run_in_tmpdir, sphere_model):
 
     pytest.approx(restart_r, lost_r)
     pytest.approx(restart_u, lost_u)
+
+
+def _split_model():
+    """Model whose source particles are each split into five by a weight window
+    at a surface checkpoint, so that the copies are transported from the shared
+    secondary bank"""
+    openmc.reset_auto_ids()
+
+    # Void-like one-group material so the only weight window checks happen at
+    # surface crossings
+    groups = openmc.mgxs.EnergyGroups([0.0, 20.0e6])
+    xsdata = openmc.XSdata('void', groups)
+    xsdata.order = 0
+    xsdata.set_total([0.0])
+    xsdata.set_absorption([0.0])
+    xsdata.set_scatter_matrix([[[0.0]]])
+    mg_library = openmc.MGXSLibrary(groups)
+    mg_library.add_xsdata(xsdata)
+    mg_library.export_to_hdf5('mgxs.h5')
+
+    mat = openmc.Material()
+    mat.add_macroscopic('void')
+    materials = openmc.Materials([mat])
+    materials.cross_sections = 'mgxs.h5'
+
+    x_min = openmc.XPlane(-1.0, boundary_type='vacuum')
+    x_mid = openmc.XPlane(0.0)
+    x_max = openmc.XPlane(1.0, boundary_type='vacuum')
+    yz = openmc.model.RectangularPrism(2.0, 2.0, axis='x',
+                                       boundary_type='vacuum')
+    left = openmc.Cell(fill=mat, region=+x_min & -x_mid & -yz)
+    right = openmc.Cell(fill=mat, region=+x_mid & -x_max & -yz)
+    geometry = openmc.Geometry([left, right])
+
+    # The mesh plane lies inside the birth cell, so the surface x = 0 is
+    # entirely in the mesh element with the lower window
+    mesh = openmc.RectilinearMesh()
+    mesh.x_grid = [-1.0, -0.1, 1.0]
+    mesh.y_grid = [-1.0, 1.0]
+    mesh.z_grid = [-1.0, 1.0]
+    ww = openmc.WeightWindows(mesh, lower_ww_bounds=[0.5, 0.1],
+                              upper_ww_bounds=[1.5, 0.2])
+
+    settings = openmc.Settings()
+    settings.energy_mode = 'multi-group'
+    settings.run_mode = 'fixed source'
+    settings.particles = 10
+    settings.batches = 1
+    settings.source = openmc.IndependentSource(
+        space=openmc.stats.Point((-0.5, 0.0, 0.0)),
+        angle=openmc.stats.Monodirectional((1.0, 0.0, 0.0)),
+    )
+    settings.weight_windows = ww
+    settings.weight_window_checkpoints = {'collision': False, 'surface': True}
+    settings.shared_secondary_bank = True
+
+    return openmc.Model(geometry, materials, settings)
+
+
+def _check_shared_secondary_tracks(tracks, source_ids):
+    """Check that the tracks written are those of the given source particles
+    and the four split copies of each"""
+    sources = {t.identifier[2]: t for t in tracks if t.root_id is None}
+    secondaries = [t for t in tracks if t.root_id is not None]
+    assert set(sources) == set(source_ids)
+    assert len(secondaries) == 4*len(source_ids)
+
+    for track in tracks:
+        # Each dataset holds one particle, with no empty leading track
+        assert len(track) == 1
+        assert len(track[0].states) > 0
+
+    for track in secondaries:
+        # A split copy starts where its source particle crossed x = 0, with
+        # the weight it was given by the split
+        assert track.root_id in sources
+        state = track[0].states[0]
+        assert state['r']['x'] == pytest.approx(0.0)
+        assert state['wgt'] == pytest.approx(0.2)
+
+
+@pytest.mark.parametrize("event_based", [False, True])
+def test_shared_secondary_max_tracks(run_in_tmpdir, event_based):
+    # Only the source particles count toward max_tracks; the copies are written
+    # with the source particles whose tracks are written
+    model = _split_model()
+    model.settings.event_based = event_based
+    model.settings.max_tracks = 3
+    generate_track_file(model, tracks=True)
+
+    tracks = openmc.Tracks('tracks.h5')
+    source_ids = [t.identifier[2] for t in tracks if t.root_id is None]
+    if not config['mpi']:
+        assert len(source_ids) == 3
+    _check_shared_secondary_tracks(tracks, source_ids)
+
+
+@pytest.mark.parametrize("event_based", [False, True])
+def test_shared_secondary_track_identifiers(run_in_tmpdir, event_based):
+    # The copies of a source particle requested by its identifier are written
+    model = _split_model()
+    model.settings.event_based = event_based
+    model.settings.track = [(1, 1, 2), (1, 1, 7)]
+    generate_track_file(model)
+
+    tracks = openmc.Tracks('tracks.h5')
+    _check_shared_secondary_tracks(tracks, [2, 7])

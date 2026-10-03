@@ -760,8 +760,16 @@ void initialize_particle_track(
       p.id() == settings::trace_particle)
     p.trace() = true;
 
-  // Set particle track.
-  p.write_track() = check_track_criteria(p);
+  // Set particle track. A secondary from the shared secondary bank does not
+  // count toward the track limit: its track is written if the track of the
+  // source particle of its history is (see event_revive_from_secondary).
+  if (is_secondary) {
+    p.write_track() = false;
+  } else {
+    p.write_track() = check_track_criteria(p);
+    if (p.write_track() && settings::use_shared_secondary_bank)
+      record_track_root(p);
+  }
 
   // Set the particle's initial weight window value.
   if (!is_secondary) {
@@ -785,7 +793,8 @@ void initialize_particle_track(
     p.invalidate_neutron_xs();
   }
 
-  // Prepare to write out particle track.
+  // Prepare to write out particle track. For a secondary, the track is added
+  // once the particle is revived from its source site.
   if (p.write_track())
     add_particle_track(p);
 }
@@ -1074,6 +1083,7 @@ void transport_history_based_shared_secondary()
   if (!model::active_pulse_height_tallies.empty()) {
     init_pulse_height_buffers();
   }
+  reset_track_roots();
 
   if (mpi::master) {
     write_message(fmt::format(" Primary source          particles: {}",
@@ -1107,6 +1117,7 @@ void transport_history_based_shared_secondary()
   collect_sorted_history_secondary_banks(thread_banks);
   resolve_root_indices(simulation::shared_secondary_bank_write, nullptr);
   thread_banks.clear();
+  synchronize_track_roots();
 
   simulation::simulation_tracks_completed += settings::n_particles;
 
@@ -1222,6 +1233,7 @@ void transport_event_based_shared_secondary()
   if (!model::active_pulse_height_tallies.empty()) {
     init_pulse_height_buffers();
   }
+  reset_track_roots();
 
   if (mpi::master) {
     write_message(fmt::format(" Primary source          particles: {}",
@@ -1251,6 +1263,7 @@ void transport_event_based_shared_secondary()
     remaining_work -= n_particles;
     source_offset += n_particles;
   }
+  synchronize_track_roots();
 
   simulation::simulation_tracks_completed += settings::n_particles;
 

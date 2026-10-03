@@ -58,6 +58,13 @@ class Track(Sequence):
     ----------
     identifier : tuple
         Tuple of (batch, generation, particle number)
+    root_id : int or None
+        When the track of a secondary particle is stored separately from the
+        source particle of its history, which happens when transporting with
+        the shared secondary bank, the particle number of that source particle.
+        Otherwise None.
+
+        .. versionadded:: 0.16.1
     particle_tracks : list
         List of tuples containing (particle type, array of track states)
     sources : list
@@ -71,6 +78,8 @@ class Track(Sequence):
         offsets = dset.attrs['offsets']
         particles = dset.attrs['particles']
         self.identifier = _identifier(dset.name)
+        root_id = dset.attrs.get('root_id')
+        self.root_id = None if root_id is None else int(root_id)
 
         # Construct list of track histories
         tracks_list = []
@@ -145,6 +154,7 @@ class Track(Sequence):
         # Return new Track instance with only matching particle tracks
         track = type(self).__new__(type(self))
         track.identifier = self.identifier
+        track.root_id = self.root_id
         track.particle_tracks = matching
         return track
 

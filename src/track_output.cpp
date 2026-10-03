@@ -12,8 +12,10 @@
 #include <fmt/core.h>
 #include <hdf5.h>
 
-#include <cstddef> // for size_t
+#include <algorithm> // for lower_bound, sort
+#include <cstddef>   // for size_t
 #include <string>
+#include <utility> // for pair
 
 namespace openmc {
 
@@ -24,6 +26,18 @@ namespace openmc {
 hid_t track_file;     //! HDF5 identifier for track file
 hid_t track_dtype;    //! HDF5 identifier for track datatype
 int n_tracks_written; //! Number of tracks written
+
+namespace {
+
+//! (root index, particle ID) of each source particle whose track is being
+//! written, recorded on this rank while the source particles are transported
+//! with the shared secondary bank
+vector<std::pair<int64_t, int64_t>> pending_track_roots;
+
+//! Pairs recorded on all ranks, sorted by root index
+vector<std::pair<int64_t, int64_t>> track_roots;
+
+} // namespace
 
 //==============================================================================
 // Non-member functions
@@ -146,6 +160,15 @@ void finalize_particle_track(Particle& p)
     write_attribute(dset, "offsets", offsets);
     write_attribute(dset, "particles", particles);
 
+    // With the shared secondary bank, a secondary is written to its own
+    // dataset; link it to the dataset of the source particle of its history
+    if (settings::use_shared_secondary_bank) {
+      int64_t root_id = track_root_id(p.root_index());
+      if (root_id >= 0 && root_id != p.id()) {
+        write_attribute(dset, "root_id", root_id);
+      }
+    }
+
     // Free resources
     H5Dclose(dset);
     H5Sclose(dspace);
@@ -153,6 +176,63 @@ void finalize_particle_track(Particle& p)
 
   // Clear particle tracks
   p.tracks().clear();
+}
+
+void reset_track_roots()
+{
+  pending_track_roots.clear();
+  track_roots.clear();
+}
+
+void record_track_root(const Particle& p)
+{
+#pragma omp critical(RecordTrackRoot)
+  pending_track_roots.emplace_back(p.root_index(), p.id());
+}
+
+void synchronize_track_roots()
+{
+  track_roots = pending_track_roots;
+  pending_track_roots.clear();
+
+#ifdef OPENMC_MPI
+  if (mpi::n_procs > 1) {
+    // Flatten pairs and gather them from all ranks
+    vector<int64_t> send;
+    for (const auto& [root, id] : track_roots) {
+      send.push_back(root);
+      send.push_back(id);
+    }
+    int n_send = send.size();
+    vector<int> counts(mpi::n_procs);
+    MPI_Allgather(
+      &n_send, 1, MPI_INT, counts.data(), 1, MPI_INT, mpi::intracomm);
+    vector<int> displs(mpi::n_procs, 0);
+    for (int i = 1; i < mpi::n_procs; ++i) {
+      displs[i] = displs[i - 1] + counts[i - 1];
+    }
+    vector<int64_t> recv(displs.back() + counts.back());
+    MPI_Allgatherv(send.data(), n_send, MPI_INT64_T, recv.data(), counts.data(),
+      displs.data(), MPI_INT64_T, mpi::intracomm);
+
+    track_roots.clear();
+    for (std::size_t i = 0; i < recv.size(); i += 2) {
+      track_roots.emplace_back(recv[i], recv[i + 1]);
+    }
+  }
+#endif
+
+  std::sort(track_roots.begin(), track_roots.end());
+}
+
+int64_t track_root_id(int64_t root_index)
+{
+  auto it = std::lower_bound(track_roots.begin(), track_roots.end(), root_index,
+    [](const auto& a, int64_t root) { return a.first < root; });
+  if (it != track_roots.end() && it->first == root_index) {
+    return it->second;
+  }
+  return -1;
 }
 
 } // namespace openmc

@@ -535,6 +535,10 @@ void Particle::event_revive_from_secondary(const SourceSite& site)
   // initialize_particle_track(), since the whole tree is transported here.
   if (settings::use_shared_secondary_bank) {
     root_index() = site.root_index();
+
+    // The secondary is written to its own track dataset if the track of the
+    // source particle of its history is being written
+    write_track() = track_root_id(root_index()) >= 0;
   }
 
   n_event() = 0;

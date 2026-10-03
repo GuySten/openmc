@@ -447,7 +447,9 @@ The ``<max_secondaries>`` element indicates the maximum secondary bank size.
 ------------------------
 
 The ``<max_tracks>`` element indicates the maximum number of tracks written to a
-track file (per MPI process).
+track file (per MPI process). When transporting with the shared secondary bank,
+the tracks of secondary particles are written if the track of the source
+particle of their history is, and do not count toward this limit.
 
   *Default*: 1000
 

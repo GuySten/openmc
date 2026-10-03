@@ -1018,6 +1018,13 @@ void apply_weight_window(Particle& p, WeightWindow weight_window)
     if (p.n_split() >= settings::max_history_splits)
       return;
 
+    // Do not split a particle in a void (i.e., when a surface checkpoint is
+    // entering a void cell). The copies would share position and direction
+    // until they reach material, so splitting only multiplies void tracking
+    // and the copies may be rouletted again when they leave the void.
+    if (p.material() == MATERIAL_VOID)
+      return;
+
     // Dividing by the same dead-banded bound used in the branch condition
     // keeps the number of splits stable when the weight-to-bound ratio sits
     // within rounding of an exact integer, which the weight window arithmetic

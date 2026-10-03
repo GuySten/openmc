@@ -1881,7 +1881,9 @@ following sub-elements/attributes:
 
   :surface:
     If set to "true", weight window checks will be performed at surface
-    crossings.
+    crossings. A particle entering a void cell may be rouletted but is not
+    split, since the resulting copies would be identical until they reach
+    material.
 
     *Default*: False
 

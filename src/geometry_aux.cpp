@@ -353,10 +353,16 @@ void prepare_distribcell(const std::vector<int32_t>* user_distribcells)
     }
   }
 
-  // By default, add material cells to the list of distributed cells
+  // By default, add material cells to the list of distributed cells. A cell in
+  // a universe with at most one instance always has instance 0 and needs no
+  // offsets. Leaving such cells out matters for models with many universes
+  // used once, since the offset tables have an entry for every fill cell and
+  // lattice element per universe containing distributed cells.
   if (settings::material_cell_offsets) {
     for (int64_t i = 0; i < model::cells.size(); ++i) {
-      if (model::cells[i]->type_ == Fill::MATERIAL)
+      const Cell& c = *model::cells[i];
+      if (c.type_ == Fill::MATERIAL &&
+          model::universes[c.universe_]->n_instances_ > 1)
         distribcells.insert(i);
     }
   }

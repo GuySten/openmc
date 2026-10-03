@@ -202,7 +202,7 @@ TEST_CASE("Regions outside of many objects")
       auto r = random_point(rng, -12.0, 12.0);
       auto u = random_direction(rng);
 
-      bool expected = true;
+      bool expected = r.norm() < 20.0;
       for (int i = 0; i < N; ++i) {
         if (fixture.in_sphere(i, r) && (!c.lower_halves || r.z < 0.0))
           expected = false;

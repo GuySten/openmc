@@ -722,10 +722,14 @@ counting.
    maximum photon energy of the problem to prevent it, and lowers the maximum
    electron and positron energy as well when thick-target bremsstrahlung is in
    use. A warning at startup names the nuclide and reaction responsible.
-   Source particles above the resulting limit are rejected, so a bremsstrahlung
+   A source particle above the resulting limit, whether sampled from a source
+   distribution or read from a source file, stops the run, so a bremsstrahlung
    calculation whose beam energy is too high for the available neutron data
-   will fail immediately rather than under-report photoneutrons. Modelling such
+   fails immediately rather than under-reporting photoneutrons. Modelling such
    a case requires neutron data covering the photonuclear energy range.
+   Alternatively, setting the maximum neutron energy in
+   :attr:`Settings.energy_max` to at most the top of the neutron data removes
+   the limit, at the cost of killing the photoneutrons produced above it.
 
 --------------------------
 Generation of Output Files

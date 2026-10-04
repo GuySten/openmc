@@ -32,6 +32,7 @@ std::unordered_map<std::string, int> photonuclear_map;
 vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 double photonuclear_energy_min;
 double photonuclear_energy_max;
+array<bool, 4> photonuclear_energy_limited {false, false, false, false};
 
 } // namespace data
 

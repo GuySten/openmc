@@ -1,6 +1,7 @@
 #ifndef OPENMC_PHOTONUCLEAR_H
 #define OPENMC_PHOTONUCLEAR_H
 
+#include "openmc/array.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -155,6 +156,11 @@ extern std::unordered_map<std::string, int> photonuclear_map;
 extern vector<unique_ptr<PhotonuclearInteraction>> photonuclears;
 extern double photonuclear_energy_min;
 extern double photonuclear_energy_max;
+
+//! Whether the maximum transport energy of each particle type (indexed by
+//! transport_index()) was lowered at initialization so that no photoneutron
+//! can exceed the upper limit of the neutron transport data
+extern array<bool, 4> photonuclear_energy_limited;
 
 } // namespace data
 

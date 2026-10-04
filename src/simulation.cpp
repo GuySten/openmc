@@ -865,6 +865,7 @@ void initialize_data()
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
   data::photonuclear_energy_min = INFTY;
+  data::photonuclear_energy_limited = {false, false, false, false};
 
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
@@ -988,9 +989,10 @@ void initialize_data()
       if (E_safe < data::energy_max[photon]) {
         // Cap the photon transport ceiling so that no photon capable of
         // producing an untransportable neutron can exist in the first place.
-        // Source sampling already enforces data::energy_max, so this makes the
-        // situation a configuration error caught up front rather than a silent
-        // loss of photoneutrons during transport.
+        // Source sampling stops the run for a source particle above it (see
+        // check_photonuclear_energy_limit()), so this makes the situation a
+        // configuration error caught up front rather than a silent loss of
+        // photoneutrons during transport or a silently truncated source.
         warning(fmt::format(
           "Photonuclear data extends to {:.4g} eV, but photons above {:.4g} eV "
           "can produce neutrons beyond the {:.4g} eV upper limit of the "
@@ -998,7 +1000,7 @@ void initialize_data()
           "maximum photon energy is therefore reduced from {:.4g} eV to "
           "{:.4g} eV, and the maximum electron and positron energy is limited "
           "to the same value when thick-target bremsstrahlung is enabled. "
-          "Sources above this energy will be rejected. To model higher "
+          "A source particle above this energy stops the run. To model higher "
           "energies, use neutron data covering the photonuclear energy range. "
           "Alternatively, setting the maximum neutron energy "
           "(Settings.energy_max) to at most {:.4g} eV lifts this restriction, "
@@ -1009,6 +1011,7 @@ void initialize_data()
           data::energy_max[neutron]));
 
         data::energy_max[photon] = E_safe;
+        data::photonuclear_energy_limited[photon] = true;
 
         // Bremsstrahlung photons are created up to the energy of the electron
         // that produced them, and are not checked against the photon ceiling
@@ -1018,13 +1021,16 @@ void initialize_data()
         // against data::energy_max[electron]: that is the bremsstrahlung grid
         // limit from the photon library, which is far above any realistic beam
         // energy, so comparing to it would reject every TTB calculation.
-        // Source sampling enforces data::energy_max, so a monoenergetic beam
-        // above the limit is reported as an error before transport begins.
+        // Source sampling stops the run for a source particle above the
+        // limit, so a beam above it is reported as an error before transport.
         if (settings::electron_treatment == ElectronTreatment::TTB) {
           int electron = ParticleType::electron().transport_index();
           int positron = ParticleType::positron().transport_index();
           for (int t : {electron, positron}) {
-            data::energy_max[t] = std::min(data::energy_max[t], E_safe);
+            if (E_safe < data::energy_max[t]) {
+              data::energy_max[t] = E_safe;
+              data::photonuclear_energy_limited[t] = true;
+            }
           }
         }
       }

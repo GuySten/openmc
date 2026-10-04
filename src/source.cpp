@@ -31,6 +31,7 @@
 #include "openmc/message_passing.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
+#include "openmc/photonuclear.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/search.h"
@@ -182,6 +183,34 @@ void Source::read_constraints(pugi::xml_node node)
         "Unrecognized strategy source rejection: " + rejection_strategy));
     }
   }
+}
+
+void check_photonuclear_energy_limit(ParticleType type, double E)
+{
+  // The maximum energy of photons, and of electrons and positrons under
+  // thick-target bremsstrahlung, may have been lowered at initialization so
+  // that no photoneutron can exceed the neutron transport data (see
+  // initialize_data()). Rejecting and resampling a source particle above that
+  // limit would silently remove the top of the source spectrum, where
+  // photoneutron production is largest, while results stay normalized per
+  // source particle. Treat it as a configuration error instead. A particle that
+  // the user-specified maximum energy (settings::energy_max) kills at birth is
+  // left to that setting.
+  int i = type.transport_index();
+  if (i == C_NONE || !data::photonuclear_energy_limited[i])
+    return;
+  if (E <= data::energy_max[i] || E > settings::energy_max[i])
+    return;
+
+  int neutron = ParticleType::neutron().transport_index();
+  fatal_error(fmt::format(
+    "Source {0} of {1:.6g} eV is above the maximum {0} energy of {2:.6g} eV, "
+    "which was lowered at initialization so that no photoneutron can exceed "
+    "the {3:.6g} eV upper limit of the neutron transport data. To model this "
+    "source, use neutron data covering the photonuclear energy range, or set "
+    "the maximum neutron energy (Settings.energy_max) to at most {3:.6g} eV, "
+    "which kills the photoneutrons produced above it.",
+    type.str(), E, data::energy_max[i], data::energy_max[neutron]));
 }
 
 void check_rejection_fraction(int64_t n_reject, int64_t n_accept)
@@ -437,6 +466,9 @@ SourceSite IndependentSource::sample(uint64_t* seed) const
     auto energy_ptr = dynamic_cast<Discrete*>(energy_.get());
     auto decay_spectrum = dynamic_cast<DecaySpectrum*>(energy_.get());
     if (energy_ptr) {
+      for (double E : energy_ptr->x()) {
+        check_photonuclear_energy_limit(particle_, E);
+      }
       auto energies =
         tensor::Tensor<double>(energy_ptr->x().data(), energy_ptr->x().size());
       if ((energies > data::energy_max[p]).any()) {
@@ -459,7 +491,9 @@ SourceSite IndependentSource::sample(uint64_t* seed) const
         E_wgt = E_wgt_temp;
       }
 
-      // Resample if energy falls above maximum particle energy
+      // Resample if energy falls above maximum particle energy, unless that
+      // maximum was lowered for photonuclear physics
+      check_photonuclear_energy_limit(particle_, site.E);
       if (site.E < data::energy_max[p] &&
           (satisfies_energy_constraints(site.E)))
         break;
@@ -1212,6 +1246,10 @@ SourceSite sample_external_source(uint64_t* seed)
 
   // Sample source site from i-th source distribution
   SourceSite site {model::external_sources[i]->sample_with_constraints(seed)};
+
+  // File and compiled sources do not check the energy against the maximum
+  // particle energy themselves
+  check_photonuclear_energy_limit(site.particle, site.E);
 
   // For uniform source sampling, multiply the weight by the ratio of the actual
   // probability of sampling source i to the biased probability of sampling

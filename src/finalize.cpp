@@ -18,6 +18,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/plot.h"
 #include "openmc/random_lcg.h"
 #include "openmc/random_ray/random_ray_simulation.h"
@@ -185,6 +186,7 @@ int openmc_finalize()
   simulation::ufs_mesh = nullptr;
 
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
+  data::photonuclear_energy_limited = {false, false, false, false};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
   data::temperature_min = INFTY;
   data::temperature_max = 0.0;

@@ -868,10 +868,16 @@ reaction responsible. When thick-target bremsstrahlung is enabled, the electron
 and positron limits are lowered to the same value, since bremsstrahlung photons
 are produced up to the energy of the electron that created them.
 
-Source particles above these limits are rejected, so an unsupported
-configuration is reported before transport begins rather than silently losing
-photoneutrons. Modelling higher photon energies requires neutron data covering
-the photonuclear energy range.
+A source particle above these limits, whether sampled from a source
+distribution or read from a source file, stops the run. Rejecting and
+resampling it instead would silently remove the top of the source spectrum,
+where photoneutron production is largest, while results stay normalized per
+source particle. Modelling higher photon energies requires neutron data covering
+the photonuclear energy range. Alternatively, when the user-specified maximum
+neutron energy (:attr:`Settings.energy_max`) is at or below the top of the
+neutron data, the limits are not lowered and photoneutrons above that energy
+are killed when they are created; their energy is neither transported nor
+deposited.
 
 -------------------
 Secondary Processes

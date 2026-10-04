@@ -157,7 +157,7 @@ fission.
 ``<cutoff>`` Element
 --------------------
 
-The ``<cutoff>`` element indicates three kinds of cutoffs. The first is the
+The ``<cutoff>`` element indicates four kinds of cutoffs. The first is the
 weight cutoff used below which particles undergo Russian roulette. Surviving
 particles are assigned a user-determined weight. Note that weight cutoffs and
 Russian rouletting are not turned on by default. The second is the energy cutoff
@@ -165,7 +165,14 @@ which is used to kill particles under certain energy. The energy cutoff should
 not be used unless you know particles under the energy are of no importance to
 results you care. The third is the time cutoff used to kill particles whose time
 exceeds a specific cutoff. Particles will be killed exactly at the specified
-time.
+time. The fourth bounds how far one condensed-history step of a charged
+particle may run, in deflection and in energy loss. Those two carry no particle
+name: they say how finely a step is integrated rather than which particles
+matter, so one value serves every charged particle the transport follows. The
+bare name is defined as that shared value rather than as the only form it may
+take, so should some future species need its own, it can be given one the way
+``energy_photon`` sits beside ``energy_neutron``, and inputs written today go
+on meaning what they mean now.
 
   :weight:
     The weight below which particles undergo Russian roulette.
@@ -198,12 +205,18 @@ time.
   :energy_electron:
     The energy under which electrons will be killed.
 
-    *Default*: 0.0
+    *Default*: 1000.0, the same as photons. A 1 keV electron travels some tens
+    of nanometres, so nothing is displaced by stopping it there, and following
+    one to the bottom of the data is both slow and beyond where the physics is
+    meant to be used. The value also decides how much a condensed-history step
+    may group, since a collision may be grouped only when nothing it produces
+    would have been transported: at zero, nothing inelastic is ever grouped.
 
   :energy_positron:
     The energy under which positrons will be killed.
 
-    *Default*: 0.0
+    *Default*: 1000.0. A positron reaching it annihilates at rest rather than
+    being discarded, so its two 511 keV photons are still produced.
 
   :time_neutron
     The time above which neutrons will be killed.
@@ -225,6 +238,93 @@ time.
 
     *Default*: Infinity
 
+  :deflection:
+    Largest deflection the collisions grouped into one step may accumulate,
+    measured as :math:`\langle 1-\mu \rangle`: zero for a step that does not
+    turn the particle at all, one for a step that leaves it with no memory of
+    the direction it came from. It cuts elastic scattering into a grouped part
+    and a part transported one collision at a time, and it bounds how far one
+    step may run. Setting it to zero groups nothing, which is single-event
+    transport. The inelastic channels are cut by the energy cutoffs above
+    rather than by anything set here, since a collision may be grouped only
+    when nothing it produces would have been transported anyway.
+
+    Raising those cutoffs therefore lets more be grouped, but only up to a
+    point: a grouped event may not carry more than a tenth of what the step
+    itself may lose, since the step describes its energy by a mean and a
+    variance and one transfer of that size would leave both in the hands of a
+    single event. That ceiling is a fraction of the kinetic energy, not of the
+    cutoff, so past roughly ``energy_loss/10`` of the projectile's energy a
+    higher cutoff stops buying more grouping. It still saves the transport of
+    whatever it kills.
+
+    *Default*: 0.01, chosen so that a run nobody has checked for convergence is
+    right rather than fast. Measured against single-event transport on a depth
+    dose in carbon over twenty bins, it leaves no systematic anywhere: at 1 MeV
+    the worst bin is 2.3 standard errors and at 100 keV every step declines to
+    group at all, so the two runs agree exactly. The cost is speed -- at 1 MeV
+    the same problem runs 3.4 times faster than single event where 0.05 would
+    run 8.3 times faster and still show nothing at that energy. Raise it if
+    your own convergence test says you may; PENELOPE's own advice, for the same
+    parameter, is to test before raising it.
+
+    A heavier charged particle deflects far less per unit path, so this bound
+    would simply stop binding for one and the energy bound would decide every
+    step; that is the pair working, not failing, but the number itself is an
+    electron's. Values above 0.2 are reduced to it with a warning, past which a
+    step is no longer describing a path; PENELOPE caps its :math:`C_1` at the
+    same place.
+
+  :energy_loss:
+    Largest fraction of its kinetic energy a particle may give the grouped
+    collisions of one step, which keeps the restricted stopping power evaluated
+    near the energy it belongs to. A step is never allowed to carry a particle
+    below the energy cutoff of its own kind either, nor to let one grouped
+    collision carry more than a tenth of this.
+
+    *Default*: 0.01, the same as ``deflection`` and for the same reason. It
+    binds twice: on how far a step may run, and, through the tenth of it that
+    caps a single grouped transfer, on how much of each channel may be grouped
+    at all. Loosening it therefore buys more speed than the step length alone
+    suggests, and costs more accuracy. Capped at 0.2, where PENELOPE caps its
+    :math:`C_2`.
+
+One limitation follows from how a step deposits what it loses. The grouped loss
+of each leg is deposited at a point drawn uniformly inside that leg, which
+gives the profile of a constant deposition rate along the path but not its
+shape, so a ``heating`` tally on a mesh much finer than the step length sees a
+deposition that is spread correctly on average and not within one step; step
+lengths are tens of microns in a dense high-Z target and much longer in a light
+one. Separately, and true of OpenMC's charged particles generally rather than
+of condensed history, the collision and analog estimators score no flux for a
+charged particle, so a flux tally over electrons or positrons needs
+``estimator="tracklength"`` and silently reads zero otherwise.
+
+----------------------------------
+``<bremsstrahlung_split>`` Element
+----------------------------------
+
+The ``<bremsstrahlung_split>`` element gives the number of photons emitted per
+radiative event, each carrying the emitting particle's weight divided by that
+number. It is a variance reduction for problems whose answer depends on the
+spectrum or the direction of the photons charged particles radiate, rather
+than only on how much energy they carry away, and particularly where the part
+of the spectrum that matters is a tail that analog emission reaches too
+rarely.
+
+The emissions are drawn independently rather than copied, so splitting buys
+tries at reaching that tail rather than copies of one photon, and draws that
+fall below the photon transport cutoff are discarded without being followed up.
+The emitting particle loses the first draw, which is one unbiased sample of
+what a single emission takes, so its own history stays fair while the photon
+field is right in expectation. Energy is then conserved in the mean rather than
+event by event.
+
+Ignored, with a warning, when ``<electron_transport>`` is not enabled: nothing
+radiates that there is anything to split.
+
+  *Default*: 1, which is no splitting and is bit-for-bit the unsplit transport
+
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------
@@ -242,9 +342,72 @@ from MF=1, MT=458 on an ENDF evaluation.
 
 When photon transport is enabled, the ``<electron_treatment>`` element tells
 OpenMC whether to deposit all energy from electrons locally (``led``) or create
-secondary bremsstrahlung photons (``ttb``).
+secondary bremsstrahlung photons (``ttb``). It is ignored, with a warning, when
+:ref:`electron_transport` is enabled, since bremsstrahlung is then sampled one
+photon at a time.
 
   *Default*: ttb
+
+.. _density_effect:
+
+-----------------------------
+``<density_effect>`` Element
+-----------------------------
+
+The ``<density_effect>`` element indicates whether the Sternheimer
+density-effect correction is applied to the collision stopping power of
+electrons and positrons. It is solved per material from the same oscillator
+model the recoil model uses, against the mean excitation energy of the medium.
+
+Setting it to false is not a physical choice. The screening is real, and
+leaving it out gives the collision stopping power of the free atom -- too high
+by 0.23 MeV cm^2/g in copper at 16 MeV, a sixth of the whole -- so a run that
+disables it is not simulating the material it names. OpenMC warns when it is
+switched off.
+
+It exists for the Fano cavity test, which is the stringent check on a
+condensed-history implementation. Fano's theorem holds that a medium of
+uniform composition and arbitrary density, under a source of charged particles
+uniform per unit mass, deposits the same energy per unit mass everywhere,
+whatever the density. That makes the ratio between a cavity and its
+surroundings a pure measure of the transport algorithm -- of the path-length
+correction, the boundary crossing and the grouped step -- with no experimental
+data needed. The theorem holds only while the mass stopping power is
+independent of density, and the density effect is exactly the term that breaks
+it, so the test requires this element to be false. Setting it false removes
+the plasma term from the oscillator resonance energies as well as the
+correction itself: both are the medium's response to its own density, and
+leaving either in place keeps the mass stopping power density dependent and
+the theorem's premise unmet.
+
+  *Default*: true
+
+  .. versionadded:: 0.17.0
+
+.. _electron_transport:
+
+--------------------------------
+``<electron_transport>`` Element
+--------------------------------
+
+The ``<electron_transport>`` element indicates whether electrons and positrons
+are transported as individual particles rather than having their energy
+deposited locally or spread by the thick-target approximation. Every
+interaction is simulated as a discrete event: elastic scattering from
+partial-wave cross sections, electroionization, atomic excitation,
+bremsstrahlung, and for positrons Bhabha scattering and in-flight
+annihilation. Interactions too small to be worth following one at a time are
+grouped into a condensed-history step, which the ``deflection`` cutoff controls and
+can switch off.
+
+This requires photon transport, which is enabled automatically with a warning
+if it was not requested, and it requires an electron data library in the cross
+section listing. It is considerably more expensive than either of the
+``<electron_treatment>`` options and is intended for problems where the
+electron's own path matters -- depth dose, thin targets, interface dosimetry --
+rather than for shielding calculations.
+
+  *Default*: false
 
 .. _energy_mode:
 

@@ -1,6 +1,9 @@
 #ifndef OPENMC_PHOTON_H
 #define OPENMC_PHOTON_H
 
+#include "openmc/array.h"
+#include "openmc/distribution_angle.h"
+#include "openmc/distribution_energy.h"
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
@@ -16,7 +19,12 @@
 namespace openmc {
 
 //==============================================================================
-//! Photon interaction data for a single element
+//! Interaction data for a single element
+//!
+//! Holds the photoatomic cross sections and atomic relaxation data, the
+//! Compton profiles, the stopping powers and scaled bremsstrahlung cross
+//! sections used by the thick-target approximation, and -- when electron
+//! transport is enabled -- the electron interaction data as well.
 //==============================================================================
 
 class ElectronSubshell {
@@ -34,14 +42,23 @@ public:
   int index_subshell; //!< index in SUBSHELLS
   int threshold;
   double binding_energy;
+  double num_electrons {0.0}; //!< occupancy, needed by Bhabha scattering
   vector<Transition> transitions;
 };
 
-class PhotonInteraction {
+//==============================================================================
+//! Soft/hard split of elastic scattering at one energy
+//!
+//! A mixed (class II) condensed-history step is bounded by a hard elastic
+//! collision and carries the soft ones as a single artificial deflection. The
+//! first transport cross section of the soft part sets the size of that
+//! deflection, the second its shape.
+//==============================================================================
+class Element {
 public:
   // Constructors/destructor
-  PhotonInteraction(hid_t group);
-  ~PhotonInteraction();
+  Element(hid_t group);
+  ~Element();
 
   // Methods
   void calculate_xs(Particle& p) const;
@@ -55,6 +72,81 @@ public:
     double* mu_electron, double* mu_positron, uint64_t* seed) const;
 
   void atomic_relaxation(int i_shell, Particle& p) const;
+
+  //! Read the electron interaction data for this element.
+  //
+  //! Called only when electron transport is enabled, from a group in the
+  //! electron library rather than the photoatomic one. Everything it fills is
+  //! left empty otherwise, which costs a few hundred bytes per element and no
+  //! heap at all.
+  void read_electron_data(hid_t group);
+
+  void calculate_electron_xs(Particle& p) const;
+
+  //! Sample an elastic deflection. \param q_index 0 for an electron, 1 for a
+  //! positron; the two differ little in rate and a great deal in first moment
+  double elastic_scatter(int q_index, double E, uint64_t* seed) const;
+
+  //! Sample a hard elastic deflection, the part a step did not group
+  //!
+  //! \param[in] q_index 0 for an electron, 1 for a positron
+  //! \param[in] E Kinetic energy in [eV]
+  //! \param[inout] seed pseudorandom number seed pointer
+  double elastic_scatter_hard(int q_index, double E, double xs_elastic,
+    double xs_hard, uint64_t* seed) const;
+
+  //! Elastic cross section in [b] at one energy
+  double elastic_xs(int q_index, double E) const;
+
+  //! Electron energy grid this element's cross sections are tabulated on
+  const tensor::Tensor<double>& electron_energy() const
+  {
+    return electron_energy_;
+  }
+
+  //! Evaluated ionisation cross section of one subshell at one energy
+  //!
+  //! What the oscillator model's rate for that shell is renormalised to.
+  //!
+  //! \param[in] i_shell Index into electron_shell_map_
+  //! \param[in] E Kinetic energy in [eV]
+  //! \return Cross section in [b]
+  double subshell_ionization_xs(int i_shell, double E) const;
+
+  void bremsstrahlung(Particle& p, double k_min = 0.0) const;
+
+  //! Emit the knock-on electron and deflect the projectile, for a transfer of
+  //! W out of which the atom keeps the binding energy e_b, the collision
+  //! having handed the atom a recoil energy Q
+  //
+  //! Both polar angles follow from Q alone: the projectile is deflected
+  //! through the momentum transfer and the knock-on leaves along it. Setting
+  //! Q = W recovers the free binary collision, in which the two are the
+  //! familiar Moller pair.
+  void emit_knock_on(Particle& p, double W, double e_b, double Q) const;
+
+  //! Two-photon annihilation of a positron in flight
+  //
+  //! The positron annihilates with a bound electron, which is taken to be free
+  //! and at rest, and is replaced by two photons sharing its kinetic energy
+  //! plus both rest masses. Unlike annihilation at the transport cutoff, the
+  //! photons are not 511 keV: they carry up to T + m_e c^2 each.
+  void annihilation(Particle& p) const;
+
+  //! Cross section for in-flight annihilation, per atom, in [b]
+  //
+  //! Heitler's two-photon result for a free electron at rest, multiplied by
+  //! the Z electrons of the atom. It is a closed form in the incident energy
+  //! alone, so it is evaluated exactly at the energy wanted rather than
+  //! tabulated on the grid and interpolated.
+  double annihilation_xs(double E) const;
+
+  //! Sample the energy of a bremsstrahlung photon from the scaled cross
+  //! sections of the photon library, above the threshold the electron
+  //! library's cross section was integrated from. Returns zero when the
+  //! incident energy leaves no room above that threshold.
+  double sample_bremsstrahlung_energy(
+    double E, uint64_t* seed, double k_min = 0.0) const;
 
   // Data members
   std::string name_; //!< Name of element, e.g. "Zr"
@@ -97,7 +189,7 @@ public:
   tensor::Tensor<int> subshell_map_;
 
   // Stopping power data
-  double I_; // mean excitation energy
+  double I_ {0.0}; // mean excitation energy
   tensor::Tensor<int> n_electrons_;
   tensor::Tensor<double> ionization_energy_;
   tensor::Tensor<double> stopping_power_radiative_;
@@ -108,10 +200,86 @@ public:
   // Whether atomic relaxation data is present
   bool has_atomic_relaxation_ {false};
 
+  //============================================================================
+  // Electron interaction data
+  //
+  // Empty unless electron transport is enabled; see read_electron_data(). The
+  // energy grid is the electron library's own and is not the photon grid
+  // above, so it is named separately.
+
+  //! For each electroionization subshell, the index of the matching subshell in
+  //! shells_. The two lists are not guaranteed to have the same length or
+  //! ordering, so they are matched by ENDF designator rather than by position.
+  vector<int> electron_shell_map_;
+
+  tensor::Tensor<double> electron_energy_;
+  //! Elastic cross sections and angular distributions, indexed by projectile
+  //! charge: 0 for an electron, 1 for a positron
+  array<tensor::Tensor<double>, 2> elastic_;
+  array<AngleDistribution, 2> elastic_angle_;
+  //! Soft/hard split of the elastic distribution at
+  //! settings::deflection_cutoff, on the electron energy grid,
+  //! indexed by projectile charge. The cutoff is held as the deflection 1-mu
+  //! rather than as the cosine: at C1 = 0.001 and 100 MeV it is 1.1e-4 in
+  //! tungsten, so four digits of the cosine carry no information, and both the
+  //! interpolation between grid points and the deflection the sampler works in
+  //! would inherit the loss.
+  array<tensor::Tensor<double>, 2> elastic_p_hard_;
+  array<tensor::Tensor<double>, 2> elastic_mu1_soft_;
+  array<tensor::Tensor<double>, 2> elastic_mu2_soft_;
+  //! Energy the grouped bremsstrahlung carries off and its second moment, in
+  //! [b eV] and [b eV^2] per atom, on the electron energy grid and indexed by
+  //! projectile charge, with the positron's radiative yield factor already
+  //! applied. The inelastic collisions a step groups are the medium's, not
+  //! the atom's, so they are Material's to tabulate.
+  array<tensor::Tensor<double>, 2> brems_soft_s_;
+  array<tensor::Tensor<double>, 2> brems_soft_w2_;
+  //! Fraction of the bremsstrahlung rate that stays a discrete collision, on
+  //! the electron energy grid and indexed by projectile charge, since the two
+  //! projectiles have different cutoffs and so different thresholds.
+  array<tensor::Tensor<double>, 2> brems_p_hard_;
+  //! Hard cross section in [b], and an upper bound on it over the energies one
+  //! step can cover. The flight to the next hard interaction is drawn from the
+  //! bound, which does not change along the step, and the excess is taken back
+  //! by declining that fraction of the interactions -- a delta interaction, in
+  //! PENELOPE's terms. Sampling from the cross section at the energy the step
+  //! began with would be drawing a flight from the wrong distribution, the
+  //! projectile having slowed down in the meantime.
+  array<tensor::Tensor<double>, 2> hard_total_;
+  array<tensor::Tensor<double>, 2> hard_majorant_;
+  //! Range the partial-wave data actually covers. Outside it the elastic cross
+  //! sections are clamped to the endpoints, which is tolerable for the total --
+  //! nearly flat at high energy -- but not for the first transport cross
+  //! section, which is still falling as 1/E^2.
+  double elastic_energy_min_ {0.0};
+  double elastic_energy_max_ {INFTY};
+  //! Evaluated electroionization cross section per subshell, in [b] on the
+  //! electron energy grid. The transport samples inelastic collisions from
+  //! the medium's oscillator model rather than from these, but the shells
+  //! bound above the transport cutoffs have their oscillators renormalised to
+  //! them: characteristic x-ray yields rest on that rate and it is the one
+  //! thing the delta-oscillator model is not good enough at. See
+  //! Material::init_oscillator_renorm().
+  tensor::Tensor<double> electroionization_;
+  tensor::Tensor<double> electron_bremsstrahlung_;
+
+  //! Lowest emitted photon energy the bremsstrahlung cross section above was
+  //! integrated from; the spectrum has to be sampled above the same one
+  double bremsstrahlung_photon_cutoff_ {0.0};
+
   // Constant data
   static constexpr int MAX_STACK_SIZE =
     7; //!< maximum possible size of atomic relaxation stack
 private:
+  //! Tabulate the soft/hard split of the channels the atom owns, and the
+  //! hard cross section and its majorant
+  //!
+  //! The thresholds are not free parameters: they follow from the transport
+  //! cutoffs, since a collision whose every product would be killed on
+  //! creation is one that nothing is lost by grouping. See
+  //! soft_radiative_cutoff().
+  void compute_step_tables();
+
   struct ShellKinematics {
     double pz_max;       //!< Upper bound in Kaltiaisenaho Eq. (3.73)
     double c_limit;      //!< Half-profile integral K_i(|pz_max|), Eq. (3.117)
@@ -166,6 +334,24 @@ double invert_compton_profile_tail(
 //! Calculate the outgoing-to-incident energy ratio for signed electron momentum
 double compton_energy_ratio(double alpha, double mu, double pz);
 
+//! Integral of \f$W^{order}\f$ times the free Bhabha cross section over a
+//! range of energy transfers, with the leading constant dropped
+//!
+//! Order 0 is the cross section a positron's transfers above the Moller limit
+//! contribute, 1 the stopping power and 2 the straggling.
+//!
+//! \param[in] E Incident kinetic energy in [eV]
+//! \param[in] W_lo, W_hi Range of energy transfer in [eV]
+//! \param[in] order 0, 1 or 2
+double bhabha_moment(double E, double W_lo, double W_hi, int order);
+
+//! The same for the free Moller cross section, whose transfer runs to E/2
+//!
+//! \param[in] E Incident kinetic energy in [eV]
+//! \param[in] W_lo, W_hi Range of energy transfer in [eV]
+//! \param[in] order 0, 1 or 2
+double moller_moment(double E, double W_lo, double W_hi, int order);
+
 } // namespace detail
 
 std::pair<double, double> klein_nishina(double alpha, uint64_t* seed);
@@ -181,11 +367,21 @@ namespace data {
 extern tensor::Tensor<double>
   compton_profile_pz; //! Compton profile momentum grid
 
-//! Photon interaction data for each element
+//! Grids of the Seltzer-Berger scaled bremsstrahlung cross sections, read when
+//! electron transport is enabled: incident electron kinetic energies in [eV]
+//! and reduced photon energies kappa = k/T
+extern tensor::Tensor<double> brems_e_grid;
+extern tensor::Tensor<double> brems_k_grid;
+
+//! Interaction data for each element
 extern std::unordered_map<std::string, int> element_map;
-extern vector<unique_ptr<PhotonInteraction>> elements;
+extern vector<unique_ptr<Element>> elements;
 
 } // namespace data
+
+//==============================================================================
+// Non-member functions
+//==============================================================================
 
 } // namespace openmc
 

@@ -3,6 +3,7 @@
 #include "openmc/bank.h"
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
+#include "openmc/condensed_history.h"
 #include "openmc/constants.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
@@ -42,43 +43,98 @@ namespace openmc {
 
 void collision(Particle& p)
 {
-  // Add to collision counter for particle
-  ++(p.n_collision());
-  p.secondary_bank_index() = p.local_secondary_bank().size();
+  // A condensed-history hinge is not an interaction: it is the point inside a
+  // step where the grouped deflections are applied, and a step that its energy
+  // ceiling or the geometry ended has no interaction at its end either. So no
+  // reaction is sampled -- but the event still has to be scored, because the
+  // energy the grouped collisions took along the way is deposited here. The
+  // heating score is the balance E_last - E, and returning before it would
+  // throw that energy away.
+  // It does not skip the energy cutoff below, though, and that is the whole
+  // reason this is not an early return. Under condensed history a charged
+  // particle slows down continuously along the step rather than in jumps at
+  // its collisions, so the energy at which it crosses its cutoff is almost
+  // always inside a step and not at an interaction. Returning here would let
+  // it carry on below its cutoff until its next hard collision, which the
+  // scheme has made rare -- and would let a positron pass the energy at which
+  // it should have stopped and annihilated.
+  bool hinge = p.apply_condensed_hinge();
+  if (hinge) {
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+  } else {
+    // Add to collision counter for particle
+    ++(p.n_collision());
+    p.secondary_bank_index() = p.local_secondary_bank().size();
 
-  // Sample reaction for the material the particle is in
-  switch (p.type().pdg_number()) {
-  case PDG_NEUTRON:
-    sample_neutron_reaction(p);
-    break;
-  case PDG_PHOTON:
-    sample_photon_reaction(p);
-    break;
-  case PDG_ELECTRON:
-    sample_electron_reaction(p);
-    break;
-  case PDG_POSITRON:
-    sample_positron_reaction(p);
-    break;
-  default:
-    fatal_error("Unsupported particle PDG for collision sampling.");
-  }
+    // Sample reaction for the material the particle is in
+    switch (p.type().pdg_number()) {
+    case PDG_NEUTRON:
+      sample_neutron_reaction(p);
+      break;
+    case PDG_PHOTON:
+      sample_photon_reaction(p);
+      break;
+    case PDG_ELECTRON:
+      sample_electron_reaction(p);
+      break;
+    case PDG_POSITRON:
+      sample_positron_reaction(p);
+      break;
+    default:
+      fatal_error("Unsupported particle PDG for collision sampling.");
+    }
 
-  if (settings::weight_windows_on) {
-    auto [ww_found, ww] = search_weight_window(p);
-    if (!ww_found && p.type() == ParticleType::neutron()) {
-      // if the weight window is not valid, apply russian roulette for neutrons
-      // (regardless of weight window collision checkpoint setting)
-      apply_russian_roulette(p);
-    } else if (settings::weight_window_checkpoint_collision) {
-      // if collision checkpointing is on, apply weight window
-      apply_weight_window(p, ww);
+    if (settings::weight_windows_on) {
+      auto [ww_found, ww] = search_weight_window(p);
+      if (!ww_found && p.type() == ParticleType::neutron()) {
+        // if the weight window is not valid, apply russian roulette for
+        // neutrons (regardless of weight window collision checkpoint setting)
+        apply_russian_roulette(p);
+      } else if (settings::weight_window_checkpoint_collision) {
+        // if collision checkpointing is on, apply weight window
+        apply_weight_window(p, ww);
+      }
     }
   }
 
   // Kill particle if energy falls below cutoff
   int type = p.type().transport_index();
   if (type != C_NONE && p.E() < settings::energy_cutoff[type]) {
+    // Follow the convention sample_photon_reaction uses for a photon below the
+    // cutoff: zero the energy as well as the weight. That is what deposits the
+    // residual, since the heating score is the collision energy balance
+    // E_last + Q - E - (banked secondaries), evaluated in event_collide after
+    // this returns. Zeroing only the weight discards it.
+    //
+    // The entry checks in sample_electron_reaction and sample_positron_reaction
+    // already do this, but they only see a particle that was below the cutoff
+    // before the collision. A particle slowing down crosses the cutoff during
+    // one, and lands here instead, still carrying up to a full cutoff of
+    // kinetic energy. Over a 1 MeV history that is several percent once every
+    // knock-on is counted, and it is lost at the ends of tracks -- deepest in
+    // the target -- so it distorts a depth-deposition profile as well as the
+    // total.
+    //
+    // The weight test skips particles a reaction sampler already terminated
+    // (it zeroes both, so a positron would otherwise annihilate twice) and
+    // particles killed by Russian roulette, whose energy must not be deposited.
+    if (settings::electron_transport && p.wgt() != 0.0 &&
+        (p.type().is_electron() || p.type().is_positron())) {
+      if (p.type().is_positron()) {
+        // The one thing a charged particle cannot mirror from the photon case:
+        // a positron still annihilates at rest, and dropping the pair would
+        // discard 2 m_e c^2 that has nothing to do with the transport cutoff.
+        Direction u = isotropic_direction(p.current_seed());
+        p.create_secondary(
+          p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.create_secondary(
+          p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+        p.event_mt() = POSITRON_ANNIHILATION;
+      }
+      p.E() = 0.0;
+      p.event() = TallyEvent::ABSORB;
+    }
     p.wgt() = 0.0;
   }
 
@@ -305,7 +361,7 @@ void sample_photon_reaction(Particle& p)
   }
 
   // Sample element within material
-  int i_element = sample_element(p);
+  int i_element = sample_photon_element(p);
   const auto& micro {p.photon_xs(i_element)};
   const auto& element {*data::elements[i_element]};
 
@@ -474,6 +530,11 @@ void process_charged_secondary(
   if (idx == C_NONE || E < settings::energy_cutoff[idx])
     return;
 
+  if (settings::electron_transport) {
+    p.create_secondary(p.wgt(), u, E, type);
+    return;
+  }
+
   if (settings::electron_treatment == ElectronTreatment::TTB) {
     thick_target_bremsstrahlung(p, type, u, E);
   }
@@ -494,35 +555,164 @@ void process_charged_secondary(
 
 void sample_electron_reaction(Particle& p)
 {
-  // TODO: create reaction types
-
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
   }
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+  int electron = ParticleType::electron().transport_index();
+  if (p.E() < settings::energy_cutoff[electron]) {
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    // The energy is deposited here, so this is an absorption, and an analog
+    // tally filtering on the event has to see it as one. The positron path
+    // below says so at its own cutoff check; this one did not.
+    p.event() = TallyEvent::ABSORB;
+    return;
+  }
+  // A collision ending a grouped step may only be one of the interactions
+  // that step did not group. Without condensed history the hard cross
+  // sections are the whole cross sections, so this is one code path.
+  bool hard = p.ch_hard_at_end();
+  p.ch_reset();
+
+  // The inelastic collisions belong to the medium rather than to any atom in
+  // it -- the oscillator strengths are shares of all its electrons and the
+  // resonance energies are fixed by its mean excitation energy -- so they are
+  // chosen against the material's rate before an element is sampled at all.
+  const auto& mat {*model::materials[p.material()]};
+  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
+  double inelastic =
+    hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full;
+  if (prn(p.current_seed()) * total < inelastic) {
+    if (!mat.sample_inelastic(p, hard))
+      // Nothing could be sampled, so nothing happened. Leaving event() as
+      // KILL is right: the heating balance then evaluates to zero.
+      return;
+    return;
+  }
+
+  // Sample element within material
+  int i_element = sample_electron_element(p, hard);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::elements[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff =
+    prn(p.current_seed()) * (hard ? micro.hard_total : micro.total);
+
+  // Mott scattering
+  prob += hard ? micro.hard_elastic : micro.elastic;
+  if (prob > cutoff) {
+    p.mu() = hard ? element.elastic_scatter_hard(0, p.E(), micro.elastic,
+                      micro.hard_elastic, p.current_seed())
+                  : element.elastic_scatter(0, p.E(), p.current_seed());
+    p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
+  // Bremsstrahlung. Last channel, so it takes whatever is left: the running
+  // total is accumulated in a different order from xs.total and rounding must
+  // not be able to leave the particle with no reaction at all.
+  element.bremsstrahlung(
+    p, hard ? soft_radiative_cutoff(p.type(), p.E()) : 0.0);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 void sample_positron_reaction(Particle& p)
 {
-  // TODO: create reaction types
-
-  if (settings::electron_treatment == ElectronTreatment::TTB) {
-    thick_target_bremsstrahlung(p);
+  if (!settings::electron_transport) {
+    if (settings::electron_treatment == ElectronTreatment::TTB) {
+      thick_target_bremsstrahlung(p);
+    }
   }
 
-  // Sample angle isotropically
-  Direction u = isotropic_direction(p.current_seed());
+  int positron = ParticleType::positron().transport_index();
+  if (p.E() < settings::energy_cutoff[positron] ||
+      !settings::electron_transport) {
+    // Sample angle isotropically
+    Direction u = isotropic_direction(p.current_seed());
 
-  // Create annihilation photon pair traveling in opposite directions
-  p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
-  p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
+    // Create annihilation photon pair traveling in opposite directions
+    p.create_secondary(p.wgt(), u, MASS_ELECTRON_EV, ParticleType::photon());
+    p.create_secondary(p.wgt(), -u, MASS_ELECTRON_EV, ParticleType::photon());
 
-  p.E() = 0.0;
-  p.wgt() = 0.0;
-  p.event() = TallyEvent::ABSORB;
+    p.E() = 0.0;
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    p.event_mt() = POSITRON_ANNIHILATION;
+    return;
+  }
+
+  // Only the interactions a grouped step did not group may end it; see
+  // sample_electron_reaction. Annihilation is never grouped at all.
+  bool hard = p.ch_hard_at_end();
+  p.ch_reset();
+
+  // The inelastic collisions belong to the medium rather than to any atom in
+  // it -- the oscillator strengths are shares of all its electrons and the
+  // resonance energies are fixed by its mean excitation energy -- so they are
+  // chosen against the material's rate before an element is sampled at all.
+  const auto& mat {*model::materials[p.material()]};
+  double total = hard ? p.macro_xs().step.hard : p.macro_xs().total;
+  double inelastic =
+    hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full;
+  if (prn(p.current_seed()) * total < inelastic) {
+    if (!mat.sample_inelastic(p, hard))
+      // Nothing could be sampled, so nothing happened. Leaving event() as
+      // KILL is right: the heating balance then evaluates to zero.
+      return;
+    return;
+  }
+
+  // Sample element within material
+  int i_element = sample_electron_element(p, hard);
+  const auto& micro {p.electron_xs(i_element)};
+  const auto& element {*data::elements[i_element]};
+
+  // For tallying purposes, this routine might be called directly. In that
+  // case, we need to sample a reaction via the cutoff variable
+  double prob = 0.0;
+  double cutoff =
+    prn(p.current_seed()) * (hard ? micro.hard_total : micro.total);
+
+  // Mott scattering
+  prob += hard ? micro.hard_elastic : micro.elastic;
+  if (prob > cutoff) {
+    p.mu() = hard ? element.elastic_scatter_hard(1, p.E(), micro.elastic,
+                      micro.hard_elastic, p.current_seed())
+                  : element.elastic_scatter(1, p.E(), p.current_seed());
+    p.u() = rotate_angle(p.u(), p.mu(), nullptr, p.current_seed());
+    p.event() = TallyEvent::SCATTER;
+    p.event_mt() = ELECTRON_ELASTIC;
+    return;
+  }
+
+  // Two-photon annihilation in flight, which ends the history here rather
+  // than at the cutoff and sends out photons of up to T + m_e c^2 instead of
+  // a 511 keV pair
+  prob += micro.annihilation;
+  if (prob > cutoff) {
+    element.annihilation(p);
+    return;
+  }
+
+  // Bremsstrahlung. Last channel, so it takes whatever is left rather than
+  // letting rounding drop the collision (see sample_electron_reaction).
+  element.bremsstrahlung(
+    p, hard ? soft_radiative_cutoff(p.type(), p.E()) : 0.0);
+  p.event() = TallyEvent::SCATTER;
+  p.event_mt() = ELECTRON_BREMS;
 }
 
 int sample_nuclide(Particle& p)
@@ -551,7 +741,7 @@ int sample_nuclide(Particle& p)
   throw std::runtime_error {"Did not sample any nuclide during collision."};
 }
 
-int sample_element(Particle& p)
+int sample_photon_element(Particle& p)
 {
   // Sample cumulative distribution function
   double cutoff = prn(p.current_seed()) * p.macro_xs().total;
@@ -567,6 +757,43 @@ int sample_element(Particle& p)
 
     // Determine microscopic cross section
     double sigma = atom_density * p.photon_xs(i_element).total;
+
+    // Increment probability to compare to cutoff
+    prob += sigma;
+    if (prob > cutoff) {
+      // Save which nuclide particle had collision with for tally purpose
+      p.event_nuclide() = mat->nuclide_[i];
+      return i_element;
+    }
+  }
+
+  // If we made it here, no element was sampled
+  p.write_restart();
+  fatal_error("Did not sample any element during collision.");
+}
+
+int sample_electron_element(Particle& p, bool hard)
+{
+  // Sample cumulative distribution function. The inelastic collisions are
+  // the medium's and were already offered their share of the rate before this
+  // was called, so what is left to divide among the elements is the total
+  // less that share -- normalising on the whole total would leave a slice of
+  // it belonging to nothing, and the scan below would run off the end.
+  const auto& mat {model::materials[p.material()]};
+  double total =
+    (hard ? p.macro_xs().step.hard : p.macro_xs().total) -
+    (hard ? p.macro_xs().step.inelastic : p.macro_xs().step.inelastic_full);
+  double cutoff = prn(p.current_seed()) * total;
+
+  double prob = 0.0;
+  for (int i = 0; i < mat->element_.size(); ++i) {
+    // Find atom density
+    int i_element = mat->element_[i];
+    double atom_density = mat->atom_density(i, p.density_mult());
+
+    // Determine microscopic cross section
+    const auto& micro {p.electron_xs(i_element)};
+    double sigma = atom_density * (hard ? micro.hard_total : micro.total);
 
     // Increment probability to compare to cutoff
     prob += sigma;

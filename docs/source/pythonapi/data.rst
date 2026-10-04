@@ -26,7 +26,7 @@ and product yields.
     ProbabilityTables
 
 The following classes are used for storing atomic data (incident photon cross
-sections, atomic relaxation):
+sections, atomic relaxation, incident electron cross sections):
 
 .. autosummary::
     :toctree: generated
@@ -34,6 +34,7 @@ sections, atomic relaxation):
     :template: myclass.rst
 
     IncidentPhoton
+    IncidentElectron
     PhotonReaction
     AtomicRelaxation
 

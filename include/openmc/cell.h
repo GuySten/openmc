@@ -142,6 +142,10 @@ private:
   template<typename F>
   bool evaluate(F&& in_halfspace) const;
 
+  //! Evaluate the subtree of the expression tree rooted at a node
+  template<typename F>
+  bool evaluate_subtree(int32_t root, F&& in_halfspace) const;
+
   //! Signed surface index + 1 of a half-space of the expression tree
   int32_t surface_token(int32_t halfspace) const
   {
@@ -171,6 +175,13 @@ private:
     //! Distinct surface indices + 1 of the half-spaces, in order of first
     //! appearance
     vector<int32_t> surfaces;
+    //! Node indices of the children of the root operator node
+    vector<int32_t> terms;
+    //! Positions in terms of the terms using the surface in slot i are
+    //! slot_terms[slot_term_offsets[i]] to slot_terms[slot_term_offsets[i + 1]
+    //! - 1]
+    vector<int32_t> slot_term_offsets;
+    vector<int32_t> slot_terms;
   };
 
   //! Data of a complex region (null for a simple region)

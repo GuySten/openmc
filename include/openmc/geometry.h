@@ -53,6 +53,7 @@ namespace model {
 extern int root_universe;       //!< Index of root universe
 extern int n_coord_levels;      //!< Number of CSG coordinate levels
 extern int max_region_surfaces; //!< Most distinct surfaces in a complex region
+extern int max_region_terms; //!< Most children of the root of a complex region
 
 extern vector<int64_t> overlap_check_count;
 

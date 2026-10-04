@@ -54,6 +54,7 @@ GeometryState::GeometryState()
   coord_.resize(model::n_coord_levels);
   cell_last_.resize(model::n_coord_levels);
   surface_states_.resize(model::max_region_surfaces);
+  term_values_.resize(model::max_region_terms);
   clear();
 }
 

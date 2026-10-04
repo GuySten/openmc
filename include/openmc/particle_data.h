@@ -406,6 +406,7 @@ public:
 
   //! Working space used to find the next intersection in complex regions
   vector<SurfaceState>& surface_states() { return surface_states_; }
+  vector<char>& term_values() { return term_values_; }
 
 #ifdef OPENMC_DAGMC_ENABLED
   // DagMC state variables
@@ -452,6 +453,7 @@ private:
   BoundaryInfo boundary_; //!< Info about the next intersection
   //! Working space used to find the next intersection in complex regions
   vector<SurfaceState> surface_states_;
+  vector<char> term_values_;
 
   int material_ {-1};      //!< index for current material
   int material_last_ {-1}; //!< index for last material

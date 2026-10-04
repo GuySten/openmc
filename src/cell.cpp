@@ -791,6 +791,29 @@ Region::Region(std::string region_spec, int32_t cell_id)
       std::max<int>(model::max_region_surfaces, surfaces.size());
     complex_ =
       make_unique<Complex>(Complex {std::move(nodes), std::move(surfaces)});
+
+    // Find the children of the root and the children using each surface, so
+    // that only those need to be evaluated again after a surface is crossed
+    auto& c = *complex_;
+    for (int32_t j = 1; j < c.nodes[0].end; j = c.nodes[j].end)
+      c.terms.push_back(j);
+    vector<vector<int32_t>> slot_terms(c.surfaces.size());
+    for (int32_t k = 0; k < c.terms.size(); ++k) {
+      for (int32_t i = c.terms[k]; i < c.nodes[c.terms[k]].end; ++i) {
+        if (c.nodes[i].type != Node::Type::HALFSPACE)
+          continue;
+        auto& list = slot_terms[std::abs(c.nodes[i].halfspace) - 1];
+        if (list.empty() || list.back() != k)
+          list.push_back(k);
+      }
+    }
+    c.slot_term_offsets.push_back(0);
+    for (const auto& list : slot_terms) {
+      c.slot_terms.insert(c.slot_terms.end(), list.begin(), list.end());
+      c.slot_term_offsets.push_back(c.slot_terms.size());
+    }
+    model::max_region_terms =
+      std::max<int>(model::max_region_terms, c.terms.size());
   }
 }
 
@@ -852,6 +875,41 @@ bool Region::evaluate(F&& in_halfspace) const
       int32_t i_parent = nodes[i].parent;
       if (i_parent < 0)
         return value;
+      const Node& parent = nodes[i_parent];
+      bool intersection = parent.type == Node::Type::INTERSECTION;
+      int32_t next = nodes[i].end;
+      if (value != intersection || next == parent.end) {
+        // The value of the parent is known
+        i = i_parent;
+      } else {
+        i = next;
+        break;
+      }
+    }
+  }
+}
+
+//==============================================================================
+
+template<typename F>
+bool Region::evaluate_subtree(int32_t root, F&& in_halfspace) const
+{
+  // Evaluate the expression tree without recursion: descend to the first
+  // half-space of each operator node and, after evaluating a half-space, move
+  // up the tree until reaching an operator node whose value is not yet known.
+  const auto& nodes = complex_->nodes;
+  int32_t i = root;
+  while (true) {
+    // Descend to the first half-space in this subtree
+    while (nodes[i].type != Node::Type::HALFSPACE)
+      ++i;
+    bool value = in_halfspace(nodes[i].halfspace);
+
+    // Move up the tree until reaching a node with children left to evaluate
+    while (true) {
+      if (i == root)
+        return value;
+      int32_t i_parent = nodes[i].parent;
       const Node& parent = nodes[i_parent];
       bool intersection = parent.type == Node::Type::INTERSECTION;
       int32_t next = nodes[i].end;
@@ -931,13 +989,19 @@ std::pair<double, int32_t> Region::distance_complex(
 
   // The state of each surface is kept in the particle's scratch space, so that
   // no memory is allocated during transport
+  const auto& terms = complex_->terms;
   vector<SurfaceState> local;
+  vector<char> local_terms;
   SurfaceState* state;
+  char* term_value;
   if (p) {
     state = p->surface_states().data();
+    term_value = p->term_values().data();
   } else {
     local.resize(n);
+    local_terms.resize(terms.size());
     state = local.data();
+    term_value = local_terms.data();
   }
 
   // Evaluate the distance to and sense with respect to the surface in slot i.
@@ -950,10 +1014,31 @@ std::pair<double, int32_t> Region::distance_complex(
     state[i].distance = surf.distance(r, u, coincident);
     state[i].stale = false;
   };
-  auto in_region_now = [&]() {
-    return evaluate([&](int32_t halfspace) {
-      return state[std::abs(halfspace) - 1].sense == (halfspace > 0);
-    });
+  auto in_halfspace = [&](int32_t halfspace) {
+    return state[std::abs(halfspace) - 1].sense == (halfspace > 0);
+  };
+  auto in_region_now = [&]() { return evaluate(in_halfspace); };
+
+  // After a few crossings, the value of each child of the root is kept, with
+  // the number of children deciding the value of the root: false children of
+  // an intersection, or true children of a union. After a crossing, only the
+  // children using the surfaces crossed are evaluated again.
+  constexpr int MIN_CROSSINGS = 2;
+  const bool intersection = complex_->nodes[0].type == Node::Type::INTERSECTION;
+  int n_crossings = 0;
+  bool incremental = false;
+  int32_t n_deciding = 0;
+  constexpr int MAX_CHANGED = 16;
+  array<int32_t, MAX_CHANGED> changed;
+  int n_changed = 0;
+  auto set_term = [&](int32_t k) {
+    bool value = evaluate_subtree(terms[k], in_halfspace);
+    if (value == intersection) {
+      n_deciding -= term_value[k] != intersection;
+    } else {
+      n_deciding += term_value[k] == intersection;
+    }
+    term_value[k] = value;
   };
 
   for (int i = 0; i < n; ++i) {
@@ -1003,17 +1088,49 @@ std::pair<double, int32_t> Region::distance_complex(
     }
 
     // Update the distances, and reevaluate the surfaces at the new position
+    n_changed = 0;
     for (int i = 0; i < n; ++i) {
       state[i].distance -= min_dist;
       state[i].stale = true;
       if (i == i_min || state[i].distance < TINY_BIT) {
+        bool sense = state[i].sense;
         evaluate_surface(i, i_surf);
+        if (incremental && state[i].sense != sense) {
+          if (n_changed < MAX_CHANGED)
+            changed[n_changed] = i;
+          ++n_changed;
+        }
       }
     }
 
     // If crossing the candidate changes the region membership, it is a true
     // boundary. Otherwise, continue the search from the virtual crossing.
-    if (in_region_now() != in_region) {
+    bool now;
+    if (incremental) {
+      if (n_changed > MAX_CHANGED) {
+        for (int32_t k = 0; k < terms.size(); ++k)
+          set_term(k);
+      } else {
+        for (int m = 0; m < n_changed; ++m) {
+          const auto& c = *complex_;
+          for (int32_t t = c.slot_term_offsets[changed[m]];
+               t < c.slot_term_offsets[changed[m] + 1]; ++t)
+            set_term(c.slot_terms[t]);
+        }
+      }
+      now = intersection ? n_deciding == 0 : n_deciding > 0;
+    } else if (++n_crossings >= MIN_CROSSINGS && !terms.empty()) {
+      incremental = true;
+      n_deciding = 0;
+      for (int32_t k = 0; k < terms.size(); ++k) {
+        term_value[k] = evaluate_subtree(terms[k], in_halfspace);
+        n_deciding += term_value[k] != intersection;
+      }
+      now = intersection ? n_deciding == 0 : n_deciding > 0;
+    } else {
+      now = in_region_now();
+    }
+    if (now != in_region) {
       return {total_distance, i_surf};
     }
     on_surface = i_surf;

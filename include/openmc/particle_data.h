@@ -68,7 +68,8 @@ struct SourceSite {
   // Index in data::nuclides of the nuclide whose fission made this photon,
   // inherited by its secondaries; -1 otherwise
   int fission_nuclide {-1};
-  double lifetime {0.0}; //!< time since the birth of the neutron's generation
+
+  double lifetime {0.0}; //!< time since birth of the neutron's generation [s]
 };
 
 struct CollisionTrackSite {

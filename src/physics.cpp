@@ -1544,6 +1544,15 @@ void emit_forced_photoneutron(Particle& p)
     }
   }
 
+  // The forced neutron is born with weight w, typically orders of magnitude
+  // below the photon weight. create_secondary() gives a secondary the birth
+  // weight of its parent, so with survival normalization the neutron would be
+  // rouletted against the photon's birth weight at its first collision, which
+  // undoes most of the variance reduction. Give it its own weight as birth
+  // weight, so that roulette acts only once it has lost most of that weight.
+  const double wgt_born = p.wgt_born();
+  p.wgt_born() = w;
+
   // Photofission neutrons must go through the prompt/delayed split, which also
   // sets the emission time for delayed precursors.
   double E;
@@ -1552,6 +1561,7 @@ void emit_forced_photoneutron(Particle& p)
   } else {
     E = emit_photonuclear_product(p, *nuc, *rx, product, w);
   }
+  p.wgt_born() = wgt_born;
 
   // create_secondary() banked the full outgoing energy, but only a fraction
   // "factor" of a neutron is actually emitted per collision. The heating

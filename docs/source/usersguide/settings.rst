@@ -702,6 +702,12 @@ neutrons at the rare absorptions::
 
   settings.photoneutron_biasing = True
 
+The forced neutrons carry weights far below the photon weight. If survival
+biasing is also used, enable weight normalization
+(``settings.cutoff = {'survival_normalization': True}``) so that Russian
+roulette is applied relative to each neutron's own birth weight; with an
+absolute weight cutoff most forced neutrons are rouletted when they are created.
+
 Both give the same expected neutron production and energy deposition, so the two
 can be compared directly. Because biasing emits a single neutron in place of the
 true multiplicity, it should not be used for multiplicity or coincidence

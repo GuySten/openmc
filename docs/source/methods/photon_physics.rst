@@ -746,6 +746,13 @@ Neutron emission depends on :attr:`Settings.photoneutron_biasing`:
   production bias only: the absorption of the photon remains analog, and no
   neutrons are emitted from the absorption path while biasing is active.
 
+  The forced neutron is born with its own weight :math:`w_n` as birth weight,
+  rather than that of the photon. With survival biasing and weight
+  normalization, Russian roulette therefore acts on it only once it has lost
+  most of :math:`w_n` to absorption. Without weight normalization, the absolute
+  weight cutoff applies, and a forced neutron below it is rouletted when it is
+  created, which removes most of the gain of biasing.
+
 Both treatments give the same expected neutron production and the same expected
 energy deposition, so results should agree within statistics. The biased
 treatment substantially reduces the variance of photoneutron tallies when the

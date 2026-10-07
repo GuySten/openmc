@@ -18,6 +18,7 @@
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
 #include "openmc/photon.h"
+#include "openmc/photonuclear.h"
 #include "openmc/plot.h"
 #include "openmc/random_lcg.h"
 #include "openmc/random_ray/random_ray_simulation.h"
@@ -94,6 +95,7 @@ int openmc_finalize()
   settings::delayed_photon_scaling = true;
   settings::energy_cutoff = {0.0, 1000.0, 0.0, 0.0};
   settings::time_cutoff = {INFTY, INFTY, INFTY, INFTY};
+  settings::energy_max = {INFTY, INFTY, INFTY, INFTY};
   settings::entropy_on = false;
   settings::event_based = false;
   settings::free_gas_threshold = 400.0;
@@ -125,6 +127,8 @@ int openmc_finalize()
   settings::path_sourcepoint.clear();
   settings::path_statepoint.clear();
   settings::photon_transport = false;
+  settings::photonuclear_physics = false;
+  settings::photoneutron_biasing = false;
   settings::reduce_tallies = true;
   settings::rel_max_lost_particles = 1.0e-6;
   settings::res_scat_on = false;
@@ -186,6 +190,7 @@ int openmc_finalize()
   simulation::ufs_mesh = nullptr;
 
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
+  data::photonuclear_energy_limited = {false, false, false, false};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
   data::temperature_min = INFTY;
   data::temperature_max = 0.0;

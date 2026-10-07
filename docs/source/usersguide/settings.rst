@@ -676,12 +676,66 @@ can be selected::
   settings.electron_treatment = 'led'
 
 .. note::
-   Some features related to photon transport are not currently implemented,
-   including:
+   Generating a photon source from a neutron calculation that can be used for a
+   later fixed source photon calculation is not currently implemented.
 
-     * Generating a photon source from a neutron calculation that can be used
-       for a later fixed source photon calculation.
-     * Photoneutron reactions.
+Photonuclear Physics
+--------------------
+
+Photons above roughly 8 MeV can be absorbed by a nucleus and produce neutrons,
+photons and charged particles. This is enabled with the
+:attr:`Settings.photonuclear_physics` attribute and requires photon transport::
+
+  settings.photon_transport = True
+  settings.photonuclear_physics = True
+
+Photonuclear data is per-nuclide rather than per-element and must be present in
+``cross_sections.xml`` for the nuclides of interest; see
+:ref:`io_cross_sections`. Nuclides without photonuclear data simply do not
+undergo photonuclear reactions.
+
+Photoneutron production is a rare event compared with photoatomic interaction,
+so photoneutron tallies can converge slowly. The
+:attr:`Settings.photoneutron_biasing` attribute emits one neutron of reduced
+weight at every photon collision instead of an integer number of full-weight
+neutrons at the rare absorptions::
+
+  settings.photoneutron_biasing = True
+
+The forced neutrons carry weights far below the photon weight. If survival
+biasing is also used, enable weight normalization
+(``settings.cutoff = {'survival_normalization': True}``) so that Russian
+roulette is applied relative to each neutron's own birth weight; with an
+absolute weight cutoff most forced neutrons are rouletted when they are created.
+
+Both give the same expected neutron production and energy deposition, so the two
+can be compared directly. Because biasing emits a single neutron in place of the
+true multiplicity, it should not be used for multiplicity or coincidence
+counting.
+
+.. note::
+   Photofission is supported in fixed source calculations only. Photofission
+   neutrons do not contribute to the k-eigenvalue estimators, so OpenMC reports
+   an error if photonuclear data containing fission channels is used in an
+   eigenvalue calculation. Note also that the photonuclear ACE format carries
+   no delayed neutron data, so all photofission neutrons from such libraries
+   are emitted promptly.
+
+.. warning::
+   Photonuclear libraries frequently extend to 130 MeV or beyond, while
+   general-purpose neutron libraries usually stop at 20 MeV. Where a photon
+   could produce a neutron above the neutron data range, OpenMC lowers the
+   maximum photon energy of the problem to prevent it, and lowers the maximum
+   electron and positron energy as well when thick-target bremsstrahlung is in
+   use. A warning at startup names the nuclide and reaction responsible.
+   A source particle above the resulting limit, whether sampled from a source
+   distribution or read from a source file, stops the run, so a bremsstrahlung
+   calculation whose beam energy is too high for the available neutron data
+   fails immediately rather than under-reporting photoneutrons. Modelling such
+   a case requires neutron data covering the photonuclear energy range.
+   Alternatively, setting the maximum neutron energy in
+   :attr:`Settings.energy_max` to at most the top of the neutron data removes
+   the limit, at the cost of killing the photoneutrons produced above it.
 
 --------------------------
 Generation of Output Files

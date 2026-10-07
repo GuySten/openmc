@@ -64,6 +64,12 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const;
 
+  //! Maximum outgoing energy across every applicable distribution, in the
+  //! frame those distributions are tabulated in.
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \return Maximum outgoing energy in [eV]
+  double max_energy(double E_in) const;
+
   ParticleType particle_;      //!< Particle type
   EmissionMode emission_mode_; //!< Emission mode
   double decay_rate_; //!< Decay rate (for delayed neutron precursors) in [1/s]

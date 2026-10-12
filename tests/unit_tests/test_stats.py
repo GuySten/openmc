@@ -377,27 +377,56 @@ def test_legendre():
     np.testing.assert_array_equal(d.evaluate([-1.5, 1.5]), [0.0, 0.0])
 
 
+def _legendre_squared(order):
+    """Coefficients of the normalized square of sum_l (2l+1) P_l, l <= order.
+
+    The result is a sharply forward-peaked expansion of degree 2*order with
+    double zeros, similar to a diffraction pattern.
+    """
+    c = np.polynomial.legendre.legmul(2*np.arange(order + 1) + 1.,
+                                      2*np.arange(order + 1) + 1.)
+    return c/(2*np.arange(c.size) + 1)/c[0]
+
+
+def _legendre_mixture_pdf(d, mu):
+    """Evaluate the beta mixture representation of a Legendre distribution."""
+    lower, width, w = d._beta_mixture()
+    n = len(d) - 1
+    k = np.arange(n + 1)[:, None]
+    t = (mu + 1.)/2.
+    pdf = np.zeros_like(mu)
+    for j, (t0, h) in enumerate(zip(lower, width)):
+        inside = (t >= t0) & ((t < t0 + h) | (t0 + h == 1.0))
+        u = (t[inside] - t0)/h
+        wj = w[j*(n + 1):(j + 1)*(n + 1), None]
+        pdf[inside] = np.sum(wj*beta.pdf(u, k + 1, n - k + 1), axis=0)/(2*h)
+    return pdf
+
+
 @pytest.mark.flaky(reruns=1)
 @pytest.mark.parametrize('coeffs', [
     [1.0],
     [1.0, 1/3],
+    [1.0, 0.0, 0.4],       # Zero at mu = 0
     [1.000e+0, 1.536e-1, 1.772e-2, 5.945e-4, 3.497e-5, 1.881e-5],
-    [1.0, 0.6, 0.3, 0.1],  # Requires degree elevation
+    [1.0, 0.6, 0.3, 0.1],  # Requires subdivision
     0.8**np.arange(33),    # Forward-peaked, high order
+    _legendre_squared(20), # Sharply forward-peaked with many zeros
 ])
 def test_legendre_sample(coeffs):
     d = openmc.stats.Legendre(coeffs)
 
     # Beta mixture reproduces the expansion exactly
-    w = d._beta_mixture_weights()
+    lower, width, w = d._beta_mixture()
     assert np.all(w >= 0.0)
     assert w.sum() == pytest.approx(1.0)
-    n = w.size - 1
-    mu = np.linspace(-1., 1., 101)
-    t = (mu + 1.)/2.
-    k = np.arange(n + 1)[:, None]
-    mixture = 0.5*np.sum(w[:, None]*beta.pdf(t, k + 1, n - k + 1), axis=0)
-    np.testing.assert_allclose(mixture, d(mu), atol=1e-12)
+    assert lower[0] == 0.0
+    np.testing.assert_allclose(lower[1:], (lower + width)[:-1])
+    assert lower[-1] + width[-1] == 1.0
+    mu = np.linspace(-1., 1., 1001)
+    f = d(mu)
+    np.testing.assert_allclose(_legendre_mixture_pdf(d, mu), f,
+                               atol=1e-12*f.max())
 
     # Sample means of the Legendre polynomials should equal the coefficients
     samples, weights = d.sample(100_000, seed=1)
@@ -413,16 +442,34 @@ def test_legendre_sample(coeffs):
     assert_sample_mean(samples*weights, coeffs[1] if len(coeffs) > 1 else 0.0)
 
 
-def test_legendre_sample_negative():
-    # Expansion that is negative near mu = -1 cannot be sampled exactly
-    d = openmc.stats.Legendre([1.0, 0.9, 0.5])
+@pytest.mark.parametrize('coeffs', [
+    [1.0, 0.9, 0.5],                 # Negative near mu = -1
+    [1.0, 0.0, 0.4, 0.0, -0.5],      # Several sign changes
+    _legendre_squared(10)[:15],      # Truncated expansion of a sharp peak
+])
+def test_legendre_sample_negative(coeffs):
+    # Negative parts of the expansion are set to zero
+    d = openmc.stats.Legendre(coeffs)
     with pytest.warns(UserWarning, match='cannot be sampled exactly'):
         samples, _ = d.sample(1000, seed=1)
     assert np.all(np.abs(samples) <= 1.0)
+    assert np.all(d(samples) > -1e-6)
 
+    mu = np.linspace(-1., 1., 1001)
+    positive = np.maximum(d(mu), 0.0)
+    positive /= trapezoid(positive, mu)
+    np.testing.assert_allclose(_legendre_mixture_pdf(d, mu), positive,
+                               atol=1e-3*positive.max())
+
+
+def test_legendre_cache():
     # Changing coefficients invalidates the cached mixture
+    d = openmc.stats.Legendre([1.0, 0.9, 0.5])
+    with pytest.warns(UserWarning):
+        d.sample(10, seed=1)
     d.coefficients = [1.0, 0.3]
-    assert d._beta_mixture_weights().size == 2
+    lower, width, w = d._beta_mixture()
+    assert lower.size == 1 and w.size == 2
 
     with pytest.raises(ValueError):
         openmc.stats.Legendre([-1.0]).sample()

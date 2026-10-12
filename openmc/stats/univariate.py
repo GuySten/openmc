@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from fractions import Fraction
 from functools import cache
-from math import comb, sqrt, pi, exp, log
+from math import comb, lcm, sqrt, pi, exp, log
 from numbers import Real
 from pathlib import Path
 from warnings import warn
@@ -1831,6 +1831,26 @@ def _shifted_legendre_bernstein(order: int) -> tuple[tuple[int, ...], ...]:
     )
 
 
+def _bisect_bernstein(coeffs: list[int]) -> tuple[list[int], list[int]]:
+    """Split a polynomial in Bernstein form at the midpoint of its interval.
+
+    Uses the de Casteljau algorithm on integer coefficients without dividing
+    by two, so the returned coefficients for each half are exact and scaled by
+    :math:`2^n` relative to the input, where :math:`n` is the degree.
+
+    """
+    n = len(coeffs) - 1
+    left = [0]*(n + 1)
+    right = [0]*(n + 1)
+    w = list(coeffs)
+    for r in range(n + 1):
+        # w holds the r-th de Casteljau row scaled by 2^r
+        left[r] = w[0] << (n - r)
+        right[n - r] = w[-1] << (n - r)
+        w = [w[i] + w[i + 1] for i in range(len(w) - 1)]
+    return left, right
+
+
 class Legendre(Univariate):
     r"""Probability density given by a Legendre polynomial expansion
     :math:`\sum\limits_{\ell=0}^N \frac{2\ell + 1}{2} a_\ell P_\ell(\mu)`.
@@ -1858,24 +1878,32 @@ class Legendre(Univariate):
     -----
     Sampling is performed exactly, without rejection, by rewriting the
     expansion as a mixture of beta distributions. With :math:`t = (\mu +
-    1)/2`, the polynomial density is expressed in the Bernstein basis of degree
-    :math:`n \ge N`,
+    1)/2`, the density is a polynomial of degree :math:`N` in :math:`t`, which
+    on any interval :math:`[t_0, t_0 + h]` can be written in the Bernstein
+    basis as
 
     .. math::
-        p(\mu) = \sum_{k=0}^n w_k \frac{1}{2} \mathrm{Beta}(t; k+1, n-k+1),
+        g(t) = \sum_{k=0}^N b_k \binom{N}{k} u^k (1 - u)^{N - k}, \quad
+        u = \frac{t - t_0}{h}.
 
-    where the weights :math:`w_k` sum to one. A component :math:`k` is chosen
-    with probability :math:`w_k` and :math:`t` is drawn from the corresponding
-    beta distribution. If some weights are negative at degree :math:`N`, the
-    degree is elevated until they are all nonnegative, which is guaranteed to
-    happen eventually for any expansion that is strictly positive on
-    :math:`[-1, 1]`. Expansions that are zero or negative somewhere cannot be
-    represented exactly; in that case, a warning is issued and negative weights
-    are set to zero at the maximum degree.
+    Each basis function is proportional to a :math:`\mathrm{Beta}(k+1,
+    N-k+1)` density in :math:`u`, so when all :math:`b_k \ge 0` the density on
+    the interval is a mixture of beta distributions with weights :math:`h b_k
+    / (N + 1)`. Starting from :math:`[0, 1]`, intervals with negative
+    coefficients are bisected (de Casteljau subdivision) until every
+    coefficient is nonnegative. The coefficients are computed in exact
+    rational arithmetic, and the subdivision terminates for any expansion that
+    is strictly positive on :math:`[-1, 1]`. A component is then chosen with
+    probability proportional to its weight and :math:`t` is drawn from the
+    corresponding beta distribution scaled to its interval. Parts of the
+    expansion that are negative cannot be sampled; they are treated as zero
+    and a warning is issued.
 
     """
 
-    _max_sampling_degree = 1000
+    # Maximum number of bisections of [-1, 1] used to isolate the points
+    # where the expansion is zero or changes sign
+    _max_subdivision_depth = 24
 
     def __init__(self, coefficients: Sequence[float], bias: Univariate | None = None):
         super().__init__(bias)
@@ -1905,69 +1933,99 @@ class Legendre(Univariate):
                               coefficients.size, 0)
         self._coefficients = coefficients
         self._legendre_poly = None
-        self._mixture_weights = None
+        self._mixture = None
 
     @property
     def support(self):
         return (-1.0, 1.0)
 
-    def _beta_mixture_weights(self) -> np.ndarray:
-        r"""Return the weights of the equivalent beta mixture.
+    def _beta_mixture(self):
+        r"""Return the equivalent mixture of scaled beta distributions.
 
         Returns
         -------
-        numpy.ndarray
-            Weights :math:`w_k` of the :math:`\mathrm{Beta}(k+1, n-k+1)`
-            components for :math:`k = 0, \ldots, n`, normalized to sum to one
+        lower : numpy.ndarray
+            Lower bound in :math:`t = (\mu + 1)/2` of each subinterval
+        width : numpy.ndarray
+            Width in :math:`t` of each subinterval
+        weights : numpy.ndarray
+            Probability of each component, normalized to sum to one. Component
+            :math:`j(N + 1) + k` is :math:`\mathrm{Beta}(k+1, N-k+1)` scaled to
+            subinterval :math:`j`.
 
         """
-        if self._mixture_weights is not None:
-            return self._mixture_weights
+        if self._mixture is not None:
+            return self._mixture
 
-        # Bernstein coefficients of the density in t = (mu + 1)/2, which is
-        # g(t) = sum_l (2l + 1) a_l P_l(2t - 1). The change of basis involves
-        # large alternating integers, so it is carried out in exact arithmetic
-        # and rounded once at the end.
+        # Bernstein coefficients on [0, 1] of the density in t = (mu + 1)/2,
+        # which is g(t) = sum_l (2l + 1) a_l P_l(2t - 1). The change of basis
+        # involves large alternating integers, so the coefficients are kept in
+        # exact arithmetic as integer numerators over a common denominator.
         order = len(self._coefficients) - 1
         matrix = _shifted_legendre_bernstein(order)
         a = [(2*l + 1) * Fraction(float(al))
              for l, al in enumerate(self._coefficients)]
-        b = np.array([
-            float(sum(al * row[k] for al, row in zip(a, matrix)) / comb(order, k))
-            for k in range(order + 1)
+        b = [sum(al * row[k] for al, row in zip(a, matrix)) / comb(order, k)
+             for k in range(order + 1)]
+        denominator = lcm(*(bk.denominator for bk in b))
+        b = [bk.numerator * (denominator // bk.denominator) for bk in b]
+
+        # Bisect [0, 1] until the coefficients on each subinterval are
+        # nonnegative. Each bisection multiplies the integer numerators by
+        # 2^order (see _bisect_bernstein), so a subinterval at depth d holds
+        # numerators over denominator * 2^(order*d) and its width is 2^-d.
+        pieces = []
+        negative = Fraction(0)
+        stack = [(0, 0, b)]
+        while stack:
+            depth, index, coeffs = stack.pop()
+            cmin, cmax = min(coeffs), max(coeffs)
+            # Negative values at the level of roundoff in the expansion
+            # coefficients are treated as zero
+            if cmin >= 0:
+                pieces.append((depth, index, coeffs))
+            elif -cmin * 10**12 <= cmax:
+                pieces.append((depth, index, [max(c, 0) for c in coeffs]))
+            elif cmax <= 0 or depth >= self._max_subdivision_depth:
+                # The expansion is negative on this subinterval or the
+                # subinterval contains a point where it is zero or changes
+                # sign. Keep only the positive part.
+                scale = Fraction(1, denominator << (order*depth + depth))
+                negative -= sum(c for c in coeffs if c < 0) * scale
+                if cmax > 0:
+                    pieces.append((depth, index, [max(c, 0) for c in coeffs]))
+            else:
+                left, right = _bisect_bernstein(coeffs)
+                stack.append((depth + 1, 2*index + 1, right))
+                stack.append((depth + 1, 2*index, left))
+
+        if not pieces:
+            raise ValueError('Legendre expansion is not positive anywhere on '
+                             '[-1, 1] and cannot be sampled.')
+
+        lower = np.array([index / 2**depth for depth, index, _ in pieces])
+        width = np.array([1.0 / 2**depth for depth, _, _ in pieces])
+        weights = np.array([
+            float(Fraction(c, denominator << (order*depth + depth)))
+            for depth, _, coeffs in pieces for c in coeffs
         ])
+        total = weights.sum()
+        if negative > 1e-9*total:
+            warn('Legendre expansion is negative somewhere on [-1, 1] and '
+                 'cannot be sampled exactly. Negative parts of the '
+                 'distribution were set to zero.')
 
-        # Elevate the degree until all coefficients are nonnegative. Each new
-        # coefficient is a convex combination of the old ones, so this step is
-        # numerically stable. Tiny negative values attributable to roundoff in
-        # the expansion coefficients are treated as zero.
-        n = order
-        while True:
-            if b.max() <= 0.0:
-                raise ValueError('Legendre expansion is not positive anywhere '
-                                 'on [-1, 1] and cannot be sampled.')
-            if b.min() >= -1e-12 * b.max():
-                break
-            if n >= self._max_sampling_degree:
-                warn('Legendre expansion is zero or negative somewhere on '
-                     '[-1, 1] and cannot be sampled exactly. Negative beta '
-                     f'mixture weights (as low as {b.min()/b.sum():.3e}) were '
-                     'set to zero.')
-                break
-            r = np.arange(1, n + 1) / (n + 1)
-            b = np.concatenate(([b[0]], r*b[:-1] + (1.0 - r)*b[1:], [b[-1]]))
-            n += 1
-
-        w = np.clip(b, 0.0, None)
-        self._mixture_weights = w / w.sum()
-        return self._mixture_weights
+        self._mixture = (lower, width, weights / total)
+        return self._mixture
 
     def _sample_unbiased(self, n_samples=1, seed=None):
         rng = np.random.RandomState(seed)
-        w = self._beta_mixture_weights()
-        n = w.size - 1
-        k = rng.choice(n + 1, n_samples, p=w)
-        return 2.0*rng.beta(k + 1.0, n - k + 1.0) - 1.0
+        lower, width, weights = self._beta_mixture()
+        order = len(self._coefficients) - 1
+        j, k = np.divmod(rng.choice(weights.size, n_samples, p=weights),
+                         order + 1)
+        t = lower[j] + width[j]*rng.beta(k + 1.0, order - k + 1.0)
+        return 2.0*t - 1.0
 
     def evaluate(self, x):
         x = np.asarray(x, dtype=float)

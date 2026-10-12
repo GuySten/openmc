@@ -643,16 +643,16 @@ void ScattDataLegendre::init(const tensor::Tensor<int>& in_gmin,
   // Initialize the base class attributes
   ScattData::base_init(order, in_gmin, in_gmax, in_energy, in_mult);
 
-  // Set the distribution (sdata.dist) values
+  // Set the distribution (sdata.dist) values. The representation used for
+  // sampling is only built by combine(), since only the combined data of a
+  // material is sampled.
   for (int gin = 0; gin < groups; gin++) {
     int num_groups = gmax[gin] - gmin[gin] + 1;
     for (int i_gout = 0; i_gout < num_groups; i_gout++) {
       dist[gin][i_gout] = matrix[gin][i_gout];
     }
   }
-
-  // Build the representation used for sampling
-  update_mixture();
+  mixture.clear();
 }
 
 //==============================================================================
@@ -735,6 +735,9 @@ void ScattDataLegendre::combine(
 
   // Got everything we need, store it.
   init(in_gmin, in_gmax, sparse_mult, sparse_scatter);
+
+  // Build the representation used for sampling
+  update_mixture();
 }
 
 //==============================================================================

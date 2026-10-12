@@ -217,6 +217,9 @@ public:
 
   //! \brief Build the beta mixture representation of each angular
   //! distribution used for sampling.
+  //!
+  //! This is called by combine() so that the representation is only built for
+  //! the combined data of a material, which is the only data sampled.
   void update_mixture();
 
   double calc_f(int gin, int gout, double mu) override;

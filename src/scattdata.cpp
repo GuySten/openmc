@@ -9,6 +9,7 @@
 #include "openmc/constants.h"
 #include "openmc/error.h"
 #include "openmc/math_functions.h"
+#include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
 #include "openmc/settings.h"
 
@@ -226,6 +227,171 @@ double ScattData::get_xs(
 }
 
 //==============================================================================
+// LegendreBetaMixture methods
+//==============================================================================
+
+namespace {
+
+// Maximum number of bisections of [-1, 1] used to isolate points where a
+// Legendre expansion is zero or changes sign
+constexpr int MAX_SUBDIVISION_DEPTH {16};
+
+// Binomial coefficients C(i, j) for 0 <= j <= i <= n
+vector<vector<double>> binomial_table(int n)
+{
+  vector<vector<double>> binom(n + 1);
+  for (int i = 0; i <= n; ++i) {
+    binom[i].resize(i + 1);
+    binom[i][0] = 1.;
+    binom[i][i] = 1.;
+    for (int j = 1; j < i; ++j) {
+      binom[i][j] = binom[i - 1][j - 1] + binom[i - 1][j];
+    }
+  }
+  return binom;
+}
+
+} // namespace
+
+LegendreBetaMixture::LegendreBetaMixture(const vector<double>& coeffs)
+{
+  int n = coeffs.size() - 1;
+  auto binom = binomial_table(n);
+
+  // Bernstein coefficients on [0, 1] of the density in t = (mu + 1)/2, which
+  // is g(t) = sum_l (2l + 1) a_l P_l(2t - 1). They follow from the identity
+  // P_l(2t - 1) = sum_j (-1)^(l-j) C(l,j)^2 t^j (1-t)^(l-j) after elevating
+  // the degree from l to n.
+  vector<double> b(n + 1, 0.);
+  for (int k = 0; k <= n; ++k) {
+    for (int l = 0; l <= n; ++l) {
+      double sum = 0.;
+      for (int j = std::max(0, k - n + l); j <= std::min(l, k); ++j) {
+        double term = binom[l][j] * binom[l][j] * binom[n - l][k - j];
+        sum += ((l - j) % 2 == 0) ? term : -term;
+      }
+      b[k] += (2 * l + 1) * coeffs[l] * sum;
+    }
+    b[k] /= binom[n][k];
+  }
+
+  // Coefficients within roundoff of zero are treated as zero
+  double tolerance = 0.;
+  for (double x : b) {
+    tolerance = std::max(tolerance, std::abs(x));
+  }
+  tolerance *= 1.e-12;
+
+  // Bisect [0, 1] until the coefficients on each subinterval are nonnegative.
+  // Subintervals are processed from left to right.
+  struct Interval {
+    double lower;
+    double width;
+    int depth;
+    vector<double> b;
+  };
+  vector<Interval> stack {{0., 1., 0, b}};
+  vector<double> weights;
+  while (!stack.empty()) {
+    Interval interval = std::move(stack.back());
+    stack.pop_back();
+    auto [bmin, bmax] =
+      std::minmax_element(interval.b.begin(), interval.b.end());
+
+    // The expansion is not positive on this subinterval
+    if (*bmax <= tolerance)
+      continue;
+
+    if (*bmin >= -tolerance || interval.depth == MAX_SUBDIVISION_DEPTH) {
+      // Keep the subinterval. At the maximum depth it contains a point where
+      // the expansion is zero or changes sign, and only its positive part is
+      // kept.
+      lower_.push_back(2. * interval.lower - 1.);
+      width_.push_back(2. * interval.width);
+      for (double x : interval.b) {
+        weights.push_back(interval.width * std::max(x, 0.));
+      }
+      continue;
+    }
+
+    // Split the subinterval in half with the de Casteljau algorithm
+    vector<double> left(n + 1);
+    vector<double> right(n + 1);
+    vector<double>& w = interval.b;
+    for (int r = 0; r <= n; ++r) {
+      left[r] = w[0];
+      right[n - r] = w[n - r];
+      for (int i = 0; i < n - r; ++i) {
+        w[i] = 0.5 * (w[i] + w[i + 1]);
+      }
+    }
+    double half = 0.5 * interval.width;
+    int depth = interval.depth + 1;
+    stack.push_back({interval.lower + half, half, depth, std::move(right)});
+    stack.push_back({interval.lower, half, depth, std::move(left)});
+  }
+
+  // Accumulate the CDF of the components
+  double total = std::accumulate(weights.begin(), weights.end(), 0.);
+  if (total > 0.) {
+    order_ = n;
+    cdf_.resize(weights.size());
+    std::partial_sum(weights.begin(), weights.end(), cdf_.begin());
+    for (auto& c : cdf_) {
+      c /= total;
+    }
+    cdf_.back() = 1.;
+  } else {
+    // There is nothing to sample, so fall back to an isotropic distribution
+    order_ = 0;
+    lower_ = {-1.};
+    width_ = {2.};
+    cdf_ = {1.};
+  }
+}
+
+double LegendreBetaMixture::sample(uint64_t* seed) const
+{
+  // Select a component and the subinterval it belongs to
+  int c = 0;
+  if (cdf_.size() > 1) {
+    c =
+      std::upper_bound(cdf_.begin(), cdf_.end() - 1, prn(seed)) - cdf_.begin();
+  }
+  int j = c / (order_ + 1);
+  int k = c % (order_ + 1);
+
+  // Sample the beta distribution scaled to the subinterval
+  double mu = lower_[j] + width_[j] * beta_variate(k + 1, order_ - k + 1, seed);
+  return std::clamp(mu, -1., 1.);
+}
+
+double LegendreBetaMixture::evaluate(double mu) const
+{
+  // Find the subinterval containing mu; the last one includes mu = 1
+  int n_intervals = lower_.size();
+  int j = std::upper_bound(lower_.begin(), lower_.end(), mu) - lower_.begin();
+  if (j == 0 || mu > 1.)
+    return 0.;
+  --j;
+  double u = (mu - lower_[j]) / width_[j];
+  if (u > 1. || (u == 1. && j < n_intervals - 1))
+    return 0.;
+
+  // Sum the beta densities of the components on the subinterval
+  int n = order_;
+  double f = 0.;
+  double binom = 1.;
+  for (int k = 0; k <= n; ++k) {
+    int c = j * (n + 1) + k;
+    double weight = cdf_[c] - (c > 0 ? cdf_[c - 1] : 0.);
+    f += weight * (n + 1) * binom * std::pow(u, k) * std::pow(1. - u, n - k);
+    binom = binom * (n - k) / (k + 1);
+  }
+  return f / width_[j];
+}
+
+//==============================================================================
 // ScattDataLegendre methods
 //==============================================================================
 
@@ -270,55 +436,28 @@ void ScattDataLegendre::init(const tensor::Tensor<int>& in_gmin,
   // Initialize the base class attributes
   ScattData::base_init(order, in_gmin, in_gmax, in_energy, in_mult);
 
-  // Set the distribution (sdata.dist) values and initialize max_val
-  max_val.resize(groups);
+  // Set the distribution (sdata.dist) values
   for (int gin = 0; gin < groups; gin++) {
     int num_groups = gmax[gin] - gmin[gin] + 1;
     for (int i_gout = 0; i_gout < num_groups; i_gout++) {
       dist[gin][i_gout] = matrix[gin][i_gout];
     }
-    max_val[gin].resize(num_groups);
-    for (auto& n : max_val[gin])
-      n = 0.;
   }
 
-  // Now update the maximum value
-  update_max_val();
+  // Build the representation used for sampling
+  update_mixture();
 }
 
 //==============================================================================
 
-void ScattDataLegendre::update_max_val()
+void ScattDataLegendre::update_mixture()
 {
-  size_t groups = max_val.size();
-  // Step through the polynomial with fixed number of points to identify the
-  // maximal value
-  int Nmu = 1001;
-  double dmu = 2. / (Nmu - 1);
+  size_t groups = dist.size();
+  mixture.resize(groups);
   for (int gin = 0; gin < groups; gin++) {
-    int num_groups = gmax[gin] - gmin[gin] + 1;
-    for (int i_gout = 0; i_gout < num_groups; i_gout++) {
-      for (int imu = 0; imu < Nmu; imu++) {
-        double mu;
-        if (imu == 0) {
-          mu = -1.;
-        } else if (imu == (Nmu - 1)) {
-          mu = 1.;
-        } else {
-          mu = -1. + (imu - 1) * dmu;
-        }
-
-        // Calculate probability
-        double f = evaluate_legendre(
-          dist[gin][i_gout].size() - 1, dist[gin][i_gout].data(), mu);
-
-        // if this is a new maximum, store it
-        if (f > max_val[gin][i_gout])
-          max_val[gin][i_gout] = f;
-      } // end imu loop
-
-      // Since we may not have caught the true max, add 10% margin
-      max_val[gin][i_gout] *= 1.1;
+    mixture[gin].clear();
+    for (const auto& coeffs : dist[gin]) {
+      mixture[gin].emplace_back(coeffs);
     }
   }
 }
@@ -347,22 +486,9 @@ void ScattDataLegendre::sample(
   int i_gout;
   sample_energy(gin, gout, i_gout, seed);
 
-  // Now we can sample mu using the scattering kernel using rejection
-  // sampling from a rectangular bounding box
-  double M = max_val[gin][i_gout];
-  int samples;
-  for (samples = 0; samples < MAX_SAMPLE; ++samples) {
-    mu = 2. * prn(seed) - 1.;
-    double f = calc_f(gin, gout, mu);
-    if (f > 0.) {
-      double u = prn(seed) * M;
-      if (u <= f)
-        break;
-    }
-  }
-  if (samples == MAX_SAMPLE) {
-    fatal_error("Maximum number of Legendre expansion samples reached!");
-  }
+  // Sample mu directly from the beta mixture representation of the
+  // scattering kernel
+  mu = mixture[gin][i_gout].sample(seed);
 
   // Update the weight to reflect neutron multiplicity
   wgt *= mult[gin][i_gout];

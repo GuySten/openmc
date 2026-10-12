@@ -120,14 +120,61 @@ public:
 };
 
 //==============================================================================
+//! LegendreBetaMixture represents a Legendre expansion of an angular
+//! distribution exactly as a mixture of scaled beta distributions so that it
+//! can be sampled without rejection.
+//!
+//! With t = (mu + 1)/2, an expansion of order N is a polynomial of degree N in
+//! t. On an interval [t0, t0 + h] it can be written in the Bernstein basis as
+//! sum_k b_k C(N,k) u^k (1-u)^(N-k) with u = (t - t0)/h. Each basis function is
+//! proportional to a Beta(k+1, N-k+1) density in u, so when all b_k >= 0 the
+//! expansion on the interval is a mixture of beta distributions with weights
+//! h b_k / (N + 1). Starting from [0, 1], intervals with negative coefficients
+//! are bisected (de Casteljau subdivision) until every coefficient is
+//! nonnegative, which terminates for any expansion that is positive on
+//! [-1, 1]. Parts of the expansion that are negative are set to zero.
+//==============================================================================
+
+class LegendreBetaMixture {
+public:
+  LegendreBetaMixture() = default;
+
+  //! \brief Builds the mixture from a Legendre expansion.
+  //!
+  //! @param coeffs Expansion coefficients a_l, without the (2l+1)/2 factor
+  explicit LegendreBetaMixture(const vector<double>& coeffs);
+
+  //! \brief Samples a cosine from the distribution.
+  //!
+  //! @param seed Pseudorandom number seed pointer
+  //! @return Sampled cosine in [-1, 1]
+  double sample(uint64_t* seed) const;
+
+  //! \brief Evaluates the probability density represented by the mixture.
+  //!
+  //! @param mu Cosine at which to evaluate the density
+  //! @return The density, normalized to integrate to one over [-1, 1]
+  double evaluate(double mu) const;
+
+  //! \brief Number of subintervals of [-1, 1] in the mixture.
+  size_t n_intervals() const { return lower_.size(); }
+
+private:
+  int order_ {0};        //!< Polynomial degree of the expansion
+  vector<double> lower_; //!< Lower bound in mu of each subinterval
+  vector<double> width_; //!< Width in mu of each subinterval
+  vector<double> cdf_;   //!< Cumulative probability of each component
+};
+
+//==============================================================================
 // ScattDataLegendre represents the angular distributions as Legendre kernels
 //==============================================================================
 
 class ScattDataLegendre : public ScattData {
 
 protected:
-  // Maximal value for rejection sampling from a rectangle
-  double_2dvec max_val;
+  // Beta mixture representation of each angular distribution for sampling
+  vector<vector<LegendreBetaMixture>> mixture;
 
   // Friend convert_legendre_to_tabular so it has access to protected
   // parameters
@@ -142,9 +189,9 @@ public:
   void combine(const vector<ScattData*>& those_scatts,
     const vector<double>& scalars) override;
 
-  //! \brief Find the maximal value of the angular distribution to use as a
-  // bounding box with rejection sampling.
-  void update_max_val();
+  //! \brief Build the beta mixture representation of each angular
+  //! distribution used for sampling.
+  void update_mixture();
 
   double calc_f(int gin, int gout, double mu) override;
 

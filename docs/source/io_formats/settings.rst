@@ -1461,9 +1461,9 @@ The optional ``<tabular_legendre>`` element specifies how the multi-group
 Legendre scattering kernel is represented if encountered in a multi-group
 problem.  Specifically, the options are to either convert the Legendre
 expansion to a tabular representation or leave it as a set of Legendre
-coefficients. Converting to a tabular representation will cost memory but can
-allow for a decrease in runtime compared to leaving as a set of Legendre
-coefficients. This element has the following attributes/sub-elements:
+coefficients. A tabular representation approximates the expansion with linear
+interpolation between a fixed number of points, whereas Legendre coefficients
+are sampled exactly. This element has the following attributes/sub-elements:
 
   :enable:
     This attribute/sub-element denotes whether or not the conversion of a

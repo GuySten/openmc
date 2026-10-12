@@ -75,6 +75,22 @@ extern "C" double watt_spectrum(double a, double b, uint64_t* seed);
 
 extern "C" double normal_variate(double mean, double std_dev, uint64_t* seed);
 
+//==============================================================================
+//! Samples a beta distribution with integer shape parameters.
+//!
+//! The PDF is p(x) = x^(a-1) (1-x)^(b-1) / B(a,b) on [0,1]. When either shape
+//! is one, the inverse CDF is used. Otherwise the variate is X/(X+Y), where X
+//! and Y are gamma variates with integer shapes a and b, each of which is a sum
+//! of exponential variates. This takes a + b pseudorandom numbers.
+//!
+//! \param a First shape parameter, at least 1
+//! \param b Second shape parameter, at least 1
+//! \param seed A pointer to the pseudorandom seed
+//! \return Sampled variate in [0,1]
+//==============================================================================
+
+double beta_variate(int a, int b, uint64_t* seed);
+
 } // namespace openmc
 
 #endif // OPENMC_RANDOM_DIST_H

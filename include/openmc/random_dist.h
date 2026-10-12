@@ -78,10 +78,9 @@ extern "C" double normal_variate(double mean, double std_dev, uint64_t* seed);
 //==============================================================================
 //! Samples a beta distribution with integer shape parameters.
 //!
-//! The PDF is p(x) = x^(a-1) (1-x)^(b-1) / B(a,b) on [0,1]. When either shape
-//! is one, the inverse CDF is used. Otherwise the variate is X/(X+Y), where X
-//! and Y are gamma variates with integer shapes a and b, each of which is a sum
-//! of exponential variates. This takes a + b pseudorandom numbers.
+//! The PDF is p(x) = x^(a-1) (1-x)^(b-1) / B(a,b) on [0,1]. The variate is an
+//! order statistic of a + b - 1 uniform variates, generated from min(a, b)
+//! pseudorandom numbers.
 //!
 //! \param a First shape parameter, at least 1
 //! \param b Second shape parameter, at least 1

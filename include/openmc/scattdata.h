@@ -121,18 +121,24 @@ public:
 
 //==============================================================================
 //! LegendreBetaMixture represents a Legendre expansion of an angular
-//! distribution exactly as a mixture of scaled beta distributions so that it
-//! can be sampled without rejection.
+//! distribution exactly as a mixture of simple distributions so that it can be
+//! sampled without rejection.
 //!
 //! With t = (mu + 1)/2, an expansion of order N is a polynomial of degree N in
 //! t. On an interval [t0, t0 + h] it can be written in the Bernstein basis as
 //! sum_k b_k C(N,k) u^k (1-u)^(N-k) with u = (t - t0)/h. Each basis function is
-//! proportional to a Beta(k+1, N-k+1) density in u, so when all b_k >= 0 the
-//! expansion on the interval is a mixture of beta distributions with weights
-//! h b_k / (N + 1). Starting from [0, 1], intervals with negative coefficients
-//! are bisected (de Casteljau subdivision) until every coefficient is
-//! nonnegative, which terminates for any expansion that is positive on
-//! [-1, 1]. Parts of the expansion that are negative are set to zero.
+//! proportional to a Beta(k+1, N-k+1) density in u, and the basis functions sum
+//! to one. Starting from [0, 1], intervals with negative coefficients are
+//! bisected (de Casteljau subdivision) until every coefficient is nonnegative,
+//! which terminates for any expansion that is positive on [-1, 1]. Parts of the
+//! expansion that are negative are set to zero.
+//!
+//! On each interval, the expansion is then the constant m = min_k b_k plus a
+//! mixture of beta distributions with weights proportional to b_k - m >= 0.
+//! The constant parts form a histogram that is sampled with the alias method
+//! from a single pseudorandom number. Intervals are bisected further until the
+//! histogram carries all but a small fraction of the probability, so that a
+//! beta variate is rarely needed.
 //==============================================================================
 
 class LegendreBetaMixture {
@@ -142,7 +148,12 @@ public:
   //! \brief Builds the mixture from a Legendre expansion.
   //!
   //! @param coeffs Expansion coefficients a_l, without the (2l+1)/2 factor
-  explicit LegendreBetaMixture(const vector<double>& coeffs);
+  //! @param max_residual Target for the fraction of the probability that is
+  //!   not in the histogram
+  //! @param max_bisections Maximum number of bisections used to reach the
+  //!   target, in addition to those needed for nonnegative coefficients
+  explicit LegendreBetaMixture(const vector<double>& coeffs,
+    double max_residual = 0.02, int max_bisections = 32);
 
   //! \brief Samples a cosine from the distribution.
   //!
@@ -156,14 +167,29 @@ public:
   //! @return The density, normalized to integrate to one over [-1, 1]
   double evaluate(double mu) const;
 
-  //! \brief Number of subintervals of [-1, 1] in the mixture.
+  //! \brief Number of intervals of [-1, 1] in the mixture.
   size_t n_intervals() const { return lower_.size(); }
 
+  //! \brief Probability of sampling from the histogram.
+  double histogram_fraction() const { return histogram_fraction_; }
+
 private:
-  int order_ {0};        //!< Polynomial degree of the expansion
-  vector<double> lower_; //!< Lower bound in mu of each subinterval
-  vector<double> width_; //!< Width in mu of each subinterval
-  vector<double> cdf_;   //!< Cumulative probability of each component
+  int order_ {0};                      //!< Polynomial degree of the expansion
+  double histogram_fraction_ {1.};     //!< Probability of the histogram
+  double inv_histogram_fraction_ {1.}; //!< Its reciprocal
+  vector<double> lower_;               //!< Lower bound in mu of each interval
+  vector<double> width_;               //!< Width in mu of each interval
+  vector<double> coeffs_;              //!< Bernstein coefficients of the
+                          //!< normalized density in t, per interval
+  vector<double> floor_;            //!< Smallest coefficient of each interval
+  vector<double> residual_sum_;     //!< Sum of coefficients above the floor
+  vector<double> hist_prob_;        //!< Alias table probabilities, histogram
+  vector<size_t> hist_alias_;       //!< Alias table, histogram
+  vector<double> hist_scale_;       //!< Interval width divided by the alias
+                                    //!< probability of each slot
+  vector<double> hist_alias_scale_; //!< Same for the alias of each slot
+  vector<double> resid_prob_;       //!< Alias table probabilities, residual
+  vector<size_t> resid_alias_;      //!< Alias table, residual
 };
 
 //==============================================================================

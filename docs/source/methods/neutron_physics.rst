@@ -241,7 +241,7 @@ given group transfer. If the data is provided as tabular or histogram data, then
 Now that the outgoing energy is known the change-in-angle, :math:`\mu` can be
 determined. If the data is provided as a Legendre expansion of order :math:`N`,
 it is sampled directly, without rejection, by rewriting the expansion as a
-mixture of beta distributions. With :math:`t = (\mu + 1)/2`, the probability
+mixture of simple distributions. With :math:`t = (\mu + 1)/2`, the probability
 distribution function :math:`f(\mu)` is a polynomial of degree :math:`N` in
 :math:`t`, which on an interval :math:`[t_0, t_0 + h]` can be written in the
 Bernstein basis as
@@ -253,21 +253,30 @@ Bernstein basis as
     \frac{t - t_0}{h}.
 
 Each term is proportional to the density of a beta distribution,
-:math:`\mathrm{Beta}(k+1, N-k+1)`, in :math:`u`. When all of the coefficients
-:math:`b_k` are nonnegative, :math:`f(\mu)` on the interval is therefore a
-mixture of beta distributions with weights :math:`h b_k/(N+1)`. Starting from
-the full interval :math:`[0, 1]`, intervals with negative coefficients are
-bisected using the de Casteljau algorithm until every coefficient is
-nonnegative. This always terminates when :math:`f(\mu)` is positive on
-:math:`[-1, 1]`; points where :math:`f(\mu)` is zero or changes sign are
-isolated to an interval of width :math:`2^{-16}`, and negative values of
-:math:`f(\mu)` are treated as zero probabilities. The mixture is constructed
-once when the data is loaded. To sample :math:`\mu`, a component is chosen
-according to its weight and :math:`u` is sampled from the corresponding beta
-distribution. For integer shape parameters :math:`a` and :math:`b`, a beta
-variate is obtained as :math:`X/(X+Y)`, where :math:`X` and :math:`Y` are
-gamma variates with shapes :math:`a` and :math:`b`, each of which is minus the
-logarithm of a product of uniform random numbers.
+:math:`\mathrm{Beta}(k+1, N-k+1)`, in :math:`u`. Starting from the full
+interval :math:`[0, 1]`,
+intervals whose coefficients :math:`b_k` are not all nonnegative are split
+using the de Casteljau algorithm. When the coefficients change sign exactly
+once, the polynomial has exactly one root in the interval, and the interval is
+split at that root; otherwise it is bisected. This terminates when
+:math:`f(\mu)` is positive on :math:`[-1, 1]`. Intervals on which
+:math:`f(\mu)` is negative are discarded, so negative values of
+:math:`f(\mu)` are treated as zero probabilities, and points where
+:math:`f(\mu)` touches zero are isolated to an interval of width
+:math:`2^{-16}`.
+
+Because the Bernstein basis functions sum to one, on each remaining interval
+:math:`2 f(2t - 1)` is the constant :math:`m = \min_k b_k` plus a mixture of
+beta distributions with weights proportional to :math:`b_k - m \ge 0`. The constant parts of all intervals form a histogram,
+and intervals are bisected further until the histogram carries all but about 2%
+of the probability. This representation is constructed once when the data is
+loaded. To sample :math:`\mu`, a single random number decides between the
+histogram and the remaining beta mixture. For the histogram, the same random
+number selects an interval with the alias method, and the fraction left over
+from that decision places :math:`\mu` uniformly within the interval. Otherwise,
+an interval and a component :math:`k` are selected, and :math:`u` is sampled
+from :math:`\mathrm{Beta}(k+1, N-k+1)` as an order statistic of :math:`N+1`
+uniform random numbers, which requires :math:`\min(k+1, N-k+1)` of them.
 
 If the angular data is instead provided as a tabular representation, then the
 value of :math:`\mu` is selected as described in the :ref:`angle-tabular`

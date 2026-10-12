@@ -133,3 +133,46 @@ TEST_CASE("Test LegendreBetaMixture without a positive part")
   uint64_t seed = 1;
   REQUIRE(std::abs(zero.sample(&seed)) <= 1.);
 }
+
+TEST_CASE("Test LegendreBetaMixture sample histogram")
+{
+  // Compare the fraction of samples in fine bins of mu with the probability
+  // of each bin, which checks how the histogram part reuses its random number
+  auto coeffs = GENERATE(vector<double> {1., 0.2},
+    vector<double> {1., 0.9, 0.5}, henyey_greenstein(0.8, 32));
+  LegendreBetaMixture mixture(coeffs);
+  int n = coeffs.size() - 1;
+
+  int n_bins = 200;
+  int n_samples = 2000000;
+  vector<double> counts(n_bins, 0.);
+  uint64_t seed = 1;
+  for (int i = 0; i < n_samples; ++i) {
+    double mu = mixture.sample(&seed);
+    int bin = std::min(static_cast<int>((mu + 1.) / 2. * n_bins), n_bins - 1);
+    counts[bin] += 1.;
+  }
+
+  // Bin probabilities from the positive part of the expansion with Simpson's
+  // rule
+  vector<double> prob(n_bins);
+  double total = 0.;
+  for (int i = 0; i < n_bins; ++i) {
+    double a = -1. + 2. * i / n_bins;
+    double h = 2. / n_bins;
+    double sum = 0.;
+    int m = 20;
+    for (int j = 0; j <= m; ++j) {
+      double mu = a + h * j / m;
+      double w = (j == 0 || j == m) ? 1. : (j % 2 == 1 ? 4. : 2.);
+      sum += w * std::max(evaluate_legendre(n, coeffs.data(), mu), 0.);
+    }
+    prob[i] = sum * h / (3. * m);
+    total += prob[i];
+  }
+  for (int i = 0; i < n_bins; ++i) {
+    double expected = n_samples * prob[i] / total;
+    REQUIRE_THAT(counts[i], Catch::Matchers::WithinAbs(expected,
+                              5. * std::sqrt(expected) + 1.e-3 * expected));
+  }
+}

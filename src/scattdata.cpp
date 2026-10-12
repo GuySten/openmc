@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <utility>
 
 #include "openmc/tensor.h"
 
@@ -251,9 +252,159 @@ vector<vector<double>> binomial_table(int n)
   return binom;
 }
 
+// An interval of t = (mu + 1)/2 and the Bernstein coefficients on it
+struct BernsteinInterval {
+  double lower;
+  double width;
+  int depth;
+  vector<double> b;
+
+  // Integral of the polynomial over the interval
+  double mass() const
+  {
+    return width * std::accumulate(b.begin(), b.end(), 0.) / b.size();
+  }
+
+  // Integral of the polynomial above the smallest coefficient
+  double residual() const
+  {
+    return mass() - width * *std::min_element(b.begin(), b.end());
+  }
+
+  // Value of the polynomial at the local coordinate u in [0, 1]
+  double evaluate(double u) const
+  {
+    vector<double> w = b;
+    for (int r = w.size() - 1; r > 0; --r) {
+      for (int i = 0; i < r; ++i) {
+        w[i] = (1. - u) * w[i] + u * w[i + 1];
+      }
+    }
+    return w[0];
+  }
+
+  // Split the interval at the local coordinate u with the de Casteljau
+  // algorithm
+  std::pair<BernsteinInterval, BernsteinInterval> split(double u) const
+  {
+    int n = b.size() - 1;
+    vector<double> left(n + 1);
+    vector<double> right(n + 1);
+    vector<double> w = b;
+    for (int r = 0; r <= n; ++r) {
+      left[r] = w[0];
+      right[n - r] = w[n - r];
+      for (int i = 0; i < n - r; ++i) {
+        w[i] = (1. - u) * w[i] + u * w[i + 1];
+      }
+    }
+    double x = lower + u * width;
+    return {{lower, x - lower, depth + 1, std::move(left)},
+      {x, lower + width - x, depth + 1, std::move(right)}};
+  }
+
+  std::pair<BernsteinInterval, BernsteinInterval> bisect() const
+  {
+    return split(0.5);
+  }
+
+  // If the polynomial changes sign exactly once on the interval, return the
+  // local coordinate of its root; otherwise return a negative value. By the
+  // variation diminishing property of the Bernstein basis, the number of roots
+  // is at most the number of sign changes in the coefficients.
+  double single_root() const
+  {
+    if (b.front() == 0. || b.back() == 0. ||
+        (b.front() > 0.) == (b.back() > 0.))
+      return -1.;
+    int changes = 0;
+    double last = b.front();
+    for (double x : b) {
+      if (x != 0. && (x > 0.) != (last > 0.)) {
+        ++changes;
+        last = x;
+      }
+    }
+    if (changes != 1)
+      return -1.;
+
+    // Bisection on the polynomial
+    double lo = 0.;
+    double hi = 1.;
+    bool positive_at_lo = b.front() > 0.;
+    for (int i = 0; i < 60 && hi - lo > 1.e-15; ++i) {
+      double mid = 0.5 * (lo + hi);
+      if ((evaluate(mid) > 0.) == positive_at_lo) {
+        lo = mid;
+      } else {
+        hi = mid;
+      }
+    }
+    return 0.5 * (lo + hi);
+  }
+};
+
+// Build an alias table (Vose, DOI: 10.1109/32.92917) for sampling an index
+// with probability proportional to p
+void build_alias(
+  const vector<double>& p, vector<double>& prob, vector<size_t>& alias)
+{
+  size_t n = p.size();
+  double total = std::accumulate(p.begin(), p.end(), 0.);
+  prob.resize(n);
+  alias.assign(n, 0);
+  vector<size_t> small;
+  vector<size_t> large;
+  for (size_t i = 0; i < n; ++i) {
+    prob[i] = p[i] * n / total;
+    if (prob[i] < 1.) {
+      small.push_back(i);
+    } else {
+      large.push_back(i);
+    }
+  }
+  while (!small.empty() && !large.empty()) {
+    size_t j = small.back();
+    small.pop_back();
+    size_t k = large.back();
+    alias[j] = k;
+    prob[k] -= 1. - prob[j];
+    if (prob[k] < 1.) {
+      large.pop_back();
+      small.push_back(k);
+    }
+  }
+  // Entries left over are equal to one up to roundoff
+  for (size_t i : large) {
+    prob[i] = 1.;
+  }
+  for (size_t i : small) {
+    prob[i] = 1.;
+  }
+}
+
+// Sample an index from an alias table using a single uniform variate xi in
+// [0, 1). The remaining randomness is returned in xi as a new uniform variate
+// in [0, 1) that is independent of the index.
+size_t sample_alias(
+  const vector<double>& prob, const vector<size_t>& alias, double& xi)
+{
+  double x = xi * prob.size();
+  size_t i = std::min(static_cast<size_t>(x), prob.size() - 1);
+  double f = x - i;
+  if (f < prob[i]) {
+    xi = f / prob[i];
+    return i;
+  } else {
+    xi = (f - prob[i]) / (1. - prob[i]);
+    return alias[i];
+  }
+}
+
 } // namespace
 
-LegendreBetaMixture::LegendreBetaMixture(const vector<double>& coeffs)
+LegendreBetaMixture::LegendreBetaMixture(
+  const vector<double>& coeffs, double max_residual, int max_bisections)
 {
   int n = coeffs.size() - 1;
   auto binom = binomial_table(n);
@@ -282,93 +433,149 @@ LegendreBetaMixture::LegendreBetaMixture(const vector<double>& coeffs)
   }
   tolerance *= 1.e-12;
 
-  // Bisect [0, 1] until the coefficients on each subinterval are nonnegative.
-  // Subintervals are processed from left to right.
-  struct Interval {
-    double lower;
-    double width;
-    int depth;
-    vector<double> b;
-  };
-  vector<Interval> stack {{0., 1., 0, b}};
-  vector<double> weights;
+  // Bisect [0, 1] until the coefficients on each interval are nonnegative
+  vector<BernsteinInterval> intervals;
+  vector<BernsteinInterval> stack {{0., 1., 0, b}};
   while (!stack.empty()) {
-    Interval interval = std::move(stack.back());
+    BernsteinInterval interval = std::move(stack.back());
     stack.pop_back();
     auto [bmin, bmax] =
       std::minmax_element(interval.b.begin(), interval.b.end());
 
-    // The expansion is not positive on this subinterval
+    // The expansion is not positive on this interval
     if (*bmax <= tolerance)
       continue;
 
     if (*bmin >= -tolerance || interval.depth == MAX_SUBDIVISION_DEPTH) {
-      // Keep the subinterval. At the maximum depth it contains a point where
-      // the expansion is zero or changes sign, and only its positive part is
-      // kept.
-      lower_.push_back(2. * interval.lower - 1.);
-      width_.push_back(2. * interval.width);
-      for (double x : interval.b) {
-        weights.push_back(interval.width * std::max(x, 0.));
+      // Keep the interval. At the maximum depth it contains a point where the
+      // expansion is zero or changes sign, and only its positive part is kept.
+      for (auto& x : interval.b) {
+        x = std::max(x, 0.);
       }
+      intervals.push_back(std::move(interval));
       continue;
     }
 
-    // Split the subinterval in half with the de Casteljau algorithm
-    vector<double> left(n + 1);
-    vector<double> right(n + 1);
-    vector<double>& w = interval.b;
-    for (int r = 0; r <= n; ++r) {
-      left[r] = w[0];
-      right[n - r] = w[n - r];
-      for (int i = 0; i < n - r; ++i) {
-        w[i] = 0.5 * (w[i] + w[i + 1]);
-      }
-    }
-    double half = 0.5 * interval.width;
-    int depth = interval.depth + 1;
-    stack.push_back({interval.lower + half, half, depth, std::move(right)});
-    stack.push_back({interval.lower, half, depth, std::move(left)});
+    // Split at the root if there is exactly one, and otherwise in half
+    double root = interval.single_root();
+    auto [left, right] =
+      root > 0. && root < 1. ? interval.split(root) : interval.bisect();
+    stack.push_back(std::move(right));
+    stack.push_back(std::move(left));
   }
 
-  // Accumulate the CDF of the components
-  double total = std::accumulate(weights.begin(), weights.end(), 0.);
-  if (total > 0.) {
-    order_ = n;
-    cdf_.resize(weights.size());
-    std::partial_sum(weights.begin(), weights.end(), cdf_.begin());
-    for (auto& c : cdf_) {
-      c /= total;
-    }
-    cdf_.back() = 1.;
-  } else {
-    // There is nothing to sample, so fall back to an isotropic distribution
-    order_ = 0;
-    lower_ = {-1.};
-    width_ = {2.};
-    cdf_ = {1.};
+  double total = 0.;
+  for (const auto& interval : intervals) {
+    total += interval.mass();
   }
+  if (intervals.empty() || total <= 0.) {
+    // There is nothing to sample, so fall back to an isotropic distribution
+    intervals = {{0., 1., 0, {1.}}};
+    total = 1.;
+  }
+
+  // Bisect the interval with the largest probability above its floor until
+  // the histogram of floors carries enough of the probability
+  for (int i_bisection = 0; i_bisection < max_bisections; ++i_bisection) {
+    double residual = 0.;
+    size_t worst = 0;
+    for (size_t i = 0; i < intervals.size(); ++i) {
+      double r = intervals[i].residual();
+      residual += r;
+      if (r > intervals[worst].residual())
+        worst = i;
+    }
+    if (residual <= max_residual * total)
+      break;
+    auto [left, right] = intervals[worst].bisect();
+    intervals[worst] = std::move(left);
+    intervals.insert(intervals.begin() + worst + 1, std::move(right));
+  }
+
+  // Store the intervals in mu with coefficients of the normalized density
+  order_ = intervals[0].b.size() - 1;
+  vector<double> hist_weight;
+  vector<double> resid_weight;
+  for (const auto& interval : intervals) {
+    lower_.push_back(2. * interval.lower - 1.);
+    width_.push_back(2. * interval.width);
+    double floor =
+      *std::min_element(interval.b.begin(), interval.b.end()) / total;
+    double sum = 0.;
+    for (double x : interval.b) {
+      coeffs_.push_back(x / total);
+      sum += x / total - floor;
+    }
+    floor_.push_back(floor);
+    residual_sum_.push_back(sum);
+    hist_weight.push_back(interval.width * floor);
+    resid_weight.push_back(interval.width * sum / (order_ + 1));
+  }
+
+  double hist_total =
+    std::accumulate(hist_weight.begin(), hist_weight.end(), 0.);
+  double resid_total =
+    std::accumulate(resid_weight.begin(), resid_weight.end(), 0.);
+  histogram_fraction_ = hist_total / (hist_total + resid_total);
+  if (hist_total > 0.) {
+    inv_histogram_fraction_ = 1. / histogram_fraction_;
+    build_alias(hist_weight, hist_prob_, hist_alias_);
+
+    // Precompute the factors that map the randomness left over from the alias
+    // decision to a position within the selected interval
+    size_t n_slots = hist_prob_.size();
+    hist_scale_.resize(n_slots);
+    hist_alias_scale_.resize(n_slots);
+    for (size_t i = 0; i < n_slots; ++i) {
+      double p = hist_prob_[i];
+      hist_scale_[i] = p > 0. ? width_[i] / p : 0.;
+      hist_alias_scale_[i] = p < 1. ? width_[hist_alias_[i]] / (1. - p) : 0.;
+    }
+  }
+  if (resid_total > 0.)
+    build_alias(resid_weight, resid_prob_, resid_alias_);
 }
 
 double LegendreBetaMixture::sample(uint64_t* seed) const
 {
-  // Select a component and the subinterval it belongs to
-  int c = 0;
-  if (cdf_.size() > 1) {
-    c =
-      std::upper_bound(cdf_.begin(), cdf_.end() - 1, prn(seed)) - cdf_.begin();
+  double xi = prn(seed);
+  if (xi < histogram_fraction_) {
+    // Sample the histogram of floors: pick an interval with the alias method
+    // and place mu uniformly within it, all from the same random number. The
+    // fraction left over after choosing a slot of the alias table is uniform
+    // on [0, prob) for the slot itself and on [prob, 1) for its alias.
+    double x = xi * inv_histogram_fraction_ * hist_prob_.size();
+    size_t i = std::min(static_cast<size_t>(x), hist_prob_.size() - 1);
+    double f = x - i;
+    double mu;
+    if (f < hist_prob_[i]) {
+      mu = lower_[i] + f * hist_scale_[i];
+    } else {
+      size_t j = hist_alias_[i];
+      mu = lower_[j] + (f - hist_prob_[i]) * hist_alias_scale_[i];
+    }
+    return std::clamp(mu, -1., 1.);
   }
-  int j = c / (order_ + 1);
-  int k = c % (order_ + 1);
 
-  // Sample the beta distribution scaled to the subinterval
-  double mu = lower_[j] + width_[j] * beta_variate(k + 1, order_ - k + 1, seed);
-  return std::clamp(mu, -1., 1.);
+  // Sample the residual: pick an interval, then a beta component in it with
+  // probability proportional to its coefficient above the floor
+  xi = (xi - histogram_fraction_) / (1. - histogram_fraction_);
+  size_t j = sample_alias(resid_prob_, resid_alias_, xi);
+  const double* c = &coeffs_[j * (order_ + 1)];
+  double target = xi * residual_sum_[j];
+  int k = 0;
+  for (; k < order_; ++k) {
+    target -= c[k] - floor_[j];
+    if (target < 0.)
+      break;
+  }
+  double u = beta_variate(k + 1, order_ - k + 1, seed);
+  return std::clamp(lower_[j] + width_[j] * u, -1., 1.);
 }
 
 double LegendreBetaMixture::evaluate(double mu) const
 {
-  // Find the subinterval containing mu; the last one includes mu = 1
+  // Find the interval containing mu; the last one includes its upper bound
   int n_intervals = lower_.size();
   int j = std::upper_bound(lower_.begin(), lower_.end(), mu) - lower_.begin();
   if (j == 0 || mu > 1.)
@@ -378,17 +585,17 @@ double LegendreBetaMixture::evaluate(double mu) const
   if (u > 1. || (u == 1. && j < n_intervals - 1))
     return 0.;
 
-  // Sum the beta densities of the components on the subinterval
+  // Evaluate the polynomial in Bernstein form; the factor of 1/2 converts the
+  // density in t to a density in mu
   int n = order_;
+  const double* c = &coeffs_[j * (n + 1)];
   double f = 0.;
   double binom = 1.;
   for (int k = 0; k <= n; ++k) {
-    int c = j * (n + 1) + k;
-    double weight = cdf_[c] - (c > 0 ? cdf_[c - 1] : 0.);
-    f += weight * (n + 1) * binom * std::pow(u, k) * std::pow(1. - u, n - k);
+    f += c[k] * binom * std::pow(u, k) * std::pow(1. - u, n - k);
     binom = binom * (n - k) / (k + 1);
   }
-  return f / width_[j];
+  return 0.5 * f;
 }
 
 //==============================================================================

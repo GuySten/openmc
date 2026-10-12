@@ -7,6 +7,7 @@ import openmc
 import openmc.stats
 from openmc.stats.univariate import _INTERPOLATION_SCHEMES, DecaySpectrum
 from scipy.integrate import trapezoid
+from scipy.stats import beta
 
 from tests.unit_tests import assert_sample_mean
 
@@ -369,6 +370,62 @@ def test_legendre():
 
     with pytest.raises(NotImplementedError):
         d.to_xml_element('distribution')
+
+    # Density is zero outside of [-1, 1]
+    assert d.support == (-1.0, 1.0)
+    np.testing.assert_allclose(d.evaluate(mu), d(mu))
+    np.testing.assert_array_equal(d.evaluate([-1.5, 1.5]), [0.0, 0.0])
+
+
+@pytest.mark.flaky(reruns=1)
+@pytest.mark.parametrize('coeffs', [
+    [1.0],
+    [1.0, 1/3],
+    [1.000e+0, 1.536e-1, 1.772e-2, 5.945e-4, 3.497e-5, 1.881e-5],
+    [1.0, 0.6, 0.3, 0.1],  # Requires degree elevation
+    0.8**np.arange(33),    # Forward-peaked, high order
+])
+def test_legendre_sample(coeffs):
+    d = openmc.stats.Legendre(coeffs)
+
+    # Beta mixture reproduces the expansion exactly
+    w = d._beta_mixture_weights()
+    assert np.all(w >= 0.0)
+    assert w.sum() == pytest.approx(1.0)
+    n = w.size - 1
+    mu = np.linspace(-1., 1., 101)
+    t = (mu + 1.)/2.
+    k = np.arange(n + 1)[:, None]
+    mixture = 0.5*np.sum(w[:, None]*beta.pdf(t, k + 1, n - k + 1), axis=0)
+    np.testing.assert_allclose(mixture, d(mu), atol=1e-12)
+
+    # Sample means of the Legendre polynomials should equal the coefficients
+    samples, weights = d.sample(100_000, seed=1)
+    assert np.all(np.abs(samples) <= 1.0)
+    assert np.all(weights == 1.0)
+    for l in range(1, min(len(coeffs), 4)):
+        p_l = np.polynomial.Legendre.basis(l)(samples)
+        assert_sample_mean(p_l, coeffs[l])
+
+    # Biased sampling
+    d.bias = openmc.stats.Uniform(-1., 1.)
+    samples, weights = d.sample(100_000, seed=1)
+    assert_sample_mean(samples*weights, coeffs[1] if len(coeffs) > 1 else 0.0)
+
+
+def test_legendre_sample_negative():
+    # Expansion that is negative near mu = -1 cannot be sampled exactly
+    d = openmc.stats.Legendre([1.0, 0.9, 0.5])
+    with pytest.warns(UserWarning, match='cannot be sampled exactly'):
+        samples, _ = d.sample(1000, seed=1)
+    assert np.all(np.abs(samples) <= 1.0)
+
+    # Changing coefficients invalidates the cached mixture
+    d.coefficients = [1.0, 0.3]
+    assert d._beta_mixture_weights().size == 2
+
+    with pytest.raises(ValueError):
+        openmc.stats.Legendre([-1.0]).sample()
 
 
 @pytest.mark.flaky(reruns=1)

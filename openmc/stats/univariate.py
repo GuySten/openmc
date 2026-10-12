@@ -2,8 +2,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from fractions import Fraction
 from functools import cache
-from math import sqrt, pi, exp, log
+from math import comb, sqrt, pi, exp, log
 from numbers import Real
 from pathlib import Path
 from warnings import warn
@@ -1807,6 +1808,29 @@ class Tabular(Univariate):
                 f'integral() not supported for {self.interpolation} interpolation')
 
 
+@cache
+def _shifted_legendre_bernstein(order: int) -> tuple[tuple[int, ...], ...]:
+    r"""Integer matrix mapping shifted Legendre polynomials to Bernstein form.
+
+    Row :math:`\ell` holds the integers :math:`N_{\ell k}` such that
+    :math:`P_\ell(2t - 1) = \sum_{k=0}^n N_{\ell k} b_{k,n}(t) / \binom{n}{k}`,
+    where :math:`b_{k,n}` are the Bernstein basis polynomials of degree
+    :math:`n` equal to `order`. This follows from the identity
+    :math:`P_\ell(2t - 1) = \sum_j (-1)^{\ell - j} \binom{\ell}{j}^2 t^j
+    (1 - t)^{\ell - j}` after degree elevation from :math:`\ell` to :math:`n`.
+
+    """
+    n = order
+    return tuple(
+        tuple(
+            sum((-1)**(l - j) * comb(l, j)**2 * comb(n - l, k - j)
+                for j in range(max(0, k - n + l), min(l, k) + 1))
+            for k in range(n + 1)
+        )
+        for l in range(n + 1)
+    )
+
+
 class Legendre(Univariate):
     r"""Probability density given by a Legendre polynomial expansion
     :math:`\sum\limits_{\ell=0}^N \frac{2\ell + 1}{2} a_\ell P_\ell(\mu)`.
@@ -1830,12 +1854,32 @@ class Legendre(Univariate):
     bias : openmc.stats.Univariate or None
         Distribution for biased sampling
 
+    Notes
+    -----
+    Sampling is performed exactly, without rejection, by rewriting the
+    expansion as a mixture of beta distributions. With :math:`t = (\mu +
+    1)/2`, the polynomial density is expressed in the Bernstein basis of degree
+    :math:`n \ge N`,
+
+    .. math::
+        p(\mu) = \sum_{k=0}^n w_k \frac{1}{2} \mathrm{Beta}(t; k+1, n-k+1),
+
+    where the weights :math:`w_k` sum to one. A component :math:`k` is chosen
+    with probability :math:`w_k` and :math:`t` is drawn from the corresponding
+    beta distribution. If some weights are negative at degree :math:`N`, the
+    degree is elevated until they are all nonnegative, which is guaranteed to
+    happen eventually for any expansion that is strictly positive on
+    :math:`[-1, 1]`. Expansions that are zero or negative somewhere cannot be
+    represented exactly; in that case, a warning is issued and negative weights
+    are set to zero at the maximum degree.
+
     """
+
+    _max_sampling_degree = 1000
 
     def __init__(self, coefficients: Sequence[float], bias: Univariate | None = None):
         super().__init__(bias)
         self.coefficients = coefficients
-        self._legendre_poly = None
 
     def __call__(self, x):
         # Create Legendre polynomial if we haven't yet
@@ -1855,20 +1899,79 @@ class Legendre(Univariate):
 
     @coefficients.setter
     def coefficients(self, coefficients):
-        self._coefficients = np.asarray(coefficients)
+        cv.check_type('Legendre coefficients', coefficients, Iterable, Real)
+        coefficients = np.asarray(coefficients, dtype=float)
+        cv.check_greater_than('number of Legendre coefficients',
+                              coefficients.size, 0)
+        self._coefficients = coefficients
+        self._legendre_poly = None
+        self._mixture_weights = None
 
     @property
     def support(self):
-        raise NotImplementedError
+        return (-1.0, 1.0)
+
+    def _beta_mixture_weights(self) -> np.ndarray:
+        r"""Return the weights of the equivalent beta mixture.
+
+        Returns
+        -------
+        numpy.ndarray
+            Weights :math:`w_k` of the :math:`\mathrm{Beta}(k+1, n-k+1)`
+            components for :math:`k = 0, \ldots, n`, normalized to sum to one
+
+        """
+        if self._mixture_weights is not None:
+            return self._mixture_weights
+
+        # Bernstein coefficients of the density in t = (mu + 1)/2, which is
+        # g(t) = sum_l (2l + 1) a_l P_l(2t - 1). The change of basis involves
+        # large alternating integers, so it is carried out in exact arithmetic
+        # and rounded once at the end.
+        order = len(self._coefficients) - 1
+        matrix = _shifted_legendre_bernstein(order)
+        a = [(2*l + 1) * Fraction(float(al))
+             for l, al in enumerate(self._coefficients)]
+        b = np.array([
+            float(sum(al * row[k] for al, row in zip(a, matrix)) / comb(order, k))
+            for k in range(order + 1)
+        ])
+
+        # Elevate the degree until all coefficients are nonnegative. Each new
+        # coefficient is a convex combination of the old ones, so this step is
+        # numerically stable. Tiny negative values attributable to roundoff in
+        # the expansion coefficients are treated as zero.
+        n = order
+        while True:
+            if b.max() <= 0.0:
+                raise ValueError('Legendre expansion is not positive anywhere '
+                                 'on [-1, 1] and cannot be sampled.')
+            if b.min() >= -1e-12 * b.max():
+                break
+            if n >= self._max_sampling_degree:
+                warn('Legendre expansion is zero or negative somewhere on '
+                     '[-1, 1] and cannot be sampled exactly. Negative beta '
+                     f'mixture weights (as low as {b.min()/b.sum():.3e}) were '
+                     'set to zero.')
+                break
+            r = np.arange(1, n + 1) / (n + 1)
+            b = np.concatenate(([b[0]], r*b[:-1] + (1.0 - r)*b[1:], [b[-1]]))
+            n += 1
+
+        w = np.clip(b, 0.0, None)
+        self._mixture_weights = w / w.sum()
+        return self._mixture_weights
 
     def _sample_unbiased(self, n_samples=1, seed=None):
-        raise NotImplementedError
-
-    def sample(self, n_samples=1, seed=None):
-        raise NotImplementedError
+        rng = np.random.RandomState(seed)
+        w = self._beta_mixture_weights()
+        n = w.size - 1
+        k = rng.choice(n + 1, n_samples, p=w)
+        return 2.0*rng.beta(k + 1.0, n - k + 1.0) - 1.0
 
     def evaluate(self, x):
-        raise NotImplementedError
+        x = np.asarray(x, dtype=float)
+        return np.where(np.abs(x) <= 1.0, self(x), 0.0)
 
     def to_xml_element(self, element_name):
         raise NotImplementedError

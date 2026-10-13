@@ -194,23 +194,33 @@ Tally::Tally(pugi::xml_node node)
     fatal_error(fmt::format("No scores specified on tally {}.", id_));
   }
 
-  // Determine which kinds of IFP data this tally requires. The two flags are
-  // independent, so a score simply turns on the data it needs.
+  // Determine which kinds of IFP data this tally requires. The beta numerator
+  // needs the fission births of the ancestors and the time numerator their
+  // lifetimes. The denominator needs either, so it only asks for one if nuclide
+  // bins require the births. IFP scores are binned by the nuclide whose
+  // fission emitted the ancestor, which the births record.
+  bool nuclide_bins = std::any_of(
+    nuclides_.begin(), nuclides_.end(), [](int i) { return i >= 0; });
   bool wants_lifetime = false;
-  bool wants_delayed_group = false;
+  bool wants_birth = false;
+  bool wants_denominator = false;
   for (int score : scores_) {
     switch (score) {
     case SCORE_IFP_TIME_NUM:
       wants_lifetime = true;
+      wants_birth |= nuclide_bins;
       break;
     case SCORE_IFP_BETA_NUM:
+      wants_birth = true;
+      break;
     case SCORE_IFP_DENOM:
-      wants_delayed_group = true;
+      wants_denominator = true;
+      wants_birth |= nuclide_bins;
       break;
     }
   }
 
-  if (wants_lifetime || wants_delayed_group) {
+  if (wants_lifetime || wants_birth || wants_denominator) {
     // Validate once, when the first IFP tally is encountered
     if (!ifp_on()) {
       if (settings::run_mode == RunMode::FIXED_SOURCE) {
@@ -237,8 +247,9 @@ Tally::Tally(pugi::xml_node node)
     if (settings::run_mode == RunMode::EIGENVALUE) {
       if (wants_lifetime)
         simulation::ifp_lifetime.enable();
-      if (wants_delayed_group)
-        simulation::ifp_delayed_group.enable();
+      if (wants_birth)
+        simulation::ifp_birth.enable();
+      simulation::ifp_denominator_on |= wants_denominator;
     }
   }
 

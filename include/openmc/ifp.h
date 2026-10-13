@@ -7,8 +7,48 @@
 #include "openmc/settings.h"
 
 #include <algorithm> // for copy
+#include <cstdint>   // for int32_t
 
 namespace openmc {
+
+//==============================================================================
+//! The fission event that emitted a neutron, as recorded by IFP.
+//
+//! The probability that the neutron was emitted in each delayed group is a
+//! function of the fissioning nuclide, the fission reaction, the incident
+//! energy, and the outgoing energy, so those are stored rather than the
+//! probabilities themselves. The nuclide and reaction indices share one
+//! integer and the energies are stored in single precision, which changes the
+//! probabilities by about a part in 10^7.
+//==============================================================================
+
+struct IFPBirth {
+  //! Record of a neutron that was not emitted by fission
+  IFPBirth() = default;
+
+  //! Record of a fission neutron
+  //! \param[in] i_nuclide Index of the fissioning nuclide
+  //! \param[in] i_rx Index of the fission reaction in Nuclide::fission_rx_
+  //! \param[in] E_in Energy of the neutron causing fission in [eV]
+  //! \param[in] E_out Energy of the fission neutron in [eV]
+  IFPBirth(int i_nuclide, int i_rx, double E_in, double E_out)
+    : id {(i_nuclide << 2) | i_rx}, E_in {static_cast<float>(E_in)},
+      E_out {static_cast<float>(E_out)}
+  {}
+
+  bool from_fission() const { return id >= 0; }
+  int nuclide() const { return id >> 2; }
+  int reaction() const { return id & 0x3; }
+
+  bool operator==(const IFPBirth& other) const
+  {
+    return id == other.id && E_in == other.E_in && E_out == other.E_out;
+  }
+
+  int32_t id {-1};    //!< Nuclide index times 4 plus fission reaction index
+  float E_in {0.0f};  //!< Incident energy in [eV]
+  float E_out {0.0f}; //!< Outgoing energy in [eV]
+};
 
 //! Update a list of values by adding a new value if the size
 //! of the list can accomodate the new value or by shifting all
@@ -17,20 +57,21 @@ namespace openmc {
 //!
 //! \param[in] value Value to add to the list
 //! \param[in] data Initial version of the list
+//! \param[in] max_size Maximum size of the list
 //! \return Updated list
 template<typename T>
-vector<T> _ifp(const T& value, const vector<T>& data)
+vector<T> _ifp(const T& value, const vector<T>& data, size_t max_size)
 {
   vector<T> updated;
   size_t source_idx = data.size();
 
-  if (source_idx < settings::ifp_n_generation) {
+  if (source_idx < max_size) {
     updated.resize(source_idx + 1);
     for (size_t i = 0; i < source_idx; i++) {
       updated[i] = data[i];
     }
     updated[source_idx] = value;
-  } else if (source_idx == settings::ifp_n_generation) {
+  } else if (source_idx == max_size) {
     updated.resize(source_idx);
     for (size_t i = 0; i < source_idx - 1; i++) {
       updated[i] = data[i + 1];
@@ -43,11 +84,15 @@ vector<T> _ifp(const T& value, const vector<T>& data)
 //==============================================================================
 //! One stream of Iterated Fission Probability history data.
 //
-//! IFP tracks two quantities with identical bookkeeping: the delayed group
-//! number of the ancestor neutron (an int) and its lifetime (a double). Each is
-//! a per-particle list of the last ifp_n_generation values, held in a source
-//! bank and a fission bank, and each is maintained only if a tally asked for
-//! it.
+//! IFP tracks two quantities with identical bookkeeping: the lifetime of the
+//! ancestor neutrons (a double) and the fission events that emitted them (an
+//! IFPBirth). Each is a per-particle list of the last ifp_n_generation values,
+//! held in a source bank and a fission bank, and each is maintained only if a
+//! tally asked for it.
+//!
+//! A lifetime is appended when the neutron causes fission, but a birth is only
+//! known when the fission site is created. The births list therefore also
+//! holds the site's own birth as its last entry: its history offset is 1.
 //!
 //! Bundling the flag with the two banks it governs means every operation is a
 //! no-op when the stream is off, so callers do not branch, and the banks cannot
@@ -57,6 +102,11 @@ vector<T> _ifp(const T& value, const vector<T>& data)
 template<typename T>
 class IFPStream {
 public:
+  //! \param[in] history_offset Number of entries beyond ifp_n_generation that
+  //!   each list holds
+  explicit IFPStream(int history_offset = 0) : history_offset_ {history_offset}
+  {}
+
   //! Whether this stream is being maintained
   bool enabled() const { return enabled_; }
 
@@ -85,12 +135,33 @@ public:
     fission_bank_.resize(n_fission);
   }
 
+  //! Number of entries in a complete list
+  size_t history_size() const
+  {
+    return settings::ifp_n_generation + history_offset_;
+  }
+
+  //! Whether the list of a source particle is complete
+  bool complete(int64_t i_source) const
+  {
+    return source_bank_[i_source].size() == history_size();
+  }
+
   //! Append a value to the ancestor history of a new fission site
+  //
+  //! A list that holds the site's own value has no entry for a source particle
+  //! that was not born from fission; it gets a default value, so that lists of
+  //! all streams cover the same ancestors.
   void store(int64_t i_source, int64_t i_fission, const T& value)
   {
     if (!enabled_)
       return;
-    fission_bank_[i_fission] = _ifp(value, source_bank_[i_source]);
+    const auto& parent = source_bank_[i_source];
+    if (history_offset_ > 0 && parent.empty()) {
+      fission_bank_[i_fission] = {T {}, value};
+    } else {
+      fission_bank_[i_fission] = _ifp(value, parent, history_size());
+    }
   }
 
   //! Resize a caller-owned buffer for this stream, if it is enabled.
@@ -141,22 +212,26 @@ public:
 
 private:
   bool enabled_ {false};
+  int history_offset_;
   vector<vector<T>> source_bank_;
   vector<vector<T>> fission_bank_;
 };
 
 namespace simulation {
 
-extern IFPStream<int> ifp_delayed_group; //!< Delayed group numbers
-extern IFPStream<double> ifp_lifetime;   //!< Neutron lifetimes
+extern IFPStream<IFPBirth> ifp_birth;  //!< Fission events that emitted neutrons
+extern IFPStream<double> ifp_lifetime; //!< Neutron lifetimes
+
+//! Whether a tally asked for the IFP denominator, which needs either stream
+extern bool ifp_denominator_on;
 
 } // namespace simulation
 
 //! Whether Iterated Fission Probability is in use at all
 inline bool ifp_on()
 {
-  return simulation::ifp_delayed_group.enabled() ||
-         simulation::ifp_lifetime.enabled();
+  return simulation::ifp_birth.enabled() ||
+         simulation::ifp_lifetime.enabled() || simulation::ifp_denominator_on;
 }
 
 //! \brief Iterated Fission Probability (IFP) method.
@@ -168,9 +243,45 @@ inline bool ifp_on()
 //!
 //! \param[in] p Particle
 //! \param[in] idx Bank index from the thread_safe_append call in physics.cpp
-void ifp(const Particle& p, int64_t idx);
+//! \param[in] birth Fission event that emitted the new site
+void ifp(const Particle& p, int64_t idx, const IFPBirth& birth);
 
-//! Resize the IFP banks used in the simulation
+//! Whether a source particle has a complete IFP history
+//! \param[in] i_source Index of the particle in the source bank
+bool ifp_history_complete(int64_t i_source);
+
+//! Fission event that emitted the ancestor whose score a fission of this
+//! source particle adds, ifp_n_generation generations before its parent
+//! \param[in] i_source Index of the particle in the source bank
+//! \return The record, or nullptr if the history is not complete
+const IFPBirth* ifp_ancestor(int64_t i_source);
+
+//! Whether an IFP score of a source particle belongs in a tally nuclide bin.
+//! IFP scores are binned by the nuclide whose fission emitted the ancestor.
+//! \param[in] i_source Index of the particle in the source bank
+//! \param[in] i_nuclide Index of the nuclide bin, or -1 for the total
+bool ifp_in_nuclide_bin(int64_t i_source, int i_nuclide);
+
+//! Compute the probability that a neutron was emitted in each delayed group
+//! given the fission event that emitted it.
+//!
+//! The neutron is sampled from the mixture
+//!   f(E_out) = (1 - beta) chi_p(E_out) + sum_g beta_g chi_g(E_out),
+//! so the probability of group g given E_out is beta_g chi_g(E_out) / f(E_out).
+//! Scoring these probabilities in place of a 0/1 delayed indicator gives the
+//! same expected IFP beta numerator with a much lower variance, because the
+//! progeny of the neutron depend on how it was emitted only through its
+//! outgoing energy.
+//!
+//! The ancestor of a particle is the same for the whole history, so the last
+//! result is cached and reused for its other fissions and tallies.
+//!
+//! \param[in] birth Fission event that emitted the neutron
+//! \param[out] probabilities Probabilities of groups 1..MAX_DELAYED_GROUPS
+void ifp_delayed_group_probabilities(
+  const IFPBirth& birth, double* probabilities);
+
+//! Choose the streams the requested IFP scores need and resize their banks
 void resize_simulation_ifp_banks();
 
 //! Clear both streams, including their flags
@@ -188,11 +299,24 @@ struct DeserializationInfo {
 //! the first processor of whichever stream is enabled.
 //!
 //! \param[in,out] n_generation Number of generations
-//! \param[in] delayed_groups List of delayed group numbers lists
+//! \param[in] births List of fission birth lists
 //! \param[in] lifetimes List of lifetimes lists
 void broadcast_ifp_n_generation(int& n_generation,
-  const vector<vector<int>>& delayed_groups,
+  const vector<vector<IFPBirth>>& births,
   const vector<vector<double>>& lifetimes);
+
+//! MPI datatype of the values of an IFP stream
+template<typename T>
+MPI_Datatype ifp_mpi_type()
+{
+  return mpi::MPITypeMap<T>::mpi_type;
+}
+
+template<>
+inline MPI_Datatype ifp_mpi_type<IFPBirth>()
+{
+  return mpi::ifp_birth;
+}
 
 //! Send IFP data using MPI.
 //!
@@ -216,7 +340,7 @@ void send_ifp_info(int64_t idx, int64_t n, int n_generation, int neighbor,
 
   // Send data
   requests.emplace_back();
-  MPI_Datatype datatype = mpi::MPITypeMap<T>::mpi_type;
+  MPI_Datatype datatype = ifp_mpi_type<T>();
   MPI_Isend(&send_data[n_generation * idx], n_generation * static_cast<int>(n),
     datatype, neighbor, mpi::rank, mpi::intracomm, &requests.back());
 }
@@ -236,7 +360,7 @@ void receive_ifp_data(int64_t idx, int64_t n, int n_generation, int neighbor,
   vector<DeserializationInfo>& deserialization)
 {
   requests.emplace_back();
-  MPI_Datatype datatype = mpi::MPITypeMap<T>::mpi_type;
+  MPI_Datatype datatype = ifp_mpi_type<T>();
   MPI_Irecv(&data[n_generation * idx], n_generation * static_cast<int>(n),
     datatype, neighbor, neighbor, mpi::intracomm, &requests.back());
 

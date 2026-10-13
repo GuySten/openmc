@@ -19,6 +19,7 @@
 #include "openmc/file_utils.h"
 #include "openmc/geometry_aux.h"
 #include "openmc/hdf5_interface.h"
+#include "openmc/ifp.h"
 #include "openmc/material.h"
 #include "openmc/memory.h"
 #include "openmc/message_passing.h"
@@ -236,6 +237,24 @@ void initialize_mpi(MPI_Comm intracomm)
   MPI_Type_create_struct(
     16, blocksc, dispc, typesc, &mpi::collision_track_site);
   MPI_Type_commit(&mpi::collision_track_site);
+
+  // Create IFP fission birth datatype
+  IFPBirth bb;
+  MPI_Aint dispb[3];
+  MPI_Get_address(&bb.id, &dispb[0]);
+  MPI_Get_address(&bb.E_in, &dispb[1]);
+  MPI_Get_address(&bb.E_out, &dispb[2]);
+  for (int i = 2; i >= 0; --i) {
+    dispb[i] -= dispb[0];
+  }
+  int blocksb[] = {1, 1, 1};
+  MPI_Datatype typesb[] = {MPI_INT32_T, MPI_FLOAT, MPI_FLOAT};
+  MPI_Datatype ifp_birth_struct;
+  MPI_Type_create_struct(3, blocksb, dispb, typesb, &ifp_birth_struct);
+  MPI_Type_create_resized(
+    ifp_birth_struct, 0, sizeof(IFPBirth), &mpi::ifp_birth);
+  MPI_Type_free(&ifp_birth_struct);
+  MPI_Type_commit(&mpi::ifp_birth);
 }
 #endif // OPENMC_MPI
 

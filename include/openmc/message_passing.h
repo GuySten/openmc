@@ -20,6 +20,7 @@ extern bool master;
 #ifdef OPENMC_MPI
 extern MPI_Datatype source_site;
 extern MPI_Datatype collision_track_site;
+extern MPI_Datatype ifp_birth;
 extern MPI_Comm intracomm;
 
 //==============================================================================

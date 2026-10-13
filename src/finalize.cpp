@@ -206,6 +206,9 @@ int openmc_finalize()
   if (mpi::collision_track_site != MPI_DATATYPE_NULL) {
     MPI_Type_free(&mpi::collision_track_site);
   }
+  if (mpi::ifp_birth != MPI_DATATYPE_NULL) {
+    MPI_Type_free(&mpi::ifp_birth);
+  }
 #endif
 
   openmc_finalize_random_ray();

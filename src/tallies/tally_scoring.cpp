@@ -941,64 +941,53 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       break;
 
     case SCORE_IFP_TIME_NUM:
-      if (ifp_on()) {
-        if (p.type().is_neutron() && p.fission()) {
-          if (simulation::ifp_lifetime.enabled()) {
-            const auto& lifetimes =
-              simulation::ifp_lifetime.source_bank()[p.current_work()];
-            if (lifetimes.size() == settings::ifp_n_generation) {
-              score = lifetimes[0] * p.wgt_last();
-            }
-          }
+      if (simulation::ifp_lifetime.enabled() && p.type().is_neutron() &&
+          p.fission()) {
+        int64_t i_source = p.current_work();
+        if (simulation::ifp_lifetime.complete(i_source) &&
+            ifp_in_nuclide_bin(i_source, i_nuclide)) {
+          score =
+            simulation::ifp_lifetime.source_bank()[i_source][0] * p.wgt_last();
         }
       }
       break;
 
     case SCORE_IFP_BETA_NUM:
-      if (ifp_on()) {
-        if (p.type().is_neutron() && p.fission()) {
-          if (simulation::ifp_delayed_group.enabled()) {
-            const auto& delayed_groups =
-              simulation::ifp_delayed_group.source_bank()[p.current_work()];
-            if (delayed_groups.size() == settings::ifp_n_generation) {
-              if (delayed_groups[0] > 0) {
-                score = p.wgt_last();
-                if (tally.delayedgroup_filter_ != C_NONE) {
-                  auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
-                  const DelayedGroupFilter& filt {
-                    *dynamic_cast<DelayedGroupFilter*>(
-                      model::tally_filters[i_dg_filt].get())};
-                  for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
-                    if (filt.groups()[d_bin] == delayed_groups[0]) {
-                      score_fission_delayed_dg(
-                        i_tally, d_bin, score, score_index, p.filter_matches());
-                      break;
-                    }
-                  }
-                  continue;
-                }
-              }
+      if (simulation::ifp_birth.enabled() && p.type().is_neutron() &&
+          p.fission()) {
+        int64_t i_source = p.current_work();
+        const IFPBirth* ancestor = ifp_ancestor(i_source);
+        if (!ancestor || !ifp_in_nuclide_bin(i_source, i_nuclide))
+          break;
+
+        // Score the probability that the ancestor was emitted in each delayed
+        // group rather than whether it was
+        double prob[MAX_DELAYED_GROUPS];
+        ifp_delayed_group_probabilities(*ancestor, prob);
+        if (tally.delayedgroup_filter_ != C_NONE) {
+          auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
+          const DelayedGroupFilter& filt {*dynamic_cast<DelayedGroupFilter*>(
+            model::tally_filters[i_dg_filt].get())};
+          for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
+            int g = filt.groups()[d_bin];
+            if (g >= 1 && g <= MAX_DELAYED_GROUPS && prob[g - 1] > 0.0) {
+              score_fission_delayed_dg(i_tally, d_bin,
+                p.wgt_last() * prob[g - 1], score_index, p.filter_matches());
             }
           }
+          continue;
         }
+        score =
+          p.wgt_last() * std::accumulate(prob, prob + MAX_DELAYED_GROUPS, 0.0);
       }
       break;
 
     case SCORE_IFP_DENOM:
-      if (ifp_on()) {
-        if (p.type().is_neutron() && p.fission()) {
-          int ifp_data_size;
-          if (simulation::ifp_delayed_group.enabled()) {
-            ifp_data_size = static_cast<int>(
-              simulation::ifp_delayed_group.source_bank()[p.current_work()]
-                .size());
-          } else {
-            ifp_data_size = static_cast<int>(
-              simulation::ifp_lifetime.source_bank()[p.current_work()].size());
-          }
-          if (ifp_data_size == settings::ifp_n_generation) {
-            score = p.wgt_last();
-          }
+      if (ifp_on() && p.type().is_neutron() && p.fission()) {
+        int64_t i_source = p.current_work();
+        if (ifp_history_complete(i_source) &&
+            ifp_in_nuclide_bin(i_source, i_nuclide)) {
+          score = p.wgt_last();
         }
       }
       break;

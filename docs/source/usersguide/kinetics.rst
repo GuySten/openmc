@@ -18,11 +18,11 @@ Iterated Fission Probability (IFP)
 
 With IFP, additional information needs to be recorded during the simulation
 compared to a typical eigenvalue calculation. OpenMC stores an additional
-set of values (neutron lifetime or delayed neutron group number for
-:math:`\Lambda_{\text{eff}}` or :math:`\beta_{\text{eff}}`, respectively)
-for every fission neutron simulated. Each set of values corresponds to
-the values that are associated to the :math:`N_{\text{gen}}` direct ancestors
-of any given fission neutron.
+set of values for every fission neutron simulated: the lifetimes of its
+:math:`N_{\text{gen}}` direct ancestors for :math:`\Lambda_{\text{eff}}`, and
+for :math:`\beta_{\text{eff}}` the fission events that emitted its ancestors
+and itself (the fissioning nuclide and reaction, and the incident and outgoing
+energies).
 
 :math:`N_{\text{gen}}` is referred to as the number of generations in the
 IFP method and corresponds to the number of generations between the birth of
@@ -57,11 +57,38 @@ are needed to compute kinetics parameters in OpenMC:
 
 .. note:: Because the memory footprint of additional data is generally non-negligible
     with IFP, it is recommended to choose the value for ``ifp_n_generation`` carefully.
-    For example, using one generation for both kinetics parameters corresponds to store
-    one additional integer (for the delayed neutron group number used with
-    :math:`\beta_{\text{eff}}`) and one floating point value (for the neutron lifetime
-    used with :math:`\Lambda_{\text{eff}}`) for every fission neutron simulated once the
-    asymptotic regime is reached.
+    For every fission neutron simulated, :math:`\Lambda_{\text{eff}}` stores
+    :math:`N_{\text{gen}}` floating point values (8 bytes each) and
+    :math:`\beta_{\text{eff}}` stores :math:`N_{\text{gen}} + 1` fission records
+    (12 bytes each).
+
+The ``ifp-beta-numerator`` score does not score whether an ancestor was emitted
+as a delayed neutron, which happens for a fraction :math:`\beta` of fission
+neutrons, but the probability that it was emitted in each delayed group given
+the fission event that emitted it and its outgoing energy :math:`E'`:
+
+.. math::
+    :label: ifp_delayed_probability
+
+    w_g(E') = \frac{\beta_g \chi_{d,g}(E')}{(1 - \beta) \chi_p(E') +
+    \sum_{g'} \beta_{g'} \chi_{d,g'}(E')},
+
+where :math:`\chi_p` and :math:`\chi_{d,g}` are the prompt and delayed group
+emission spectra of the fissioning nuclide at the incident energy, and
+:math:`\beta_g` its delayed neutron fraction of group :math:`g`. The progeny
+of a neutron depend on how it was emitted only through its outgoing energy, so
+this has the same expectation as scoring the delayed group that was sampled,
+with a much lower variance. It requires outgoing energy distributions whose
+density can be evaluated (tabular, Maxwell, evaporation, and Watt spectra).
+
+IFP scores can be tallied by nuclide, in which case they are binned by the
+nuclide whose fission emitted the ancestor rather than by the nuclide in which
+the scoring fission occurs. The contribution of nuclide :math:`i` to the
+effective delayed neutron fraction is then the ``ifp-beta-numerator`` score
+of nuclide :math:`i` divided by the total ``ifp-denominator`` score. When
+``ifp_n_generation`` equals the number of inactive batches, ancestors in the
+first active batch can be source neutrons rather than fission neutrons, which
+only contribute to the total.
 
 -----------------------------
 Obtaining kinetics parameters

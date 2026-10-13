@@ -8,6 +8,7 @@ import numpy as np
 import openmc.checkvalue as cv
 from openmc.mixin import EqualityMixin
 from openmc.stats.univariate import Univariate, Tabular, Discrete, Mixture
+from .cdf import DiscreteCDF, TabularCDF, cdf_values
 from .data import EV_PER_MEV
 from .endf import get_tab1_record, get_tab2_record
 from .function import Tabulated1D, INTERPOLATION_SCHEME
@@ -1100,10 +1101,10 @@ class ContinuousTabular(EnergyDistribution):
                 interpolation[i] = 1 if continuous.interpolation == 'histogram' else 2
                 pairs[0, j:j+m] = discrete.x
                 pairs[1, j:j+m] = discrete.p
-                pairs[2, j:j+m] = discrete.c
+                pairs[2, j:j+m] = cdf_values(discrete)
                 pairs[0, j+m:j+n] = continuous.x
                 pairs[1, j+m:j+n] = continuous.p
-                pairs[2, j+m:j+n] = continuous.c
+                pairs[2, j+m:j+n] = cdf_values(continuous)
             else:
                 if isinstance(eout, Tabular):
                     n_discrete_lines[i] = 0
@@ -1113,7 +1114,7 @@ class ContinuousTabular(EnergyDistribution):
                     interpolation[i] = 1
                 pairs[0, j:j+n] = eout.x
                 pairs[1, j:j+n] = eout.p
-                pairs[2, j:j+n] = eout.c
+                pairs[2, j:j+n] = cdf_values(eout)
             j += n
 
         # Create dataset for distributions
@@ -1163,15 +1164,17 @@ class ContinuousTabular(EnergyDistribution):
 
             # Create discrete distribution if lines are present
             if m > 0:
-                eout_discrete = Discrete(data[0, j:j+m], data[1, j:j+m])
-                eout_discrete.c = data[2, j:j+m]
-                p_discrete = eout_discrete.c[-1]
+                eout_discrete = DiscreteCDF(
+                    data[0, j:j+m], data[1, j:j+m],
+                    tabulated_cdf=data[2, j:j+m])
+                p_discrete = eout_discrete.tabulated_cdf[-1]
 
             # Create continuous distribution
             if m < n:
                 interp = INTERPOLATION_SCHEME[interpolation[i]]
-                eout_continuous = Tabular(data[0, j+m:j+n], data[1, j+m:j+n], interp)
-                eout_continuous.c = data[2, j+m:j+n]
+                eout_continuous = TabularCDF(
+                    data[0, j+m:j+n], data[1, j+m:j+n], interp,
+                    tabulated_cdf=data[2, j+m:j+n])
 
             # If both continuous and discrete are present, create a mixture
             # distribution
@@ -1251,16 +1254,18 @@ class ContinuousTabular(EnergyDistribution):
             data[0,:] *= EV_PER_MEV
 
             # Create continuous distribution
-            eout_continuous = Tabular(data[0][n_discrete_lines:],
-                                      data[1][n_discrete_lines:]/EV_PER_MEV,
-                                      INTERPOLATION_SCHEME[intt])
-            eout_continuous.c = data[2][n_discrete_lines:]
+            eout_continuous = TabularCDF(
+                data[0][n_discrete_lines:],
+                data[1][n_discrete_lines:]/EV_PER_MEV,
+                INTERPOLATION_SCHEME[intt],
+                tabulated_cdf=data[2][n_discrete_lines:])
 
             # If discrete lines are present, create a mixture distribution
             if n_discrete_lines > 0:
-                eout_discrete = Discrete(data[0][:n_discrete_lines],
-                                         data[1][:n_discrete_lines])
-                eout_discrete.c = data[2][:n_discrete_lines]
+                eout_discrete = DiscreteCDF(
+                    data[0][:n_discrete_lines],
+                    data[1][:n_discrete_lines],
+                    tabulated_cdf=data[2][:n_discrete_lines])
                 if n_discrete_lines == n_energy_out:
                     eout_i = eout_discrete
                 else:

@@ -124,6 +124,38 @@ Angle-Energy Distributions
     IncoherentInelasticAEDiscrete
     MixedElasticAE
 
+Tabulated Cumulative Distributions
+----------------------------------
+
+ACE tables and OpenMC's HDF5 nuclear data library tabulate a cumulative
+distribution alongside each probability density. OpenMC preserves those values
+as read rather than recomputing them from the density, so that sampling
+reproduces ACE results. The following classes are distributions from
+:mod:`openmc.stats` that additionally carry such a cumulative distribution, and
+are what :mod:`openmc.data` produces when reading ACE and HDF5 files:
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+    :template: myclass.rst
+
+    TabularCDF
+    DiscreteCDF
+    TabulatedCDFMixin
+
+Note that the tabulated cumulative distribution is not the same as the values
+returned by :meth:`openmc.stats.Tabular.cdf`, which are always derived from the
+probability density. The following function returns cumulative values in the
+convention used by ACE and HDF5 files for any distribution, whether or not it
+came from a file:
+
+.. autosummary::
+    :toctree: generated
+    :nosignatures:
+    :template: myfunction.rst
+
+    cdf_values
+
 Resonance Data
 --------------
 

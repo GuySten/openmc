@@ -653,6 +653,18 @@ void read_settings_xml(pugi::xml_node root)
     }
   }
 
+  // In an eigenvalue calculation photoneutrons would join the fission chain.
+  // That photoneutrons banked as secondaries change k correctly has not been
+  // validated, photofission multiplicity counts in none of the k-eigenvalue
+  // estimators, and only photoneutrons from prompt photons could be produced:
+  // the delayed photoneutrons from fission-product decay photons, the larger
+  // part, are missing because no decay photons are emitted. Refuse the
+  // combination rather than return a k that includes some photoneutrons.
+  if (photonuclear_physics && run_mode == RunMode::EIGENVALUE) {
+    fatal_error("Photonuclear physics is not supported in an eigenvalue "
+                "calculation. Use fixed source mode.");
+  }
+
   // Check for photoneutron biasing
   if (check_for_node(root, "photoneutron_biasing")) {
     photoneutron_biasing = get_node_value_bool(root, "photoneutron_biasing");

@@ -602,6 +602,7 @@ Photonuclear physics must be enabled when this element is set to "true".
 The ``<photonuclear_physics>`` element determines whether photonuclear physics is
 enabled. This element has no attributes or sub-elements and can be set to
 either "false" or "true". Photon transport must be enabled as well.
+Photonuclear physics is not supported in an eigenvalue calculation.
 
 Enabling photonuclear physics may lower the maximum photon energy of the
 problem, and with thick-target bremsstrahlung the maximum electron and positron

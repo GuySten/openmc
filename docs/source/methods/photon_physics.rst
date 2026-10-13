@@ -796,12 +796,16 @@ is left in the local deposition.
    incorrect. A warning naming the nuclide is issued at load time.
 
 .. note::
-   Photofission is not supported in k-eigenvalue mode. Photofission neutrons do
-   not contribute to any of the k-eigenvalue estimators, which accumulate
-   nu-fission from neutron cross sections only, so a fission source built from
-   them would be inconsistent with the eigenvalue it is normalized against.
-   OpenMC reports an error at initialization if photonuclear data containing
-   fission channels is used in an eigenvalue calculation.
+   Photonuclear physics is not supported in k-eigenvalue mode, and OpenMC
+   reports an error at initialization if it is enabled in an eigenvalue
+   calculation. Photoneutrons would be banked as secondaries and join the
+   fission chain, which has not been validated against the k-eigenvalue
+   estimators; photofission multiplicity in particular counts in none of them,
+   since they accumulate nu-fission from neutron cross sections only. Moreover,
+   only photoneutrons from prompt photons could be produced: an eigenvalue
+   calculation emits no fission-product decay photons, so the delayed
+   photoneutrons, usually the larger part, would be missing and k would include
+   only some of the photoneutron contribution.
 
 Reference Frames
 ----------------

@@ -207,7 +207,8 @@ class Settings:
         True. Enabling this may lower the maximum photon energy of the problem,
         and the maximum electron and positron energy when thick-target
         bremsstrahlung is used, so that photoneutrons cannot be produced above
-        the range of the neutron transport data.
+        the range of the neutron transport data. Not supported in an
+        eigenvalue calculation.
 
         .. versionadded:: 0.16.1
     plot_seed : int

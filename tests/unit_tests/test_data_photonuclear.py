@@ -1,6 +1,7 @@
 from collections.abc import Mapping, Callable
 import os
 
+import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -131,3 +132,23 @@ def test_ace_table_types():
     assert TT.from_suffix('80u') == TT.PHOTONUCLEAR
 
 
+
+
+def test_nbody_incident_particle(run_in_tmpdir):
+    """The incident particle of an N-body distribution survives an HDF5 round
+    trip, and data written without it are read as neutron data."""
+    photon = openmc.data.NBodyPhaseSpace(2.9877, 3, 2.9896, -6.2575e6, 'photon')
+    neutron = openmc.data.NBodyPhaseSpace(2.9877, 3, 2.9896, -6.2575e6)
+    assert neutron.particle == 'neutron'
+    with pytest.raises(ValueError):
+        openmc.data.NBodyPhaseSpace(2.9877, 3, 2.9896, -6.2575e6, 'proton')
+
+    with h5py.File('nbody.h5', 'w') as f:
+        photon.to_hdf5(f.create_group('photon'))
+        legacy = f.create_group('legacy')
+        neutron.to_hdf5(legacy)
+        del legacy.attrs['particle']
+
+    with h5py.File('nbody.h5', 'r') as f:
+        assert openmc.data.NBodyPhaseSpace.from_hdf5(f['photon']).particle == 'photon'
+        assert openmc.data.NBodyPhaseSpace.from_hdf5(f['legacy']).particle == 'neutron'

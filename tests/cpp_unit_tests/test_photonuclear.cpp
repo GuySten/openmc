@@ -1,16 +1,20 @@
+#include <cmath>
 #include <cstdio>
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include "openmc/constants.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/particle.h"
 #include "openmc/photonuclear.h"
+#include "openmc/secondary_nbody.h"
 #include "openmc/vector.h"
 
 using namespace openmc;
 using Catch::Matchers::WithinAbs;
+using Catch::Matchers::WithinRel;
 
 namespace {
 
@@ -144,4 +148,58 @@ TEST_CASE("Photonuclear cross section at a repeated highest grid point")
   REQUIRE(nuc.reactions_[0]->xs(micro) == 3.0);
 
   data::photonuclears.clear();
+}
+
+namespace {
+
+NBodyPhaseSpace make_nbody(const std::string& filename, const char* particle)
+{
+  hid_t file = file_open(filename, 'w');
+  hid_t group = create_group(file, "nbody");
+  write_attribute(group, "n_particles", 3);
+  write_attribute(group, "total_mass", 2.9877);
+  write_attribute(group, "atomic_weight_ratio", 2.9896);
+  write_attribute(group, "q_value", -6.2575e6);
+  if (particle)
+    write_attribute(group, "particle", particle);
+  NBodyPhaseSpace dist {group};
+  close_group(group);
+  file_close(file);
+  std::remove(filename.c_str());
+  return dist;
+}
+
+} // namespace
+
+// The maximum N-body energy is (Ap-1)/Ap times the kinetic energy available in
+// the center-of-mass system. A neutron carries A/(A+1) of its energy into that
+// system; a massless photon loses only the center-of-mass recoil E^2/(2Mc^2).
+TEST_CASE("N-body phase space energy limit depends on the incident particle")
+{
+  const double Ap = 2.9877;
+  const double A = 2.9896;
+  const double Q = -6.2575e6;
+  const double E = 20.0e6;
+
+  // Data written before the incident particle was recorded are neutron data
+  auto legacy = make_nbody("test_nbody_legacy.h5", nullptr);
+  REQUIRE_THAT(legacy.max_energy(E),
+    WithinRel((Ap - 1.0) / Ap * (A / (A + 1.0) * E + Q), 1e-14));
+
+  auto neutron = make_nbody("test_nbody_neutron.h5", "neutron");
+  REQUIRE(neutron.max_energy(E) == legacy.max_energy(E));
+
+  auto photon = make_nbody("test_nbody_photon.h5", "photon");
+  double E_cm = E - E * E / (2.0 * MASS_NEUTRON_EV * A) + Q;
+  REQUIRE_THAT(photon.max_energy(E), WithinRel((Ap - 1.0) / Ap * E_cm, 1e-14));
+
+  // Sampled energies never exceed the limit
+  uint64_t seed = 1;
+  for (int i = 0; i < 1000; ++i) {
+    double E_out;
+    double mu;
+    photon.sample(E, E_out, mu, &seed);
+    REQUIRE(E_out >= 0.0);
+    REQUIRE(E_out <= photon.max_energy(E));
+  }
 }

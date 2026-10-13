@@ -528,6 +528,8 @@ N-Body Phase Space
              - **atomic_weight_ratio** (*double*) -- Atomic weight ratio of the
                target nuclide in neutron masses
              - **q_value** (*double*) -- Q value for the reaction in eV
+             - **particle** (*char[]*) -- Incident particle name. If absent,
+               the incident particle is a neutron.
 
 Coherent Elastic
 ----------------

@@ -19,6 +19,8 @@ class NBodyPhaseSpace(AngleEnergy):
         Atomic weight ratio of target nuclide
     q_value : float
         Q value for reaction in eV
+    particle : {'neutron', 'photon'}
+        Incident particle type, defaults to neutron
 
     Attributes
     ----------
@@ -30,14 +32,18 @@ class NBodyPhaseSpace(AngleEnergy):
         Atomic weight ratio of target nuclide
     q_value : float
         Q value for reaction in eV
+    particle : {'neutron', 'photon'}
+        Incident particle type
 
     """
 
-    def __init__(self, total_mass, n_particles, atomic_weight_ratio, q_value):
+    def __init__(self, total_mass, n_particles, atomic_weight_ratio, q_value,
+                 particle='neutron'):
         self.total_mass = total_mass
         self.n_particles = n_particles
         self.atomic_weight_ratio = atomic_weight_ratio
         self.q_value = q_value
+        self.particle = particle
 
     @property
     def total_mass(self):
@@ -82,6 +88,16 @@ class NBodyPhaseSpace(AngleEnergy):
         cv.check_type(name, q_value, Real)
         self._q_value = q_value
 
+    @property
+    def particle(self):
+        return self._particle
+
+    @particle.setter
+    def particle(self, particle):
+        cv.check_value('N-body phase space incident particle', particle,
+                       ['neutron', 'photon'])
+        self._particle = particle
+
     def to_hdf5(self, group):
         """Write distribution to an HDF5 group
 
@@ -96,6 +112,7 @@ class NBodyPhaseSpace(AngleEnergy):
         group.attrs['n_particles'] = self.n_particles
         group.attrs['atomic_weight_ratio'] = self.atomic_weight_ratio
         group.attrs['q_value'] = self.q_value
+        group.attrs['particle'] = np.bytes_(self.particle)
 
     @classmethod
     def from_hdf5(cls, group):
@@ -116,7 +133,10 @@ class NBodyPhaseSpace(AngleEnergy):
         n_particles = group.attrs['n_particles']
         awr = group.attrs['atomic_weight_ratio']
         q_value = group.attrs['q_value']
-        return cls(total_mass, n_particles, awr, q_value)
+        # Files written before the incident particle was recorded are neutron
+        # data
+        particle = group.attrs.get('particle', b'neutron').decode()
+        return cls(total_mass, n_particles, awr, q_value, particle)
 
     @classmethod
     def from_ace(cls, ace, idx, q_value):
@@ -140,7 +160,9 @@ class NBodyPhaseSpace(AngleEnergy):
         """
         n_particles = int(ace.xss[idx])
         total_mass = ace.xss[idx + 1]
-        return cls(total_mass, n_particles, ace.atomic_weight_ratio, q_value)
+        particle = 'photon' if ace.data_type.value == 'u' else 'neutron'
+        return cls(total_mass, n_particles, ace.atomic_weight_ratio, q_value,
+                   particle)
 
     @classmethod
     def from_endf(cls, file_obj):

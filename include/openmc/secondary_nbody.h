@@ -11,9 +11,9 @@
 namespace openmc {
 
 //==============================================================================
-//! Angle-energy distribution for particles emitted from neutron and
-//! charged-particle reactions. This corresponds to ACE law 66 and ENDF File 6,
-//! LAW=6.
+//! Angle-energy distribution for particles emitted from neutron, photonuclear
+//! and charged-particle reactions. This corresponds to ACE law 66 and ENDF File
+//! 6, LAW=6.
 //==============================================================================
 
 class NBodyPhaseSpace : public AngleEnergy {
@@ -49,10 +49,16 @@ public:
   double max_energy(double E_in) const override;
 
 private:
-  int n_bodies_;      //!< Number of particles distributed
-  double mass_ratio_; //!< Total mass of particles [neutron mass]
-  double A_;          //!< Atomic weight ratio
-  double Q_;          //!< Reaction Q-value [eV]
+  //! Kinetic energy available to the products in the center-of-mass system
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \return Available energy in [eV]
+  double available_energy(double E_in) const;
+
+  int n_bodies_;        //!< Number of particles distributed
+  double mass_ratio_;   //!< Total mass of particles [neutron mass]
+  double A_;            //!< Atomic weight ratio
+  double Q_;            //!< Reaction Q-value [eV]
+  bool photon_ {false}; //!< Whether the incident particle is a photon
 };
 
 } // namespace openmc

@@ -90,3 +90,17 @@ def test_split_particles_keep_birth_state(
     np.testing.assert_array_equal(mesh_born[[0, 2, 3]], 0.0)
     assert mesh_born[1] == cell_born[0]
 
+
+def test_derivatives_refused_with_weight_windows(model, run_in_tmpdir):
+    """Split neutrons start with zero flux derivatives, so tally derivatives
+    are refused when weight windows are on."""
+    deriv = openmc.TallyDerivative(
+        variable='density',
+        material=next(iter(model.geometry.get_all_materials())))
+    tally = openmc.Tally()
+    tally.scores = ['flux']
+    tally.derivative = deriv
+    model.tallies.append(tally)
+
+    with pytest.raises(RuntimeError, match='not supported with weight windows'):
+        model.run()

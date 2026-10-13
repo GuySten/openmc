@@ -1503,7 +1503,7 @@ void photonuclear_collision(Particle& p)
     if (prn(p.current_seed()) < nu_t - n_emit)
       ++n_emit;
     for (int j = 0; j < n_emit; ++j)
-      (void)emit_photofission_neutron(p, *nuc, *rx, wgt);
+      emit_photofission_neutron(p, *nuc, *rx, wgt);
   }
 
   // The photon is absorbed
@@ -1555,25 +1555,26 @@ void emit_forced_photoneutron(Particle& p)
 
   // Photofission neutrons must go through the prompt/delayed split, which also
   // sets the emission time for delayed precursors.
-  double E;
+  const double E_banked = p.bank_second_E();
   if (nuc->fissionable_ && rx.get() == nuc->fission_rx_) {
-    E = emit_photofission_neutron(p, *nuc, *rx, w);
+    emit_photofission_neutron(p, *nuc, *rx, w);
   } else {
-    E = emit_photonuclear_product(p, *nuc, *rx, product, w);
+    emit_photonuclear_product(p, *nuc, *rx, product, w);
   }
   p.wgt_born() = wgt_born;
 
-  // create_secondary() banked the full outgoing energy, but only a fraction
-  // "factor" of a neutron is actually emitted per collision. The heating
-  // estimator scores against the pre-collision weight, so scale the banked
-  // energy to the expected energy carried away. Without this, heating tallies
+  // create_secondary() adds the full outgoing energy to bank_second_E() when
+  // the neutron is banked or leaves above the maximum energy, and nothing when
+  // it is below the energy cutoff and deposited locally. Only a fraction
+  // "factor" of a neutron is actually emitted per collision, and the heating
+  // estimator scores against the pre-collision weight, so scale whatever was
+  // added to the expected energy carried away. Without this, heating tallies
   // would be wrong whenever biasing is enabled.
-  p.bank_second_E() += (factor - 1.0) * E;
+  p.bank_second_E() = E_banked + factor * (p.bank_second_E() - E_banked);
 }
 
-double emit_photofission_neutron(Particle& p,
-  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
-  double wgt)
+void emit_photofission_neutron(Particle& p, const PhotonuclearInteraction& nuc,
+  const PhotonuclearReaction& rx, double wgt)
 {
   const double E_in = p.E();
   uint64_t* seed = p.current_seed();
@@ -1609,15 +1610,13 @@ double emit_photofission_neutron(Particle& p,
       p.time() -= std::log(prn(seed)) / decay_rate;
   }
 
-  double E = emit_photonuclear_product(p, nuc, rx, rx.products_[group], wgt);
+  emit_photonuclear_product(p, nuc, rx, rx.products_[group], wgt);
 
   p.time() = time_saved;
-  return E;
 }
 
-double emit_photonuclear_product(Particle& p,
-  const PhotonuclearInteraction& nuc, const PhotonuclearReaction& rx,
-  const ReactionProduct& product, double wgt)
+void emit_photonuclear_product(Particle& p, const PhotonuclearInteraction& nuc,
+  const PhotonuclearReaction& rx, const ReactionProduct& product, double wgt)
 {
   const bool is_neutron = product.particle_ == ParticleType::neutron();
   const double E_in = p.E();
@@ -1681,8 +1680,6 @@ double emit_photonuclear_product(Particle& p,
 
   // Create the secondary particle
   p.create_secondary(wgt, u, E, product.particle_);
-
-  return E;
 }
 
 } // namespace openmc

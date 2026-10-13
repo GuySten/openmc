@@ -200,10 +200,8 @@ class PhotonuclearReaction(EqualityMixin):
                 product = Product('neutron')
                 dist = UncorrelatedAngleEnergy()
 
-                A = ev.target['mass']
-                threshold = abs(rx.q_value)
-                mass_ratio = (A-1)/A
-                dist.energy = LevelInelastic(threshold, mass_ratio)
+                dist.energy = LevelInelastic(rx.q_value, ev.target['mass'],
+                                             particle='photon')
 
                 product.distribution.append(dist)
 

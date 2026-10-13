@@ -164,3 +164,40 @@ def test_redundant_reaction():
     total = nuc[1]
     assert total.redundant
     assert total.xs(5.0e6) == pytest.approx(2.0e-3)
+
+
+def test_level_inelastic_from_endf(endf_data, run_in_tmpdir):
+    """A level reaction given only an angular distribution (MF=4) gets a
+    photon-incident LevelInelastic energy distribution."""
+    # No ENDF/B photonuclear evaluation has such a reaction, so make one from
+    # H2 by replacing the MF=6 distribution of MT=50 with an isotropic MF=4 one
+    filename = os.path.join(endf_data, 'gammas', 'g-001_H_002.endf')
+    with open(filename) as f:
+        lines = f.read().splitlines()
+    i_mf6 = next(i for i, line in enumerate(lines) if line[70:75] == ' 6 50')
+    head = lines[i_mf6]
+    mat = head[66:70]
+    za, awr = head[:11], head[11:22]
+    zero = ' 0.000000+0'
+    mf4 = [
+        f'{za}{awr}{0:11d}{0:11d}{0:11d}{0:11d}{mat} 4 50',
+        f'{zero}{awr}{1:11d}{1:11d}{0:11d}{0:11d}{mat} 4 50',
+        f'{zero}{zero}{0:11d}{0:11d}{0:11d}{0:11d}{mat} 4  0',
+    ]
+    lines = [line for line in lines if line[70:75] != ' 6 50']
+    lines[i_mf6:i_mf6] = mf4
+    with open('h2_mf4.endf', 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+
+    h2 = openmc.data.IncidentPhotonuclear.from_endf('h2_mf4.endf')
+    rx = h2[50]
+    assert len(rx.products) == 1
+    product = rx.products[0]
+    assert product.particle == 'neutron'
+    dist = product.distribution[0].energy
+    assert isinstance(dist, openmc.data.LevelInelastic)
+    assert dist.particle == 'photon'
+    assert dist.q_value == rx.q_value
+    assert dist.mass == pytest.approx(h2.atomic_weight_ratio)
+    # The photon threshold lies just above |Q| because of the recoil
+    assert -rx.q_value < dist.threshold < -rx.q_value * 1.001

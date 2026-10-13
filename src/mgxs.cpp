@@ -18,6 +18,27 @@
 
 namespace openmc {
 
+namespace {
+
+// Name of a scattering format as given in the library
+std::string scatter_format_name(AngleDistributionType format)
+{
+  switch (format) {
+  case AngleDistributionType::LEGENDRE:
+    return "legendre";
+  case AngleDistributionType::HISTOGRAM:
+    return "histogram";
+  case AngleDistributionType::TABULAR:
+    return "tabular";
+  case AngleDistributionType::NEPSF:
+    return "nepsf";
+  default:
+    return "unknown";
+  }
+}
+
+} // namespace
+
 //==============================================================================
 // Mgxs base-class methods
 //==============================================================================
@@ -172,6 +193,8 @@ void Mgxs::metadata_from_hdf5(hid_t xs_id, const vector<double>& temperature,
       in_scatter_format = AngleDistributionType::HISTOGRAM;
     } else if (temp_str.compare(0, 7, "tabular") == 0) {
       in_scatter_format = AngleDistributionType::TABULAR;
+    } else if (temp_str.compare(0, 5, "nepsf") == 0) {
+      in_scatter_format = AngleDistributionType::NEPSF;
     } else {
       fatal_error("Invalid scatter_format option!");
     }
@@ -208,9 +231,16 @@ void Mgxs::metadata_from_hdf5(hid_t xs_id, const vector<double>& temperature,
   // For Legendre data, we usually refer to it as Pn where n is the order.
   // However Pn has n+1 sets of points (since you need to count the P0
   // moment). Adjust for that. Histogram and Tabular formats dont need this
-  // adjustment.
+  // adjustment. Steps preserving a Legendre order N have (N + 1)/2 (weight,
+  // lower bound, upper bound) triplets.
   if (in_scatter_format == AngleDistributionType::LEGENDRE) {
     ++order_dim;
+  } else if (in_scatter_format == AngleDistributionType::NEPSF) {
+    if (order_dim < 1 || order_dim % 2 == 0) {
+      fatal_error("The order of the nepsf scatter format of " + in_name +
+                  " must be odd.");
+    }
+    order_dim = 3 * (order_dim + 1) / 2;
   }
 
   // Get the angular information
@@ -317,6 +347,18 @@ Mgxs::Mgxs(const std::string& in_name, const vector<double>& mat_kTs,
   // Force all of the following data to be the same; these will be verified
   // to be true later
   AngleDistributionType in_scatter_format = micros[0]->scatter_format;
+
+  // The angular distributions of different formats cannot be combined
+  for (const auto* micro : micros) {
+    if (micro->scatter_format != in_scatter_format) {
+      fatal_error(fmt::format(
+        "Cannot combine the scattering data of {} ({} format) and {} ({} "
+        "format) in {}. Convert the library to a single format, e.g., with "
+        "openmc.MGXSLibrary.convert_scatter_format.",
+        micros[0]->name, scatter_format_name(in_scatter_format), micro->name,
+        scatter_format_name(micro->scatter_format), in_name));
+    }
+  }
   bool in_is_isotropic = micros[0]->is_isotropic;
   vector<double> in_polar = micros[0]->polar;
   vector<double> in_azimuthal = micros[0]->azimuthal;

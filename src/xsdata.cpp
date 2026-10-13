@@ -29,7 +29,8 @@ XsData::XsData(bool fissionable, AngleDistributionType scatter_format,
   // check to make sure scatter format is OK before we allocate
   if (scatter_format != AngleDistributionType::HISTOGRAM &&
       scatter_format != AngleDistributionType::TABULAR &&
-      scatter_format != AngleDistributionType::LEGENDRE) {
+      scatter_format != AngleDistributionType::LEGENDRE &&
+      scatter_format != AngleDistributionType::NEPSF) {
     fatal_error("Invalid scatter_format!");
   }
   // allocate all [temperature][angle][in group] quantities
@@ -69,6 +70,8 @@ XsData::XsData(bool fissionable, AngleDistributionType scatter_format,
       scatter.emplace_back(new ScattDataTabular);
     } else if (scatter_format == AngleDistributionType::LEGENDRE) {
       scatter.emplace_back(new ScattDataLegendre);
+    } else if (scatter_format == AngleDistributionType::NEPSF) {
+      scatter.emplace_back(new ScattDataNEPSF);
     }
   }
 }

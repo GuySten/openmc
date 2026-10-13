@@ -67,12 +67,20 @@ data for the nuclide or material that it represents.
                ignored otherwise.
              - **scatter_format** (*char[]*) -- The representation of the
                scattering angular distribution.  The options are either
-               "legendre", "histogram", or "tabular".  If not provided, the
-               default of "legendre" will be assumed.
+               "legendre", "histogram", "tabular", or "nepsf" (nonequally
+               probable step functions).  If not provided, the default of
+               "legendre" will be assumed.
              - **order** (*int*) -- Either the Legendre order, number of bins,
                or number of points (depending on the value of `scatter_format`)
                used to describe the angular distribution associated with each
-               group-to-group transfer probability.
+               group-to-group transfer probability. For "nepsf", it is the odd
+               Legendre order :math:`N` preserved by :math:`(N+1)/2` steps,
+               and the "Order" dimension of the scattering matrix holds a
+               (weight, lower bound, upper bound) triplet for each step, so it
+               has :math:`3(N+1)/2` entries. The weights sum to the
+               group-to-group scattering cross section; a step whose bounds
+               are equal is a discrete angle, and steps with zero weight are
+               ignored.
              - **scatter_shape** (*char[]*) -- The shape of the provided
                scatter and multiplicity matrix. The values provided are strings
                describing the ordering the scattering array is provided in

@@ -176,3 +176,125 @@ TEST_CASE("Test LegendreBetaMixture sample histogram")
                               5. * std::sqrt(expected) + 1.e-3 * expected));
   }
 }
+
+namespace {
+
+// One incoming and one outgoing group with the given (weight, lower, upper)
+// step triplets
+ScattDataNEPSF one_group_steps(const vector<double>& triplets)
+{
+  ScattDataNEPSF data;
+  tensor::Tensor<int> gmin({1}, 0);
+  tensor::Tensor<int> gmax({1}, 0);
+  double_2dvec mult {{1.}};
+  double_3dvec coeffs {{triplets}};
+  data.init(gmin, gmax, mult, coeffs);
+  return data;
+}
+
+// Mean of P_l over [a, b], or P_l(a) if a == b
+double mean_legendre(int l, double a, double b)
+{
+  vector<double> pa(l + 2);
+  vector<double> pb(l + 2);
+  calc_pn_c(l + 1, a, pa.data());
+  calc_pn_c(l + 1, b, pb.data());
+  if (b == a)
+    return pa[l];
+  if (l == 0)
+    return 1.;
+  return (pb[l + 1] - pb[l - 1] - pa[l + 1] + pa[l - 1]) /
+         ((2 * l + 1) * (b - a));
+}
+
+} // namespace
+
+TEST_CASE("Test ScattDataNEPSF moments and density")
+{
+  // Two steps and a discrete angle; weights sum to the cross section 2
+  vector<double> triplets {0.5, -0.8, -0.2, 1.2, 0.3, 0.9, 0.3, 0.95, 0.95};
+  auto data = one_group_steps(triplets);
+  REQUIRE(data.get_order() == 5);
+  REQUIRE_THAT(data.scattxs[0], Catch::Matchers::WithinRel(2., 1e-14));
+
+  auto matrix = data.get_matrix(6);
+  for (int l = 0; l <= 6; ++l) {
+    double expected = 0.;
+    for (int k = 0; k < 9; k += 3) {
+      expected +=
+        triplets[k] * mean_legendre(l, triplets[k + 1], triplets[k + 2]);
+    }
+    REQUIRE_THAT(matrix(0, 0, l), Catch::Matchers::WithinAbs(expected, 1e-13));
+  }
+
+  // The density of the steps, normalized over the transfer
+  REQUIRE_THAT(
+    data.calc_f(0, 0, -0.5), Catch::Matchers::WithinRel(0.25 / 0.6, 1e-14));
+  REQUIRE_THAT(
+    data.calc_f(0, 0, 0.5), Catch::Matchers::WithinRel(0.6 / 0.6, 1e-14));
+  REQUIRE(data.calc_f(0, 0, 0.0) == 0.);
+}
+
+TEST_CASE("Test ScattDataNEPSF sampling")
+{
+  vector<double> triplets {0.5, -0.8, -0.2, 1.2, 0.3, 0.9, 0.3, 0.95, 0.95};
+  auto data = one_group_steps(triplets);
+
+  uint64_t seed = 1;
+  int n = 400000;
+  int n_point = 0;
+  int n_gap = 0;
+  vector<double> sum(4, 0.);
+  vector<double> pn(4);
+  for (int i = 0; i < n; ++i) {
+    int gout;
+    double mu;
+    double wgt = 1.;
+    data.sample(0, gout, mu, wgt, &seed);
+    REQUIRE(gout == 0);
+    REQUIRE(wgt == 1.);
+    if (mu == 0.95)
+      ++n_point;
+    if ((mu > -0.2 && mu < 0.3) || mu < -0.8 || (mu > 0.9 && mu != 0.95))
+      ++n_gap;
+    calc_pn_c(3, mu, pn.data());
+    for (int l = 0; l < 4; ++l)
+      sum[l] += pn[l];
+  }
+  REQUIRE(n_gap == 0);
+  REQUIRE_THAT(n_point / static_cast<double>(n),
+    Catch::Matchers::WithinAbs(0.15, 5. * std::sqrt(0.15 * 0.85 / n)));
+  auto matrix = data.get_matrix(3);
+  for (int l = 1; l < 4; ++l) {
+    REQUIRE_THAT(sum[l] / n,
+      Catch::Matchers::WithinAbs(matrix(0, 0, l) / 2., 5. / std::sqrt(n)));
+  }
+}
+
+TEST_CASE("Test ScattDataNEPSF combine concatenates steps")
+{
+  auto a = one_group_steps({1., -1., 0.});
+  auto b = one_group_steps({2., 0.5, 0.7, 1., 0.9, 1.});
+  ScattDataNEPSF combined;
+  vector<ScattData*> those {&a, &b};
+  combined.combine(those, {0.5, 2.});
+
+  // 0.5 * 1 + 2 * 3
+  REQUIRE_THAT(combined.scattxs[0], Catch::Matchers::WithinRel(6.5, 1e-14));
+  REQUIRE(combined.get_order() == 3);
+
+  // Moments are those of the weighted sum of the data
+  auto ma = a.get_matrix(5);
+  auto mb = b.get_matrix(5);
+  auto mc = combined.get_matrix(5);
+  for (int l = 0; l <= 5; ++l) {
+    REQUIRE_THAT(mc(0, 0, l),
+      Catch::Matchers::WithinAbs(0.5 * ma(0, 0, l) + 2. * mb(0, 0, l), 1e-13));
+  }
+
+  // Densities add as well, including where steps overlap
+  REQUIRE_THAT(combined.calc_f(0, 0, 0.6),
+    Catch::Matchers::WithinRel((2. * 2. / 0.2) / 6.5, 1e-13));
+  REQUIRE_THAT(combined.calc_f(0, 0, -0.5),
+    Catch::Matchers::WithinRel((0.5 * 1.) / 6.5, 1e-13));
+}

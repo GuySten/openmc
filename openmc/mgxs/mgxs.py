@@ -89,10 +89,11 @@ _DOMAINS = (
 
 # Supported ScatterMatrixXS angular distribution types. Note that 'histogram' is
 # defined here and used in mgxs_library.py, but it is not used for the current
-# module
+# module. The same holds for 'nepsf'.
 SCATTER_TABULAR = 'tabular'
 SCATTER_LEGENDRE = 'legendre'
 SCATTER_HISTOGRAM = 'histogram'
+SCATTER_NEPSF = 'nepsf'
 MU_TREATMENTS = (
     SCATTER_LEGENDRE,
     SCATTER_HISTOGRAM

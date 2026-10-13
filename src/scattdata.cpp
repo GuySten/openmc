@@ -1165,6 +1165,223 @@ void ScattDataTabular::combine(
 }
 
 //==============================================================================
+// ScattDataNEPSF methods
+//==============================================================================
+
+void ScattDataNEPSF::init(const tensor::Tensor<int>& in_gmin,
+  const tensor::Tensor<int>& in_gmax, const double_2dvec& in_mult,
+  const double_3dvec& coeffs)
+{
+  size_t groups = coeffs.size();
+
+  // The group-to-group cross section is the sum of the step weights
+  scattxs = tensor::zeros<double>({groups});
+  double_2dvec in_energy(groups);
+  for (int gin = 0; gin < groups; gin++) {
+    in_energy[gin].resize(coeffs[gin].size());
+    for (int i_gout = 0; i_gout < coeffs[gin].size(); i_gout++) {
+      const auto& c = coeffs[gin][i_gout];
+      double norm = 0.;
+      for (size_t k = 0; k < c.size(); k += 3) {
+        norm += c[k];
+      }
+      in_energy[gin][i_gout] = norm;
+      scattxs[gin] += norm;
+    }
+  }
+
+  // Initialize the base class attributes
+  ScattData::base_init(0, in_gmin, in_gmax, in_energy, in_mult);
+
+  // Data from a library has the same number of steps for every transfer
+  if (groups > 0 && !coeffs[0].empty() && coeffs[0][0].size() >= 3) {
+    order = 2 * (coeffs[0][0].size() / 3) - 1;
+  }
+
+  steps.resize(groups);
+  for (int gin = 0; gin < groups; gin++) {
+    steps[gin].resize(coeffs[gin].size());
+    for (int i_gout = 0; i_gout < coeffs[gin].size(); i_gout++) {
+      const auto& c = coeffs[gin][i_gout];
+      double norm = in_energy[gin][i_gout];
+      Steps& s = steps[gin][i_gout];
+      vector<double> weights;
+      for (size_t k = 0; k + 2 < c.size(); k += 3) {
+        if (c[k] == 0. || norm == 0.)
+          continue;
+        double p = c[k] / norm;
+        dist[gin][i_gout].insert(
+          dist[gin][i_gout].end(), {p, c[k + 1], c[k + 2]});
+        s.lower.push_back(c[k + 1]);
+        s.width.push_back(c[k + 2] - c[k + 1]);
+        // Steps with negative weight, which only come from negative
+        // group-to-group cross sections, are not sampled
+        weights.push_back(std::max(p, 0.));
+      }
+      if (std::accumulate(weights.begin(), weights.end(), 0.) > 0.) {
+        build_alias(weights, s.prob, s.alias);
+      }
+    }
+  }
+}
+
+//==============================================================================
+
+void ScattDataNEPSF::combine(
+  const vector<ScattData*>& those_scatts, const vector<double>& scalars)
+{
+  size_t groups = those_scatts[0]->energy.size();
+
+  // Concatenate the steps of each transfer with weights equal to their
+  // contribution to the combined cross section
+  vector<vector<vector<double>>> dense(groups, vector<vector<double>>(groups));
+  tensor::Tensor<double> nuscatt = tensor::zeros<double>({groups, groups});
+  tensor::Tensor<double> scatt = tensor::zeros<double>({groups, groups});
+  size_t max_order = 0;
+  for (int i = 0; i < those_scatts.size(); i++) {
+    auto* that = dynamic_cast<ScattDataNEPSF*>(those_scatts[i]);
+    if (!that) {
+      fatal_error("Cannot combine the ScattData objects!");
+    }
+    max_order = std::max(max_order, that->get_order());
+    for (int gin = 0; gin < groups; gin++) {
+      for (int i_gout = 0; i_gout < that->energy[gin].size(); i_gout++) {
+        int gout = i_gout + that->gmin[gin];
+        double xs = scalars[i] * that->scattxs[gin] * that->energy[gin][i_gout];
+        if (xs == 0.)
+          continue;
+        nuscatt(gin, gout) += xs;
+        scatt(gin, gout) += xs / that->mult[gin][i_gout];
+        const auto& d = that->dist[gin][i_gout];
+        for (size_t k = 0; k < d.size(); k += 3) {
+          dense[gin][gout].insert(
+            dense[gin][gout].end(), {xs * d[k], d[k + 1], d[k + 2]});
+        }
+      }
+    }
+  }
+
+  // Convert to the sparse format
+  tensor::Tensor<int> in_gmin({groups}, 0);
+  tensor::Tensor<int> in_gmax({groups}, 0);
+  double_3dvec sparse_scatter(groups);
+  double_2dvec sparse_mult(groups);
+  for (int gin = 0; gin < groups; gin++) {
+    int gmin_ = 0;
+    while (gmin_ < groups && dense[gin][gmin_].empty())
+      ++gmin_;
+    int gmax_ = groups - 1;
+    while (gmax_ >= 0 && dense[gin][gmax_].empty())
+      --gmax_;
+    if (gmin_ > gmax_) {
+      gmin_ = gin;
+      gmax_ = gin;
+    }
+    in_gmin[gin] = gmin_;
+    in_gmax[gin] = gmax_;
+    for (int gout = gmin_; gout <= gmax_; gout++) {
+      sparse_scatter[gin].push_back(std::move(dense[gin][gout]));
+      double m = nuscatt(gin, gout) / scatt(gin, gout);
+      sparse_mult[gin].push_back(std::isfinite(m) ? m : 0.);
+    }
+  }
+
+  init(in_gmin, in_gmax, sparse_mult, sparse_scatter);
+  order = max_order;
+}
+
+//==============================================================================
+
+double ScattDataNEPSF::calc_f(int gin, int gout, double mu)
+{
+  if ((gout < gmin[gin]) || (gout > gmax[gin])) {
+    return 0.;
+  }
+  const auto& d = dist[gin][gout - gmin[gin]];
+  double f = 0.;
+  for (size_t k = 0; k < d.size(); k += 3) {
+    double lower = d[k + 1];
+    double upper = d[k + 2];
+    if (upper > lower && mu >= lower && (mu < upper || mu == 1.)) {
+      f += d[k] / (upper - lower);
+    }
+  }
+  return f;
+}
+
+//==============================================================================
+
+void ScattDataNEPSF::sample(
+  int gin, int& gout, double& mu, double& wgt, uint64_t* seed)
+{
+  // Sample the outgoing energy using the base-class method
+  int i_gout;
+  sample_energy(gin, gout, i_gout, seed);
+
+  const Steps& s = steps[gin][i_gout];
+  double xi = prn(seed);
+  if (s.prob.empty()) {
+    // No angular data for this transfer
+    mu = 2. * xi - 1.;
+  } else {
+    // Choose a step with the alias method, then a point within it from the
+    // randomness left over
+    size_t i = sample_alias(s.prob, s.alias, xi);
+    mu = std::clamp(s.lower[i] + xi * s.width[i], -1., 1.);
+  }
+
+  // Update the weight to reflect neutron multiplicity
+  wgt *= mult[gin][i_gout];
+}
+
+//==============================================================================
+
+tensor::Tensor<double> ScattDataNEPSF::get_matrix(size_t max_order)
+{
+  size_t groups = energy.size();
+  size_t order_dim = max_order + 1;
+  tensor::Tensor<double> matrix =
+    tensor::zeros<double>({groups, groups, order_dim});
+
+  // Legendre polynomials up to order max_order + 1 at the step bounds
+  vector<double> p_lower(order_dim + 1);
+  vector<double> p_upper(order_dim + 1);
+  vector<double> p_mid(order_dim + 1);
+  for (int gin = 0; gin < groups; gin++) {
+    for (int i_gout = 0; i_gout < energy[gin].size(); i_gout++) {
+      int gout = i_gout + gmin[gin];
+      double xs = scattxs[gin] * energy[gin][i_gout];
+      const auto& d = dist[gin][i_gout];
+      for (size_t k = 0; k < d.size(); k += 3) {
+        double lower = d[k + 1];
+        double upper = d[k + 2];
+        double width = upper - lower;
+        if (width < 1.e-6) {
+          // The mean of P_l over a narrow step is P_l at its midpoint to
+          // within O(width^2)
+          calc_pn_c(max_order, 0.5 * (lower + upper), p_mid.data());
+          for (int l = 0; l < order_dim; l++) {
+            matrix(gin, gout, l) += xs * d[k] * p_mid[l];
+          }
+        } else {
+          // The integral of P_l is (P_l+1 - P_l-1)/(2l + 1)
+          calc_pn_c(max_order + 1, lower, p_lower.data());
+          calc_pn_c(max_order + 1, upper, p_upper.data());
+          matrix(gin, gout, 0) += xs * d[k];
+          for (int l = 1; l < order_dim; l++) {
+            double integral = (p_upper[l + 1] - p_upper[l - 1] -
+                                p_lower[l + 1] + p_lower[l - 1]) /
+                              (2 * l + 1);
+            matrix(gin, gout, l) += xs * d[k] * integral / width;
+          }
+        }
+      }
+    }
+  }
+  return matrix;
+}
+
+//==============================================================================
 // module-level methods
 //==============================================================================
 

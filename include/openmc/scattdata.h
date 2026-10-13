@@ -298,6 +298,63 @@ public:
 };
 
 //==============================================================================
+// ScattDataNEPSF represents the angular distributions as nonequally probable
+// step functions (Mao, Both, and Nimal, Nucl. Sci. Eng., 130, 226 (1998)):
+// uniform distributions on intervals of [-1, 1] with given probabilities. A
+// step of zero width is a discrete angle.
+//
+// Unlike the other formats, combining data from several nuclides or
+// temperatures does not add coefficients. Since a weighted sum of
+// distributions is a mixture, the steps of each nuclide are kept, with their
+// weights multiplied by the nuclide's share of the group-to-group cross
+// section. The combined steps may overlap and preserve the Legendre moments of
+// the combined data exactly.
+//==============================================================================
+
+class ScattDataNEPSF : public ScattData {
+
+protected:
+  // Steps of one angular distribution
+  struct Steps {
+    vector<double> lower; // Lower bound of each step
+    vector<double> width; // Width of each step
+    vector<double> prob;  // Alias table probabilities
+    vector<size_t> alias; // Alias table
+  };
+
+  vector<vector<Steps>> steps; // Steps of each angular distribution
+  size_t order {0};            // Legendre order preserved by the steps
+
+  // dist[gin][i_gout] holds (probability, lower bound, upper bound) for each
+  // step of an angular distribution
+
+public:
+  //! \brief Initializes the steps from the scattering data.
+  //!
+  //! For each group-to-group transfer, coeffs holds a (weight, lower bound,
+  //! upper bound) triplet for each step, where the weights sum to the
+  //! group-to-group cross section. Steps with zero weight are ignored.
+  void init(const tensor::Tensor<int>& in_gmin,
+    const tensor::Tensor<int>& in_gmax, const double_2dvec& in_mult,
+    const double_3dvec& coeffs) override;
+
+  void combine(const vector<ScattData*>& those_scatts,
+    const vector<double>& scalars) override;
+
+  //! \brief Density of the steps; discrete angles do not contribute.
+  double calc_f(int gin, int gout, double mu) override;
+
+  void sample(
+    int gin, int& gout, double& mu, double& wgt, uint64_t* seed) override;
+
+  size_t get_order() override { return order; };
+
+  //! \brief Builds the dense matrix of Legendre moments of the steps up to
+  //! order max_order.
+  tensor::Tensor<double> get_matrix(size_t max_order) override;
+};
+
+//==============================================================================
 // Function to convert Legendre functions to tabular
 //==============================================================================
 

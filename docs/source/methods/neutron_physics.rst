@@ -236,7 +236,8 @@ If the scattering data is represented as a Legendre expansion, then the
 value of :math:`\Sigma_{s,g \rightarrow g'}` above is the 0th order for the
 given group transfer. If the data is provided as tabular or histogram data, then
 :math:`\Sigma_{s,g \rightarrow g'}` is the sum of all bins of data for a given
-`g` and `g'` pair.
+`g` and `g'` pair. For nonequally probable step functions, it is the sum of the
+step weights.
 
 Now that the outgoing energy is known the change-in-angle, :math:`\mu` can be
 determined. If the data is provided as a Legendre expansion of order :math:`N`,
@@ -277,6 +278,32 @@ from that decision places :math:`\mu` uniformly within the interval. Otherwise,
 an interval and a component :math:`k` are selected, and :math:`u` is sampled
 from :math:`\mathrm{Beta}(k+1, N-k+1)` as an order statistic of :math:`N+1`
 uniform random numbers, which requires :math:`\min(k+1, N-k+1)` of them.
+
+Truncated Legendre expansions are often negative in part of :math:`[-1, 1]`,
+and treating negative values as zero changes the moments of the distribution.
+The angular data can instead be provided as nonequally probable step functions
+[Mao]_, which the Python API computes from a Legendre expansion of odd order
+:math:`N` with :meth:`openmc.XSdata.convert_scatter_format`. The
+:math:`n = (N+1)/2` discrete angles that preserve the moments of the expansion
+up to order :math:`2n-1` give the probabilities :math:`p_i` of :math:`n`
+uniform distributions on intervals :math:`[\mu_{2i-1}, \mu_{2i}]` with
+:math:`-1 \le \mu_1 < \mu_2 \le \mu_3 < \ldots < \mu_{2n} \le 1`. The
+:math:`2n` bounds are chosen to preserve the same :math:`N` moments, leaving
+one degree of freedom, which is used to make the steps as wide as possible: the
+bounds minimize :math:`\sum_i p_i / (\mu_{2i} - \mu_{2i-1})^2`, the term
+that Mao et al. add to their merit function to widen the steps, subject to the
+moment conditions. These conditions are imposed on moments of
+:math:`(\mu - c)/s`, where :math:`c` and :math:`s` are the mean and standard
+deviation of the discrete angles, which is equivalent and well conditioned for
+strongly peaked distributions. If the moments are those of no nonnegative
+distribution, or of only a discrete one, a lower order or the discrete angles
+are used. To sample :math:`\mu`, a step is chosen with the alias method, and
+the fraction of the random number left over places :math:`\mu` uniformly
+within the step. When the data of several nuclides or temperatures are combined
+into a material, the steps of each are kept, with their probabilities scaled by
+the contribution to :math:`\Sigma_{s,g \rightarrow g'}`, which preserves the
+moments of the combined data exactly. Data in different formats cannot be
+combined.
 
 If the angular data is instead provided as a tabular representation, then the
 value of :math:`\mu` is selected as described in the :ref:`angle-tabular`
@@ -1762,6 +1789,10 @@ types.
 .. only:: html
 
    .. rubric:: References
+
+.. [Mao] L. Mao, J. P. Both, and J. C. Nimal, "Transfer Matrix Treatments in
+   TRIMARAN-II, Nonequally Probable Step Function Representation in Multigroup
+   Monte Carlo," *Nucl. Sci. Eng.*, **130**, 226-238 (1998).
 
 .. [Gelbard] Ely M. Gelbard, "Epithermal Scattering in VIM," FRA-TM-123, Argonne
    National Laboratory (1979).

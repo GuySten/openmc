@@ -19,7 +19,8 @@ enum class AngleDistributionType {
   EQUI_32,
   TABULAR,
   LEGENDRE,
-  HISTOGRAM
+  HISTOGRAM,
+  NEPSF
 };
 
 //==============================================================================

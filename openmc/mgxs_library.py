@@ -9,7 +9,9 @@ from scipy.special import eval_legendre
 
 import openmc
 import openmc.mgxs
-from openmc.mgxs import SCATTER_TABULAR, SCATTER_LEGENDRE, SCATTER_HISTOGRAM
+from openmc.mgxs import SCATTER_TABULAR, SCATTER_LEGENDRE, SCATTER_HISTOGRAM, \
+    SCATTER_NEPSF
+from openmc.mgxs.nepsf import nepsf
 from .checkvalue import check_type, check_value, check_greater_than, \
     check_iterable_type, check_less_than, check_filetype_version, PathLike
 
@@ -27,7 +29,8 @@ _REPRESENTATIONS = {
 _SCATTER_TYPES = {
     SCATTER_TABULAR,
     SCATTER_LEGENDRE,
-    SCATTER_HISTOGRAM
+    SCATTER_HISTOGRAM,
+    SCATTER_NEPSF
 }
 
 # Number of mu points for conversion between scattering formats
@@ -75,12 +78,14 @@ class XSdata:
         Num delayed groups
     fissionable : bool
         Whether or not this is a fissionable data set.
-    scatter_format : {'legendre', 'histogram', or 'tabular'}
-        Angular distribution representation (legendre, histogram, or tabular)
+    scatter_format : {'legendre', 'histogram', 'tabular', or 'nepsf'}
+        Angular distribution representation (legendre, histogram, tabular, or
+        nonequally probable step functions)
     order : int
         Either the Legendre order, number of bins, or number of points used to
         describe the angular distribution associated with each group-to-group
-        transfer probability.
+        transfer probability. For the 'nepsf' format, it is the odd Legendre
+        order :math:`N` preserved by the :math:`(N+1)/2` steps.
     representation : {'isotropic', 'angle'}
         Method used in generating the MGXS (isotropic or angle-dependent flux
         weighting).
@@ -99,7 +104,10 @@ class XSdata:
     scatter_matrix : list of numpy.ndarray
         Scattering moment matrices presented with the columns representing
         incoming group and rows representing the outgoing group.  That is,
-        down-scatter will be above the diagonal of the resultant matrix.
+        down-scatter will be above the diagonal of the resultant matrix. For
+        the 'nepsf' format, the last dimension holds a (weight, lower bound,
+        upper bound) triplet for each step, where the weights sum to the
+        group-to-group scattering cross section.
     multiplicity_matrix : list of numpy.ndarray
         Ratio of neutrons produced in scattering collisions to the neutrons
         which undergo scattering collisions; that is, the multiplicity provides
@@ -436,6 +444,10 @@ class XSdata:
 
         if self._scatter_format in (None, SCATTER_LEGENDRE):
             return self._order + 1
+        elif self._scatter_format == SCATTER_NEPSF:
+            if self._order % 2 == 0:
+                raise ValueError('The order of the nepsf format must be odd.')
+            return 3 * (self._order + 1) // 2
         else:
             return self._order
 
@@ -1798,6 +1810,12 @@ class XSdata:
             check_greater_than('num_polar', num_polar, 0)
             check_greater_than('num_azimuthal', num_azimuthal, 0)
 
+        if (target_representation == REPRESENTATION_ISOTROPIC and
+                self.representation == REPRESENTATION_ANGLE and
+                self.scatter_format == SCATTER_NEPSF):
+            raise ValueError('Steps cannot be averaged over angle bins; '
+                             'convert to the legendre format first.')
+
         xsdata = copy.deepcopy(self)
 
         # First handle the case where the current and requested
@@ -1858,14 +1876,21 @@ class XSdata:
         """Produce a new MGXSLibrary object with the same data, but converted
         to the new scatter format and order
 
+        Conversion to the 'nepsf' format represents each group-to-group
+        Legendre expansion by the nonequally probable step functions of Mao,
+        Both, and Nimal (Nucl. Sci. Eng., 130, 226 (1998)) that preserve its
+        moments up to `target_order`, which must be odd.
+
         Parameters
         ----------
-        target_format : {'tabular', 'legendre', 'histogram'}
+        target_format : {'tabular', 'legendre', 'histogram', 'nepsf'}
             Representation of the scattering angle distribution
         target_order : int
             Either the Legendre target_order, number of bins, or number of
             points used to describe the angular distribution associated with
-            each group-to-group transfer probability
+            each group-to-group transfer probability. For the 'nepsf' format,
+            it is the odd Legendre order to preserve and defaults to the
+            largest odd integer not exceeding the Legendre order of the data.
 
         Returns
         -------
@@ -1876,11 +1901,16 @@ class XSdata:
         """
 
         check_value('target_format', target_format, _SCATTER_TYPES)
+        if target_format == SCATTER_NEPSF:
+            return self._convert_to_nepsf(target_order)
         check_type('target_order', target_order, Integral)
         if target_format == SCATTER_LEGENDRE:
             check_greater_than('target_order', target_order, 0, equality=True)
         else:
             check_greater_than('target_order', target_order, 0)
+
+        if self.scatter_format == SCATTER_NEPSF:
+            return self._convert_from_nepsf(target_format, target_order)
 
         xsdata = copy.deepcopy(self)
         xsdata.scatter_format = target_format
@@ -2019,6 +2049,121 @@ class XSdata:
 
         return xsdata
 
+    def _convert_to_nepsf(self, target_order):
+        """Convert the scattering data to nonequally probable step functions
+        preserving the Legendre moments up to the odd `target_order`."""
+        if self.scatter_format == SCATTER_LEGENDRE:
+            max_order = self.order
+        elif self.scatter_format == SCATTER_NEPSF:
+            # Steps define moments of every order
+            max_order = target_order if target_order is not None else self.order
+        else:
+            max_order = target_order
+        if target_order is None:
+            if max_order is None:
+                raise ValueError('target_order must be provided to convert '
+                                 f'from the {self.scatter_format} format.')
+            target_order = max_order if max_order % 2 == 1 else max_order - 1
+        check_type('target_order', target_order, Integral)
+        check_greater_than('target_order', target_order, 0)
+        if target_order % 2 == 0:
+            raise ValueError('The order of the nepsf format must be odd.')
+        check_less_than('target_order', target_order, max_order, equality=True)
+
+        # Get the Legendre moments of the data
+        if self.scatter_format == SCATTER_LEGENDRE:
+            legendre = self
+        else:
+            legendre = self.convert_scatter_format(SCATTER_LEGENDRE,
+                                                   target_order)
+
+        xsdata = copy.deepcopy(self)
+        xsdata.scatter_format = SCATTER_NEPSF
+        xsdata.order = target_order
+        xsdata._xs_shapes = None
+        n_steps = (target_order + 1) // 2
+
+        for i, temp in enumerate(xsdata.temperatures):
+            orig_data = legendre._scatter_matrix[i]
+            new_data = np.zeros(orig_data.shape[:-1] + (3*n_steps,))
+            for index in np.ndindex(orig_data.shape[:-1]):
+                sigma = orig_data[index]
+                if sigma[0] == 0.:
+                    continue
+                elif sigma[0] < 0.:
+                    # Not a distribution; keep the cross section with an
+                    # isotropic angular distribution
+                    new_data[index][:3] = (sigma[0], -1., 1.)
+                    continue
+                lower, upper, weights, _ = nepsf(sigma / sigma[0],
+                                                 target_order)
+                new_data[index][0::3] = sigma[0] * weights
+                new_data[index][1::3] = lower
+                new_data[index][2::3] = upper
+            xsdata.set_scatter_matrix(new_data, temp)
+
+        return xsdata
+
+    def _convert_from_nepsf(self, target_format, target_order):
+        """Convert nonequally probable step functions to another format."""
+        xsdata = copy.deepcopy(self)
+        xsdata.scatter_format = target_format
+        xsdata.order = target_order
+        xsdata._xs_shapes = None
+
+        for i, temp in enumerate(xsdata.temperatures):
+            orig_data = self._scatter_matrix[i]
+            weights = orig_data[..., 0::3, np.newaxis]
+            lower = orig_data[..., 1::3, np.newaxis]
+            upper = orig_data[..., 2::3, np.newaxis]
+            width = upper - lower
+            point = width <= 0.
+            safe_width = np.where(point, 1., width)
+
+            if target_format == SCATTER_LEGENDRE:
+                # Exact moments: the mean of P_l over each step is
+                # (P_l+1 - P_l-1)/(2l + 1) evaluated at the bounds
+                l = np.arange(xsdata.num_orders)
+                p_lower = eval_legendre(np.arange(xsdata.num_orders + 1),
+                                        lower)
+                p_upper = eval_legendre(np.arange(xsdata.num_orders + 1),
+                                        upper)
+                integral = np.zeros(p_lower.shape[:-1] + (xsdata.num_orders,))
+                integral[..., 0] = width[..., 0]
+                integral[..., 1:] = (
+                    (p_upper[..., 2:] - p_upper[..., :-2]) -
+                    (p_lower[..., 2:] - p_lower[..., :-2])) / (2*l[1:] + 1)
+                mean = np.where(point, p_lower[..., :-1],
+                                integral / safe_width)
+                new_data = np.sum(weights * mean, axis=-2)
+
+            else:
+                if target_format == SCATTER_HISTOGRAM:
+                    edges = np.linspace(-1., 1., xsdata.num_orders + 1)
+                    lo_edge, hi_edge = edges[:-1], edges[1:]
+                else:
+                    # Average the density over the cell around each point
+                    mu = np.linspace(-1., 1., xsdata.num_orders)
+                    half = 1. / (xsdata.num_orders - 1)
+                    lo_edge = np.maximum(mu - half, -1.)
+                    hi_edge = np.minimum(mu + half, 1.)
+                overlap = np.clip(np.minimum(upper, hi_edge) -
+                                  np.maximum(lower, lo_edge), 0., None)
+                # Steps of zero width belong to the bin containing them, and
+                # mu = 1 to the last bin
+                inside = (lower >= lo_edge) & np.where(
+                    hi_edge >= 1., lower <= hi_edge, lower < hi_edge)
+                fraction = np.where(point, inside, overlap / safe_width)
+                if target_format == SCATTER_HISTOGRAM:
+                    new_data = np.sum(weights * fraction, axis=-2)
+                else:
+                    new_data = np.sum(weights * fraction, axis=-2) / \
+                        (hi_edge - lo_edge)
+
+            xsdata.set_scatter_matrix(new_data, temp)
+
+        return xsdata
+
     def to_hdf5(self, file):
         """Write XSdata to an HDF5 file
 
@@ -2142,6 +2287,16 @@ class XSdata:
                             elif self.representation == REPRESENTATION_ANGLE:
                                 matrix = \
                                     self._scatter_matrix[i][p, a, g_in, :, 0]
+                        elif self.scatter_format == SCATTER_NEPSF:
+                            # Sum the step weights, not the step bounds
+                            if self.representation == REPRESENTATION_ISOTROPIC:
+                                matrix = np.sum(
+                                    self._scatter_matrix[i][g_in, :, 0::3],
+                                    axis=1)
+                            elif self.representation == REPRESENTATION_ANGLE:
+                                matrix = np.sum(
+                                    self._scatter_matrix[i][p, a, g_in, :, 0::3],
+                                    axis=1)
                         else:
                             if self.representation == REPRESENTATION_ISOTROPIC:
                                 matrix = \
@@ -2542,18 +2697,20 @@ class MGXSLibrary:
                                               num_polar, num_azimuthal)
         return library
 
-    def convert_scatter_format(self, target_format, target_order):
+    def convert_scatter_format(self, target_format, target_order=None):
         """Produce a new MGXSLibrary object with the same data, but converted
         to the new scatter format and order
 
         Parameters
         ----------
-        target_format : {'tabular', 'legendre', 'histogram'}
+        target_format : {'tabular', 'legendre', 'histogram', 'nepsf'}
             Representation of the scattering angle distribution
         target_order : int
             Either the Legendre target_order, number of bins, or number of
             points used to describe the angular distribution associated with
-            each group-to-group transfer probability
+            each group-to-group transfer probability. For the 'nepsf' format,
+            it is the odd Legendre order to preserve and defaults to the
+            largest odd integer not exceeding the Legendre order of the data.
 
         Returns
         -------

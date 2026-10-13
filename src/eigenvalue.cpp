@@ -135,9 +135,12 @@ void synchronize_bank()
   // Temporary banks for IFP
   vector<vector<int>> temp_delayed_groups;
   vector<vector<double>> temp_lifetimes;
+  vector<vector<double>> temp_dg_weights;
   if (settings::ifp_on()) {
     resize_ifp_data(
       temp_delayed_groups, temp_lifetimes, 3 * simulation::work_per_rank);
+    if (settings::ifp_dg_weight_on)
+      temp_dg_weights.resize(3 * simulation::work_per_rank);
   }
 
   // ==========================================================================
@@ -166,7 +169,7 @@ void synchronize_bank()
     temp_sites[index_temp] = simulation::fission_bank[idx];
     if (settings::ifp_on()) {
       copy_ifp_data_from_fission_banks(
-        idx, index_temp, temp_delayed_groups, temp_lifetimes);
+        idx, index_temp, temp_delayed_groups, temp_lifetimes, temp_dg_weights);
     }
     ++index_temp;
 
@@ -333,8 +336,8 @@ void synchronize_bank()
         &simulation::source_bank[index_local]);
 
       if (settings::ifp_on()) {
-        copy_partial_ifp_data_to_source_banks(
-          index_temp, n, index_local, temp_delayed_groups, temp_lifetimes);
+        copy_partial_ifp_data_to_source_banks(index_temp, n, index_local,
+          temp_delayed_groups, temp_lifetimes, temp_dg_weights);
       }
     }
 
@@ -364,7 +367,8 @@ void synchronize_bank()
   std::copy(temp_sites.data(), temp_sites.data() + settings::n_particles,
     simulation::source_bank.begin());
   if (settings::ifp_on()) {
-    copy_complete_ifp_data_to_source_banks(temp_delayed_groups, temp_lifetimes);
+    copy_complete_ifp_data_to_source_banks(
+      temp_delayed_groups, temp_lifetimes, temp_dg_weights);
   }
 #endif
 

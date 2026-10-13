@@ -656,6 +656,8 @@ const std::unordered_map<int, const char*> score_names = {
   {SCORE_IFP_TIME_NUM, "IFP lifetime numerator"},
   {SCORE_IFP_BETA_NUM, "IFP delayed fraction numerator"},
   {SCORE_IFP_DENOM, "IFP common denominator"},
+  {SCORE_IFP_BETA_NUM_COND, "IFP delayed fraction numerator (conditional)"},
+  {SCORE_IFP_BETA_NUM_GROUP, "IFP delayed fraction numerator (group)"},
 };
 
 //! Create an ASCII output file showing all tally results.

@@ -197,6 +197,7 @@ Tally::Tally(pugi::xml_node node)
   // independent, so a score simply turns on the data it needs.
   bool wants_lifetime = false;
   bool wants_delayed_group = false;
+  bool wants_dg_weight = false;
   for (int score : scores_) {
     switch (score) {
     case SCORE_IFP_TIME_NUM:
@@ -206,7 +207,17 @@ Tally::Tally(pugi::xml_node node)
     case SCORE_IFP_DENOM:
       wants_delayed_group = true;
       break;
+    case SCORE_IFP_BETA_NUM_COND:
+    case SCORE_IFP_BETA_NUM_GROUP:
+      wants_delayed_group = true;
+      wants_dg_weight = true;
+      break;
     }
+  }
+
+  if (wants_dg_weight && mpi::n_procs > 1) {
+    fatal_error("The ifp-beta-numerator-cond and ifp-beta-numerator-group "
+                "scores do not yet support more than one MPI process.");
   }
 
   if (wants_lifetime || wants_delayed_group) {
@@ -236,6 +247,7 @@ Tally::Tally(pugi::xml_node node)
     if (settings::run_mode == RunMode::EIGENVALUE) {
       settings::ifp_lifetime_on |= wants_lifetime;
       settings::ifp_delayed_group_on |= wants_delayed_group;
+      settings::ifp_dg_weight_on |= wants_dg_weight;
     }
   }
 
@@ -568,7 +580,9 @@ void Tally::set_scores(const vector<std::string>& scores)
     // score.
     if (delayedgroup_filter_ != C_NONE) {
       if (score_str != "delayed-nu-fission" && score_str != "decay-rate" &&
-          score_str != "ifp-beta-numerator")
+          score_str != "ifp-beta-numerator" &&
+          score_str != "ifp-beta-numerator-cond" &&
+          score_str != "ifp-beta-numerator-group")
         fatal_error("Cannot tally " + score_str + "with a delayedgroup filter");
     }
 
@@ -673,6 +687,8 @@ void Tally::set_scores(const vector<std::string>& scores)
 
     case SCORE_IFP_TIME_NUM:
     case SCORE_IFP_BETA_NUM:
+    case SCORE_IFP_BETA_NUM_COND:
+    case SCORE_IFP_BETA_NUM_GROUP:
     case SCORE_IFP_DENOM:
       estimator_ = TallyEstimator::COLLISION;
       break;

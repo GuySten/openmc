@@ -116,6 +116,44 @@ for ``ifp-denominator``:
 
     \beta_{\text{eff}} = \frac{S_{\text{ifp-beta-numerator}}}{S_{\text{ifp-denominator}}}
 
+------------------------------------------------
+Lower-variance :math:`\beta_{\text{eff}}` scores
+------------------------------------------------
+
+The ``ifp-beta-numerator`` score is an analog estimator: an ancestor contributes
+only if it happened to be emitted as a delayed neutron, which occurs for a
+fraction :math:`\beta` of fission neutrons. Two alternative scores replace this
+0/1 indicator by a probability and can be used in place of
+``ifp-beta-numerator`` in Eq. :eq:`beta_eff`:
+
+``ifp-beta-numerator-cond``
+    Every ancestor scores the probability that it was emitted in each delayed
+    group given the fission event that produced it and its sampled outgoing
+    energy :math:`E'`,
+
+    .. math::
+
+        w_g(E') = \frac{\beta_g \chi_{d,g}(E')}{(1 - \beta) \chi_p(E') +
+        \sum_{g'} \beta_{g'} \chi_{d,g'}(E')},
+
+    where :math:`\chi_p` and :math:`\chi_{d,g}` are the prompt and delayed
+    group emission spectra of the fissioning nuclide at the incident energy.
+    The progeny of a neutron depend on how it was emitted only through its
+    outgoing energy, so this score has the same expectation as
+    ``ifp-beta-numerator``. Weighting by :math:`\beta_g` alone would not:
+    it would lose the difference in importance between the softer delayed
+    spectrum and the prompt spectrum.
+
+``ifp-beta-numerator-group``
+    Keeps the analog delayed indicator but spreads a delayed ancestor over the
+    groups by :math:`w_g(E') / \sum_{g'} w_{g'}(E')`. Its total is identical to
+    ``ifp-beta-numerator``; only the group-wise values have a lower variance.
+
+Both scores store :math:`N_{\text{gen}} + 1` sets of group probabilities for
+every fission neutron, require outgoing energy distributions whose density can
+be evaluated (tabular, Maxwell, evaporation, and Watt spectra), and do not yet
+support more than one MPI process.
+
 The kinetics parameters can be retrieved directly from a statepoint file using
 the :meth:`openmc.StatePoint.ifp_results` method::
 

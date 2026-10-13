@@ -4,6 +4,7 @@
 #include "openmc/message_passing.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
+#include "openmc/reaction.h"
 #include "openmc/settings.h"
 
 #include <algorithm> // for copy
@@ -67,7 +68,29 @@ vector<T> _ifp(const T& value, const vector<T>& data)
 //!
 //! \param[in] p Particle
 //! \param[in] idx Bank index from the thread_safe_append call in physics.cpp
-void ifp(const Particle& p, int64_t idx);
+//! \param[in] dg_weights Delayed group probabilities of the new fission site
+//!   (MAX_DELAYED_GROUPS values), only read when settings::ifp_dg_weight_on
+void ifp(const Particle& p, int64_t idx, const double* dg_weights);
+
+//! Compute the probability that a fission neutron was emitted in each delayed
+//! group given the fission event and its sampled outgoing energy.
+//!
+//! The neutron is sampled from the mixture
+//!   f(E_out) = (1 - beta) chi_p(E_out) + sum_g beta_g chi_g(E_out),
+//! so the probability of group g given E_out is beta_g chi_g(E_out) / f(E_out).
+//! Scoring these probabilities in place of the 0/1 delayed indicator gives the
+//! same expected IFP beta numerator, because the progeny of the neutron depend
+//! on how it was emitted only through its outgoing energy.
+//!
+//! \param[in] i_nuclide Index of the fissioning nuclide
+//! \param[in] rx Fission reaction that produced the neutron
+//! \param[in] E_in Energy of the neutron causing fission in [eV]
+//! \param[in] E_out Sampled energy of the fission neutron in [eV]
+//! \param[in] delayed_group Sampled delayed group (0 for prompt), used only
+//!   when the mixture density vanishes at E_out
+//! \param[out] weights Probabilities for groups 1..MAX_DELAYED_GROUPS
+void ifp_delayed_group_weights(int i_nuclide, const Reaction& rx, double E_in,
+  double E_out, int delayed_group, double* weights);
 
 //! Resize the IFP banks used in the simulation
 void resize_simulation_ifp_banks();
@@ -78,8 +101,10 @@ void resize_simulation_ifp_banks();
 //! \param[in] i_temp Index in the temporary bank vectors
 //! \param[in,out] delayed_groups Delayed group numbers
 //! \param[in,out] lifetimes Lifetimes lists
+//! \param[in,out] dg_weights Delayed group probability lists
 void copy_ifp_data_from_fission_banks(int64_t i_bank, int64_t i_temp,
-  vector<vector<int>>& delayed_groups, vector<vector<double>>& lifetimes);
+  vector<vector<int>>& delayed_groups, vector<vector<double>>& lifetimes,
+  vector<vector<double>>& dg_weights);
 
 #ifdef OPENMC_MPI
 
@@ -157,9 +182,11 @@ void receive_ifp_data(int64_t idx, int64_t n, int n_generation, int neighbor,
 //! \param[in] i_bank Index in the IFP source banks
 //! \param[in] delayed_groups List of delayed group numbers lists
 //! \param[in] lifetimes List of lifetimes lists
+//! \param[in] dg_weights List of delayed group probability lists
 void copy_partial_ifp_data_to_source_banks(int64_t idx, int n, int64_t i_bank,
   const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes);
+  const vector<vector<double>>& lifetimes,
+  const vector<vector<double>>& dg_weights);
 
 //! Deserialize IFP information received using MPI and store it in
 //! the IFP source banks.
@@ -190,23 +217,27 @@ void deserialize_ifp_info(int n_generation, const vector<T>& data,
 //!
 //! \param[in] delayed_groups List of delayed group numbers lists
 //! \param[in] lifetimes List of lifetimes lists
+//! \param[in] dg_weights List of delayed group probability lists
 void copy_complete_ifp_data_to_source_banks(
   const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes);
+  const vector<vector<double>>& lifetimes,
+  const vector<vector<double>>& dg_weights);
 
 //! Allocate temporary vectors for IFP data.
 //!
 //! \param[in,out] delayed_groups List of delayed group numbers lists
 //! \param[in,out] lifetimes List of delayed group numbers lists
-void allocate_temporary_vector_ifp(
-  vector<vector<int>>& delayed_groups, vector<vector<double>>& lifetimes);
+//! \param[in,out] dg_weights List of delayed group probability lists
+void allocate_temporary_vector_ifp(vector<vector<int>>& delayed_groups,
+  vector<vector<double>>& lifetimes, vector<vector<double>>& dg_weights);
 
 //! Copy local IFP data to IFP fission banks.
 //!
 //! \param[in] delayed_groups_ptr Pointer to delayed group numbers
 //! \param[in] lifetimes_ptr Pointer to lifetimes
-void copy_ifp_data_to_fission_banks(
-  const vector<int>* delayed_groups_ptr, const vector<double>* lifetimes_ptr);
+//! \param[in] dg_weights_ptr Pointer to delayed group probabilities
+void copy_ifp_data_to_fission_banks(const vector<int>* delayed_groups_ptr,
+  const vector<double>* lifetimes_ptr, const vector<double>* dg_weights_ptr);
 
 } // namespace openmc
 

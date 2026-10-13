@@ -357,6 +357,16 @@ The following tables show all valid scores:
     |                      |kinetics parameters using the iterated fission     |
     |                      |probability (IFP) method.                          |
     +----------------------+---------------------------------------------------+
+    |ifp-beta-numerator-   |Same quantity as ifp-beta-numerator, scored with   |
+    |cond                  |the probability that each ancestor was a delayed   |
+    |                      |neutron given its outgoing energy. See             |
+    |                      |:ref:`kinetics`.                                   |
+    +----------------------+---------------------------------------------------+
+    |ifp-beta-numerator-   |Same total as ifp-beta-numerator, with a delayed   |
+    |group                 |ancestor spread over the delayed groups by their   |
+    |                      |probabilities given its outgoing energy. See       |
+    |                      |:ref:`kinetics`.                                   |
+    +----------------------+---------------------------------------------------+
     |ifp-denominator       |Weights corresponding to the number of fission     |
     |                      |events in units of number of fission event per     |
     |                      |source particle. This score is used to compute     |

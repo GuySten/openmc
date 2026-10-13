@@ -58,6 +58,7 @@ bool entropy_on {false};
 bool event_based {false};
 bool ifp_delayed_group_on {false};
 bool ifp_lifetime_on {false};
+bool ifp_dg_weight_on {false};
 bool legendre_to_tabular {true};
 bool material_cell_offsets {true};
 bool output_summary {true};
@@ -1379,6 +1380,7 @@ void free_memory_settings()
   settings::track_identifiers.clear();
   settings::ifp_delayed_group_on = false;
   settings::ifp_lifetime_on = false;
+  settings::ifp_dg_weight_on = false;
 }
 
 //==============================================================================

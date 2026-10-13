@@ -347,7 +347,13 @@ enum TallyScore {
   SCORE_PULSE_HEIGHT = -17,       // pulse-height
   SCORE_IFP_TIME_NUM = -18,       // IFP lifetime numerator
   SCORE_IFP_BETA_NUM = -19,       // IFP delayed fraction numerator
-  SCORE_IFP_DENOM = -20           // IFP common denominator
+  SCORE_IFP_DENOM = -20,          // IFP common denominator
+  SCORE_IFP_BETA_NUM_COND = -21,  // IFP delayed fraction numerator scored
+                                  // with the delayed group probabilities
+                                  // given the outgoing energy
+  SCORE_IFP_BETA_NUM_GROUP = -22  // IFP delayed fraction numerator scored
+                                  // with the delayed group probabilities
+                                  // given a delayed emission
 };
 
 // Global tally parameters

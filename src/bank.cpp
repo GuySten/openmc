@@ -39,6 +39,10 @@ vector<vector<int>> ifp_fission_delayed_group_bank;
 
 vector<vector<double>> ifp_fission_lifetime_bank;
 
+vector<vector<double>> ifp_source_dg_weight_bank;
+
+vector<vector<double>> ifp_fission_dg_weight_bank;
+
 // Each entry in this vector corresponds to the number of progeny produced
 // this generation for the particle located at that index. This vector is
 // used to efficiently sort the fission bank after each iteration.
@@ -68,6 +72,8 @@ void free_memory_bank()
   simulation::ifp_source_lifetime_bank.clear();
   simulation::ifp_fission_delayed_group_bank.clear();
   simulation::ifp_fission_lifetime_bank.clear();
+  simulation::ifp_source_dg_weight_bank.clear();
+  simulation::ifp_fission_dg_weight_bank.clear();
   simulation::shared_secondary_bank_read.clear();
   simulation::shared_secondary_bank_write.clear();
 }
@@ -104,6 +110,7 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
   vector<SourceSite> sorted_bank_holder;
   vector<vector<int>> sorted_ifp_delayed_group_bank;
   vector<vector<double>> sorted_ifp_lifetime_bank;
+  vector<vector<double>> sorted_ifp_dg_weight_bank;
 
   // If there is not enough space, allocate a temporary vector and point to it
   if (bank.size() > bank.capacity() / 2) {
@@ -114,8 +121,8 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
   }
 
   if (settings::ifp_on() && is_fission_bank) {
-    allocate_temporary_vector_ifp(
-      sorted_ifp_delayed_group_bank, sorted_ifp_lifetime_bank);
+    allocate_temporary_vector_ifp(sorted_ifp_delayed_group_bank,
+      sorted_ifp_lifetime_bank, sorted_ifp_dg_weight_bank);
   }
 
   // Use parent and progeny indices to sort bank
@@ -136,16 +143,16 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
     }
     sorted_bank[idx] = site;
     if (settings::ifp_on() && is_fission_bank) {
-      copy_ifp_data_from_fission_banks(
-        i, idx, sorted_ifp_delayed_group_bank, sorted_ifp_lifetime_bank);
+      copy_ifp_data_from_fission_banks(i, idx, sorted_ifp_delayed_group_bank,
+        sorted_ifp_lifetime_bank, sorted_ifp_dg_weight_bank);
     }
   }
 
   // Copy sorted bank into the fission bank
   std::copy(sorted_bank, sorted_bank + bank.size(), bank.data());
   if (settings::ifp_on() && is_fission_bank) {
-    copy_ifp_data_to_fission_banks(
-      sorted_ifp_delayed_group_bank.data(), sorted_ifp_lifetime_bank.data());
+    copy_ifp_data_to_fission_banks(sorted_ifp_delayed_group_bank.data(),
+      sorted_ifp_lifetime_bank.data(), sorted_ifp_dg_weight_bank.data());
   }
 }
 

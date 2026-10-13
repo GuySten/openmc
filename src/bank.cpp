@@ -93,7 +93,7 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
   vector<SourceSite> sorted_bank_holder;
   vector<vector<int>> sorted_ifp_delayed_group_bank;
   vector<vector<double>> sorted_ifp_lifetime_bank;
-  vector<vector<double>> sorted_ifp_dg_weight_bank;
+  vector<vector<IFPBirth>> sorted_ifp_birth_bank;
 
   // If there is not enough space, allocate a temporary vector and point to it
   if (bank.size() > bank.capacity() / 2) {
@@ -107,7 +107,7 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
     int64_t n = simulation::fission_bank.size();
     simulation::ifp_delayed_group.resize_temp(sorted_ifp_delayed_group_bank, n);
     simulation::ifp_lifetime.resize_temp(sorted_ifp_lifetime_bank, n);
-    simulation::ifp_dg_weight.resize_temp(sorted_ifp_dg_weight_bank, n);
+    simulation::ifp_birth.resize_temp(sorted_ifp_birth_bank, n);
   }
 
   // Use parent and progeny indices to sort bank
@@ -132,8 +132,7 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
         i, idx, sorted_ifp_delayed_group_bank);
       simulation::ifp_lifetime.copy_from_fission(
         i, idx, sorted_ifp_lifetime_bank);
-      simulation::ifp_dg_weight.copy_from_fission(
-        i, idx, sorted_ifp_dg_weight_bank);
+      simulation::ifp_birth.copy_from_fission(i, idx, sorted_ifp_birth_bank);
     }
   }
 
@@ -145,8 +144,7 @@ void sort_bank(SharedArray<SourceSite>& bank, bool is_fission_bank)
       sorted_ifp_delayed_group_bank.data(), n);
     simulation::ifp_lifetime.copy_temp_to_fission(
       sorted_ifp_lifetime_bank.data(), n);
-    simulation::ifp_dg_weight.copy_temp_to_fission(
-      sorted_ifp_dg_weight_bank.data(), n);
+    simulation::ifp_birth.copy_temp_to_fission(sorted_ifp_birth_bank.data(), n);
   }
 }
 

@@ -8,8 +8,58 @@
 #include "openmc/settings.h"
 
 #include <algorithm> // for copy
+#include <cstdint>   // for int32_t
 
 namespace openmc {
+
+//==============================================================================
+//! The fission event that emitted a neutron, recorded for IFP.
+//
+//! The delayed group probabilities scored by ifp-beta-numerator-cond and
+//! ifp-beta-numerator-group are a function of the fissioning nuclide, the
+//! fission reaction, the incident energy, and the sampled outgoing energy, so
+//! those are stored instead of the probabilities themselves and the
+//! probabilities are computed when they are scored. The nuclide, reaction and
+//! sampled delayed group are packed into one integer and the energies are
+//! stored in single precision, which changes the probabilities by less than a
+//! part in 10^6, for 12 bytes per record.
+//==============================================================================
+
+class IFPBirth {
+public:
+  //! Record of a neutron that was not born from fission
+  IFPBirth() = default;
+
+  //! Record of a fission neutron
+  //! \param[in] i_nuclide Index of the fissioning nuclide
+  //! \param[in] i_rx Index of the fission reaction in Nuclide::fission_rx_
+  //! \param[in] delayed_group Sampled delayed group (0 for prompt)
+  //! \param[in] E_in Energy of the neutron causing fission in [eV]
+  //! \param[in] E_out Energy of the fission neutron in [eV]
+  IFPBirth(
+    int i_nuclide, int i_rx, int delayed_group, double E_in, double E_out)
+    : id_ {(i_nuclide << 6) | (i_rx << 4) | delayed_group},
+      E_in_ {static_cast<float>(E_in)}, E_out_ {static_cast<float>(E_out)}
+  {}
+
+  bool from_fission() const { return id_ >= 0; }
+  int nuclide() const { return id_ >> 6; }
+  int reaction() const { return (id_ >> 4) & 0x3; }
+  int delayed_group() const { return from_fission() ? id_ & 0xF : 0; }
+  double E_in() const { return E_in_; }
+  double E_out() const { return E_out_; }
+
+  bool operator==(const IFPBirth& other) const
+  {
+    return id_ == other.id_ && E_in_ == other.E_in_ && E_out_ == other.E_out_;
+  }
+
+private:
+  int32_t id_ {
+    -1}; //!< Nuclide (bits 6-30), reaction (4-5), delayed group (0-3)
+  float E_in_ {0.0f};  //!< Incident energy in [eV]
+  float E_out_ {0.0f}; //!< Outgoing energy in [eV]
+};
 
 //! Update a list of values by adding a new value if the size
 //! of the list can accomodate the new value or by shifting all
@@ -151,10 +201,10 @@ namespace simulation {
 extern IFPStream<int> ifp_delayed_group; //!< Delayed group numbers
 extern IFPStream<double> ifp_lifetime;   //!< Neutron lifetimes
 
-//! Delayed group probabilities, stored as consecutive blocks of
-//! MAX_DELAYED_GROUPS values. Unlike the other streams, each list ends with the
-//! site's own birth, so it holds up to ifp_n_generation + 1 blocks.
-extern IFPStream<double> ifp_dg_weight;
+//! Fission events that emitted the ancestors. Unlike the other streams, each
+//! list ends with the site's own birth, so it holds up to ifp_n_generation + 1
+//! records.
+extern IFPStream<IFPBirth> ifp_birth;
 
 } // namespace simulation
 
@@ -162,8 +212,7 @@ extern IFPStream<double> ifp_dg_weight;
 inline bool ifp_on()
 {
   return simulation::ifp_delayed_group.enabled() ||
-         simulation::ifp_lifetime.enabled() ||
-         simulation::ifp_dg_weight.enabled();
+         simulation::ifp_lifetime.enabled() || simulation::ifp_birth.enabled();
 }
 
 //! \brief Iterated Fission Probability (IFP) method.
@@ -175,9 +224,26 @@ inline bool ifp_on()
 //!
 //! \param[in] p Particle
 //! \param[in] idx Bank index from the thread_safe_append call in physics.cpp
-//! \param[in] dg_weights Delayed group probabilities of the new fission site
-//!   (MAX_DELAYED_GROUPS values), only read when ifp_dg_weight is enabled
-void ifp(const Particle& p, int64_t idx, const double* dg_weights);
+//! \param[in] birth Fission event that emitted the new fission site, only read
+//!   when ifp_birth is enabled
+void ifp(const Particle& p, int64_t idx, const IFPBirth& birth);
+
+//! Delayed group of the ancestor whose score a fission of this source particle
+//! adds, or -1 if the particle does not yet have ifp_n_generation ancestors
+//! \param[in] i_source Index of the particle in the source bank
+int ifp_ancestor_delayed_group(int64_t i_source);
+
+//! Whether a source particle has ifp_n_generation ancestors recorded
+//! \param[in] i_source Index of the particle in the source bank
+bool ifp_history_complete(int64_t i_source);
+
+//! Delayed group probabilities of the ancestor whose score a fission of this
+//! particle adds. The ancestor is the same for the whole history, so they are
+//! computed once and reused for every fission and tally.
+//! \param[in] p Particle
+//! \param[out] weights Probabilities for groups 1..MAX_DELAYED_GROUPS
+//! \return Whether the particle has ifp_n_generation ancestors recorded
+bool ifp_ancestor_dg_weights(const Particle& p, double* weights);
 
 //! Compute the probability that a fission neutron was emitted in each delayed
 //! group given the fission event and its sampled outgoing energy.

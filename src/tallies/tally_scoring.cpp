@@ -21,8 +21,7 @@
 #include "openmc/tallies/filter_delayedgroup.h"
 #include "openmc/tallies/filter_energy.h"
 
-#include <algorithm> // for copy
-#include <numeric>   // for accumulate
+#include <numeric> // for accumulate
 #include <string>
 
 namespace openmc {
@@ -952,30 +951,22 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       break;
 
     case SCORE_IFP_BETA_NUM:
-      if (ifp_on()) {
-        if (p.type().is_neutron() && p.fission()) {
-          if (simulation::ifp_delayed_group.enabled()) {
-            const auto& delayed_groups =
-              simulation::ifp_delayed_group.source_bank()[p.current_work()];
-            if (delayed_groups.size() == settings::ifp_n_generation) {
-              if (delayed_groups[0] > 0) {
-                score = p.wgt_last();
-                if (tally.delayedgroup_filter_ != C_NONE) {
-                  auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
-                  const DelayedGroupFilter& filt {
-                    *dynamic_cast<DelayedGroupFilter*>(
-                      model::tally_filters[i_dg_filt].get())};
-                  for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
-                    if (filt.groups()[d_bin] == delayed_groups[0]) {
-                      score_fission_delayed_dg(
-                        i_tally, d_bin, score, score_index, p.filter_matches());
-                      break;
-                    }
-                  }
-                  continue;
-                }
+      if (ifp_on() && p.type().is_neutron() && p.fission()) {
+        int delayed_group = ifp_ancestor_delayed_group(p.current_work());
+        if (delayed_group > 0) {
+          score = p.wgt_last();
+          if (tally.delayedgroup_filter_ != C_NONE) {
+            auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
+            const DelayedGroupFilter& filt {*dynamic_cast<DelayedGroupFilter*>(
+              model::tally_filters[i_dg_filt].get())};
+            for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
+              if (filt.groups()[d_bin] == delayed_group) {
+                score_fission_delayed_dg(
+                  i_tally, d_bin, score, score_index, p.filter_matches());
+                break;
               }
             }
+            continue;
           }
         }
       }
@@ -983,71 +974,50 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
 
     case SCORE_IFP_BETA_NUM_COND:
     case SCORE_IFP_BETA_NUM_GROUP:
-      if (simulation::ifp_dg_weight.enabled() && p.type().is_neutron() &&
+      if (simulation::ifp_birth.enabled() && p.type().is_neutron() &&
           p.fission()) {
-        constexpr int stride = MAX_DELAYED_GROUPS;
-        const auto& weights =
-          simulation::ifp_dg_weight.source_bank()[p.current_work()];
-        if (weights.size() == (settings::ifp_n_generation + 1) * stride) {
-          // Delayed group probabilities of the ancestor emitted
-          // ifp_n_generation generations before the parent of this neutron.
-          // The first block holds them because each list ends with the
-          // neutron's own birth.
-          double w[MAX_DELAYED_GROUPS];
-          std::copy(weights.begin(), weights.begin() + stride, w);
+        double w[MAX_DELAYED_GROUPS];
+        if (!ifp_ancestor_dg_weights(p, w))
+          break;
 
-          if (score_bin == SCORE_IFP_BETA_NUM_GROUP) {
-            // Keep the analog delayed indicator and only spread a delayed
-            // ancestor over the groups by their probabilities given that the
-            // emission was delayed
-            const auto& delayed_groups =
-              simulation::ifp_delayed_group.source_bank()[p.current_work()];
-            double w_delayed = std::accumulate(w, w + stride, 0.0);
-            bool delayed = !delayed_groups.empty() && delayed_groups[0] > 0;
-            for (int g = 0; g < stride; ++g) {
-              if (!delayed) {
-                w[g] = 0.0;
-              } else if (w_delayed > 0.0) {
-                w[g] /= w_delayed;
-              } else {
-                w[g] = (g + 1 == delayed_groups[0]) ? 1.0 : 0.0;
-              }
+        if (score_bin == SCORE_IFP_BETA_NUM_GROUP) {
+          // Keep the analog delayed indicator and only spread a delayed
+          // ancestor over the groups by their probabilities given that the
+          // emission was delayed
+          int delayed_group = ifp_ancestor_delayed_group(p.current_work());
+          double w_delayed = std::accumulate(w, w + MAX_DELAYED_GROUPS, 0.0);
+          for (int g = 0; g < MAX_DELAYED_GROUPS; ++g) {
+            if (delayed_group <= 0) {
+              w[g] = 0.0;
+            } else if (w_delayed > 0.0) {
+              w[g] /= w_delayed;
+            } else {
+              w[g] = (g + 1 == delayed_group) ? 1.0 : 0.0;
             }
           }
-
-          if (tally.delayedgroup_filter_ != C_NONE) {
-            auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
-            const DelayedGroupFilter& filt {*dynamic_cast<DelayedGroupFilter*>(
-              model::tally_filters[i_dg_filt].get())};
-            for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
-              int g = filt.groups()[d_bin];
-              if (g >= 1 && g <= stride && w[g - 1] != 0.0) {
-                score_fission_delayed_dg(i_tally, d_bin,
-                  p.wgt_last() * w[g - 1], score_index, p.filter_matches());
-              }
-            }
-            continue;
-          }
-          score = p.wgt_last() * std::accumulate(w, w + stride, 0.0);
         }
+
+        if (tally.delayedgroup_filter_ != C_NONE) {
+          auto i_dg_filt = tally.filters()[tally.delayedgroup_filter_];
+          const DelayedGroupFilter& filt {*dynamic_cast<DelayedGroupFilter*>(
+            model::tally_filters[i_dg_filt].get())};
+          for (int d_bin = 0; d_bin < filt.n_bins(); ++d_bin) {
+            int g = filt.groups()[d_bin];
+            if (g >= 1 && g <= MAX_DELAYED_GROUPS && w[g - 1] != 0.0) {
+              score_fission_delayed_dg(i_tally, d_bin, p.wgt_last() * w[g - 1],
+                score_index, p.filter_matches());
+            }
+          }
+          continue;
+        }
+        score = p.wgt_last() * std::accumulate(w, w + MAX_DELAYED_GROUPS, 0.0);
       }
       break;
 
     case SCORE_IFP_DENOM:
-      if (ifp_on()) {
-        if (p.type().is_neutron() && p.fission()) {
-          int ifp_data_size;
-          if (simulation::ifp_delayed_group.enabled()) {
-            ifp_data_size = static_cast<int>(
-              simulation::ifp_delayed_group.source_bank()[p.current_work()]
-                .size());
-          } else {
-            ifp_data_size = static_cast<int>(
-              simulation::ifp_lifetime.source_bank()[p.current_work()].size());
-          }
-          if (ifp_data_size == settings::ifp_n_generation) {
-            score = p.wgt_last();
-          }
+      if (ifp_on() && p.type().is_neutron() && p.fission()) {
+        if (ifp_history_complete(p.current_work())) {
+          score = p.wgt_last();
         }
       }
       break;

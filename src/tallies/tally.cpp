@@ -198,7 +198,7 @@ Tally::Tally(pugi::xml_node node)
   // independent, so a score simply turns on the data it needs.
   bool wants_lifetime = false;
   bool wants_delayed_group = false;
-  bool wants_dg_weight = false;
+  bool wants_birth = false;
   for (int score : scores_) {
     switch (score) {
     case SCORE_IFP_TIME_NUM:
@@ -210,18 +210,17 @@ Tally::Tally(pugi::xml_node node)
       break;
     case SCORE_IFP_BETA_NUM_COND:
     case SCORE_IFP_BETA_NUM_GROUP:
-      wants_delayed_group = true;
-      wants_dg_weight = true;
+      wants_birth = true;
       break;
     }
   }
 
-  if (wants_dg_weight && mpi::n_procs > 1) {
+  if (wants_birth && mpi::n_procs > 1) {
     fatal_error("The ifp-beta-numerator-cond and ifp-beta-numerator-group "
                 "scores do not yet support more than one MPI process.");
   }
 
-  if (wants_lifetime || wants_delayed_group) {
+  if (wants_lifetime || wants_delayed_group || wants_birth) {
     // Validate once, when the first IFP tally is encountered
     if (!ifp_on()) {
       if (settings::run_mode == RunMode::FIXED_SOURCE) {
@@ -250,8 +249,8 @@ Tally::Tally(pugi::xml_node node)
         simulation::ifp_lifetime.enable();
       if (wants_delayed_group)
         simulation::ifp_delayed_group.enable();
-      if (wants_dg_weight)
-        simulation::ifp_dg_weight.enable();
+      if (wants_birth)
+        simulation::ifp_birth.enable();
     }
   }
 

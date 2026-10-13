@@ -149,9 +149,13 @@ fraction :math:`\beta` of fission neutrons. Two alternative scores replace this
     groups by :math:`w_g(E') / \sum_{g'} w_{g'}(E')`. Its total is identical to
     ``ifp-beta-numerator``; only the group-wise values have a lower variance.
 
-Both scores store :math:`N_{\text{gen}} + 1` sets of group probabilities for
-every fission neutron, require outgoing energy distributions whose density can
-be evaluated (tabular, Maxwell, evaporation, and Watt spectra), and do not yet
+Both scores store, for every fission neutron, :math:`N_{\text{gen}} + 1`
+records of 12 bytes of the fission events that emitted it and its ancestors
+(nuclide, reaction, sampled delayed group, incident and outgoing energy), from
+which the group probabilities are computed when they are scored. These records
+also serve ``ifp-beta-numerator``, so no delayed group numbers are stored in
+addition. The scores require outgoing energy distributions whose density can be
+evaluated (tabular, Maxwell, evaporation, and Watt spectra), and do not yet
 support more than one MPI process.
 
 The kinetics parameters can be retrieved directly from a statepoint file using

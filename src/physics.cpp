@@ -251,12 +251,14 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       }
       // Iterated Fission Probability (IFP) method
       if (ifp_on()) {
-        double dg_weights[MAX_DELAYED_GROUPS];
-        if (simulation::ifp_dg_weight.enabled()) {
-          ifp_delayed_group_weights(
-            i_nuclide, rx, p.E(), site.E, site.delayed_group, dg_weights);
+        IFPBirth birth;
+        if (simulation::ifp_birth.enabled()) {
+          const auto& fission_rx = data::nuclides[i_nuclide]->fission_rx_;
+          int i_rx = std::find(fission_rx.begin(), fission_rx.end(), &rx) -
+                     fission_rx.begin();
+          birth = {i_nuclide, i_rx, site.delayed_group, p.E(), site.E};
         }
-        ifp(p, idx, dg_weights);
+        ifp(p, idx, birth);
       }
     } else {
       site.wgt_born = p.wgt_born();

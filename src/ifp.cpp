@@ -21,36 +21,93 @@ namespace simulation {
 
 IFPStream<int> ifp_delayed_group;
 IFPStream<double> ifp_lifetime;
-IFPStream<double> ifp_dg_weight;
+IFPStream<IFPBirth> ifp_birth;
 
 } // namespace simulation
 
-void ifp(const Particle& p, int64_t idx, const double* dg_weights)
+namespace {
+
+//! Incremented whenever the streams are reset, so that cached probabilities
+//! never outlive the nuclear data they were computed from
+int ifp_cache_epoch {0};
+
+} // namespace
+
+void ifp(const Particle& p, int64_t idx, const IFPBirth& birth)
 {
   simulation::ifp_delayed_group.store(p.current_work(), idx, p.delayed_group());
   simulation::ifp_lifetime.store(p.current_work(), idx, p.lifetime());
 
-  auto& stream = simulation::ifp_dg_weight;
+  auto& stream = simulation::ifp_birth;
   if (stream.enabled()) {
-    // Each list ends with the site's own birth so that the probabilities
-    // computed when it was emitted are not lost. The list of a neutron that
-    // was not born from fission is empty; it gets an all-prompt entry, as the
-    // delayed group stream records group 0 for it.
-    constexpr int stride = MAX_DELAYED_GROUPS;
+    // Each list ends with the site's own birth, which is only known here. The
+    // list of a neutron that was not born from fission is empty; it gets a
+    // record saying so, as the delayed group stream records group 0 for it.
     const auto& parent = stream.source_bank()[p.current_work()];
     auto& updated = stream.fission_bank()[idx];
     if (parent.empty()) {
-      updated.assign(stride, 0.0);
+      updated.assign(1, IFPBirth {});
     } else {
       updated = parent;
     }
-    updated.insert(updated.end(), dg_weights, dg_weights + stride);
-    size_t max_size = (settings::ifp_n_generation + 1) * stride;
-    if (updated.size() > max_size) {
-      updated.erase(
-        updated.begin(), updated.begin() + (updated.size() - max_size));
+    updated.push_back(birth);
+    if (updated.size() > settings::ifp_n_generation + 1) {
+      updated.erase(updated.begin());
     }
   }
+}
+
+int ifp_ancestor_delayed_group(int64_t i_source)
+{
+  if (simulation::ifp_delayed_group.enabled()) {
+    const auto& groups = simulation::ifp_delayed_group.source_bank()[i_source];
+    return groups.size() == settings::ifp_n_generation ? groups[0] : -1;
+  }
+  if (simulation::ifp_birth.enabled()) {
+    const auto& births = simulation::ifp_birth.source_bank()[i_source];
+    return births.size() == settings::ifp_n_generation + 1
+             ? births[0].delayed_group()
+             : -1;
+  }
+  return -1;
+}
+
+bool ifp_history_complete(int64_t i_source)
+{
+  if (simulation::ifp_delayed_group.enabled() ||
+      simulation::ifp_birth.enabled()) {
+    return ifp_ancestor_delayed_group(i_source) >= 0;
+  }
+  return simulation::ifp_lifetime.source_bank()[i_source].size() ==
+         settings::ifp_n_generation;
+}
+
+bool ifp_ancestor_dg_weights(const Particle& p, double* weights)
+{
+  const auto& births = simulation::ifp_birth.source_bank()[p.current_work()];
+  if (births.size() != settings::ifp_n_generation + 1)
+    return false;
+
+  // Several fissions and tallies of the same history ask for the same ancestor
+  thread_local IFPBirth cached_birth;
+  thread_local int cached_epoch {-1};
+  thread_local double cached_weights[MAX_DELAYED_GROUPS];
+
+  const IFPBirth& ancestor = births[0];
+  if (cached_epoch != ifp_cache_epoch || !(ancestor == cached_birth)) {
+    if (ancestor.from_fission()) {
+      const auto& rx =
+        *data::nuclides[ancestor.nuclide()]->fission_rx_[ancestor.reaction()];
+      ifp_delayed_group_weights(ancestor.nuclide(), rx, ancestor.E_in(),
+        ancestor.E_out(), ancestor.delayed_group(), cached_weights);
+    } else {
+      std::fill(cached_weights, cached_weights + MAX_DELAYED_GROUPS, 0.0);
+    }
+    cached_birth = ancestor;
+    cached_epoch = ifp_cache_epoch;
+  }
+  std::copy(cached_weights, cached_weights + MAX_DELAYED_GROUPS, weights);
+  return true;
 }
 
 void ifp_delayed_group_weights(int i_nuclide, const Reaction& rx, double E_in,
@@ -114,14 +171,20 @@ void resize_simulation_ifp_banks()
   int64_t n = simulation::work_per_rank;
   simulation::ifp_delayed_group.resize_banks(n, 3 * n);
   simulation::ifp_lifetime.resize_banks(n, 3 * n);
-  simulation::ifp_dg_weight.resize_banks(n, 3 * n);
+  simulation::ifp_birth.resize_banks(n, 3 * n);
+
+  // The birth records also hold the sampled delayed group, which makes the
+  // delayed group stream redundant
+  if (simulation::ifp_birth.enabled())
+    simulation::ifp_delayed_group.reset();
 }
 
 void reset_ifp_streams()
 {
   simulation::ifp_delayed_group.reset();
   simulation::ifp_lifetime.reset();
-  simulation::ifp_dg_weight.reset();
+  simulation::ifp_birth.reset();
+  ++ifp_cache_epoch;
 }
 
 #ifdef OPENMC_MPI
@@ -130,9 +193,14 @@ void broadcast_ifp_n_generation(int& n_generation,
   const vector<vector<double>>& lifetimes)
 {
   if (mpi::rank == 0) {
-    n_generation = simulation::ifp_delayed_group.enabled()
-                     ? static_cast<int>(delayed_groups[0].size())
-                     : static_cast<int>(lifetimes[0].size());
+    if (simulation::ifp_delayed_group.enabled()) {
+      n_generation = static_cast<int>(delayed_groups[0].size());
+    } else if (simulation::ifp_lifetime.enabled()) {
+      n_generation = static_cast<int>(lifetimes[0].size());
+    } else {
+      // Only birth records, which are not yet sent between processes
+      n_generation = 0;
+    }
   }
   MPI_Bcast(&n_generation, 1, MPI_INT, 0, mpi::intracomm);
 }

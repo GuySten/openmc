@@ -135,11 +135,11 @@ void synchronize_bank()
   // Temporary banks for IFP
   vector<vector<int>> temp_delayed_groups;
   vector<vector<double>> temp_lifetimes;
-  vector<vector<double>> temp_dg_weights;
+  vector<vector<IFPBirth>> temp_births;
   int64_t n_temp = 3 * simulation::work_per_rank;
   simulation::ifp_delayed_group.resize_temp(temp_delayed_groups, n_temp);
   simulation::ifp_lifetime.resize_temp(temp_lifetimes, n_temp);
-  simulation::ifp_dg_weight.resize_temp(temp_dg_weights, n_temp);
+  simulation::ifp_birth.resize_temp(temp_births, n_temp);
 
   // ==========================================================================
   // SAMPLE N_PARTICLES FROM FISSION BANK AND PLACE IN TEMP_SITES
@@ -168,8 +168,7 @@ void synchronize_bank()
     simulation::ifp_delayed_group.copy_from_fission(
       idx, index_temp, temp_delayed_groups);
     simulation::ifp_lifetime.copy_from_fission(idx, index_temp, temp_lifetimes);
-    simulation::ifp_dg_weight.copy_from_fission(
-      idx, index_temp, temp_dg_weights);
+    simulation::ifp_birth.copy_from_fission(idx, index_temp, temp_births);
     ++index_temp;
 
     // Next tooth
@@ -334,8 +333,8 @@ void synchronize_bank()
         index_temp, n, index_local, temp_delayed_groups);
       simulation::ifp_lifetime.copy_temp_to_source(
         index_temp, n, index_local, temp_lifetimes);
-      simulation::ifp_dg_weight.copy_temp_to_source(
-        index_temp, n, index_local, temp_dg_weights);
+      simulation::ifp_birth.copy_temp_to_source(
+        index_temp, n, index_local, temp_births);
     }
 
     // Increment all indices
@@ -363,8 +362,8 @@ void synchronize_bank()
     temp_delayed_groups, settings::n_particles);
   simulation::ifp_lifetime.copy_all_temp_to_source(
     temp_lifetimes, settings::n_particles);
-  simulation::ifp_dg_weight.copy_all_temp_to_source(
-    temp_dg_weights, settings::n_particles);
+  simulation::ifp_birth.copy_all_temp_to_source(
+    temp_births, settings::n_particles);
 #endif
 
   simulation::time_bank_sendrecv.stop();

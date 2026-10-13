@@ -1789,7 +1789,8 @@ paper. Every nuclide uses the KD03 global parameters unless TALYS
 [Koning23]_, which produces the TENDL library, uses different ones:
 
 - the nucleus-specific KD03 parameter sets in TALYS
-  ``structure/optical/neutron/n-<Element>.omp`` (72 nuclides), and
+  ``structure/optical/neutron/n-<Element>.omp`` (72 nuclides, of which 69
+  are used), and
 - the neutron optical-model adjustment factors in the TALYS
   ``structure/best/<Nuclide>/n-<Nuclide>.talys`` files (43 nuclides), applied
   as TALYS applies them. Most of these adjustments are local corrections below
@@ -1809,8 +1810,10 @@ instead:
   restore that flux. OpenMC's calculation is spherical, so the reduction would
   underestimate the reaction cross section and is not applied.
 - For actinides TALYS uses coupled-channels potentials: RIPL potential 2408
-  (Capote et al.) for :math:`90 \le Z \le 97`, :math:`228 \le A \le 249` and
-  the Soukhovitskii potential for other :math:`Z \ge 90`.
+  (Capote et al.) for :math:`90 \le Z \le 97`, :math:`228 \le A \le 249`,
+  in place of its local parameter sets for Th232, U238 and Pu239, and the
+  Soukhovitskii potential for other :math:`Z \ge 90`. These nuclides use the
+  global KD03 parameters.
 - Nuclide-specific potentials selected in the TALYS best files for Ge70-Ge76
   (``optmodfilen``) and Hf174-Hf180, Pu239 and U238 (``optmod``).
 

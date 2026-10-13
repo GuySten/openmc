@@ -251,7 +251,10 @@ def talys_neutron_potential(Z, A, energy):
     optical-model adjustments of the TALYS "best" files are applied. TALYS
     reduces the surface absorption by 15% for nuclei it treats with coupled
     channels; that reduction is compensated by the explicitly coupled levels
-    and is therefore not applied in this spherical calculation.
+    and is therefore not applied in this spherical calculation. For
+    actinides with :math:`90 \\le Z \\le 97` and :math:`228 \\le A \\le 249`
+    TALYS uses a coupled-channels potential instead of its local
+    Koning-Delaroche parameters, and the global ones are used here.
 
     Parameters
     ----------
@@ -271,6 +274,11 @@ def talys_neutron_potential(Z, A, energy):
     data = _talys_data()
     name = f'{ATOMIC_SYMBOL[Z]}{A}'
     params = data['local'].get(name)
+    # For these actinides TALYS replaces any nucleus-specific set with the
+    # coupled-channels potential RIPL 2408 (input_omppar.f90), so its local
+    # parameters are never used for TENDL
+    if 90 <= Z <= 97 and 228 <= A <= 249:
+        params = None
     if params is None:
         params = global_parameters(Z, A)
     factors = {key: adjustment_factor(adj, energy)

@@ -72,6 +72,12 @@ def test_talys_global_fallback():
         koning_delaroche(82, 207, 80.0)
 
 
+def test_talys_actinides_global():
+    # TALYS has a local set for U238 but uses RIPL 2408 instead
+    assert talys_neutron_potential(92, 238, 80.0) == \
+        koning_delaroche(92, 238, 80.0)
+
+
 def test_talys_local_parameters():
     # TALYS has a nucleus-specific Koning-Delaroche set for Fe56
     pot = talys_neutron_potential(26, 56, 80.0)

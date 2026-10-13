@@ -177,3 +177,18 @@ def test_generation_time_only(run_in_tmpdir, geometry):
     with openmc.StatePoint(sp_file) as sp:
         values = sp.tallies[tally.id].mean.ravel()
     assert np.all(values > 0.0)
+
+
+def test_beta_numerator_time_cutoff(run_in_tmpdir, geometry):
+    """A time cutoff removes delayed neutrons, which the score cannot handle."""
+    model = openmc.Model(geometry=geometry)
+    model.settings.particles = 1000
+    model.settings.batches = 10
+    model.settings.inactive = 5
+    model.settings.ifp_n_generation = 5
+    model.settings.cutoff = {"time_neutron": 1.0}
+    tally = openmc.Tally()
+    tally.scores = ["ifp-beta-numerator", "ifp-denominator"]
+    model.tallies = [tally]
+    with pytest.raises(RuntimeError, match="time cutoff"):
+        model.run()

@@ -153,22 +153,29 @@ void ifp_delayed_group_probabilities(
 
     // Delayed emission probabilities, following sample_fission_neutron(): the
     // neutron is delayed with probability nu_d / nu_t, and the group is then
-    // chosen from the cumulative yields, the last group taking any remainder
+    // chosen by comparing a uniform number on [0, nu_d) with the cumulative
+    // yields of groups 1 to n - 1, the last group taking any remainder; a
+    // group whose cumulative yield passes nu_d is cut there
     int n_group = std::min(nuc->n_precursor_, MAX_DELAYED_GROUPS);
     double nu_t = nuc->nu(E_in, Nuclide::EmissionMode::total);
     double nu_d = nuc->nu(E_in, Nuclide::EmissionMode::delayed);
     if (n_group > 0 && nu_d > 0.0 && nu_t > 0.0) {
       double beta = nu_d / nu_t;
       double prob_group[MAX_DELAYED_GROUPS] = {0.};
-      double prob_used = 0.0;
+      double cumulative = 0.0;
       for (int g = 1; g <= n_group; ++g) {
-        double prob = (g < n_group) ? (*rx.products_[g].yield_)(E_in) / nu_d
-                                    : std::max(0.0, 1.0 - prob_used);
-        prob_group[g - 1] = beta * prob;
-        prob_used += prob;
+        double upper =
+          (g < n_group)
+            ? std::min(nu_d, cumulative + (*rx.products_[g].yield_)(E_in))
+            : nu_d;
+        prob_group[g - 1] = beta * std::max(0.0, upper - cumulative) / nu_d;
+        cumulative = std::max(cumulative, upper);
       }
 
-      // Mixture density of the outgoing energy and its delayed components
+      // Mixture density of the outgoing energy and its delayed components. An
+      // outgoing energy above the data's maximum is resampled, which scales a
+      // density by its probability below that energy; this is left out, as
+      // it is below 1e-5 in ENDF/B-VII.1 (prompt spectra at E above 13 MeV)
       auto density = [&](int i_product) {
         double f = rx.products_[i_product].energy_pdf(E_in, E_out);
         if (f < 0.0) {
@@ -212,8 +219,17 @@ void resize_simulation_ifp_banks()
     simulation::ifp_lifetime.enable();
   }
 
-  if (simulation::ifp_birth.enabled())
+  if (simulation::ifp_birth.enabled()) {
+    // A time cutoff discards delayed neutrons emitted after it, so a
+    // neutron's progeny no longer depend on its emission only through its
+    // outgoing energy, which the delayed group probabilities assume
+    int neutron = ParticleType::neutron().transport_index();
+    if (settings::time_cutoff[neutron] < INFTY) {
+      fatal_error("The ifp-beta-numerator score cannot be used with a neutron "
+                  "time cutoff.");
+    }
     build_ifp_fission_channels();
+  }
 
   int64_t n = simulation::work_per_rank;
   simulation::ifp_birth.resize_banks(n, 3 * n);

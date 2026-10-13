@@ -70,6 +70,10 @@ struct SourceSite {
   int fission_nuclide {-1};
 
   double lifetime {0.0}; //!< time since birth of the neutron's generation [s]
+  // Birth position and cell of the particle a split copy was split from.
+  // cell_born is C_NONE for every other site, which is then born at r.
+  Position r_born;
+  int cell_born {C_NONE};
 };
 
 struct CollisionTrackSite {

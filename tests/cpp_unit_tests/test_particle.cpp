@@ -134,3 +134,54 @@ TEST_CASE_METHOD(
     REQUIRE(r.delayed_group() == site.delayed_group);
   }
 }
+
+TEST_CASE_METHOD(OneCoordLevel, "Split particles keep the birth state")
+{
+  using namespace openmc;
+
+  // A photon born at r_born in cell 2, from the decay of nuclide 7, that has
+  // since moved
+  Particle p;
+  set_state(p, ParticleType::photon());
+  p.r_born() = {-4.0, -5.0, -6.0};
+  p.cell_born() = 2;
+  p.parent_nuclide() = 7;
+
+  // A copy split by a weight window, and a secondary electron
+  p.split(0.5);
+  REQUIRE(p.create_secondary(p.wgt(), p.u(), 1.0e6, ParticleType::electron()));
+
+  const auto& bank = p.local_secondary_bank();
+  REQUIRE(bank.size() == 2);
+
+  // The split copy continues the history of the photon
+  Particle q;
+  q.from_source(&bank[0]);
+  REQUIRE(q.r() == p.r());
+  REQUIRE(q.r_born() == p.r_born());
+  REQUIRE(q.cell_born() == 2);
+  REQUIRE(q.parent_nuclide() == 7);
+
+  Particle s;
+  s.event_revive_from_secondary(bank[0]);
+  REQUIRE(s.r_born() == p.r_born());
+  REQUIRE(s.cell_born() == 2);
+  REQUIRE(s.parent_nuclide() == 7);
+
+  // A secondary particle is born where it was created
+  Particle e;
+  e.from_source(&bank[1]);
+  REQUIRE(e.r_born() == p.r());
+  REQUIRE(e.cell_born() == C_NONE);
+  REQUIRE(e.parent_nuclide() == -1);
+
+  // So is a particle from an external or fission source
+  SourceSite site {};
+  site.r = {1.0, 1.0, 1.0};
+  Particle f;
+  f.r_born() = {9.0, 9.0, 9.0};
+  f.cell_born() = 3;
+  f.from_source(&site);
+  REQUIRE(f.r_born() == site.r);
+  REQUIRE(f.cell_born() == C_NONE);
+}

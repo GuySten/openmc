@@ -1858,8 +1858,8 @@ evaluations of neighboring heavy nuclides by +26% (W184), -12% (Hg202), +12%
   parameters, the model was compared from 20 to 200 MeV with TENDL-2025,
   above the energies where TENDL is normalized to other libraries. For the
   66 nuclides TALYS treats as spherical, the nonelastic cross sections agree
-  within 0.6% (median 0.1%) and the total cross sections within 0.5% above 30
-  MeV. For the 28 nuclides TALYS treats with coupled channels, the spherical
+  within 1.8% at every energy (median rms deviation 0.1%) and the total cross
+  sections within 1% above 30 MeV, except Al27 (2.3%). For the 28 nuclides TALYS treats with coupled channels, the spherical
   model differs by up to 3% (vibrational) and up to 9% (rotational, e.g.
   Sm154, Mg24) in the nonelastic cross section.
 - **Deformed nuclei.** For Th232 and U238 the total cross section is up to 4%

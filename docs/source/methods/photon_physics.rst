@@ -804,8 +804,8 @@ is left in the local deposition.
    since they accumulate nu-fission from neutron cross sections only. Moreover,
    only photoneutrons from prompt photons could be produced: an eigenvalue
    calculation emits no fission-product decay photons, so the delayed
-   photoneutrons, usually the larger part, would be missing and k would include
-   only some of the photoneutron contribution.
+   photoneutrons would be missing and k would include only some of the
+   photoneutron contribution.
 
 Reference Frames
 ----------------

@@ -657,9 +657,9 @@ void read_settings_xml(pugi::xml_node root)
   // That photoneutrons banked as secondaries change k correctly has not been
   // validated, photofission multiplicity counts in none of the k-eigenvalue
   // estimators, and only photoneutrons from prompt photons could be produced:
-  // the delayed photoneutrons from fission-product decay photons, the larger
-  // part, are missing because no decay photons are emitted. Refuse the
-  // combination rather than return a k that includes some photoneutrons.
+  // the delayed photoneutrons from fission-product decay photons are missing
+  // because no decay photons are emitted. Refuse the combination rather than
+  // return a k that includes some photoneutrons.
   if (photonuclear_physics && run_mode == RunMode::EIGENVALUE) {
     fatal_error("Photonuclear physics is not supported in an eigenvalue "
                 "calculation. Use fixed source mode.");

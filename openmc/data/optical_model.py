@@ -10,11 +10,14 @@ interaction for neutrons). Kinematics are relativistic.
 
 """
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 import numpy as np
 from scipy.special import spherical_jn, spherical_yn, lpmv
 
-from .data import NEUTRON_MASS
+from .data import ATOMIC_SYMBOL, NEUTRON_MASS
+from .talys import adjustment_factor
 
 #: Reduced Planck constant times speed of light in MeV-fm
 HBARC = 197.3269804
@@ -47,6 +50,14 @@ class OpticalPotential:
     ad: float
     rso: float
     aso: float
+    rwso: float = None
+    awso: float = None
+
+    def __post_init__(self):
+        if self.rwso is None:
+            self.rwso = self.rso
+        if self.awso is None:
+            self.awso = self.aso
 
     def __call__(self, r, ls):
         """Evaluate the complex potential in MeV.
@@ -64,14 +75,16 @@ class OpticalPotential:
         # 4 a d/dr f is negative and peaks at -1 at r = R
         dfd = 4.0 * self.ad * _woods_saxon_deriv(r, self.rd, self.ad)
         dfso = _woods_saxon_deriv(r, self.rso, self.aso) / r
+        dfwso = _woods_saxon_deriv(r, self.rwso, self.awso) / r
         return (-self.vv * fv - 1j * (self.wv * fw - self.wd * dfd)
-                + PION_COMPTON_SQ * (self.vso + 1j * self.wso) * dfso * ls)
+                + PION_COMPTON_SQ * (self.vso*dfso + 1j*self.wso*dfwso) * ls)
 
     @property
     def radius(self):
         """Radius beyond which the nuclear potential is negligible"""
         return max(self.rv + 12*self.av, self.rw + 12*self.aw,
-                   self.rd + 12*self.ad, self.rso + 12*self.aso)
+                   self.rd + 12*self.ad, self.rso + 12*self.aso,
+                   self.rwso + 12*self.awso)
 
 
 def _woods_saxon(r, R, a):
@@ -101,6 +114,102 @@ KD03 = {
     'ef_0': -11.2814, 'ef_A': 0.02646,
 }
 
+def global_parameters(Z, A, parameters=KD03):
+    """Koning-Delaroche global parameters for one nucleus.
+
+    Parameters
+    ----------
+    Z : int
+        Atomic number of the target
+    A : int
+        Mass number of the target
+    parameters : dict
+        Global parameters, e.g. :data:`KD03`
+
+    Returns
+    -------
+    dict
+        Parameters for :func:`potential` in the form of a nucleus-specific
+        set, with radii in units of :math:`A^{1/3}` fm
+
+    """
+    p = parameters
+    asym = (A - 2*Z) / A
+    a13 = A**(1/3)
+    return {
+        'ef': p['ef_0'] + p['ef_A']*A,
+        'rv': p['rv_0'] - p['rv_A']/a13, 'av': p['av_0'] - p['av_A']*A,
+        'v1': p['v1_0'] - p['v1_asym']*asym - p['v1_A']*A,
+        'v2': p['v2_0'] - p['v2_A']*A, 'v3': p['v3_0'] - p['v3_A']*A,
+        'v4': p['v4_0'],
+        'w1': p['w1_0'] + p['w1_A']*A, 'w2': p['w2_0'] + p['w2_A']*A,
+        'rd': p['rd_0'] - p['rd_A']*a13, 'ad': p['ad_0'] - p['ad_A']*A,
+        'd1': p['d1_0'] - p['d1_asym']*asym,
+        'd2': p['d2_0'] + p['d2_A']/(1.0 + np.exp((A - p['d2_A3'])/p['d2_A2'])),
+        'd3': p['d3_0'],
+        'rso': p['rso_0'] - p['rso_A']/a13, 'aso': p['aso_0'],
+        'vso1': p['vso1_0'] + p['vso1_A']*A, 'vso2': p['vso2_0'],
+        'wso1': p['wso1_0'], 'wso2': p['wso2_0'],
+    }
+
+
+def potential(params, A, energy, factors=None):
+    """Optical potential from Koning-Delaroche-form parameters.
+
+    Implements the energy dependence of [KD03]_ as TALYS does
+    (``opticalnp.f90``), including its multiplicative adjustment factors.
+
+    Parameters
+    ----------
+    params : dict
+        Parameters as returned by :func:`global_parameters` or
+        :func:`openmc.data.talys.read_omp_file`
+    A : int
+        Mass number of the target
+    energy : float
+        Incident neutron energy in the laboratory system in MeV
+    factors : dict, optional
+        Multiplication factors keyed by the names in
+        :data:`openmc.data.talys.ADJUST_KEYS`
+
+    Returns
+    -------
+    OpticalPotential
+        Potential depths and geometry
+
+    """
+    F = {} if factors is None else factors
+    p = params
+    a13 = A**(1/3)
+    f = energy - p['ef']
+    v1 = F.get('v1', 1.0)*p['v1']
+    v2 = F.get('v2', 1.0)*p['v2']
+    v3 = F.get('v3', 1.0)*p['v3']
+    v4 = F.get('v4', 1.0)*p['v4']
+    w1 = F.get('w1', 1.0)*p['w1']
+    w2 = F.get('w2', 1.0)*p['w2']
+    d1 = F.get('d1', 1.0)*p['d1']
+    d2 = F.get('d2', 1.0)*p['d2']
+    d3 = F.get('d3', 1.0)*p['d3']
+    vso1 = F.get('vso1', 1.0)*p['vso1']
+    vso2 = F.get('vso2', 1.0)*p['vso2']
+    wso1 = F.get('wso1', 1.0)*p['wso1']
+    wso2 = F.get('wso2', 1.0)*p['wso2']
+    return OpticalPotential(
+        vv=v1*(1.0 - v2*f + v3*f**2 - v4*f**3),
+        wv=w1*f**2/(f**2 + w2**2),
+        wd=d1*f**2/(f**2 + d3**2)*np.exp(-d2*f),
+        vso=vso1*np.exp(-vso2*f),
+        wso=wso1*f**2/(f**2 + wso2**2),
+        rv=F.get('rv', 1.0)*p['rv']*a13, av=F.get('av', 1.0)*p['av'],
+        rw=F.get('rw', 1.0)*p['rv']*a13, aw=F.get('aw', 1.0)*p['av'],
+        rd=F.get('rwd', 1.0)*p['rd']*a13, ad=F.get('awd', 1.0)*p['ad'],
+        rso=F.get('rvso', 1.0)*p['rso']*a13, aso=F.get('avso', 1.0)*p['aso'],
+        rwso=F.get('rwso', 1.0)*p['rso']*a13,
+        awso=F.get('awso', 1.0)*p['aso'],
+    )
+
+
 def koning_delaroche(Z, A, energy, parameters=KD03):
     """Koning-Delaroche global neutron optical potential.
 
@@ -121,35 +230,53 @@ def koning_delaroche(Z, A, energy, parameters=KD03):
         Potential depths and geometry
 
     """
-    p = parameters
-    asym = (A - 2*Z) / A
-    a13 = A**(1/3)
+    return potential(global_parameters(Z, A, parameters), A, energy)
 
-    v1 = p['v1_0'] - p['v1_asym']*asym - p['v1_A']*A
-    v2 = p['v2_0'] - p['v2_A']*A
-    v3 = p['v3_0'] - p['v3_A']*A
-    v4 = p['v4_0']
-    w1 = p['w1_0'] + p['w1_A']*A
-    w2 = p['w2_0'] + p['w2_A']*A
-    d1 = p['d1_0'] - p['d1_asym']*asym
-    d2 = p['d2_0'] + p['d2_A']/(1.0 + np.exp((A - p['d2_A3'])/p['d2_A2']))
-    d3 = p['d3_0']
-    vso1 = p['vso1_0'] + p['vso1_A']*A
-    e_fermi = p['ef_0'] + p['ef_A']*A
 
-    f = energy - e_fermi
-    rv = (p['rv_0'] - p['rv_A']/a13)*a13
-    av = p['av_0'] - p['av_A']*A
-    return OpticalPotential(
-        vv=v1*(1.0 - v2*f + v3*f**2 - v4*f**3),
-        wv=w1*f**2/(f**2 + w2**2),
-        wd=d1*f**2/(f**2 + d3**2)*np.exp(-d2*f),
-        vso=vso1*np.exp(-p['vso2_0']*f),
-        wso=p['wso1_0']*f**2/(f**2 + p['wso2_0']**2),
-        rv=rv, av=av, rw=rv, aw=av,
-        rd=(p['rd_0'] - p['rd_A']*a13)*a13, ad=p['ad_0'] - p['ad_A']*A,
-        rso=(p['rso_0'] - p['rso_A']/a13)*a13, aso=p['aso_0'],
-    )
+_TALYS_DATA = None
+
+
+def _talys_data():
+    global _TALYS_DATA
+    if _TALYS_DATA is None:
+        path = Path(__file__).with_name('talys_neutron_omp.json')
+        _TALYS_DATA = json.loads(path.read_text())
+    return _TALYS_DATA
+
+
+def talys_neutron_potential(Z, A, energy):
+    """Neutron optical potential as TALYS uses it for TENDL.
+
+    The nucleus-specific Koning-Delaroche parameters distributed with TALYS
+    are used when they exist, the global ones otherwise, and the neutron
+    optical-model adjustments of the TALYS "best" files are applied. TALYS
+    reduces the surface absorption by 15% for nuclei it treats with coupled
+    channels; that reduction is compensated by the explicitly coupled levels
+    and is therefore not applied in this spherical calculation.
+
+    Parameters
+    ----------
+    Z : int
+        Atomic number of the target
+    A : int
+        Mass number of the target
+    energy : float
+        Incident neutron energy in the laboratory system in MeV
+
+    Returns
+    -------
+    OpticalPotential
+        Potential depths and geometry
+
+    """
+    data = _talys_data()
+    name = f'{ATOMIC_SYMBOL[Z]}{A}'
+    params = data['local'].get(name)
+    if params is None:
+        params = global_parameters(Z, A)
+    factors = {key: adjustment_factor(adj, energy)
+               for key, adj in data['adjust'].get(name, {}).items()}
+    return potential(params, A, energy, factors)
 
 
 def relativistic_kinematics(energy, target_mass, projectile_mass=NEUTRON_MASS_MEV):

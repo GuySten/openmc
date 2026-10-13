@@ -240,17 +240,16 @@ void initialize_mpi(MPI_Comm intracomm)
 
   // Create IFP fission birth datatype
   IFPBirth bb;
-  MPI_Aint dispb[3];
-  MPI_Get_address(&bb.id, &dispb[0]);
-  MPI_Get_address(&bb.E_in, &dispb[1]);
-  MPI_Get_address(&bb.E_out, &dispb[2]);
-  for (int i = 2; i >= 0; --i) {
+  MPI_Aint dispb[2];
+  MPI_Get_address(&bb.bits, &dispb[0]);
+  MPI_Get_address(&bb.E_out, &dispb[1]);
+  for (int i = 1; i >= 0; --i) {
     dispb[i] -= dispb[0];
   }
-  int blocksb[] = {1, 1, 1};
-  MPI_Datatype typesb[] = {MPI_INT32_T, MPI_FLOAT, MPI_FLOAT};
+  int blocksb[] = {1, 1};
+  MPI_Datatype typesb[] = {MPI_UINT32_T, MPI_FLOAT};
   MPI_Datatype ifp_birth_struct;
-  MPI_Type_create_struct(3, blocksb, dispb, typesb, &ifp_birth_struct);
+  MPI_Type_create_struct(2, blocksb, dispb, typesb, &ifp_birth_struct);
   MPI_Type_create_resized(
     ifp_birth_struct, 0, sizeof(IFPBirth), &mpi::ifp_birth);
   MPI_Type_free(&ifp_birth_struct);

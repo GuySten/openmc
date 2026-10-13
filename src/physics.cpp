@@ -256,7 +256,7 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
           const auto& fission_rx = data::nuclides[i_nuclide]->fission_rx_;
           int i_rx = std::find(fission_rx.begin(), fission_rx.end(), &rx) -
                      fission_rx.begin();
-          birth = IFPBirth {i_nuclide, i_rx, p.E(), site.E};
+          birth = make_ifp_birth(i_nuclide, i_rx, p.E(), site.E);
         }
         ifp(p, idx, birth);
       }

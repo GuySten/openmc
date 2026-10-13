@@ -1,6 +1,7 @@
 #include "openmc/ifp.h"
 
 #include <algorithm> // for copy, fill, max, min
+#include <cmath>     // for exp, log, lround
 
 #include <fmt/core.h>
 
@@ -31,7 +32,74 @@ namespace {
 //! never outlive the nuclear data they were computed from
 int ifp_cache_epoch {0};
 
+//! Fission channel of an IFP birth record
+struct FissionChannel {
+  int nuclide;  //!< Index in data::nuclides
+  int reaction; //!< Index in Nuclide::fission_rx_
+};
+
+vector<FissionChannel> ifp_channels; //!< Channels by index
+vector<int> ifp_first_channel;       //!< First channel of each nuclide
+constexpr uint32_t IFP_ENERGY_MAX {(1u << 24) - 1}; //!< Largest grid index
+double ifp_log_E_min {0.0};  //!< Log of the lowest grid energy
+double ifp_log_E_step {0.0}; //!< Log spacing of the energy grid
+
 } // namespace
+
+void build_ifp_fission_channels()
+{
+  ifp_channels.clear();
+  ifp_first_channel.assign(data::nuclides.size(), -1);
+  for (int i = 0; i < data::nuclides.size(); ++i) {
+    const auto& nuc {data::nuclides[i]};
+    if (!nuc->fissionable_)
+      continue;
+    ifp_first_channel[i] = ifp_channels.size();
+    for (int r = 0; r < nuc->fission_rx_.size(); ++r) {
+      ifp_channels.push_back({i, r});
+    }
+  }
+  if (ifp_channels.size() > IFP_NOT_FISSION) {
+    fatal_error(fmt::format(
+      "IFP records can distinguish at most {} fission reactions, but the "
+      "model has {}.",
+      IFP_NOT_FISSION, ifp_channels.size()));
+  }
+
+  // The incident energy grid spans the neutron energies of the data
+  int neutron = ParticleType::neutron().transport_index();
+  ifp_log_E_min = std::log(data::energy_min[neutron]);
+  ifp_log_E_step =
+    (std::log(data::energy_max[neutron]) - ifp_log_E_min) / IFP_ENERGY_MAX;
+}
+
+IFPBirth make_ifp_birth(int i_nuclide, int i_rx, double E_in, double E_out)
+{
+  uint32_t channel = ifp_first_channel[i_nuclide] + i_rx;
+  double x = (std::log(E_in) - ifp_log_E_min) / ifp_log_E_step;
+  uint32_t energy = static_cast<uint32_t>(std::lround(
+    std::min(std::max(x, 0.0), static_cast<double>(IFP_ENERGY_MAX))));
+  IFPBirth birth;
+  birth.bits = (channel << 24) | energy;
+  birth.E_out = static_cast<float>(E_out);
+  return birth;
+}
+
+int ifp_birth_nuclide(const IFPBirth& birth)
+{
+  return ifp_channels[birth.channel()].nuclide;
+}
+
+int ifp_birth_reaction(const IFPBirth& birth)
+{
+  return ifp_channels[birth.channel()].reaction;
+}
+
+double ifp_birth_E_in(const IFPBirth& birth)
+{
+  return std::exp(
+    ifp_log_E_min + (birth.bits & IFP_ENERGY_MAX) * ifp_log_E_step);
+}
 
 void ifp(const Particle& p, int64_t idx, const IFPBirth& birth)
 {
@@ -60,7 +128,7 @@ bool ifp_in_nuclide_bin(int64_t i_source, int i_nuclide)
     return true;
   const IFPBirth* ancestor = ifp_ancestor(i_source);
   return ancestor && ancestor->from_fission() &&
-         ancestor->nuclide() == i_nuclide;
+         ifp_birth_nuclide(*ancestor) == i_nuclide;
 }
 
 void ifp_delayed_group_probabilities(
@@ -78,9 +146,9 @@ void ifp_delayed_group_probabilities(
 
   std::fill(probabilities, probabilities + MAX_DELAYED_GROUPS, 0.0);
   if (birth.from_fission()) {
-    const auto& nuc {data::nuclides[birth.nuclide()]};
-    const Reaction& rx {*nuc->fission_rx_[birth.reaction()]};
-    double E_in = birth.E_in;
+    const auto& nuc {data::nuclides[ifp_birth_nuclide(birth)]};
+    const Reaction& rx {*nuc->fission_rx_[ifp_birth_reaction(birth)]};
+    double E_in = ifp_birth_E_in(birth);
     double E_out = birth.E_out;
 
     // Delayed emission probabilities, following sample_fission_neutron(): the
@@ -144,6 +212,9 @@ void resize_simulation_ifp_banks()
     simulation::ifp_lifetime.enable();
   }
 
+  if (simulation::ifp_birth.enabled())
+    build_ifp_fission_channels();
+
   int64_t n = simulation::work_per_rank;
   simulation::ifp_birth.resize_banks(n, 3 * n);
   simulation::ifp_lifetime.resize_banks(n, 3 * n);
@@ -154,6 +225,8 @@ void reset_ifp_streams()
   simulation::ifp_birth.reset();
   simulation::ifp_lifetime.reset();
   simulation::ifp_denominator_on = false;
+  ifp_channels.clear();
+  ifp_first_channel.clear();
   ++ifp_cache_epoch;
 }
 

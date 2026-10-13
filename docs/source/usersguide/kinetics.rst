@@ -60,7 +60,9 @@ are needed to compute kinetics parameters in OpenMC:
     For every fission neutron simulated, :math:`\Lambda_{\text{eff}}` stores
     :math:`N_{\text{gen}}` floating point values (8 bytes each) and
     :math:`\beta_{\text{eff}}` stores :math:`N_{\text{gen}} + 1` fission records
-    (12 bytes each).
+    (8 bytes each). A record identifies the fission reaction in one byte, so a
+    model can contain at most 255 fission reactions (one per fissionable
+    nuclide, or four for a nuclide with first- to fourth-chance fission data).
 
 The ``ifp-beta-numerator`` score does not score whether an ancestor was emitted
 as a delayed neutron, which happens for a fraction :math:`\beta` of fission

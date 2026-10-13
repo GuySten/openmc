@@ -7,7 +7,7 @@
 #include "openmc/settings.h"
 
 #include <algorithm> // for copy
-#include <cstdint>   // for int32_t
+#include <cstdint>   // for uint32_t
 
 namespace openmc {
 
@@ -15,40 +15,38 @@ namespace openmc {
 //! The fission event that emitted a neutron, as recorded by IFP.
 //
 //! The probability that the neutron was emitted in each delayed group is a
-//! function of the fissioning nuclide, the fission reaction, the incident
-//! energy, and the outgoing energy, so those are stored rather than the
-//! probabilities themselves. The nuclide and reaction indices share one
-//! integer and the energies are stored in single precision, which changes the
-//! probabilities by about a part in 10^7.
+//! function of the fission channel (the fissioning nuclide and its fission
+//! reaction), the incident energy, and the outgoing energy, so those are stored
+//! rather than the probabilities themselves, in 8 bytes:
+//!
+//! - bits 24-31 of `bits`: index of the fission channel in the table built by
+//!   build_ifp_fission_channels(), or IFP_NOT_FISSION
+//! - bits 0-23 of `bits`: the incident energy on a logarithmic grid spanning
+//!   the neutron energy range of the data, a relative step of about 2e-6
+//! - `E_out`: the outgoing energy in single precision
+//!
+//! Records are made and read with make_ifp_birth() and the ifp_birth_*()
+//! functions, which hold the channel table and the energy grid.
 //==============================================================================
 
+//! Channel index of a neutron that was not emitted by fission
+constexpr uint32_t IFP_NOT_FISSION {0xFF};
+
 struct IFPBirth {
-  //! Record of a neutron that was not emitted by fission
-  IFPBirth() = default;
-
-  //! Record of a fission neutron
-  //! \param[in] i_nuclide Index of the fissioning nuclide
-  //! \param[in] i_rx Index of the fission reaction in Nuclide::fission_rx_
-  //! \param[in] E_in Energy of the neutron causing fission in [eV]
-  //! \param[in] E_out Energy of the fission neutron in [eV]
-  IFPBirth(int i_nuclide, int i_rx, double E_in, double E_out)
-    : id {(i_nuclide << 2) | i_rx}, E_in {static_cast<float>(E_in)},
-      E_out {static_cast<float>(E_out)}
-  {}
-
-  bool from_fission() const { return id >= 0; }
-  int nuclide() const { return id >> 2; }
-  int reaction() const { return id & 0x3; }
+  bool from_fission() const { return (bits >> 24) != IFP_NOT_FISSION; }
+  int channel() const { return static_cast<int>(bits >> 24); }
 
   bool operator==(const IFPBirth& other) const
   {
-    return id == other.id && E_in == other.E_in && E_out == other.E_out;
+    return bits == other.bits && E_out == other.E_out;
   }
 
-  int32_t id {-1};    //!< Nuclide index times 4 plus fission reaction index
-  float E_in {0.0f};  //!< Incident energy in [eV]
-  float E_out {0.0f}; //!< Outgoing energy in [eV]
+  uint32_t bits {
+    IFP_NOT_FISSION << 24}; //!< Fission channel and incident energy
+  float E_out {0.0f};       //!< Outgoing energy in [eV]
 };
+
+static_assert(sizeof(IFPBirth) == 8, "IFP birth records are 8 bytes");
 
 //! Update a list of values by adding a new value if the size
 //! of the list can accomodate the new value or by shifting all
@@ -245,6 +243,27 @@ inline bool ifp_on()
 //! \param[in] idx Bank index from the thread_safe_append call in physics.cpp
 //! \param[in] birth Fission event that emitted the new site
 void ifp(const Particle& p, int64_t idx, const IFPBirth& birth);
+
+//! Build the table of fission channels that IFP births refer to: one per
+//! fission reaction of each fissionable nuclide, at most IFP_NOT_FISSION
+void build_ifp_fission_channels();
+
+//! Record of a fission neutron
+//! \param[in] i_nuclide Index of the fissioning nuclide
+//! \param[in] i_rx Index of the fission reaction in Nuclide::fission_rx_
+//! \param[in] E_in Energy of the neutron causing fission in [eV]
+//! \param[in] E_out Energy of the fission neutron in [eV]
+IFPBirth make_ifp_birth(int i_nuclide, int i_rx, double E_in, double E_out);
+
+//! Index of the nuclide whose fission emitted a neutron
+int ifp_birth_nuclide(const IFPBirth& birth);
+
+//! Index in Nuclide::fission_rx_ of the reaction that emitted a neutron
+int ifp_birth_reaction(const IFPBirth& birth);
+
+//! Incident energy of the fission that emitted a neutron in [eV], to the
+//! precision of the energy grid
+double ifp_birth_E_in(const IFPBirth& birth);
 
 //! Whether a source particle has a complete IFP history
 //! \param[in] i_source Index of the particle in the source bank

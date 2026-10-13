@@ -83,6 +83,12 @@ int openmc_simulation_init()
   if (simulation::initialized)
     return 0;
 
+  // A particle split by a weight window continues one history, but its copies
+  // start with zero flux derivatives, so derivative tallies would be biased
+  if (settings::weight_windows_on && !model::tally_derivs.empty()) {
+    fatal_error("Tally derivatives are not supported with weight windows.");
+  }
+
   // Initialize nuclear data (energy limits, log grid)
   if (settings::run_CE) {
     initialize_data();

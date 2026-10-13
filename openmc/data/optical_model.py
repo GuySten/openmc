@@ -1,12 +1,10 @@
 """Spherical optical-model calculations for neutrons above the evaluated range.
 
-The potential is the Koning-Delaroche global neutron potential [KD03]_. The
-radial Schrödinger equation is solved partial wave by partial wave with
-Numerov integration and matched to Riccati-Bessel functions (no Coulomb
-interaction for neutrons). Kinematics are relativistic.
-
-.. [KD03] A. J. Koning and J. P. Delaroche, "Local and global nucleon optical
-   models from 1 keV to 200 MeV," Nucl. Phys. A 713, 231 (2003).
+The potential is the Koning-Delaroche global neutron potential (A. J. Koning
+and J. P. Delaroche, Nucl. Phys. A 713, 231 (2003)). The radial Schrödinger
+equation is solved partial wave by partial wave with Numerov integration and
+matched to Riccati-Bessel functions (no Coulomb interaction for neutrons).
+Kinematics are relativistic.
 
 """
 from dataclasses import dataclass
@@ -96,7 +94,7 @@ def _woods_saxon_deriv(r, R, a):
     return -x / (a * (1.0 + x)**2)
 
 
-#: Koning-Delaroche global neutron parameters [KD03]_. Keys follow the
+#: Koning-Delaroche global neutron parameters. Keys follow the
 #: notation of the paper; ``*_A`` multiplies the mass number and ``*_asym``
 #: multiplies :math:`(N-Z)/A`.
 KD03 = {
@@ -145,7 +143,8 @@ def global_parameters(Z, A, parameters=KD03):
         'w1': p['w1_0'] + p['w1_A']*A, 'w2': p['w2_0'] + p['w2_A']*A,
         'rd': p['rd_0'] - p['rd_A']*a13, 'ad': p['ad_0'] - p['ad_A']*A,
         'd1': p['d1_0'] - p['d1_asym']*asym,
-        'd2': p['d2_0'] + p['d2_A']/(1.0 + np.exp((A - p['d2_A3'])/p['d2_A2'])),
+        'd2': p['d2_0'] + p['d2_A']/(
+            1.0 + np.exp((A - p['d2_A3'])/p['d2_A2'])),
         'd3': p['d3_0'],
         'rso': p['rso_0'] - p['rso_A']/a13, 'aso': p['aso_0'],
         'vso1': p['vso1_0'] + p['vso1_A']*A, 'vso2': p['vso2_0'],
@@ -156,7 +155,7 @@ def global_parameters(Z, A, parameters=KD03):
 def potential(params, A, energy, factors=None):
     """Optical potential from Koning-Delaroche-form parameters.
 
-    Implements the energy dependence of [KD03]_ as TALYS does
+    Implements the Koning-Delaroche energy dependence as TALYS does
     (``opticalnp.f90``), including its multiplicative adjustment factors.
 
     Parameters
@@ -282,11 +281,8 @@ def talys_neutron_potential(Z, A, energy):
 def relativistic_kinematics(energy, target_mass, projectile_mass=NEUTRON_MASS_MEV):
     """Center-of-mass wave number and relativistic reduced mass.
 
-    Uses the prescription of Ingemarsson [Ing74]_, which is what the
-    Koning-Delaroche parameters were fitted with.
-
-    .. [Ing74] A. Ingemarsson, "Relativistic kinematics in optical model
-       calculations," Phys. Scr. 9, 156 (1974).
+    Uses the prescription of A. Ingemarsson, Phys. Scr. 9, 156 (1974), which
+    is what the Koning-Delaroche parameters were fitted with.
 
     Parameters
     ----------

@@ -1,12 +1,9 @@
 """Neutron-proton elastic scattering from the Nijmegen partial-wave analysis.
 
 The tabulated differential cross sections in ``np_pwa93.txt`` are those of
-PWA93 [Stoks93]_ as computed by NN-OnLine; see
+PWA93 (V. G. J. Stoks, R. A. M. Klomp, M. C. M. Rentmeester, and J. J. de
+Swart, Phys. Rev. C 48, 792 (1993)) as computed by NN-OnLine; see
 ``tools/data/generate_np_pwa93.py``.
-
-.. [Stoks93] V. G. J. Stoks, R. A. M. Klomp, M. C. M. Rentmeester, and
-   J. J. de Swart, "Partial-wave analysis of all nucleon-nucleon scattering
-   data below 350 MeV," Phys. Rev. C 48, 792 (1993).
 
 """
 from functools import lru_cache

@@ -1,14 +1,12 @@
 """Readers for neutron optical-model parameters distributed with TALYS.
 
-TALYS [Koning23]_ ships nucleus-specific Koning-Delaroche parameter sets in
+TALYS (A. Koning, S. Hilaire, and S. Goriely, Eur. Phys. J. A 59, 131
+(2023)) ships nucleus-specific Koning-Delaroche parameter sets in
 ``structure/optical/neutron/n-<Element>.omp`` and, for the TENDL library,
 per-nuclide parameter adjustments in ``structure/best/<Nuclide>/n-*.talys``.
 The functions here read both exactly as TALYS does (``omppar.f90``,
 ``getvalues.f90``, ``input_omppar.f90``) and evaluate the resulting
 adjustment factors as ``adjust.f90`` and ``ompadjust.f90`` do.
-
-.. [Koning23] A. Koning, S. Hilaire, and S. Goriely, "TALYS: modeling of
-   nuclear reactions," Eur. Phys. J. A 59, 131 (2023).
 
 """
 from pathlib import Path

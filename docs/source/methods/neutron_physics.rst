@@ -1730,9 +1730,165 @@ maximum value, it is prohibited from splitting further.
 At present, OpenMC allows weight windows to be defined on all supported mesh
 types.
 
+.. _methods_high_energy_neutrons:
+
+-----------------------------------------
+Neutrons Above the Evaluated Energy Range
+-----------------------------------------
+
+Photonuclear reactions produce neutrons with energies up to the incident photon
+energy, while most evaluated neutron libraries stop at 20 MeV. Above a
+nuclide's evaluated range, OpenMC describes neutron interactions with nuclear
+models. This section describes the cross-section part of that model, which is
+available in the Python API as :mod:`openmc.data.optical_model` and
+:mod:`openmc.data.np_elastic`.
+
+Spherical Optical Model
+-----------------------
+
+For targets with :math:`A \ge 6` the total, reaction (nonelastic) and elastic
+cross sections and the elastic angular distribution follow from a spherical
+optical-model potential :math:`U(r)`. For each orbital angular momentum
+:math:`\ell` and total angular momentum :math:`j = \ell \pm 1/2`, the radial
+equation
+
+.. math::
+
+    u''(r) + \left[ k^2 - \frac{2\mu}{\hbar^2} U_{\ell j}(r) -
+    \frac{\ell(\ell+1)}{r^2} \right] u(r) = 0
+
+is integrated outward with the Numerov method, starting from the power series
+of the regular solution, and matched beyond the range of the potential to
+:math:`u \propto H^-_\ell(kr) - S_{\ell j} H^+_\ell(kr)`, where :math:`H^\pm_\ell
+= G_\ell \pm i F_\ell` are Riccati-Hankel functions (there is no Coulomb
+interaction for neutrons). Partial waves up to :math:`\ell \approx kR + 15` are
+included, about 45 at 150 MeV for lead. The wave number and the reduced mass
+follow the relativistic prescription of Ingemarsson [Ingemarsson]_, which is the
+one the potential below was fitted with. The cross sections are
+
+.. math::
+
+    \sigma_t = \frac{2\pi}{k^2} \sum_\ell \left[ (\ell+1)(1 - \mathrm{Re}\,
+    S_{\ell,\ell+1/2}) + \ell (1 - \mathrm{Re}\, S_{\ell,\ell-1/2}) \right],
+
+    \sigma_R = \frac{\pi}{k^2} \sum_\ell \left[ (\ell+1)(1 - |S_{\ell,\ell+1/2}|^2)
+    + \ell (1 - |S_{\ell,\ell-1/2}|^2) \right],
+
+:math:`\sigma_{el} = \sigma_t - \sigma_R`, and the center-of-mass elastic
+angular distribution is :math:`|f(\theta)|^2 + |g(\theta)|^2` with the usual
+spin-non-flip and spin-flip amplitudes. Compound-nucleus elastic scattering is
+negligible above 20 MeV and is not included.
+
+Optical-Model Parameters
+------------------------
+
+The potential has the form of Koning and Delaroche [KD03]_: Woods-Saxon real
+and imaginary volume terms, a derivative Woods-Saxon imaginary surface term
+and a Thomas-form spin-orbit term, with the energy-dependent depths of that
+paper. Every nuclide uses the KD03 global parameters unless TALYS
+[Koning23]_, which produces the TENDL library, uses different ones:
+
+- the nucleus-specific KD03 parameter sets in TALYS
+  ``structure/optical/neutron/n-<Element>.omp`` (72 nuclides), and
+- the neutron optical-model adjustment factors in the TALYS
+  ``structure/best/<Nuclide>/n-<Nuclide>.talys`` files (43 nuclides), applied
+  as TALYS applies them. Most of these adjustments are local corrections below
+  20 MeV and have no effect above it; constant factors on radii,
+  diffusenesses and surface-absorption parameters remain for Ag, Ce, Cr52, Eu, Ga69,
+  Lu, Mn55, Mo95, Nd, Pm147, Ru96, Sm and Zr96.
+
+Both are read from a TALYS source tree by ``tools/data/generate_talys_omp.py``
+into ``openmc/data/talys_neutron_omp.json``, which records the TALYS version and
+commit. Each nuclide uses one parameter set over its whole model range.
+
+The following TALYS choices are not used, and the KD03 parameters above apply
+instead:
+
+- TALYS reduces the surface absorption depth by 15% for nuclides it treats
+  with coupled channels, because the explicitly coupled collective levels
+  restore that flux. OpenMC's calculation is spherical, so the reduction would
+  underestimate the reaction cross section and is not applied.
+- For actinides TALYS uses coupled-channels potentials: RIPL potential 2408
+  (Capote et al.) for :math:`90 \le Z \le 97`, :math:`228 \le A \le 249` and
+  the Soukhovitskii potential for other :math:`Z \ge 90`.
+- Nuclide-specific potentials selected in the TALYS best files for Ge70-Ge76
+  (``optmodfilen``) and Hf174-Hf180, Pu239 and U238 (``optmod``).
+
+TENDL takes its data for H to F from other libraries, so the TALYS parameters
+for Li, Be, B, C, N, O and F have not been validated through TENDL. For
+:math:`A \le 4` the model is not validated (see below).
+
+Neutron-Proton Scattering
+-------------------------
+
+For hydrogen the only open channel below the pion production threshold is
+elastic scattering. Its cross section and center-of-mass angular distribution,
+including the backward charge-exchange peak, are tabulated from the Nijmegen
+partial-wave analysis PWA93 [Stoks93]_ between 20 and 200 MeV
+(``openmc/data/np_pwa93.txt``, generated by ``tools/data/generate_np_pwa93.py``).
+PWA93 includes the magnetic-moment interaction, whose forward spike is not part
+of the nuclear cross section measured in transmission; the table therefore
+starts at 1 degree, and the value there is used down to 0 degrees. The
+integrated cross section agrees with the measured np total cross section
+[Abfalterer]_ within 1.5% from 20 to 200 MeV.
+
+Validation and Known Limitations
+--------------------------------
+
+The model is judged against measured data rather than against evaluations.
+Evaluations that extend above 20 MeV were themselves built on optical models
+and differ from each other by more than the model differs from measurements.
+For example, the nonelastic cross section of the global KD03 potential, which
+varies smoothly with mass number, differs at 150 MeV from the ENDF/B-VII.1
+evaluations of neighboring heavy nuclides by +26% (W184), -12% (Hg202), +12%
+(Pb208) and -12% (Bi209): the evaluations disagree with each other in sign.
+
+- **Total cross sections.** Against the measurements of Finlay et al.
+  [Finlay]_ and Abfalterer et al. [Abfalterer]_ from 20 to 150 MeV, the global
+  KD03 potential has a median rms deviation of 1.3% for :math:`A \ge 24` (worst
+  2.8%) and reproduces the nuclear Ramsauer oscillations. The largest
+  deviations are at 20 MeV for V and Ni (+4-5%).
+- **Deformed nuclei.** For Th232 and U238 the total cross section is up to 4%
+  low between 40 and 50 MeV, as expected for a spherical potential applied to
+  strongly deformed nuclei.
+- **Nonelastic cross sections.** For :math:`A \ge 24` the median deviation from
+  measured nonelastic cross sections is +3%, within the 5-15% scatter of the
+  measurements. For C and O the potential is 20-30% high between 20 and 50 MeV.
+- **Elastic angular distributions.** The forward diffraction peak agrees with
+  the evaluations for O16, Fe56 and Pb208 within 5-10%. Against measured
+  angular distributions between 24 and 155 MeV the model is mostly 5-15% low
+  when weighted by cross section; many of these measurements do not resolve
+  low-lying inelastic states from elastic scattering.
+- **Light nuclei A <= 4.** For He4 the KD03 potential overestimates the
+  measured total cross section by 8-25% and gives nonelastic cross sections 2
+  to 13 times larger than the Geant4 G4PARTICLEXS evaluation between 20 and 50
+  MeV. The treatment of H3, He3 and He4 above their evaluated range is not
+  validated.
+
 .. only:: html
 
    .. rubric:: References
+
+.. [Abfalterer] W. P. Abfalterer, F. B. Bateman, F. S. Dietrich, R. W. Finlay,
+   R. C. Haight, and G. L. Morgan, "Measurement of neutron total cross sections
+   up to 560 MeV," *Phys. Rev. C*, **63**, 044608 (2001).
+
+.. [Finlay] R. W. Finlay, W. P. Abfalterer, G. Fink, E. Montei, T. Adami, P.
+   W. Lisowski, G. L. Morgan, and R. C. Haight, "Neutron total cross sections at
+   intermediate energies," *Phys. Rev. C*, **47**, 237 (1993).
+
+.. [Ingemarsson] A. Ingemarsson, "Relativistic kinematics in optical model
+   calculations," *Phys. Scr.*, **9**, 156 (1974).
+
+.. [KD03] A. J. Koning and J. P. Delaroche, "Local and global nucleon optical
+   models from 1 keV to 200 MeV," *Nucl. Phys. A*, **713**, 231 (2003).
+
+.. [Koning23] A. Koning, S. Hilaire, and S. Goriely, "TALYS: modeling of nuclear
+   reactions," *Eur. Phys. J. A*, **59**, 131 (2023).
+
+.. [Stoks93] V. G. J. Stoks, R. A. M. Klomp, M. C. M. Rentmeester, and J. J. de
+   Swart, "Partial-wave analysis of all nucleon-nucleon scattering data below
+   350 MeV," *Phys. Rev. C*, **48**, 792 (1993).
 
 .. [Gelbard] Ely M. Gelbard, "Epithermal Scattering in VIM," FRA-TM-123, Argonne
    National Laboratory (1979).

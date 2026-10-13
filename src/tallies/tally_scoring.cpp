@@ -938,11 +938,11 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       break;
 
     case SCORE_IFP_TIME_NUM:
-      if (settings::ifp_on()) {
+      if (ifp_on()) {
         if (p.type().is_neutron() && p.fission()) {
-          if (settings::ifp_lifetime_on) {
+          if (simulation::ifp_lifetime.enabled()) {
             const auto& lifetimes =
-              simulation::ifp_source_lifetime_bank[p.current_work()];
+              simulation::ifp_lifetime.source_bank()[p.current_work()];
             if (lifetimes.size() == settings::ifp_n_generation) {
               score = lifetimes[0] * p.wgt_last();
             }
@@ -952,11 +952,11 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       break;
 
     case SCORE_IFP_BETA_NUM:
-      if (settings::ifp_on()) {
+      if (ifp_on()) {
         if (p.type().is_neutron() && p.fission()) {
-          if (settings::ifp_delayed_group_on) {
+          if (simulation::ifp_delayed_group.enabled()) {
             const auto& delayed_groups =
-              simulation::ifp_source_delayed_group_bank[p.current_work()];
+              simulation::ifp_delayed_group.source_bank()[p.current_work()];
             if (delayed_groups.size() == settings::ifp_n_generation) {
               if (delayed_groups[0] > 0) {
                 score = p.wgt_last();
@@ -983,10 +983,11 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
 
     case SCORE_IFP_BETA_NUM_COND:
     case SCORE_IFP_BETA_NUM_GROUP:
-      if (settings::ifp_dg_weight_on && p.type().is_neutron() && p.fission()) {
+      if (simulation::ifp_dg_weight.enabled() && p.type().is_neutron() &&
+          p.fission()) {
         constexpr int stride = MAX_DELAYED_GROUPS;
         const auto& weights =
-          simulation::ifp_source_dg_weight_bank[p.current_work()];
+          simulation::ifp_dg_weight.source_bank()[p.current_work()];
         if (weights.size() == (settings::ifp_n_generation + 1) * stride) {
           // Delayed group probabilities of the ancestor emitted
           // ifp_n_generation generations before the parent of this neutron.
@@ -1000,7 +1001,7 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
             // ancestor over the groups by their probabilities given that the
             // emission was delayed
             const auto& delayed_groups =
-              simulation::ifp_source_delayed_group_bank[p.current_work()];
+              simulation::ifp_delayed_group.source_bank()[p.current_work()];
             double w_delayed = std::accumulate(w, w + stride, 0.0);
             bool delayed = !delayed_groups.empty() && delayed_groups[0] > 0;
             for (int g = 0; g < stride; ++g) {
@@ -1033,16 +1034,16 @@ void score_general_ce_nonanalog(Particle& p, int i_tally, int start_index,
       break;
 
     case SCORE_IFP_DENOM:
-      if (settings::ifp_on()) {
+      if (ifp_on()) {
         if (p.type().is_neutron() && p.fission()) {
           int ifp_data_size;
-          if (settings::ifp_delayed_group_on) {
+          if (simulation::ifp_delayed_group.enabled()) {
             ifp_data_size = static_cast<int>(
-              simulation::ifp_source_delayed_group_bank[p.current_work()]
+              simulation::ifp_delayed_group.source_bank()[p.current_work()]
                 .size());
           } else {
             ifp_data_size = static_cast<int>(
-              simulation::ifp_source_lifetime_bank[p.current_work()].size());
+              simulation::ifp_lifetime.source_bank()[p.current_work()].size());
           }
           if (ifp_data_size == settings::ifp_n_generation) {
             score = p.wgt_last();

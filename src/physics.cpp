@@ -250,9 +250,9 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
         break;
       }
       // Iterated Fission Probability (IFP) method
-      if (settings::ifp_on()) {
+      if (ifp_on()) {
         double dg_weights[MAX_DELAYED_GROUPS];
-        if (settings::ifp_dg_weight_on) {
+        if (simulation::ifp_dg_weight.enabled()) {
           ifp_delayed_group_weights(
             i_nuclide, rx, p.E(), site.E, site.delayed_group, dg_weights);
         }

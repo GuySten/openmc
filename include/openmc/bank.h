@@ -24,21 +24,6 @@ extern SharedArray<CollisionTrackSite> collision_track_bank;
 
 extern SharedArray<SourceSite> fission_bank;
 
-extern vector<vector<int>> ifp_source_delayed_group_bank;
-
-extern vector<vector<double>> ifp_source_lifetime_bank;
-
-extern vector<vector<int>> ifp_fission_delayed_group_bank;
-
-extern vector<vector<double>> ifp_fission_lifetime_bank;
-
-//! Delayed group probabilities of the IFP ancestors of each source and fission
-//! site, stored as consecutive blocks of MAX_DELAYED_GROUPS values. The last
-//! block is the site's own birth.
-extern vector<vector<double>> ifp_source_dg_weight_bank;
-
-extern vector<vector<double>> ifp_fission_dg_weight_bank;
-
 extern vector<int64_t> progeny_per_particle;
 
 extern SharedArray<SourceSite> shared_secondary_bank_read;

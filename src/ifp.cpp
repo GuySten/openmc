@@ -17,28 +17,28 @@
 
 namespace openmc {
 
+namespace simulation {
+
+IFPStream<int> ifp_delayed_group;
+IFPStream<double> ifp_lifetime;
+IFPStream<double> ifp_dg_weight;
+
+} // namespace simulation
+
 void ifp(const Particle& p, int64_t idx, const double* dg_weights)
 {
-  if (settings::ifp_delayed_group_on) {
-    const auto& delayed_groups =
-      simulation::ifp_source_delayed_group_bank[p.current_work()];
-    simulation::ifp_fission_delayed_group_bank[idx] =
-      _ifp(p.delayed_group(), delayed_groups);
-  }
-  if (settings::ifp_lifetime_on) {
-    const auto& lifetimes =
-      simulation::ifp_source_lifetime_bank[p.current_work()];
-    simulation::ifp_fission_lifetime_bank[idx] = _ifp(p.lifetime(), lifetimes);
-  }
-  if (settings::ifp_dg_weight_on) {
-    // Unlike the banks above, each list ends with the site's own birth so
-    // that the probabilities computed when it was emitted are not lost. The
-    // list of a neutron that was not born from fission is empty; it gets an
-    // all-prompt entry, as the delayed group bank records group 0 for it.
+  simulation::ifp_delayed_group.store(p.current_work(), idx, p.delayed_group());
+  simulation::ifp_lifetime.store(p.current_work(), idx, p.lifetime());
+
+  auto& stream = simulation::ifp_dg_weight;
+  if (stream.enabled()) {
+    // Each list ends with the site's own birth so that the probabilities
+    // computed when it was emitted are not lost. The list of a neutron that
+    // was not born from fission is empty; it gets an all-prompt entry, as the
+    // delayed group stream records group 0 for it.
     constexpr int stride = MAX_DELAYED_GROUPS;
-    const auto& parent =
-      simulation::ifp_source_dg_weight_bank[p.current_work()];
-    auto& updated = simulation::ifp_fission_dg_weight_bank[idx];
+    const auto& parent = stream.source_bank()[p.current_work()];
+    auto& updated = stream.fission_bank()[idx];
     if (parent.empty()) {
       updated.assign(stride, 0.0);
     } else {
@@ -111,30 +111,17 @@ void ifp_delayed_group_weights(int i_nuclide, const Reaction& rx, double E_in,
 
 void resize_simulation_ifp_banks()
 {
-  resize_ifp_data(simulation::ifp_source_delayed_group_bank,
-    simulation::ifp_source_lifetime_bank, simulation::work_per_rank);
-  resize_ifp_data(simulation::ifp_fission_delayed_group_bank,
-    simulation::ifp_fission_lifetime_bank, 3 * simulation::work_per_rank);
-  if (settings::ifp_dg_weight_on) {
-    simulation::ifp_source_dg_weight_bank.resize(simulation::work_per_rank);
-    simulation::ifp_fission_dg_weight_bank.resize(
-      3 * simulation::work_per_rank);
-  }
+  int64_t n = simulation::work_per_rank;
+  simulation::ifp_delayed_group.resize_banks(n, 3 * n);
+  simulation::ifp_lifetime.resize_banks(n, 3 * n);
+  simulation::ifp_dg_weight.resize_banks(n, 3 * n);
 }
 
-void copy_ifp_data_from_fission_banks(int64_t i_bank, int64_t i_temp,
-  vector<vector<int>>& delayed_groups, vector<vector<double>>& lifetimes,
-  vector<vector<double>>& dg_weights)
+void reset_ifp_streams()
 {
-  if (settings::ifp_dg_weight_on) {
-    dg_weights[i_temp] = simulation::ifp_fission_dg_weight_bank[i_bank];
-  }
-  if (settings::ifp_delayed_group_on) {
-    delayed_groups[i_temp] = simulation::ifp_fission_delayed_group_bank[i_bank];
-  }
-  if (settings::ifp_lifetime_on) {
-    lifetimes[i_temp] = simulation::ifp_fission_lifetime_bank[i_bank];
-  }
+  simulation::ifp_delayed_group.reset();
+  simulation::ifp_lifetime.reset();
+  simulation::ifp_dg_weight.reset();
 }
 
 #ifdef OPENMC_MPI
@@ -143,85 +130,12 @@ void broadcast_ifp_n_generation(int& n_generation,
   const vector<vector<double>>& lifetimes)
 {
   if (mpi::rank == 0) {
-    if (settings::ifp_delayed_group_on) {
-      n_generation = static_cast<int>(delayed_groups[0].size());
-    } else {
-      n_generation = static_cast<int>(lifetimes[0].size());
-    }
+    n_generation = simulation::ifp_delayed_group.enabled()
+                     ? static_cast<int>(delayed_groups[0].size())
+                     : static_cast<int>(lifetimes[0].size());
   }
   MPI_Bcast(&n_generation, 1, MPI_INT, 0, mpi::intracomm);
 }
-
-void copy_partial_ifp_data_to_source_banks(int64_t idx, int n, int64_t i_bank,
-  const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes,
-  const vector<vector<double>>& dg_weights)
-{
-  if (settings::ifp_dg_weight_on) {
-    std::copy(&dg_weights[idx], &dg_weights[idx + n],
-      &simulation::ifp_source_dg_weight_bank[i_bank]);
-  }
-  if (settings::ifp_delayed_group_on) {
-    std::copy(&delayed_groups[idx], &delayed_groups[idx + n],
-      &simulation::ifp_source_delayed_group_bank[i_bank]);
-  }
-  if (settings::ifp_lifetime_on) {
-    std::copy(&lifetimes[idx], &lifetimes[idx + n],
-      &simulation::ifp_source_lifetime_bank[i_bank]);
-  }
-}
 #endif
-
-void copy_complete_ifp_data_to_source_banks(
-  const vector<vector<int>>& delayed_groups,
-  const vector<vector<double>>& lifetimes,
-  const vector<vector<double>>& dg_weights)
-{
-  if (settings::ifp_dg_weight_on) {
-    std::copy(dg_weights.data(), dg_weights.data() + settings::n_particles,
-      simulation::ifp_source_dg_weight_bank.begin());
-  }
-  if (settings::ifp_delayed_group_on) {
-    std::copy(delayed_groups.data(),
-      delayed_groups.data() + settings::n_particles,
-      simulation::ifp_source_delayed_group_bank.begin());
-  }
-  if (settings::ifp_lifetime_on) {
-    std::copy(lifetimes.data(), lifetimes.data() + settings::n_particles,
-      simulation::ifp_source_lifetime_bank.begin());
-  }
-}
-
-void allocate_temporary_vector_ifp(vector<vector<int>>& delayed_groups,
-  vector<vector<double>>& lifetimes, vector<vector<double>>& dg_weights)
-{
-  if (settings::ifp_dg_weight_on) {
-    dg_weights.resize(simulation::fission_bank.size());
-  }
-  if (settings::ifp_delayed_group_on) {
-    delayed_groups.resize(simulation::fission_bank.size());
-  }
-  if (settings::ifp_lifetime_on) {
-    lifetimes.resize(simulation::fission_bank.size());
-  }
-}
-
-void copy_ifp_data_to_fission_banks(const vector<int>* const delayed_groups_ptr,
-  const vector<double>* lifetimes_ptr, const vector<double>* dg_weights_ptr)
-{
-  if (settings::ifp_dg_weight_on) {
-    std::copy(dg_weights_ptr, dg_weights_ptr + simulation::fission_bank.size(),
-      simulation::ifp_fission_dg_weight_bank.data());
-  }
-  if (settings::ifp_delayed_group_on) {
-    std::copy(delayed_groups_ptr,
-      delayed_groups_ptr + simulation::fission_bank.size(),
-      simulation::ifp_fission_delayed_group_bank.data());
-  }
-  if (settings::ifp_lifetime_on) {
-    std::copy(lifetimes_ptr, lifetimes_ptr + simulation::fission_bank.size(),
-      simulation::ifp_fission_lifetime_bank.data());
-  }
-}
 
 } // namespace openmc

@@ -22,6 +22,15 @@ namespace openmc {
 class EnergyDistribution {
 public:
   virtual double sample(double E, uint64_t* seed) const = 0;
+
+  //! Evaluate the probability density of the distribution that sample()
+  //! draws from
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV], or a negative value if the
+  //!   density cannot be evaluated for this distribution
+  virtual double pdf(double E, double E_out) const { return -1.0; }
+
   virtual ~EnergyDistribution() = default;
 };
 
@@ -81,7 +90,19 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Evaluate the probability density of the outgoing energy
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV]
+  double pdf(double E, double E_out) const override;
+
 private:
+  //! Evaluate the density of a single tabulated outgoing distribution
+  //! \param[in] l Index of the incoming energy table
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV]
+  double table_pdf(int l, double E_out) const;
+
   //! Outgoing energy for a single incoming energy
   struct CTTable {
     Interpolation interpolation;  //!< Interpolation law
@@ -112,6 +133,12 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Evaluate the probability density of the outgoing energy
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV]
+  double pdf(double E, double E_out) const override;
+
 private:
   Tabulated1D theta_; //!< Incoming energy dependent parameter
   double u_;          //!< Restriction energy
@@ -132,6 +159,12 @@ public:
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
 
+  //! Evaluate the probability density of the outgoing energy
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV]
+  double pdf(double E, double E_out) const override;
+
 private:
   Tabulated1D theta_; //!< Incoming energy dependent parameter
   double u_;          //!< Restriction energy
@@ -151,6 +184,12 @@ public:
   //! \param[inout] seed Pseudorandom number seed pointer
   //! \return Sampled energy in [eV]
   double sample(double E, uint64_t* seed) const override;
+
+  //! Evaluate the probability density of the outgoing energy
+  //! \param[in] E Incident particle energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV]
+  double pdf(double E, double E_out) const override;
 
 private:
   Tabulated1D a_; //!< Energy-dependent 'a' parameter

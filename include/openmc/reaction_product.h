@@ -64,6 +64,14 @@ public:
   double sample_energy_and_pdf(
     double E_in, double mu, double& E_out, uint64_t* seed) const;
 
+  //! Evaluate the probability density of the outgoing energy that sample()
+  //! draws from, mixing the angle-energy distributions by their applicability
+  //! \param[in] E_in Incoming energy in [eV]
+  //! \param[in] E_out Outgoing energy in [eV]
+  //! \return Probability density in [1/eV], or a negative value if the
+  //!   density cannot be evaluated for this product
+  double energy_pdf(double E_in, double E_out) const;
+
   ParticleType particle_;      //!< Particle type
   EmissionMode emission_mode_; //!< Emission mode
   double decay_rate_; //!< Decay rate (for delayed neutron precursors) in [1/s]

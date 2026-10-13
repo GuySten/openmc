@@ -1,16 +1,19 @@
 #include "openmc/distribution_energy.h"
 
 #include <algorithm> // for max, min, copy, move
+#include <cmath>     // for erf, exp, sqrt
 #include <cstddef>   // for size_t
 #include <iterator>  // for back_inserter
 
 #include "openmc/tensor.h"
 
+#include "openmc/constants.h"
 #include "openmc/endf.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/math_functions.h"
 #include "openmc/random_dist.h"
 #include "openmc/random_lcg.h"
+#include "openmc/search.h"
 
 namespace openmc {
 
@@ -267,6 +270,100 @@ double ContinuousTabular::sample(double E, uint64_t* seed) const
   }
 }
 
+double ContinuousTabular::table_pdf(int l, double E_out) const
+{
+  const auto& d = distribution_[l];
+
+  // Discrete lines have no density
+  if (d.n_discrete > 0)
+    return -1.0;
+
+  int n = d.e_out.size();
+  if (n < 2 || E_out < d.e_out[0] || E_out > d.e_out[n - 1])
+    return 0.0;
+
+  // Find the outgoing energy bin containing E_out
+  int k = lower_bound_index(d.e_out.begin(), d.e_out.end(), E_out);
+  k = std::max(0, std::min(k, n - 2));
+
+  if (d.interpolation == Interpolation::histogram) {
+    return d.p[k];
+  } else if (d.interpolation == Interpolation::lin_lin) {
+    double dE = d.e_out[k + 1] - d.e_out[k];
+    if (dE == 0.0)
+      return d.p[k];
+    return d.p[k] + (d.p[k + 1] - d.p[k]) * (E_out - d.e_out[k]) / dE;
+  }
+  return -1.0;
+}
+
+double ContinuousTabular::pdf(double E, double E_out) const
+{
+  // This mirrors sample(): table l is chosen with probability 1 - r (l = i)
+  // or r (l = i + 1) and its outgoing energy is then mapped linearly onto the
+  // interpolated range [E_1, E_K], which scales the density by the inverse of
+  // the stretch factor
+  bool histogram_interp;
+  if (n_region_ == 1) {
+    histogram_interp = (interpolation_[0] == Interpolation::histogram);
+  } else {
+    histogram_interp = false;
+  }
+
+  int i;
+  double r;
+  get_energy_index(energy_, E, i, r);
+
+  if (histogram_interp) {
+    return table_pdf(i, E_out);
+  }
+
+  // Bounds of the continuous part of the two bracketing tables
+  auto bounds = [this](int l, double& E_lo, double& E_hi) {
+    const auto& d = distribution_[l];
+    E_lo = d.e_out[d.n_discrete];
+    E_hi = d.e_out[d.e_out.size() - 1];
+  };
+
+  double E_i_1, E_i_K;
+  bounds(i, E_i_1, E_i_K);
+  double E_i1_1 = E_i_1;
+  double E_i1_K = E_i_K;
+  if (i + 1 < static_cast<int>(distribution_.size())) {
+    bounds(i + 1, E_i1_1, E_i1_K);
+  }
+  const double E_1 = E_i_1 + r * (E_i1_1 - E_i_1);
+  const double E_K = E_i_K + r * (E_i1_K - E_i_K);
+
+  double density = 0.0;
+  for (int m = 0; m < 2; ++m) {
+    int l = i + m;
+    double prob = (m == 0) ? 1.0 - r : r;
+    if (prob <= 0.0)
+      continue;
+
+    if (distribution_[l].e_out.size() <= 1) {
+      double f = table_pdf(l, E_out);
+      if (f < 0.0)
+        return -1.0;
+      density += prob * f;
+      continue;
+    }
+
+    double E_l_1 = (m == 0) ? E_i_1 : E_i1_1;
+    double E_l_K = (m == 0) ? E_i_K : E_i1_K;
+    double stretch = (E_K - E_1) / (E_l_K - E_l_1);
+    if (stretch <= 0.0)
+      return -1.0;
+    double E_table = E_l_1 + (E_out - E_1) / stretch;
+    double f = table_pdf(l, E_table);
+    if (f < 0.0)
+      return -1.0;
+    density += prob * f / stretch;
+  }
+  return density;
+}
+
 //==============================================================================
 // MaxwellEnergy implementation
 //==============================================================================
@@ -292,6 +389,20 @@ double MaxwellEnergy::sample(double E, uint64_t* seed) const
     if (E_out <= E - u_)
       return E_out;
   }
+}
+
+double MaxwellEnergy::pdf(double E, double E_out) const
+{
+  double theta = theta_(E);
+  double E_max = E - u_;
+  if (E_out < 0.0 || E_out > E_max || theta <= 0.0)
+    return 0.0;
+
+  // Maxwellian density truncated at the restriction energy
+  double x = E_max / theta;
+  double norm = std::erf(std::sqrt(x)) - 2.0 * std::sqrt(x / PI) * std::exp(-x);
+  return 2.0 / std::sqrt(PI) * std::sqrt(E_out) / std::pow(theta, 1.5) *
+         std::exp(-E_out / theta) / norm;
 }
 
 //==============================================================================
@@ -326,6 +437,19 @@ double Evaporation::sample(double E, uint64_t* seed) const
   return x * theta;
 }
 
+double Evaporation::pdf(double E, double E_out) const
+{
+  double theta = theta_(E);
+  double E_max = E - u_;
+  if (E_out < 0.0 || E_out > E_max || theta <= 0.0)
+    return 0.0;
+
+  // Evaporation density truncated at the restriction energy
+  double y = E_max / theta;
+  double norm = theta * theta * (1.0 - std::exp(-y) * (1.0 + y));
+  return E_out * std::exp(-E_out / theta) / norm;
+}
+
 //==============================================================================
 // WattEnergy implementation
 //==============================================================================
@@ -358,6 +482,28 @@ double WattEnergy::sample(double E, uint64_t* seed) const
     if (E_out <= E - u_)
       return E_out;
   }
+}
+
+double WattEnergy::pdf(double E, double E_out) const
+{
+  double a = a_(E);
+  double b = b_(E);
+  double E_max = E - u_;
+  if (E_out < 0.0 || E_out > E_max || a <= 0.0 || b <= 0.0)
+    return 0.0;
+
+  // Integral of exp(-E/a) sinh(sqrt(b E)) from 0 to E_max, obtained by
+  // substituting s = sqrt(E) and completing the square in each exponential
+  double S = std::sqrt(E_max);
+  double c = 0.5 * a * std::sqrt(b);
+  double sa = std::sqrt(a);
+  double norm =
+    std::exp(0.25 * a * b) *
+    (0.5 * a *
+        (std::exp(-(S + c) * (S + c) / a) - std::exp(-(S - c) * (S - c) / a)) +
+      0.5 * c * std::sqrt(PI * a) *
+        (std::erf((S - c) / sa) + std::erf((S + c) / sa)));
+  return std::exp(-E_out / a) * std::sinh(std::sqrt(b * E_out)) / norm;
 }
 
 } // namespace openmc

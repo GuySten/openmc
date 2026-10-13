@@ -83,4 +83,11 @@ double UncorrelatedAngleEnergy::sample_energy_and_pdf(
   }
 }
 
+double UncorrelatedAngleEnergy::energy_pdf(double E_in, double E_out) const
+{
+  if (energy_ == nullptr)
+    return -1.0;
+  return energy_->pdf(E_in, E_out);
+}
+
 } // namespace openmc

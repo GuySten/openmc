@@ -166,6 +166,16 @@ constexpr int ParticleType::transport_index() const
 }
 
 //------------------------------------------------------------------------------
+// Free functions
+//------------------------------------------------------------------------------
+
+//! Return the atomic number for an element symbol, e.g. 2 for "He"
+//
+//! \param[in] symbol Element symbol, case sensitive
+//! \return Atomic number, or zero if the symbol is not recognized
+int atomic_number_from_symbol(std::string_view symbol);
+
+//------------------------------------------------------------------------------
 // Legacy conversion helpers
 //------------------------------------------------------------------------------
 

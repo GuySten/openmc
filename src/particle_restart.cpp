@@ -3,6 +3,7 @@
 #include "openmc/array.h"
 #include "openmc/bank.h"
 #include "openmc/constants.h"
+#include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
 #include "openmc/mgxs_interface.h"
 #include "openmc/nuclide.h"
@@ -97,6 +98,13 @@ void run_particle_restart()
   // Read in the restart information
   RunMode previous_run_mode;
   read_particle_restart(p, previous_run_mode);
+
+  // The restarted particle takes the place of a source particle, but its type
+  // only becomes known here, long after the decision of which data to read
+  if (p.type().is_neutron() && !settings::neutron_transport) {
+    fatal_error("The particle being restarted is a neutron, but neutron "
+                "transport is turned off, so no neutron data was read.");
+  }
 
   // write track if that was requested on command line
   if (settings::write_all_tracks) {

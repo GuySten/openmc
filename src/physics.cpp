@@ -1553,6 +1553,14 @@ void emit_forced_photoneutron(Particle& p)
   const double wgt_born = p.wgt_born();
   p.wgt_born() = w;
 
+  // Weight windows are scaled by wgt_born / wgt_ww_born, which a secondary
+  // inherits from its parent so that it sees the same windows. Scale the birth
+  // weight-window value as well, so that the forced neutron keeps the photon's
+  // ratio instead of having its windows shrunk by the factor w / wgt_born.
+  const double wgt_ww_born = p.wgt_ww_born();
+  if (wgt_ww_born > 0.0)
+    p.wgt_ww_born() = wgt_ww_born * w / wgt_born;
+
   // Photofission neutrons must go through the prompt/delayed split, which also
   // sets the emission time for delayed precursors.
   const double E_banked = p.bank_second_E();
@@ -1562,6 +1570,7 @@ void emit_forced_photoneutron(Particle& p)
     emit_photonuclear_product(p, *nuc, *rx, product, w);
   }
   p.wgt_born() = wgt_born;
+  p.wgt_ww_born() = wgt_ww_born;
 
   // create_secondary() adds the full outgoing energy to bank_second_E() when
   // the neutron is banked or leaves above the maximum energy, and nothing when

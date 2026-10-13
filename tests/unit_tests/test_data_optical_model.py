@@ -93,8 +93,10 @@ def test_talys_adjustment():
     pot = talys_neutron_potential(42, 95, 100.0)
     ref = potential(global_parameters(42, 95), 95, 100.0)
     assert pot.av == pytest.approx(0.85*ref.av)
-    assert pot.aw == ref.aw
     assert pot.rv == ref.rv
+    # TALYS applies the factor to the imaginary volume term as well
+    assert pot.aw == pytest.approx(0.85*ref.aw)
+    assert pot.ad == ref.ad
 
 
 def test_imaginary_spin_orbit_geometry():

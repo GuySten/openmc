@@ -243,15 +243,23 @@ def _talys_data():
     return _TALYS_DATA
 
 
+# Pairs of (imaginary, real) geometry factors linked by input_omppar.f90
+_TALYS_PARTNERS = (('rw', 'rv'), ('aw', 'av'), ('rvd', 'rwd'), ('avd', 'awd'),
+                   ('rwso', 'rvso'), ('awso', 'avso'))
+
+
 def talys_neutron_potential(Z, A, energy):
     """Neutron optical potential as TALYS uses it for TENDL.
 
     The nucleus-specific Koning-Delaroche parameters distributed with TALYS
     are used when they exist, the global ones otherwise, and the neutron
-    optical-model adjustments of the TALYS "best" files are applied. TALYS
-    reduces the surface absorption by 15% for nuclei it treats with coupled
-    channels; that reduction is compensated by the explicitly coupled levels
-    and is therefore not applied in this spherical calculation. For
+    optical-model adjustments of the TALYS "best" files are applied. As in
+    TALYS, a constant radius or diffuseness factor of the real volume or
+    spin-orbit term also applies to the corresponding imaginary term unless
+    that one is given separately. TALYS reduces the surface absorption by
+    15% for nuclei it treats with coupled channels; that reduction is
+    compensated by the explicitly coupled levels and is therefore not
+    applied in this spherical calculation. For
     actinides with :math:`90 \\le Z \\le 97` and :math:`228 \\le A \\le 249`
     TALYS uses a coupled-channels potential instead of its local
     Koning-Delaroche parameters, and the global ones are used here.
@@ -281,9 +289,16 @@ def talys_neutron_potential(Z, A, energy):
         params = None
     if params is None:
         params = global_parameters(Z, A)
+    adjust = data['adjust'].get(name, {})
     factors = {key: adjustment_factor(adj, energy)
-               for key, adj in data['adjust'].get(name, {}).items()}
+               for key, adj in adjust.items()}
+    # input_omppar.f90: constant factors that are not given for the
+    # imaginary geometry take the value of their real counterpart
+    for imag, real in _TALYS_PARTNERS:
+        if imag not in adjust and real in adjust:
+            factors[imag] = adjust[real]['value']
     return potential(params, A, energy, factors)
+
 
 
 def relativistic_kinematics(energy, target_mass, projectile_mass=NEUTRON_MASS_MEV):

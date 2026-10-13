@@ -1793,7 +1793,10 @@ paper. Every nuclide uses the KD03 global parameters unless TALYS
   are used), and
 - the neutron optical-model adjustment factors in the TALYS
   ``structure/best/<Nuclide>/n-<Nuclide>.talys`` files (43 nuclides), applied
-  as TALYS applies them. Most of these adjustments are local corrections below
+  as TALYS applies them, including its rule that a constant radius or
+  diffuseness factor of a real term also applies to the corresponding
+  imaginary term unless that one is adjusted separately. Most of these
+  adjustments are local corrections below
   20 MeV and have no effect above it; constant factors on radii,
   diffusenesses and surface-absorption parameters remain for Ag, Ce, Cr52, Eu, Ga69,
   Lu, Mn55, Mo95, Nd, Pm147, Ru96, Sm and Zr96.
@@ -1851,6 +1854,14 @@ evaluations of neighboring heavy nuclides by +26% (W184), -12% (Hg202), +12%
   KD03 potential has a median rms deviation of 1.3% for :math:`A \ge 24` (worst
   2.8%) and reproduces the nuclear Ramsauer oscillations. The largest
   deviations are at 20 MeV for V and Ni (+4-5%).
+- **Reproduction of TENDL.** For the 94 nuclides with TALYS-specific
+  parameters, the model was compared from 20 to 200 MeV with TENDL-2025,
+  above the energies where TENDL is normalized to other libraries. For the
+  66 nuclides TALYS treats as spherical, the nonelastic cross sections agree
+  within 0.6% (median 0.1%) and the total cross sections within 0.5% above 30
+  MeV. For the 28 nuclides TALYS treats with coupled channels, the spherical
+  model differs by up to 3% (vibrational) and up to 9% (rotational, e.g.
+  Sm154, Mg24) in the nonelastic cross section.
 - **Deformed nuclei.** For Th232 and U238 the total cross section is up to 4%
   low between 40 and 50 MeV, as expected for a spherical potential applied to
   strongly deformed nuclei.

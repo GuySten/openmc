@@ -151,3 +151,16 @@ def test_nbody_incident_particle(run_in_tmpdir):
     with h5py.File('nbody.h5', 'r') as f:
         assert openmc.data.NBodyPhaseSpace.from_hdf5(f['photon']).particle == 'photon'
         assert openmc.data.NBodyPhaseSpace.from_hdf5(f['legacy']).particle == 'neutron'
+
+
+def test_redundant_reaction():
+    """A redundant reaction that is not stored is built from its components."""
+    nuc = openmc.data.IncidentPhotonuclear('H2', 1, 2, 0, 1.9968)
+    nuc.energy = np.array([2.3e6, 5.0e6, 1.0e7])
+    rx = openmc.data.PhotonuclearReaction(50)
+    rx.xs = openmc.data.Tabulated1D(nuc.energy, [0.0, 2.0e-3, 1.0e-3])
+    nuc.reactions[50] = rx
+
+    total = nuc[1]
+    assert total.redundant
+    assert total.xs(5.0e6) == pytest.approx(2.0e-3)

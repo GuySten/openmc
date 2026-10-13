@@ -832,6 +832,31 @@ projectile. The outgoing neutron energy and cosine in the laboratory frame are
 where :math:`E` is the incident photon energy, :math:`A` is the mass of the
 target nucleus in neutron masses and :math:`m_n` is the neutron mass in eV.
 
+Kalbach-Mann Angular Distribution
+---------------------------------
+
+The outgoing energy and the parameters :math:`R` and :math:`A` of a
+Kalbach-Mann distribution are found as for an incident neutron (see
+:ref:`kalbach-mann`). For an incident photon, however, the equilibrium
+component is isotropic rather than symmetric about :math:`\mu = 0`, so the
+probability distribution function for the cosine of the scattering angle is
+
+.. math::
+    :label: photonuclear-KM-pdf-angle
+
+    p(\mu) d\mu = \left [ \frac{1 - R}{2} + R \frac{A e^{A\mu}}{2 \sinh (A)}
+    \right ] d\mu.
+
+With probability :math:`1 - R` the cosine is sampled isotropically, and
+otherwise from :math:`e^{A\mu}` as
+
+.. math::
+    :label: photonuclear-KM-angle
+
+    \mu = \frac{1}{A} \ln \left ( \cosh (A) + (2\xi - 1) \sinh (A) \right )
+
+where :math:`\xi` is a random number on the unit interval.
+
 Inelastic Level Scattering
 --------------------------
 

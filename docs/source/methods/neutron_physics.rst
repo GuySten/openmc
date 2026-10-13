@@ -766,6 +766,8 @@ angle and energy are correlated with one another and cannot be sampled
 separately. Several representations exist in ENDF/ACE for correlated
 angle-energy distributions.
 
+.. _kalbach-mann:
+
 Kalbach-Mann Correlated Scattering
 ++++++++++++++++++++++++++++++++++
 

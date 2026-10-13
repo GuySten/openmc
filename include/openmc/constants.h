@@ -57,6 +57,10 @@ constexpr double FP_COINCIDENT {1e-12};
 // Coincidence tolerances
 constexpr double TORUS_TOL {1e-10};
 constexpr double RADIAL_MESH_TOL {1e-10};
+// Relative tolerance for deciding that a coordinate lies on a structured mesh
+// grid boundary. Applied as GRID_MESH_TOL * (1 + |coordinate|), so it tracks
+// the rounding error of the position rather than assuming a length scale.
+constexpr double GRID_MESH_TOL {1e-10};
 
 // Tolerance on the normalized normal of a general plane for treating that
 // plane as axis-aligned when computing a bounding box. Matches the value of

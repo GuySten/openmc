@@ -16,21 +16,14 @@ from . import HDF5_VERSION, HDF5_VERSION_MAJOR
 from .ace import Table, get_metadata, get_table, Library
 from .angle_distribution import AngleDistribution
 from .angle_energy import AngleEnergy
-from .correlated import CorrelatedAngleEnergy
 from .data import ATOMIC_SYMBOL, EV_PER_MEV
-from .endf import Evaluation, SUM_RULES, get_head_record, get_tab1_record,  get_cont_record
+from .endf import Evaluation, SUM_RULES, get_head_record, get_tab1_record
 from .fission_energy import FissionEnergyRelease
 from .function import Tabulated1D
 from .njoy import make_ace_photonuclear
-from .reaction import Reaction, REACTION_NAME as _REACTION_NAME, FISSION_MTS, _get_products, _get_fission_products_endf, _get_photon_products_endf, _get_activation_products
+from .reaction import REACTION_NAME as _REACTION_NAME, FISSION_MTS, _get_products, _get_fission_products_endf, _get_photon_products_endf, _get_activation_products
 from .product import Product
-from .energy_distribution import EnergyDistribution, LevelInelastic, \
-    DiscretePhoton
-from .function import Tabulated1D, Polynomial
-from .kalbach_mann import KalbachMann
-from .laboratory import LaboratoryAngleEnergy
-from .nbody import NBodyPhaseSpace
-from .product import Product
+from .energy_distribution import EnergyDistribution, LevelInelastic
 from .uncorrelated import UncorrelatedAngleEnergy
 
 REACTION_NAME = {50 : '(gamma,n0)'}
@@ -672,7 +665,6 @@ class IncidentPhotonuclear(EqualityMixin):
 
         total_xs = ace.xss[ace.jxs[2] : ace.jxs[2] + n_energy]
         nonelastic_xs = ace.xss[ace.jxs[3] : ace.jxs[3] + n_energy]
-        elastic_xs = total_xs-nonelastic_xs
         heating_number = ace.xss[ace.jxs[5] : ace.jxs[5] +  n_energy] * EV_PER_MEV
         heating_number = Tabulated1D(energy, heating_number)
             

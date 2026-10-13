@@ -207,7 +207,6 @@ struct PhotonuclearMicroXS {
   double last_E {0.0};  //!< last evaluated energy in [eV]
   double interp_factor; //!< interpolation factor on energy grid
   double total;         //!< microscopic total photonuclear xs
-  double heating;       //!< microscopic heating xs
   double neutron_prod;  //!< microscopic neutron production xs
 };
 

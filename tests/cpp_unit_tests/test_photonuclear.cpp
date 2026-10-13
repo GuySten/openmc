@@ -83,17 +83,13 @@ TEST_CASE("Photonuclear total matches the sum of reactions near thresholds")
     nuc.calculate_xs(p);
 
     double total = 0.0;
-    double heating = 0.0;
     for (const auto& rx : nuc.reactions_) {
-      if (rx->mt_ == 301)
-        heating += rx->xs(micro);
       if (!rx->redundant_)
         total += rx->xs(micro);
     }
 
     INFO("E = " << E);
     REQUIRE_THAT(micro.total, WithinAbs(total, 1e-15));
-    REQUIRE_THAT(micro.heating, WithinAbs(heating, 1e-9));
   }
 
   // A photon exactly at the highest grid point is evaluated at the upper end of

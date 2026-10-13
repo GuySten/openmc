@@ -5,7 +5,6 @@
 #include "openmc/endf.h"
 #include "openmc/memory.h" // for unique_ptr
 #include "openmc/particle.h"
-#include "openmc/reaction.h"
 #include "openmc/reaction_product.h"
 #include "openmc/vector.h"
 
@@ -14,7 +13,6 @@
 
 #include <string>
 #include <unordered_map>
-#include <utility> // for pair
 
 namespace openmc {
 
@@ -22,8 +20,7 @@ class PhotonuclearReaction {
 public:
   //! Construct reaction from HDF5 data
   //! \param[in] group HDF5 group containing reaction data
-  //! \param[in] name Name of the nuclide
-  explicit PhotonuclearReaction(hid_t group, std::string name);
+  explicit PhotonuclearReaction(hid_t group);
 
   //! Calculate cross section given grid index, interpolation factor
   //
@@ -35,15 +32,6 @@ public:
   //
   //! \param[in] micro Microscopic cross section cache
   double xs(const PhotonuclearMicroXS& micro) const;
-
-  //! \brief Calculate reaction rate based on group-wise flux distribution
-  //
-  //! \param[in] energy Energy group boundaries in [eV]
-  //! \param[in] flux Flux in each energy group (not normalized per eV)
-  //! \param[in] grid Nuclide energy grid
-  //! \return Reaction rate
-  double collapse_rate(span<const double> energy, span<const double> flux,
-    const vector<double>& grid) const;
 
   //! Cross section at a single temperature
   struct TemperatureXS {
@@ -99,9 +87,6 @@ public:
 
   // Data members
   std::string name_; //!< Name of nuclide, e.g. "U235"
-  int Z_;            //!< Atomic number
-  int A_;            //!< Mass number
-  int metastable_;   //!< Metastable state
   double awr_;       //!< Atomic weight ratio
   int64_t index_;    //!< Index in the photonuclears array
 
@@ -124,7 +109,6 @@ private:
   void create_derived();
 
   static int XS_TOTAL;
-  static int XS_HEATING;
   static int XS_NEUTRON_PROD;
 };
 

@@ -1791,11 +1791,17 @@ class Settings:
             
     def _create_photonuclear_physics_subelement(self, root):
         if self._photonuclear_physics is not None:
+            if self._photonuclear_physics and not self._photon_transport:
+                raise ValueError("Photon transport must be enabled when "
+                                 "photonuclear physics is enabled")
             element = ET.SubElement(root, "photonuclear_physics")
             element.text = str(self._photonuclear_physics).lower()
 
     def _create_photoneutron_biasing_subelement(self, root):
         if self._photoneutron_biasing is not None:
+            if self._photoneutron_biasing and not self._photonuclear_physics:
+                raise ValueError("Photonuclear physics must be enabled when "
+                                 "photoneutron biasing is enabled")
             element = ET.SubElement(root, "photoneutron_biasing")
             element.text = str(self._photoneutron_biasing).lower()
 

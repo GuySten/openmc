@@ -149,6 +149,11 @@ void Particle::split(double wgt)
   bank.wgt_ww_born = wgt_ww_born();
   bank.n_split = n_split();
   bank.n_collision = n_collision();
+  // A split copy continues the history of the particle it was split from, so
+  // it keeps that particle's birth position, birth cell and parent nuclide
+  bank.r_born = r_born();
+  bank.cell_born = cell_born();
+  bank.parent_nuclide = parent_nuclide();
   // A split neutron keeps the lifetime clock and delayed group of the neutron
   // it was split from
   if (type().is_neutron()) {
@@ -168,7 +173,7 @@ void Particle::from_source(const SourceSite* src)
   // Reset some attributes
   clear();
   surface() = SURFACE_NONE;
-  cell_born() = C_NONE;
+  cell_born() = src->cell_born;
   material() = C_NONE;
   n_collision() = src->n_collision;
   fission() = false;
@@ -184,7 +189,7 @@ void Particle::from_source(const SourceSite* src)
   wgt_last() = src->wgt;
   r() = src->r;
   u() = src->u;
-  r_born() = src->r;
+  r_born() = (src->cell_born == C_NONE) ? src->r : src->r_born;
   r_last_current() = src->r;
   r_last() = src->r;
   u_last() = src->u;

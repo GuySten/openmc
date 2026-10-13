@@ -36,7 +36,9 @@ class _SourceSite(Structure):
                 ('wgt_ww_born', c_double),
                 ('n_split', c_int64),
                 ('n_collision', c_int),
-                ('lifetime', c_double)]
+                ('lifetime', c_double),
+                ('r_born', c_double*3),
+                ('cell_born', c_int)]
 
 # Define input type for numpy arrays that will be passed into C++ functions
 # Must be an int or double array, with single dimension that is contiguous

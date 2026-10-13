@@ -256,3 +256,61 @@ TEST_CASE_METHOD(SharedSecondaryBank,
   q.event_revive_from_secondary(site);
   REQUIRE(q.delayed_group() == 2);
 }
+
+TEST_CASE_METHOD(SharedSecondaryBank,
+  "Split particles revived from the shared secondary bank keep the birth state")
+{
+  // In each state i, a photon born at a different position and cell, from the
+  // decay of a different nuclide, banks a split photon and an electron on the
+  // first rank
+  auto born_at = [](int64_t i) { return Position {-1.0 * i, -2.0, -3.0}; };
+  const int64_t n_sites = 2 * N_PARENT_STATES;
+  SharedArray<SourceSite> bank;
+  if (mpi::rank == 0) {
+    Particle p;
+    p.type() = ParticleType::photon();
+    p.wgt() = 1.0;
+    p.r() = {1.0, 2.0, 3.0};
+    p.u() = {0.0, 0.0, 1.0};
+    p.E() = 2.0e6;
+    for (int i = 0; i < N_PARENT_STATES; ++i) {
+      p.r_born() = born_at(i);
+      p.cell_born() = i + 1;
+      p.parent_nuclide() = i + 10;
+      p.split(0.5);
+      CHECK(p.create_secondary(1.0, p.u(), 1.0e6, ParticleType::electron()));
+    }
+    for (const auto& site : p.local_secondary_bank()) {
+      bank.thread_unsafe_append(site);
+    }
+  }
+
+  int64_t n_total = synchronize_global_secondary_bank(bank);
+  REQUIRE(n_total == n_sites);
+  int64_t share =
+    n_sites / mpi::n_procs + (mpi::rank < n_sites % mpi::n_procs ? 1 : 0);
+  REQUIRE(bank.size() == share);
+
+  Particle q;
+  for (int64_t j = 0; j < bank.size(); ++j) {
+    const auto& site = bank[j];
+    int64_t i = site.progeny_id / 2;
+    REQUIRE(site.progeny_id >= 0);
+    REQUIRE(i < N_PARENT_STATES);
+
+    q.event_revive_from_secondary(site);
+    if (site.progeny_id % 2 == 0) {
+      // The split photon continues the history of the photon
+      REQUIRE(q.type() == ParticleType::photon());
+      REQUIRE(q.r_born() == born_at(i));
+      REQUIRE(q.cell_born() == i + 1);
+      REQUIRE(q.parent_nuclide() == i + 10);
+    } else {
+      // The electron is born where it was created
+      REQUIRE(q.type() == ParticleType::electron());
+      REQUIRE(q.r_born() == Position {1.0, 2.0, 3.0});
+      REQUIRE(q.cell_born() == C_NONE);
+      REQUIRE(q.parent_nuclide() == -1);
+    }
+  }
+}

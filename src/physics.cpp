@@ -1395,6 +1395,13 @@ void photonuclear_collision(Particle& p)
   const auto& nuc {data::photonuclears[i_nuclide]};
   const auto& micro {p.photonuclear_xs(i_nuclide)};
 
+  // Record the target as the event nuclide, an index in data::nuclides as for
+  // any other collision, so that tallies and collision tracks attribute the
+  // event to it
+  auto it = data::nuclide_map.find(nuc->name_);
+  p.event_nuclide() =
+    (it != data::nuclide_map.end()) ? it->second : NUCLIDE_NONE;
+
   // Sample which reaction occurred, over all non-redundant channels. Channels
   // with no transported products are sampled too -- they simply absorb the
   // photon and deposit its energy locally.

@@ -101,28 +101,6 @@ KD03 = {
     'ef_0': -11.2814, 'ef_A': 0.02646,
 }
 
-#: Medians of the "federal" posterior of the KDUQ refit of the
-#: Koning-Delaroche potential [KDUQ]_.
-#:
-#: .. [KDUQ] C. D. Pruitt, J. E. Escher, and R. Rahman, "Uncertainty-quantified
-#:    phenomenological optical potentials for single-nucleon scattering,"
-#:    Phys. Rev. C 107, 014602 (2023).
-KDUQ_FEDERAL = {
-    'v1_0': 58.919, 'v1_asym': 13.638, 'v1_A': 0.028856,
-    'v2_0': 0.0059806, 'v2_A': 1.6675e-6, 'v3_0': 9.2423e-6,
-    'v3_A': 1.3891e-8, 'v4_0': -5.648e-9,
-    'rv_0': 1.2868, 'rv_A': 0.41352, 'av_0': 0.66720, 'av_A': -2.2060e-4,
-    'w1_0': 20.295, 'w1_A': 0.010717, 'w2_0': 97.317, 'w2_A': 0.045861,
-    'd1_0': 20.587, 'd1_asym': 11.936, 'd2_0': 0.027116, 'd2_A': 0.0034351,
-    'd2_A2': 8.2613, 'd2_A3': 251.72, 'd3_0': 16.158,
-    'rd_0': 1.3667, 'rd_A': 0.017673, 'ad_0': 0.55704, 'ad_A': -6.4027e-5,
-    'vso1_0': 5.4986, 'vso1_A': -5.065e-4, 'vso2_0': 0.0047754,
-    'wso1_0': -3.4497, 'wso2_0': 249.46,
-    'rso_0': 1.2097, 'rso_A': 0.66071, 'aso_0': 0.57059,
-    'ef_0': -11.2814, 'ef_A': 0.02646,
-}
-
-
 def koning_delaroche(Z, A, energy, parameters=KD03):
     """Koning-Delaroche global neutron optical potential.
 
@@ -135,7 +113,7 @@ def koning_delaroche(Z, A, energy, parameters=KD03):
     energy : float
         Incident neutron energy in the laboratory system in MeV
     parameters : dict
-        Global parameters, e.g. :data:`KD03` or :data:`KDUQ_FEDERAL`
+        Global parameters, e.g. :data:`KD03`
 
     Returns
     -------

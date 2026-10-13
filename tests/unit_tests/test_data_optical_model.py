@@ -3,7 +3,7 @@ import pytest
 
 from openmc.data import atomic_mass
 from openmc.data.optical_model import (
-    AMU_MEV, KDUQ_FEDERAL, NEUTRON_MASS_MEV, OpticalPotential,
+    AMU_MEV, NEUTRON_MASS_MEV, OpticalPotential,
     koning_delaroche, relativistic_kinematics, solve)
 
 
@@ -53,12 +53,6 @@ def test_optical_theorem():
 ])
 def test_pb208_total(energy, total):
     assert _pb208(energy).total == pytest.approx(total, rel=0.03)
-
-
-def test_kduq_pb208_total():
-    mass = atomic_mass('Pb208')*AMU_MEV
-    pot = koning_delaroche(82, 208, 100.0, KDUQ_FEDERAL)
-    assert solve(pot, 100.0, mass).total == pytest.approx(4.600, rel=0.05)
 
 
 def test_kinematics_nonrelativistic_limit():

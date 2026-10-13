@@ -12,6 +12,7 @@
 #include "openmc/nuclide.h"
 #include "openmc/particle.h"
 #include "openmc/particle_data.h"
+#include "openmc/secondary_uncorrelated.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
 #include "openmc/vector.h"
@@ -57,6 +58,24 @@ void build_ifp_fission_channels()
     ifp_first_channel[i] = ifp_channels.size();
     for (int r = 0; r < nuc->fission_rx_.size(); ++r) {
       ifp_channels.push_back({i, r});
+
+      // The delayed group probabilities condition on the outgoing energy
+      // only, so prompt and delayed neutrons must share their angular
+      // distribution; require it to be isotropic, as in evaluated data
+      for (const auto& product : nuc->fission_rx_[r]->products_) {
+        if (!product.particle_.is_neutron())
+          continue;
+        for (const auto& d : product.distribution_) {
+          const auto* u = dynamic_cast<const UncorrelatedAngleEnergy*>(d.get());
+          if (u && !u->angle().empty() && !u->angle().isotropic()) {
+            fatal_error(fmt::format(
+              "Fission neutrons of {} have an anisotropic angular "
+              "distribution, which the ifp-beta-numerator score does not "
+              "support.",
+              nuc->name_));
+          }
+        }
+      }
     }
   }
   if (ifp_channels.size() > IFP_NOT_FISSION) {

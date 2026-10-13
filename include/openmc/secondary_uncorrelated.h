@@ -50,6 +50,7 @@ public:
 
   // Accessors
   AngleDistribution& angle() { return angle_; }
+  const AngleDistribution& angle() const { return angle_; }
 
 private:
   AngleDistribution angle_;               //!< Angle distribution

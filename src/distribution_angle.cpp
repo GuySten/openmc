@@ -82,6 +82,17 @@ double AngleDistribution::sample(double E, uint64_t* seed) const
   return mu;
 }
 
+bool AngleDistribution::isotropic() const
+{
+  for (const auto& d : distribution_) {
+    for (double p : d->p()) {
+      if (std::abs(p - 0.5) > 1e-6)
+        return false;
+    }
+  }
+  return true;
+}
+
 double AngleDistribution::evaluate(double E, double mu) const
 {
   // Find energy bin and calculate interpolation factor

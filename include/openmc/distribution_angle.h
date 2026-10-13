@@ -36,6 +36,10 @@ public:
   //! \return Whether distribution is empty
   bool empty() const { return energy_.empty(); }
 
+  //! Determine whether the distribution is isotropic at every energy
+  //! \return Whether every tabulated density equals 1/2
+  bool isotropic() const;
+
 private:
   vector<double> energy_;
   vector<unique_ptr<Tabular>> distribution_;

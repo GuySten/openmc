@@ -39,6 +39,11 @@ extern Timer time_ray_buffering;
 extern Timer time_generate_voronoi_centers;
 extern Timer time_source_region_exchange;
 extern Timer time_mpi_imbalance;
+extern Timer time_adjpop;
+extern Timer time_adjpop_trees;
+extern Timer time_adjpop_probes;
+extern Timer time_adjpop_rays;
+extern Timer time_adjpop_detectors;
 
 } // namespace simulation
 

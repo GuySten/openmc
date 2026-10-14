@@ -27,6 +27,7 @@
 #include "openmc/tallies/filter_adjoint_root.h"
 #include "openmc/tallies/filter_match.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/timer.h"
 #include "openmc/weight_windows.h"
 
 namespace openmc {
@@ -1590,6 +1591,7 @@ void run_shadow_pass()
 {
   if (!simulation::adjpop_on)
     return;
+  simulation::time_adjpop.start();
 
   // Merge the driver's records in a deterministic order
   vector<FissionRecord> fissions;
@@ -1764,14 +1766,17 @@ void run_shadow_pass()
   for (int i = 0; i < 8; ++i)
     saved[i].swap(*lists[i]);
 
+  simulation::time_adjpop_trees.start();
   const auto n = static_cast<int64_t>(roots.size());
 #pragma omp parallel for schedule(static)
   for (int64_t i = 0; i < n; ++i)
     run_one_tree(roots[i].first, roots[i].second);
+  simulation::time_adjpop_trees.stop();
 
   // Probes, after every other tree and in loops of their own, so that the
   // other populations are grown and summed exactly as without them
   if (probes_on()) {
+    simulation::time_adjpop_probes.start();
     const int nb = n_nbins();
     vector<double> raw_photon(nb, 0.0);
     vector<int64_t> n_event(nb, 0);
@@ -1853,10 +1858,12 @@ void run_shadow_pass()
 #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n_kept; ++i)
       run_one_tree(kept[i].first, kept[i].second);
+    simulation::time_adjpop_probes.stop();
   }
 
   // Ray probes, after everything else
   if (rays_on()) {
+    simulation::time_adjpop_rays.start();
     const int nb = n_nbins();
     vector<double> raw_cast(nb, 0.0);
     vector<int64_t> n_cast(nb, 0);
@@ -1935,11 +1942,13 @@ void run_shadow_pass()
       // weight, whose expected value is the raw weight
       run_one_ray_tree(rroots[grow[i].first], grow[i].second);
     }
+    simulation::time_adjpop_rays.stop();
   }
 
   // Detector trees, last: the scoring lists then hold the detector tallies
   // alone, and the driver's are put back after
   if (detectors_on()) {
+    simulation::time_adjpop_detectors.start();
     // The weight windows are tuned to the detector but carry no absolute
     // scale. As in CADIS, a window's centre c is taken as R / I with I the
     // importance and R the source-averaged importance: per category, over its
@@ -1974,6 +1983,7 @@ void run_shadow_pass()
     for (int64_t i = 0; i < n_det; ++i)
       run_detector_tree(det_roots[i]);
     model::time_grid.swap(saved_grid);
+    simulation::time_adjpop_detectors.stop();
   }
 
   for (int i = 0; i < 8; ++i)
@@ -2019,6 +2029,7 @@ void run_shadow_pass()
     for (int i = 0; i < nrc; ++i)
       batch_rj[i] += thread_rj[static_cast<size_t>(t) * nrc + i];
   }
+  simulation::time_adjpop.stop();
 }
 
 void finalize_batch()

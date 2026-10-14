@@ -475,6 +475,13 @@ void print_runtime()
   show_time("Total time in simulation",
     time_inactive.elapsed() + time_active.elapsed());
   show_time("Time in transport only", time_transport.elapsed(), 1);
+  if (settings::adjpop_n_generation > 0) {
+    show_time("Time in adjoint side populations", time_adjpop.elapsed(), 1);
+    show_time("Shadow trees", time_adjpop_trees.elapsed(), 2);
+    show_time("Probe lines", time_adjpop_probes.elapsed(), 2);
+    show_time("Ray lines", time_adjpop_rays.elapsed(), 2);
+    show_time("Detector trees", time_adjpop_detectors.elapsed(), 2);
+  }
   if (settings::event_based) {
     show_time("Particle initialization", time_event_init.elapsed(), 2);
     show_time("XS lookups", time_event_calculate_xs.elapsed(), 2);

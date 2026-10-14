@@ -167,7 +167,12 @@ def test_ray_trees_match_probe_trees(run_in_tmpdir):
         sd = tally.std_dev.ravel()
         off_pn, off_probe, off_ray, n_cat = \
             sp.adjoint_populations.detector_categories
+        runtime = sp.runtime
 
+    # Each part of the side populations is timed, within their total
+    parts = ['shadow trees', 'probe lines', 'ray lines', 'detector trees']
+    assert all(runtime[p] > 0.0 for p in parts)
+    assert sum(runtime[p] for p in parts) <= runtime['adjoint side populations']
     assert tally.filters[1].num_bins == n_cat
     for k in range(3):
         probe = off_probe + 3 * k

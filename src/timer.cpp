@@ -34,6 +34,11 @@ Timer time_load_balance;
 Timer time_generate_voronoi_centers;
 Timer time_source_region_exchange;
 Timer time_mpi_imbalance;
+Timer time_adjpop;
+Timer time_adjpop_trees;
+Timer time_adjpop_probes;
+Timer time_adjpop_rays;
+Timer time_adjpop_detectors;
 
 } // namespace simulation
 
@@ -94,6 +99,11 @@ void reset_timers()
   simulation::time_event_collision.reset();
   simulation::time_event_death.reset();
   simulation::time_update_src.reset();
+  simulation::time_adjpop.reset();
+  simulation::time_adjpop_trees.reset();
+  simulation::time_adjpop_probes.reset();
+  simulation::time_adjpop_rays.reset();
+  simulation::time_adjpop_detectors.reset();
 }
 
 } // namespace openmc

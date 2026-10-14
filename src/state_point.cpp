@@ -328,6 +328,15 @@ extern "C" int openmc_statepoint_write(const char* filename, bool* write_source)
     write_dataset(runtime_group, "simulation",
       time_inactive.elapsed() + time_active.elapsed());
     write_dataset(runtime_group, "transport", time_transport.elapsed());
+    if (settings::adjpop_n_generation > 0) {
+      write_dataset(
+        runtime_group, "adjoint side populations", time_adjpop.elapsed());
+      write_dataset(runtime_group, "shadow trees", time_adjpop_trees.elapsed());
+      write_dataset(runtime_group, "probe lines", time_adjpop_probes.elapsed());
+      write_dataset(runtime_group, "ray lines", time_adjpop_rays.elapsed());
+      write_dataset(
+        runtime_group, "detector trees", time_adjpop_detectors.elapsed());
+    }
     if (settings::run_mode == RunMode::EIGENVALUE) {
       write_dataset(runtime_group, "inactive batches", time_inactive.elapsed());
     }

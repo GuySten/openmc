@@ -1742,6 +1742,21 @@ void finalize_batch()
         batch_pf.swap(rpf);
       }
     }
+    if (!batch_rf.empty()) {
+      vector<double> rrw(batch_rw.size()), rrj(batch_rj.size()),
+        rrf(batch_rf.size());
+      mpi::reduce<double>(batch_rw.data(), rrw.data(), batch_rw.size(), MPI_SUM,
+        0, mpi::intracomm);
+      mpi::reduce<double>(batch_rj.data(), rrj.data(), batch_rj.size(), MPI_SUM,
+        0, mpi::intracomm);
+      mpi::reduce<double>(batch_rf.data(), rrf.data(), batch_rf.size(), MPI_SUM,
+        0, mpi::intracomm);
+      if (mpi::master) {
+        batch_rw.swap(rrw);
+        batch_rj.swap(rrj);
+        batch_rf.swap(rrf);
+      }
+    }
   }
 #endif
   if (mpi::master) {

@@ -28,6 +28,7 @@ _FILTER_TYPES = (
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
     'particleproduction', 'cellinstance', 'collision', 'time', 'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
+    'adjointroot',
 )
 
 def _mesh_current_names(mesh):
@@ -1062,6 +1063,102 @@ class MeshBornFilter(MeshFilter):
         The number of filter bins
 
     """
+
+
+class AdjointRootFilter(Filter):
+    """Bins the scores of the adjoint side populations' detector trees.
+
+    A detector tally (listed in ``Settings.adjoint_populations
+    ['detector_tallies']``) is scored only by detector trees: one generation
+    grown from each prompt fission, delayed, photoneutron, probe or ray root,
+    in which fission is absorption. This filter bins its scores by the root's
+    category and, with a mesh, by the mesh element of the fission event the
+    root came from (for a driver photoneutron, the birth of its photon).
+    Every score is divided by the generation's source weight in its bin, so
+    that the tally is the detector response per unit source weight.
+
+    The number of bins is set by the side populations' settings and is known
+    once results are read from a statepoint.
+
+    Parameters
+    ----------
+    mesh : openmc.MeshBase, optional
+        Mesh by which the roots' origins are binned
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    mesh : openmc.MeshBase or None
+        Mesh by which the roots' origins are binned
+    id : int
+        Unique identifier for the filter
+    bins : list of int
+        The mesh ID, or empty without a mesh
+    num_bins : int
+        Number of categories times the number of mesh elements (from a
+        statepoint)
+
+    """
+
+    def __init__(self, mesh=None, filter_id=None):
+        self.mesh = mesh
+        self.id = filter_id
+        self._num_bins = None
+
+    @property
+    def mesh(self):
+        return self._mesh
+
+    @mesh.setter
+    def mesh(self, mesh):
+        if mesh is not None:
+            cv.check_type('adjoint root filter mesh', mesh, openmc.MeshBase)
+        self._mesh = mesh
+
+    @property
+    def bins(self):
+        return [] if self.mesh is None else [self.mesh.id]
+
+    @property
+    def num_bins(self):
+        if self._num_bins is None:
+            raise ValueError('The number of bins of an AdjointRootFilter is '
+                             'only known from a statepoint.')
+        return self._num_bins
+
+    def can_merge(self, other):
+        return False
+
+    @classmethod
+    def from_xml_element(cls, elem, **kwargs):
+        filter_id = int(get_text(elem, 'id'))
+        bins = get_elem_list(elem, 'bins', int) or []
+        mesh = kwargs['meshes'][bins[0]] if bins else None
+        return cls(mesh, filter_id=filter_id)
+
+    @classmethod
+    def from_hdf5(cls, group, **kwargs):
+        if group['type'][()].decode() != cls.short_name.lower():
+            raise ValueError("Expected HDF5 data for filter type '"
+                             + cls.short_name.lower() + "' but got '"
+                             + group['type'][()].decode() + " instead")
+        filter_id = int(group.name.split('/')[-1].lstrip('filter '))
+        mesh_id = int(group['bins'][()])
+        mesh = None
+        if mesh_id >= 0:
+            if 'meshes' not in kwargs:
+                raise ValueError(cls.__name__ + " requires a 'meshes' keyword "
+                                 "argument.")
+            mesh = kwargs['meshes'][mesh_id]
+        out = cls(mesh, filter_id=filter_id)
+        out._num_bins = int(group['n_bins'][()])
+        return out
+
+    def get_pandas_dataframe(self, data_size, stride, **kwargs):
+        filter_bins = _repeat_and_tile(np.arange(self.num_bins), stride,
+                                       data_size)
+        return pd.DataFrame({self.short_name.lower(): filter_bins})
 
 
 class MeshMaterialFilter(MeshFilter):

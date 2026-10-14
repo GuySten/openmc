@@ -49,11 +49,22 @@
 //! beta_eff per group, generation time, the photoneutron fraction and its
 //! effect on both -- are formed from these sums in the Python API, with
 //! ordinary batch statistics.
+//!
+//! Detector trees (optional): every root grown above that is a prompt
+//! fission neutron, a delayed neutron, a photoneutron, or a probe or ray
+//! photoneutron, also grows a depth-0 tree of its own, on its own stream, in
+//! which fission is absorption and only the detector tallies are scored. Its
+//! scores are binned by the root's category and by the mesh element of the
+//! fission event the root came from (AdjointRootFilter), and divided by the
+//! source weight of that bin in the generation: the detector tallies are the
+//! non-multiplying detector response per unit source weight, the weighting
+//! functions of an ex-core detector.
 
 #ifndef OPENMC_ADJOINT_POPULATIONS_H
 #define OPENMC_ADJOINT_POPULATIONS_H
 
 #include <cstdint>
+#include <string>
 
 #include "hdf5.h"
 
@@ -62,6 +73,7 @@
 
 namespace openmc {
 
+class FilterMatch;
 class Particle;
 class Reaction;
 
@@ -101,6 +113,9 @@ struct Root {
   int tag;
   int ebin {-1}; //!< photoneutron energy group, -1 if none
   int64_t seed_id;
+  //! Where the root's source was: the fission event that made it or its
+  //! photon, or the birth of the driver photon that made a photoneutron
+  Position origin;
 };
 
 //! A shadow tag packs the class, the delayed-group tag and, for photoneutron
@@ -208,6 +223,13 @@ void write_results(hid_t file_id);
 //! a restart statepoint, so that the restarted run continues them. Called on
 //! the master rank, after init().
 void read_results(hid_t file_id);
+
+//! AdjointRootFilter hook: the bins and weights of the score of the detector
+//! tree being grown on this thread (none outside detector trees)
+void detector_bins(FilterMatch& match);
+
+//! Label of an AdjointRootFilter bin
+std::string detector_bin_label(int bin);
 
 //! Free storage
 void clear();

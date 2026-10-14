@@ -141,6 +141,7 @@ int adjpop_ray_comb_points {0};
 int adjpop_ray_refinement {1};
 bool adjpop_ray_probe_check {false};
 int adjpop_ray_allocation {0};
+vector<int> adjpop_detector_tallies;
 int legendre_to_tabular_points {C_NONE};
 int max_order {0};
 int n_log_bins {8000};
@@ -749,6 +750,12 @@ void read_settings_xml(pugi::xml_node root)
           fatal_error("<adjoint_populations> 'photoneutron_ray_allocation' "
                       "must be 'equal' or 'fission'.");
         }
+      }
+      if (check_for_node(node, "detector_tallies")) {
+        adjpop_detector_tallies = get_node_array<int>(node, "detector_tallies");
+        if (adjpop_detector_tallies.empty())
+          fatal_error("<adjoint_populations> 'detector_tallies' must name at "
+                      "least one tally.");
       }
       if (check_for_node(node, "photoneutron_energy_variable")) {
         std::string v = get_node_value(node, "photoneutron_energy_variable");

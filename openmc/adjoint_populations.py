@@ -138,6 +138,19 @@ class AdjointPopulations:
         Probed fission weight (sum of w/k sigma_f/sigma_t over the recorded
         fission events), indexed [batch, nuclide bin]: the weight of probe
         photons emitted per line
+    detector_source : numpy.ndarray or None
+        Source weight of the detector trees' categories, indexed [batch,
+        category, origin bin], if detector tallies were on: the fission-bank
+        weight of prompt sites, the delayed-neutron weight per group, the
+        driver photoneutrons' weight, and the fission weight emitting each
+        probe and ray line. The detector tallies are divided by it per
+        generation.
+    detector_categories : tuple of int or None
+        The first category of the driver photoneutrons, the probes and the
+        rays, and the number of categories. Categories 0 and 1 to 8 are
+        prompt fission neutrons and the delayed groups.
+    n_detector_histories : int
+        Histories transported in detector trees
     probe_trigger : tuple of float or None
         (threshold, floor) of the probe-importance trigger, if one was set
 
@@ -227,6 +240,17 @@ class AdjointPopulations:
                 (self.n_batches, nn, len(self.ray_neutron_energies), nd))
             self.ray_fission_weight = \
                 group['ray_fission_weight'][()].reshape(self.n_batches, nn)
+
+        self.detector_source = None
+        self.detector_categories = None
+        self.n_detector_histories = 0
+        if 'detector_source' in group:
+            cats = tuple(int(c) for c in group['detector_categories'][()])
+            n_origin = int(group['detector_n_origin_bins'][()])
+            self.detector_categories = cats
+            self.detector_source = group['detector_source'][()].reshape(
+                (self.n_batches, cats[3], n_origin))
+            self.n_detector_histories = int(group['n_detector_histories'][()])
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))

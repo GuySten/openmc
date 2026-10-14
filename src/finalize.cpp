@@ -125,6 +125,7 @@ int openmc_finalize()
   settings::adjpop_ray_neutron_energies.clear();
   settings::adjpop_ray_fraction = 1.0;
   settings::adjpop_ray_allocation = 0;
+  settings::adjpop_detector_tallies.clear();
   settings::adjpop_ray_comb_points = 0;
   settings::adjpop_ray_refinement = 1;
   settings::adjpop_ray_probe_check = false;

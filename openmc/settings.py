@@ -220,6 +220,13 @@ class Settings:
         :photoneutron_probe_trigger_floor: Fraction of the peak importance
             below which the trigger's threshold applies to the peak instead
             of the line's own value (float in [0, 1], default 0.1).
+        :detector_tallies: Tallies (or their IDs) scored only by detector
+            trees: one generation grown from every surviving prompt fission,
+            delayed, photoneutron, probe and ray root, in which fission is
+            absorption. Each needs an :class:`openmc.AdjointRootFilter`,
+            all with the same mesh or none; the tallies are the detector
+            response per unit source weight of each root category and
+            origin.
 
         Results are read with :attr:`openmc.StatePoint.adjoint_populations`.
     max_lost_particles : int
@@ -1263,7 +1270,8 @@ class Settings:
                             'photoneutron_probe_trigger_floor',
                             'photoneutron_ray_comb_points',
                             'photoneutron_ray_refinement',
-                            'photoneutron_ray_probe_check'))
+                            'photoneutron_ray_probe_check',
+                            'detector_tallies'))
             if key == 'n_generation':
                 cv.check_type('adjoint populations n_generation', value,
                               Integral)
@@ -1332,6 +1340,16 @@ class Settings:
                 cv.check_value('adjoint populations '
                                'photoneutron_energy_variable', value,
                                ('photon_birth', 'photoneutron'))
+            elif key == 'detector_tallies':
+                cv.check_type('adjoint populations detector_tallies', value,
+                              Iterable, (Integral, openmc.Tally))
+                ids = [t.id if isinstance(t, openmc.Tally) else int(t)
+                       for t in value]
+                if not ids or len(set(ids)) != len(ids):
+                    raise ValueError('detector_tallies must name at least one '
+                                     'tally, each once.')
+                adjoint_populations = dict(adjoint_populations)
+                adjoint_populations[key] = ids
             elif key == 'photoneutron_fission_nuclides':
                 if isinstance(value, str):
                     raise TypeError('photoneutron_fission_nuclides must be a '
@@ -2144,8 +2162,9 @@ class Settings:
                              'photoneutron_probe_energies',
                              'photoneutron_ray_neutron_energies'):
                     subelement.text = ' '.join(repr(float(e)) for e in value)
-                elif key == 'photoneutron_fission_nuclides':
-                    subelement.text = ' '.join(value)
+                elif key in ('photoneutron_fission_nuclides',
+                             'detector_tallies'):
+                    subelement.text = ' '.join(str(v) for v in value)
                 else:
                     subelement.text = str(value)
 
@@ -2754,6 +2773,9 @@ class Settings:
             if text is not None:
                 value['photoneutron_probe_energies'] = [
                     float(x) for x in text.split()]
+            text = get_text(elem, 'detector_tallies')
+            if text is not None:
+                value['detector_tallies'] = [int(x) for x in text.split()]
             self.adjoint_populations = value
 
     def _tabular_legendre_from_xml_element(self, root):

@@ -17,6 +17,7 @@
 namespace openmc {
 
 enum class FilterType {
+  ADJOINT_ROOT,
   AZIMUTHAL,
   CELLBORN,
   CELLFROM,

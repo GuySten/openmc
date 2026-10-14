@@ -13,6 +13,7 @@
 #include "openmc/hdf5_interface.h"
 #include "openmc/material.h"
 #include "openmc/math_functions.h"
+#include "openmc/mesh.h"
 #include "openmc/message_passing.h"
 #include "openmc/nuclide.h"
 #include "openmc/openmp_interface.h"
@@ -23,6 +24,8 @@
 #include "openmc/reaction.h"
 #include "openmc/settings.h"
 #include "openmc/simulation.h"
+#include "openmc/tallies/filter_adjoint_root.h"
+#include "openmc/tallies/filter_match.h"
 #include "openmc/tallies/tally.h"
 
 namespace openmc {
@@ -218,6 +221,48 @@ int64_t last_probe_photons {0};
 int64_t last_probe_roots {0};
 int64_t n_probe_histories {0};
 
+// Detector trees. Categories: 0 prompt fission neutrons, 1..N_TAG-1 delayed
+// groups, then the driver's photoneutrons (by energy group and nuclide bin,
+// the last for those outside the groups), the probe bins (nuclide bin x line
+// x label) and the ray bins (nuclide bin x ray line). Each category is split
+// by the origin mesh element (one bin without a mesh).
+vector<int> det_tallies;   // indices of the detector tallies
+int32_t det_mesh {C_NONE}; // index of the origin mesh
+int n_det_mesh {1};        // origin bins
+int det_off_pn {0};        // first driver-photoneutron category
+int det_n_pn {0};          // driver-photoneutron categories
+int det_off_probe {0};     // first probe category
+int det_off_ray {0};       // first ray category
+int n_det_cat {0};         // categories
+// This generation's source weight per category and origin bin, over the
+// whole run, divided by the tallies' normalization: a score is divided by it
+vector<double> det_source;
+// Source weight per category and origin bin, this rank: this batch's, and
+// every finished batch's
+vector<double> batch_ds, batches_ds;
+int64_t n_detector_histories {0};
+// The detector tree being grown on each thread: its category, origin bin
+// and, for a ray tree, every ray line's factor
+struct DetectorTree {
+  bool on {false};
+  int cat {-1};
+  int origin_bin {0};
+  const vector<double>* factor {nullptr};
+};
+vector<DetectorTree> thread_det;
+// The fission event of the probe photon being transported on each thread
+vector<Position> thread_probe_origin;
+
+bool detectors_on()
+{
+  return !det_tallies.empty();
+}
+
+bool in_detector_tree()
+{
+  return !thread_det.empty() && thread_det[thread_num()].on;
+}
+
 int64_t generation_key()
 {
   // Particle ids restart every generation and total_gen only advances at
@@ -281,6 +326,34 @@ int nuclide_bin_of(int i_nuclide)
   return (i_nuclide >= 0 && i_nuclide < static_cast<int>(nuclide_bin.size()))
            ? nuclide_bin[i_nuclide]
            : n_nbins() - 1;
+}
+
+//! Origin bin of a detector root: its mesh element, -1 outside the mesh, or 0
+//! without a mesh
+int origin_bin(const Position& r)
+{
+  return (det_mesh == C_NONE) ? 0 : model::meshes[det_mesh]->get_bin(r);
+}
+
+//! Detector category of a root, -1 if it grows no detector tree. A ray
+//! root's is its nuclide bin's first ray line.
+int detector_category(const Root& r)
+{
+  switch (r.cls) {
+  case CLASS_FISSION:
+    // Delayed neutrons are the delayed roots', drawn for every fission
+    return (r.tag == 0) ? 0 : -1;
+  case CLASS_DELAYED:
+    return r.tag;
+  case CLASS_PHOTONEUTRON:
+    return det_off_pn + ((r.ebin >= 0) ? r.ebin : det_n_pn - 1);
+  case CLASS_PROBE:
+    return det_off_probe + r.ebin * N_PROBE_LABEL + r.tag;
+  case CLASS_RAY:
+    return det_off_ray + (r.ebin / n_comb()) * n_ray_lines();
+  default:
+    return -1;
+  }
 }
 
 //! Target (site) weight of a class
@@ -362,8 +435,9 @@ int64_t copy_id(int64_t id, int c)
   return (c == 0) ? id : combine_ids({id, c, 808});
 }
 
-//! Grow one root n_generation generations in the unperturbed physics
-void run_one_tree(const Root& root, double w)
+//! Transport one shadow-tree neutron from a root, with weight w, on a stream
+//! keyed on key. Returns the number of tracks.
+int64_t grow_tree(const Root& root, double w, int64_t key)
 {
   SourceSite site;
   site.r = root.r;
@@ -386,15 +460,46 @@ void run_one_tree(const Root& root, double w)
   p.n_split() = 0;
   p.write_track() = false;
   p.current_work() = 1;
+  init_particle_seeds(key, p.seeds());
+  p.stream() = STREAM_TRACKING;
+  transport_history_based_single_particle(p);
+  return p.n_tracks();
+}
+
+//! Grow one root n_generation generations in the unperturbed physics
+void run_one_tree(const Root& root, double w)
+{
+  score_tree(root.cls, root.tag, root.ebin, 0, w, 0.0);
   // The tree grows on its own stream, keyed differently from the one that
   // sampled the root's outgoing state.
-  init_particle_seeds(combine_ids({root.seed_id, 2}), p.seeds());
-  p.stream() = STREAM_TRACKING;
-
-  score_tree(root.cls, root.tag, root.ebin, 0, w, 0.0);
-  transport_history_based_single_particle(p);
+  const int64_t n = grow_tree(root, w, combine_ids({root.seed_id, 2}));
 #pragma omp atomic
-  n_histories += p.n_tracks();
+  n_histories += n;
+}
+
+//! A root's detector tree: the root, its weight, category and origin bin,
+//! and for a ray root every ray line's factor
+struct DetectorRoot {
+  Root root;
+  double w;
+  int cat;
+  int origin_bin;
+  vector<double> factor;
+};
+
+//! Grow a root's detector tree: one generation, in which fission is
+//! absorption and only the detector tallies score, on a stream of its own
+void run_detector_tree(const DetectorRoot& d)
+{
+  auto& state = thread_det[thread_num()];
+  state.on = true;
+  state.cat = d.cat;
+  state.origin_bin = d.origin_bin;
+  state.factor = d.factor.empty() ? nullptr : &d.factor;
+  const int64_t n = grow_tree(d.root, d.w, combine_ids({d.root.seed_id, 909}));
+  state = DetectorTree {};
+#pragma omp atomic
+  n_detector_histories += n;
 }
 
 //! A probe photon waiting to be transported
@@ -467,6 +572,9 @@ void run_one_probe(const Probe& q)
   p.current_work() = 1;
   init_particle_seeds(combine_ids({q.seed_id, 2}), p.seeds());
   p.stream() = STREAM_TRACKING;
+  // Its photoneutrons' detector trees are binned by this fission event
+  if (!thread_probe_origin.empty())
+    thread_probe_origin[thread_num()] = q.r;
   transport_history_based_single_particle(p);
 #pragma omp atomic
   n_probe_histories += p.n_tracks();
@@ -495,6 +603,7 @@ void emit_delayed(const FissionRecord& f, vector<std::pair<Root, double>>& out,
     uint64_t s = init_seed(combine_ids({sid, 3}), STREAM_TRACKING);
     Root r;
     r.r = f.r;
+    r.origin = f.r;
     r.time = f.time;
     r.wgt = w_raw;
     r.cls = CLASS_DELAYED;
@@ -959,6 +1068,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   out.nbin = nuclide_bin_of(f.i_nuclide);
   Root& r = out.root;
   r.r = rb;
+  r.origin = f.r;
   r.u = un;
   r.E = ray_comb[jc];
   r.time = f.time;
@@ -1069,6 +1179,18 @@ void run_one_ray_tree(const RayRoot& rr, double w)
 
 void init()
 {
+  // An adjoint root filter is only scored by detector trees
+  for (const auto& t : model::tallies) {
+    if (!t->get_filter<AdjointRootFilter>())
+      continue;
+    const auto& ids = settings::adjpop_detector_tallies;
+    if (settings::adjpop_n_generation <= 0 ||
+        std::find(ids.begin(), ids.end(), t->id_) == ids.end()) {
+      fatal_error(fmt::format("Tally {} has an adjoint root filter but is not "
+                              "a detector tally of <adjoint_populations>.",
+        t->id_));
+    }
+  }
   if (settings::adjpop_n_generation <= 0)
     return;
   if (settings::run_mode != RunMode::EIGENVALUE)
@@ -1191,6 +1313,50 @@ void init()
   batches_wt.clear();
   n_batches_recorded = 0;
   n_histories = 0;
+
+  // Detector trees: every detector tally bins its scores with an adjoint root
+  // filter, all on the same origin mesh (or none)
+  det_tallies.clear();
+  det_mesh = C_NONE;
+  bool first = true;
+  for (int id : settings::adjpop_detector_tallies) {
+    auto it = model::tally_map.find(id);
+    if (it == model::tally_map.end())
+      fatal_error(fmt::format(
+        "<adjoint_populations> detector tally {} does not exist.", id));
+    auto& t = *model::tallies[it->second];
+    const auto* f = t.get_filter<AdjointRootFilter>();
+    if (!f)
+      fatal_error(fmt::format("<adjoint_populations> detector tally {} needs "
+                              "an adjoint root filter.",
+        id));
+    if (first) {
+      det_mesh = f->mesh();
+      first = false;
+    } else if (f->mesh() != det_mesh) {
+      fatal_error("The adjoint root filters of the <adjoint_populations> "
+                  "detector tallies must all have the same mesh, or none.");
+    }
+    t.detector_only_ = true;
+    det_tallies.push_back(it->second);
+  }
+  n_det_mesh = (det_mesh == C_NONE) ? 1 : model::meshes[det_mesh]->n_bins();
+  det_n_pn = settings::adjpop_photoneutrons ? n_tbins() + 1 : 0;
+  det_off_pn = N_TAG;
+  det_off_probe = det_off_pn + det_n_pn;
+  det_off_ray = det_off_probe + n_probe_bins();
+  n_det_cat = det_off_ray + (rays_on() ? n_nbins() * n_ray_lines() : 0);
+  for (auto& f : model::tally_filters)
+    if (auto* g = dynamic_cast<AdjointRootFilter*>(f.get()))
+      g->set_n_bins(n_det_cat * n_det_mesh);
+  const size_t n_ds =
+    detectors_on() ? static_cast<size_t>(n_det_cat) * n_det_mesh : 0;
+  det_source.assign(n_ds, 0.0);
+  batch_ds.assign(n_ds, 0.0);
+  batches_ds.clear();
+  thread_det.assign(n_threads, DetectorTree {});
+  thread_probe_origin.assign(n_threads, Position {});
+  n_detector_histories = 0;
 }
 
 void reset_generation()
@@ -1248,6 +1414,7 @@ bool record_photoneutron(
     return false;
   Root r;
   r.r = p.r();
+  r.origin = p.r_born();
   r.u = u;
   r.E = E;
   r.time = p.time();
@@ -1280,6 +1447,8 @@ bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
     return true;
   Root r;
   r.r = p.r();
+  r.origin = thread_probe_origin.empty() ? p.r_born()
+                                         : thread_probe_origin[thread_num()];
   r.u = u;
   r.E = E;
   r.time = p.time();
@@ -1316,6 +1485,9 @@ int secondary_photon_tag(int shadow_tag)
 
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
 {
+  // A detector tree is one generation: its fissions are absorptions
+  if (in_detector_tree())
+    return;
   const int cls = tag_class(p.shadow_tag());
   const int tag = p.shadow_tag() % N_TAG;
   const int ebin = tag_ebin(p.shadow_tag());
@@ -1453,12 +1625,72 @@ void run_shadow_pass()
     }
   }
 
+  // The detector trees' source weight per category and origin bin: over
+  // every fission site, fission event and photoneutron of the generation,
+  // not just the roots that survive, so that it is known before any tree
+  // grows and every tree's score can be divided by its bin's
+  if (detectors_on()) {
+    const int nm = n_det_mesh;
+    vector<double> s(det_source.size(), 0.0);
+    auto add = [&](int cat, int b, double w) {
+      if (cat >= 0 && b >= 0)
+        s[static_cast<size_t>(cat) * nm + b] += w;
+    };
+    for (int64_t i = 0; i < simulation::fission_bank.size(); ++i) {
+      const SourceSite& site = simulation::fission_bank[i];
+      if (site.delayed_group == 0)
+        add(0, origin_bin(site.r), site.wgt);
+    }
+    const int K = n_lines(), KR = n_ray_lines();
+    for (const auto& f : fissions) {
+      const int b = origin_bin(f.r);
+      const auto& nuc = *data::nuclides[f.i_nuclide];
+      const Reaction& rx = *f.rx;
+      const int n_group = std::min<int>(
+        nuc.n_precursor_, static_cast<int>(rx.products_.size()) - 1);
+      for (int g = 1; g <= n_group; ++g)
+        add(std::min(g, N_TAG - 1), b,
+          f.wgt * f.sigma_f_to_t * (*rx.products_[g].yield_)(f.E));
+      // Per probe or ray line, the fission weight that emits it: each line
+      // gets w/k sigma_f/sigma_t per event
+      const double wf = f.wgt * f.sigma_f_to_t;
+      const int nb = nuclide_bin_of(f.i_nuclide);
+      if (probes_on())
+        for (int k = 0; k < K; ++k)
+          for (int l = 0; l < N_PROBE_LABEL; ++l)
+            add(det_off_probe + (nb * K + k) * N_PROBE_LABEL + l, b, wf);
+      if (rays_on())
+        for (int k = 0; k < KR; ++k)
+          add(det_off_ray + nb * KR + k, b, wf);
+    }
+    for (const auto& r : photo)
+      add(detector_category(r), origin_bin(r.origin), r.wgt);
+    for (size_t i = 0; i < s.size(); ++i)
+      batch_ds[i] += s[i];
+
+    // The tallies are divided by the run's particles per generation; the
+    // scores are divided by the source weight of the whole run
+    det_source = s;
+    double norm = static_cast<double>(settings::n_particles);
+#ifdef OPENMC_MPI
+    if (settings::reduce_tallies && mpi::n_procs > 1)
+      MPI_Allreduce(s.data(), det_source.data(), static_cast<int>(s.size()),
+        MPI_DOUBLE, MPI_SUM, mpi::intracomm);
+#endif
+    if (!settings::reduce_tallies)
+      norm = static_cast<double>(simulation::work_per_rank);
+    norm *= settings::gen_per_batch;
+    for (auto& v : det_source)
+      v /= norm;
+  }
+
   // The surviving roots of all three populations
   vector<std::pair<Root, double>> roots;
   for (int64_t i = 0; i < simulation::fission_bank.size(); ++i) {
     const SourceSite& s = simulation::fission_bank[i];
     Root r;
     r.r = s.r;
+    r.origin = s.r;
     r.u = s.u;
     r.E = s.E;
     r.time = s.time;
@@ -1485,6 +1717,19 @@ void run_shadow_pass()
     last_roots[c] = 0;
   for (const auto& rw : roots)
     ++last_roots[rw.first.cls];
+
+  // Every surviving root of a detector category also grows a detector tree,
+  // with the same weight
+  vector<DetectorRoot> det_roots;
+  auto add_detector_root = [&](const Root& r, double w, int cat,
+                             const vector<double>& factor) {
+    const int b = origin_bin(r.origin);
+    if (cat >= 0 && b >= 0)
+      det_roots.push_back({r, w, cat, b, factor});
+  };
+  if (detectors_on())
+    for (const auto& rw : roots)
+      add_detector_root(rw.first, rw.second, detector_category(rw.first), {});
 
   // Shadow trees score nothing but their own populations: every tally is
   // suspended for the pass.
@@ -1579,6 +1824,9 @@ void run_shadow_pass()
         kept.emplace_back(r, w);
     }
     last_probe_roots = static_cast<int64_t>(kept.size());
+    if (detectors_on())
+      for (const auto& rw : kept)
+        add_detector_root(rw.first, rw.second, detector_category(rw.first), {});
     const auto n_kept = static_cast<int64_t>(kept.size());
 #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n_kept; ++i)
@@ -1652,6 +1900,12 @@ void run_shadow_pass()
         grow.emplace_back(i, w);
     }
     last_ray_roots = static_cast<int64_t>(grow.size());
+    if (detectors_on())
+      for (const auto& g : grow) {
+        const auto& rr = rroots[g.first];
+        add_detector_root(
+          rr.root, g.second, detector_category(rr.root), rr.factor);
+      }
     const auto n_grow = static_cast<int64_t>(grow.size());
 #pragma omp parallel for schedule(static)
     for (int64_t i = 0; i < n_grow; ++i) {
@@ -1659,6 +1913,18 @@ void run_shadow_pass()
       // weight, whose expected value is the raw weight
       run_one_ray_tree(rroots[grow[i].first], grow[i].second);
     }
+  }
+
+  // Detector trees, last: the scoring lists then hold the detector tallies
+  // alone, and the driver's are put back after
+  if (detectors_on()) {
+    auto saved_grid = model::time_grid;
+    setup_detector_tallies();
+    const auto n_det = static_cast<int64_t>(det_roots.size());
+#pragma omp parallel for schedule(static)
+    for (int64_t i = 0; i < n_det; ++i)
+      run_detector_tree(det_roots[i]);
+    model::time_grid.swap(saved_grid);
   }
 
   for (int i = 0; i < 8; ++i)
@@ -1755,6 +2021,13 @@ void finalize_batch()
         batch_rf.swap(rrf);
       }
     }
+    if (!batch_ds.empty()) {
+      vector<double> rds(batch_ds.size());
+      mpi::reduce<double>(batch_ds.data(), rds.data(), batch_ds.size(), MPI_SUM,
+        0, mpi::intracomm);
+      if (mpi::master)
+        batch_ds.swap(rds);
+    }
   }
 #endif
   if (mpi::master) {
@@ -1766,6 +2039,7 @@ void finalize_batch()
     batches_rw.insert(batches_rw.end(), batch_rw.begin(), batch_rw.end());
     batches_rj.insert(batches_rj.end(), batch_rj.begin(), batch_rj.end());
     batches_rf.insert(batches_rf.end(), batch_rf.begin(), batch_rf.end());
+    batches_ds.insert(batches_ds.end(), batch_ds.begin(), batch_ds.end());
     ++n_batches_recorded;
   }
   std::fill(batch_w.begin(), batch_w.end(), 0.0);
@@ -1776,6 +2050,7 @@ void finalize_batch()
   std::fill(batch_rw.begin(), batch_rw.end(), 0.0);
   std::fill(batch_rj.begin(), batch_rj.end(), 0.0);
   std::fill(batch_rf.begin(), batch_rf.end(), 0.0);
+  std::fill(batch_ds.begin(), batch_ds.end(), 0.0);
 }
 
 double probe_trigger_ratio(int& worst_bin, double& worst_energy)
@@ -1978,6 +2253,16 @@ void write_results(hid_t file_id)
     write_dataset(group, "ray_root_fraction",
       root_fraction_or_default(settings::adjpop_ray_root_fraction));
   }
+  if (detectors_on()) {
+    // [batch][category][origin bin]: the detector trees' source weight
+    write_dataset(group, "detector_source", batches_ds);
+    write_dataset(group, "detector_n_origin_bins", n_det_mesh);
+    // The first category of the driver photoneutrons, probes and rays, and
+    // the number of categories
+    vector<int> cats {det_off_pn, det_off_probe, det_off_ray, n_det_cat};
+    write_dataset(group, "detector_categories", cats);
+    write_dataset(group, "n_detector_histories", n_detector_histories);
+  }
   close_group(group);
 }
 
@@ -2073,6 +2358,19 @@ void read_results(hid_t file_id)
     read_dataset(group, "n_probe_histories", probe_histories, true);
   }
 
+  check(object_exists(group, "detector_source") == detectors_on());
+  vector<double> ds;
+  int64_t detector_histories = 0;
+  if (detectors_on()) {
+    vector<int> cats;
+    read_dataset(group, "detector_categories", cats, true);
+    check(
+      read_int("detector_n_origin_bins") == n_det_mesh &&
+      cats == vector<int> {det_off_pn, det_off_probe, det_off_ray, n_det_cat});
+    ds = read_batches("detector_source", batch_ds);
+    read_dataset(group, "n_detector_histories", detector_histories, true);
+  }
+
   check(object_exists(group, "ray_weight") == rays_on());
   vector<double> rw, rj, rf;
   int64_t ray_segments = 0;
@@ -2098,10 +2396,63 @@ void read_results(hid_t file_id)
   batches_rw = std::move(rw);
   batches_rj = std::move(rj);
   batches_rf = std::move(rf);
+  batches_ds = std::move(ds);
+  n_detector_histories = detector_histories;
   std::copy(sw.begin(), sw.end(), site_w);
   n_histories = histories;
   n_probe_histories = probe_histories;
   n_ray_segments = ray_segments;
+}
+
+void detector_bins(FilterMatch& match)
+{
+  if (!in_detector_tree())
+    return;
+  const auto& d = thread_det[thread_num()];
+  auto add = [&](int cat, double a) {
+    const int i = cat * n_det_mesh + d.origin_bin;
+    const double s = det_source[i];
+    if (s > 0.0) {
+      match.bins_.push_back(i);
+      match.weights_.push_back(a / s);
+    }
+  };
+  if (d.factor) {
+    // A ray tree is every ray line's, each with its factor
+    for (int k = 0; k < static_cast<int>(d.factor->size()); ++k)
+      if ((*d.factor)[k] != 0.0)
+        add(d.cat + k, (*d.factor)[k]);
+  } else {
+    add(d.cat, 1.0);
+  }
+}
+
+std::string detector_bin_label(int bin)
+{
+  const int cat = bin / std::max(n_det_mesh, 1);
+  const int b = bin % std::max(n_det_mesh, 1);
+  std::string label;
+  if (cat == 0) {
+    label = "prompt fission";
+  } else if (cat < det_off_pn) {
+    label = fmt::format("delayed group {}", cat);
+  } else if (cat < det_off_probe) {
+    label = (cat == det_off_probe - 1)
+              ? std::string("photoneutrons")
+              : fmt::format("photoneutron group {}", cat - det_off_pn);
+  } else if (cat < det_off_ray) {
+    const int i = cat - det_off_probe;
+    const int line = (i / N_PROBE_LABEL) % std::max(n_lines(), 1);
+    label = fmt::format("probe nuclide bin {} line {} label {}",
+      (i / N_PROBE_LABEL) / std::max(n_lines(), 1), line, i % N_PROBE_LABEL);
+  } else {
+    const int i = cat - det_off_ray;
+    label = fmt::format("ray nuclide bin {} line {}",
+      i / std::max(n_ray_lines(), 1), i % std::max(n_ray_lines(), 1));
+  }
+  if (det_mesh != C_NONE)
+    label += ", origin " + model::meshes[det_mesh]->bin_label(b);
+  return "Adjoint root: " + label;
 }
 
 void clear()
@@ -2150,6 +2501,16 @@ void clear()
   ray_root_target.clear();
   ray_site_w.clear();
   last_rays = last_ray_roots = n_ray_segments = 0;
+  det_tallies.clear();
+  det_mesh = C_NONE;
+  n_det_mesh = 1;
+  n_det_cat = 0;
+  det_source.clear();
+  batch_ds.clear();
+  batches_ds.clear();
+  thread_det.clear();
+  thread_probe_origin.clear();
+  n_detector_histories = 0;
   nuclide_bin.clear();
   n_batches_recorded = 0;
   n_histories = 0;

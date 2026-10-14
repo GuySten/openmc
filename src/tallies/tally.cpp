@@ -1162,7 +1162,11 @@ void add_to_time_grid(vector<double> grid)
   model::time_grid.swap(merged);
 }
 
-void setup_active_tallies()
+namespace {
+
+//! Fill the scoring lists with the active tallies, either the detector-only
+//! ones or the rest
+void fill_scoring_lists(bool detector_only)
 {
   model::active_tallies.clear();
   model::active_analog_tallies.clear();
@@ -1178,7 +1182,12 @@ void setup_active_tallies()
     const auto& tally {*model::tallies[i]};
 
     if (tally.active_) {
-      model::active_tallies.push_back(i);
+      // Detector-only tallies are accumulated with the others, but only the
+      // detector trees score them
+      if (!detector_only || tally.detector_only_)
+        model::active_tallies.push_back(i);
+      if (tally.detector_only_ != detector_only)
+        continue;
       bool mesh_present = (tally.get_filter<MeshFilter>() ||
                            tally.get_filter<MeshMaterialFilter>());
       auto time_filter = tally.get_filter<TimeFilter>();
@@ -1216,6 +1225,18 @@ void setup_active_tallies()
       }
     }
   }
+}
+
+} // namespace
+
+void setup_active_tallies()
+{
+  fill_scoring_lists(false);
+}
+
+void setup_detector_tallies()
+{
+  fill_scoring_lists(true);
 }
 
 void free_memory_tally()

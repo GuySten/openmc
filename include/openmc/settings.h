@@ -184,6 +184,9 @@ extern bool adjpop_ray_probe_check;
 //! How rays and ray roots are shared among the fissioning-nuclide bins:
 //! 0 equally (a bin capped at what it has), 1 in proportion to fission weight
 extern int adjpop_ray_allocation;
+//! IDs of the detector tallies, scored only by the depth-0 detector trees
+//! grown from the side populations' roots (empty: no detector trees)
+extern vector<int> adjpop_detector_tallies;
 extern int
   legendre_to_tabular_points; //!< number of points to convert Legendres
 extern int max_order;         //!< Maximum Legendre order for multigroup data

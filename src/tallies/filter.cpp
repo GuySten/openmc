@@ -10,6 +10,7 @@
 #include "openmc/capi.h"
 #include "openmc/constants.h" // for MAX_LINE_LEN;
 #include "openmc/error.h"
+#include "openmc/tallies/filter_adjoint_root.h"
 #include "openmc/tallies/filter_azimuthal.h"
 #include "openmc/tallies/filter_cell.h"
 #include "openmc/tallies/filter_cell_instance.h"
@@ -104,7 +105,9 @@ Filter* Filter::create(pugi::xml_node node)
 
 Filter* Filter::create(const std::string& type, int32_t id)
 {
-  if (type == "azimuthal") {
+  if (type == "adjointroot") {
+    return Filter::create<AdjointRootFilter>(id);
+  } else if (type == "azimuthal") {
     return Filter::create<AzimuthalFilter>(id);
   } else if (type == "cell") {
     return Filter::create<CellFilter>(id);

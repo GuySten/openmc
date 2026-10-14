@@ -147,6 +147,10 @@ public:
   //! Whether this tally is currently being updated
   bool active_ {false};
 
+  //! Scored only by the adjoint side populations' detector trees, never by
+  //! the transport it is active in
+  bool detector_only_ {false};
+
   //! Number of realizations
   int n_realizations_ {0};
 
@@ -252,8 +256,13 @@ void accumulate_tallies();
 //! \return Distance to next time boundary (or INFTY if none)
 double distance_to_time_boundary(double time, double speed);
 
-//! Determine which tallies should be active
+//! Determine which tallies should be active. Detector-only tallies are active
+//! (accumulated and reduced) but enter no scoring list.
 void setup_active_tallies();
+
+//! Make the scoring lists hold the active detector-only tallies alone, for the
+//! side populations' detector trees. The caller restores the lists after.
+void setup_detector_tallies();
 
 #ifdef OPENMC_MPI
 //! Collect all tally results onto master process

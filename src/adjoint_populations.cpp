@@ -196,7 +196,6 @@ int64_t n_ray_segments {0};
 // The depth scores of the tree being grown on this thread, when it is a ray
 // tree (shared by every line with its own factor)
 vector<vector<double>> thread_tree_buf;
-vector<char> thread_tree_active;
 
 // The probe photons' targets per fissioning-nuclide bin; the probe roots'
 // targets and the site weight their trees bank at per bin and line
@@ -1184,7 +1183,6 @@ void init()
   batch_rf.assign(rays_on() ? n_nbins() : 0, 0.0);
   batches_rf.clear();
   thread_tree_buf.assign(n_threads, vector<double>(n_depth(), 0.0));
-  thread_tree_active.assign(n_threads, 0);
   thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
   thread_branch_n.assign(static_cast<size_t>(n_threads) * 2, 0);
   batch_w.assign(n_bins(), 0.0);
@@ -2025,7 +2023,6 @@ void clear()
   batch_rf.clear();
   batches_rf.clear();
   thread_tree_buf.clear();
-  thread_tree_active.clear();
   ray_cast_target.clear();
   ray_root_target.clear();
   ray_site_w.clear();

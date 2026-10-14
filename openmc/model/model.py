@@ -2983,6 +2983,171 @@ class Model:
         # Take a wild guess as to how many rays are needed
         self.settings.particles = 2 * int(max_length)
 
+    def detector_weight_windows(
+        self,
+        mesh: openmc.MeshBase,
+        targets: Iterable[openmc.Tally | openmc.Cell | openmc.MeshBase] | None = None,
+        groups: str | Sequence[float] | openmc.mgxs.EnergyGroups = "CASMO-8",
+        mgxs_path: PathLike = "mgxs.h5",
+        mgxs_kwargs: dict | None = None,
+        source: openmc.SourceBase | Iterable[openmc.SourceBase] | None = None,
+        energy_bounds: Sequence[float] | None = None,
+        particles: int | None = None,
+        batches: int = 200,
+        inactive: int = 100,
+        cwd: PathLike = ".",
+        **run_kwargs,
+    ) -> openmc.WeightWindowsList:
+        """FW-CADIS weight windows for the detector trees of the adjoint
+        side populations.
+
+        The detector trees grow from neutrons born at fissions, delayed
+        neutrons and photoneutrons, with fission treated as absorption. A copy
+        of the model is made into the same problem for random ray: its
+        materials are converted to multigroup, fission produces no neutrons
+        (``create_fission_neutrons = False``) and the fixed source is the
+        fission spectrum of each fissionable material, uniform over its
+        volume. FW-CADIS weight windows are then generated on `mesh` for the
+        targets; `mesh` also subdivides the random ray source regions. The
+        model itself is not changed.
+
+        Parameters
+        ----------
+        mesh : openmc.MeshBase
+            Mesh of the weight windows
+        targets : iterable of openmc.Tally, openmc.Cell or openmc.MeshBase, optional
+            Where the detector trees should score. A tally becomes a flux
+            tally with the same filters, less its
+            :class:`openmc.AdjointRootFilter`; its energy bins should fall on
+            group boundaries. A cell or mesh becomes a flux tally over it.
+            Defaults to the model's ``detector_tallies``.
+        groups : str, sequence of float or openmc.mgxs.EnergyGroups, optional
+            Energy groups of the multigroup data
+        mgxs_path : path-like, optional
+            Multigroup library, relative to `cwd`; generated if it does not
+            exist
+        mgxs_kwargs : dict, optional
+            Further arguments of :meth:`Model.convert_to_multigroup`
+        source : openmc.SourceBase or iterable of openmc.SourceBase, optional
+            Fixed source of the random ray run, in place of the fission
+            spectra; its energies must be discrete
+        energy_bounds : sequence of float, optional
+            Energy bounds of the weight windows
+        particles : int, optional
+            Rays per batch; defaults to the value set by
+            :meth:`Model.convert_to_random_ray`
+        batches : int, optional
+            Random ray batches
+        inactive : int, optional
+            Random ray inactive batches
+        cwd : path-like, optional
+            Directory of the random ray run, where ``weight_windows.h5`` is
+            written
+        **run_kwargs
+            Further arguments of :meth:`Model.run`
+
+        Returns
+        -------
+        openmc.WeightWindowsList
+            The weight windows, to be set as ``settings.weight_windows``
+
+        """
+        cwd = Path(cwd).resolve()
+        cwd.mkdir(parents=True, exist_ok=True)
+        mgxs_path = cwd / mgxs_path
+        if targets is None:
+            targets = self.settings.adjoint_populations.get(
+                'detector_tallies')
+            if not targets:
+                raise ValueError('No targets given and no detector_tallies '
+                                 'set in settings.adjoint_populations')
+        tallies = {t.id: t for t in self.tallies}
+        targets = [tallies[t] if isinstance(t, Integral) else t
+                   for t in targets]
+
+        # The copy is made with the targets so that their filters and meshes
+        # are copied along with the geometry they refer to
+        model, targets, mesh = copy.deepcopy((self, targets, mesh))
+
+        # Continuous-energy neutron transport only, for the multigroup data
+        s = model.settings
+        s.adjoint_populations = {}
+        s.photon_transport = False
+        s.photonuclear_physics = False
+        s.photoneutron_biasing = False
+        s.fission_photons_only = False
+        s.weight_windows = []
+        s.weight_windows_on = False
+        s.weight_window_generators = []
+        model.tallies = openmc.Tallies()
+        model.plots = openmc.Plots()
+        fissionable = [m for m in model.materials or
+                       model.geometry.get_all_materials().values()
+                       if any(openmc.data.zam(n)[0] >= 90
+                              for n in m.get_nuclides())]
+        model.convert_to_multigroup(
+            groups=groups, mgxs_path=mgxs_path, **(mgxs_kwargs or {}))
+        model.convert_to_random_ray()
+
+        # A fixed source with fission as absorption, as in the detector trees
+        s.run_mode = 'fixed source'
+        s.create_fission_neutrons = False
+        if particles is not None:
+            s.particles = particles
+        s.batches = batches
+        s.inactive = inactive
+        if source is None:
+            if not fissionable:
+                raise ValueError('The model has no fissionable material; '
+                                 'give the source')
+            if not isinstance(groups, openmc.mgxs.EnergyGroups):
+                groups = openmc.mgxs.EnergyGroups(groups)
+            e = np.asarray(groups.group_edges)
+            # Mid-group energies, highest group first as in the library
+            mid = (0.5 * (e[:-1] + e[1:]))[::-1]
+            library = openmc.MGXSLibrary.from_hdf5(mgxs_path)
+            source = []
+            for m in fissionable:
+                chi = library.get_by_name(m._macroscopic).chi
+                if chi is None or chi[0] is None:
+                    raise ValueError(f'No chi for material {m.id} in '
+                                     f'{mgxs_path}; give the source')
+                chi = np.asarray(chi[0], dtype=float)
+                keep = chi > 0.0
+                source.append(openmc.IndependentSource(
+                    energy=openmc.stats.Discrete(mid[keep], chi[keep]),
+                    constraints={'domains': [m]}))
+        s.source = source
+
+        # Weight windows on the mesh, which also subdivides the source regions
+        root = model.geometry.root_universe
+        s.random_ray['source_region_meshes'] = [(mesh, [root])]
+        flux_targets = openmc.Tallies()
+        for t in targets:
+            tally = openmc.Tally()
+            if isinstance(t, openmc.Tally):
+                tally.filters = [f for f in t.filters
+                                 if not isinstance(f, openmc.AdjointRootFilter)]
+            elif isinstance(t, openmc.Cell):
+                tally.filters = [openmc.CellFilter([t])]
+            elif isinstance(t, openmc.MeshBase):
+                tally.filters = [openmc.MeshFilter(t)]
+            else:
+                raise TypeError(f'Cannot make a target of {t!r}')
+            tally.scores = ['flux']
+            flux_targets.append(tally)
+        model.tallies = flux_targets
+        s.weight_window_generators = openmc.WeightWindowGenerator(
+            mesh, energy_bounds=energy_bounds, method='fw_cadis',
+            targets=flux_targets, max_realizations=batches)
+
+        with change_directory(cwd):
+            model.run(**run_kwargs)
+            # The file's meshes repeat the IDs of the model's
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', openmc.mixin.IDWarning)
+                return openmc.WeightWindowsList.from_hdf5('weight_windows.h5')
+
     def geometry_debug(
         self,
         lower_left: Sequence[float],

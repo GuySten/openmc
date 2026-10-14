@@ -389,3 +389,49 @@ def test_shared_root_filters_export_silently(run_in_tmpdir):
         warnings.simplefilter('error')
         openmc.Tallies(tallies).export_to_xml()
     assert tallies[0].filters[0].id == tallies[1].filters[0].id
+
+
+def test_detector_weight_windows(run_in_tmpdir):
+    """FW-CADIS weight windows for the detector trees from one call: the
+    model is left as it was, the windows fall towards the detector, and the
+    detector trees played in them stay unbiased."""
+    model, det, analog = detector_model()
+    mesh = openmc.RegularMesh()
+    mesh.lower_left = (-12.0,) * 3
+    mesh.upper_right = (12.0,) * 3
+    mesh.dimension = (6, 6, 6)
+    wws = model.detector_weight_windows(
+        mesh, groups=[0.0, 0.625, 2.0e7],
+        mgxs_kwargs={'particles': 500, 'batches': 20, 'inactive': 10},
+        particles=200, batches=20, inactive=10, cwd='rr', **run_kwargs())
+
+    assert model.settings.run_mode == 'eigenvalue'
+    assert model.settings.energy_mode != 'multi-group'
+    assert model.settings.create_fission_neutrons is not False
+    assert not model.settings.weight_windows
+    assert len(wws) == 1 and wws[0].particle_type == 'neutron'
+    lower = wws[0].lower_ww_bounds[..., 0]
+    # Windows are set wherever the mesh element lies in the geometry
+    c = np.linspace(-10.0, 10.0, 6)
+    x, y, z = np.meshgrid(c, c, c, indexing='ij')
+    inside = x**2 + y**2 + z**2 < 10.0**2
+    assert np.all(lower[inside] > 0.0)
+    # Lowest at the detector shell, highest in the core
+    assert lower[0, 3, 3] < lower[2, 3, 3] and lower[5, 3, 3] < lower[3, 3, 3]
+
+    model.settings.weight_windows = wws
+    model.settings.weight_windows_on = True
+    sp_path = model.run(**run_kwargs())
+    with openmc.StatePoint(sp_path) as sp:
+        tally = sp.get_tally(name='detector')
+        pops = sp.adjoint_populations
+        n_cat = pops.detector_categories[3]
+        g = tally.mean.reshape(n_cat, 2)
+        sg = tally.std_dev.reshape(n_cat, 2)
+        source = pops.detector_source.mean(axis=0)
+        a = sp.get_tally(name='analog')
+        a_mean, a_sd = a.mean.ravel()[0], a.std_dev.ravel()[0]
+    n = model.settings.particles
+    folded = (g * source).sum() / n
+    sigma = np.hypot(np.sqrt(((sg * source) ** 2).sum()) / n, a_sd)
+    assert abs(folded - a_mean) < 4.0 * sigma

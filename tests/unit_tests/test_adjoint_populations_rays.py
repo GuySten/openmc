@@ -96,12 +96,14 @@ def test_restart(model, perturbed_importance, run_in_tmpdir):
         perturbed_importance
     model.settings.batches = 6
     model.settings.statepoint = {'batches': [4, 6]}
-    model.run(**run_kwargs())
+    # One thread, so that the sums over threads' fission events are added in
+    # the same order in both runs
+    model.run(threads=1, **run_kwargs())
     n_batches, expected = read_results('statepoint.6.h5')
     assert n_batches == 4
     shutil.move('statepoint.6.h5', 'uninterrupted.h5')
 
-    model.run(restart_file='statepoint.4.h5', **run_kwargs())
+    model.run(restart_file='statepoint.4.h5', threads=1, **run_kwargs())
     n_batches, results = read_results('statepoint.6.h5')
     assert n_batches == 4
     for name in RESULTS:

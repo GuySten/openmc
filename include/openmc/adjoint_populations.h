@@ -204,6 +204,11 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy);
 //! Write the per-batch sums to a statepoint
 void write_results(hid_t file_id);
 
+//! Read the per-batch sums and counters that write_results() wrote back from
+//! a restart statepoint, so that the restarted run continues them. Called on
+//! the master rank, after init().
+void read_results(hid_t file_id);
+
 //! Free storage
 void clear();
 

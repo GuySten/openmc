@@ -554,6 +554,11 @@ extern "C" int openmc_statepoint_load(const char* filename)
     }
   }
 
+  // Read the adjoint side-population sums to master
+  if (mpi::master && settings::run_mode == RunMode::EIGENVALUE) {
+    adjpop::read_results(file_id);
+  }
+
   // Read source if in eigenvalue mode
   if (settings::run_mode == RunMode::EIGENVALUE) {
 

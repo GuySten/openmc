@@ -1981,6 +1981,129 @@ void write_results(hid_t file_id)
   close_group(group);
 }
 
+void read_results(hid_t file_id)
+{
+  if (settings::adjpop_n_generation <= 0)
+    return;
+
+  // The group is written once a batch has been recorded
+  if (!object_exists(file_id, "adjoint_populations")) {
+    if (simulation::restart_batch > settings::n_inactive)
+      fatal_error("The restart statepoint has no adjoint side-population "
+                  "results, but <adjoint_populations> is set.");
+    return;
+  }
+
+  // Reads are independent: only the master rank reads
+  hid_t group = open_group(file_id, "adjoint_populations");
+  auto check = [](bool same) {
+    if (!same)
+      fatal_error("The <adjoint_populations> settings differ from those of "
+                  "the restart statepoint.");
+  };
+  auto read_int = [&](const char* name) {
+    int value;
+    read_dataset(group, name, value, true);
+    return value;
+  };
+  auto read_vector = [&](const char* name) {
+    vector<double> v;
+    read_dataset(group, name, v, true);
+    return v;
+  };
+  auto read_string = [&](const char* name) {
+    std::string s;
+    read_dataset(group, name, s, true);
+    return s;
+  };
+
+  check(read_int("n_generation") == settings::adjpop_n_generation &&
+        read_int("n_class") == N_SCORE_CLASS && read_int("n_tag") == N_TAG &&
+        (read_int("photoneutrons") != 0) == settings::adjpop_photoneutrons &&
+        (read_int("perturbed_importance") != 0) ==
+          settings::adjpop_perturbed_importance);
+  const auto n = static_cast<size_t>(read_int("n_batches"));
+  // [batch][...] flattened, with the bins of one batch's sums
+  auto read_batches = [&](const char* name, const vector<double>& batch) {
+    vector<double> v = read_vector(name);
+    check(v.size() == n * batch.size());
+    return v;
+  };
+
+  vector<double> w = read_batches("weight", batch_w);
+  vector<double> wt = read_batches("weight_t0", batch_wt);
+  vector<double> sw = read_vector("site_weight");
+  check(sw.size() == N_SCORE_CLASS);
+  int64_t histories;
+  read_dataset(group, "n_histories", histories, true);
+
+  // The energy groups and fissioning-nuclide bins. Without listed nuclides
+  // there is one nuclide bin, which the energy-group sums are.
+  const bool by_nuclide = !settings::adjpop_fission_nuclides.empty();
+  check(object_exists(group, "photoneutron_energy_bins") == (n_ebins() > 0) &&
+        object_exists(group, "photoneutron_fission_nuclides") == by_nuclide);
+  if (n_ebins() > 0) {
+    check(
+      read_vector("photoneutron_energy_bins") == settings::adjpop_energy_bins &&
+      read_string("photoneutron_energy_variable") ==
+        (settings::adjpop_energy_variable == 0 ? "photon_birth"
+                                               : "photoneutron"));
+  }
+  std::string names;
+  for (const auto& nuc : settings::adjpop_fission_nuclides)
+    names += nuc + " ";
+  if (by_nuclide)
+    check(read_string("photoneutron_fission_nuclides") == names + "other");
+  vector<double> ew;
+  if (tagging_on()) {
+    ew = read_batches(
+      by_nuclide ? "photoneutron_nuclide_weight" : "photoneutron_energy_weight",
+      batch_ew);
+  }
+
+  check(object_exists(group, "probe_weight") == probes_on());
+  vector<double> pw, pf;
+  int64_t probe_histories = 0;
+  if (probes_on()) {
+    check(read_vector("probe_energies") == settings::adjpop_probe_energies &&
+          read_string("probe_fission_nuclides") ==
+            names + (by_nuclide ? "other" : "all"));
+    pw = read_batches("probe_weight", batch_pw);
+    pf = read_batches("probe_fission_weight", batch_pf);
+    read_dataset(group, "n_probe_histories", probe_histories, true);
+  }
+
+  check(object_exists(group, "ray_weight") == rays_on());
+  vector<double> rw, rj, rf;
+  int64_t ray_segments = 0;
+  if (rays_on()) {
+    check(read_vector("ray_photon_energies") == ray_lines &&
+          read_vector("ray_neutron_energies") == ray_comb);
+    rw = read_batches("ray_weight", batch_rw);
+    rj = read_batches("ray_comb_weight", batch_rj);
+    rf = read_batches("ray_fission_weight", batch_rf);
+    read_dataset(group, "n_ray_segments", ray_segments, true);
+  }
+  close_group(group);
+
+  // Every check passed: continue the sums. The branch targets follow the
+  // measured branch weight from one pass to the next; the other targets are
+  // set anew by each pass.
+  n_batches_recorded = static_cast<int>(n);
+  batches_w = std::move(w);
+  batches_wt = std::move(wt);
+  batches_ew = std::move(ew);
+  batches_pw = std::move(pw);
+  batches_pf = std::move(pf);
+  batches_rw = std::move(rw);
+  batches_rj = std::move(rj);
+  batches_rf = std::move(rf);
+  std::copy(sw.begin(), sw.end(), site_w);
+  n_histories = histories;
+  n_probe_histories = probe_histories;
+  n_ray_segments = ray_segments;
+}
+
 void clear()
 {
   thread_roots.clear();

@@ -27,6 +27,7 @@
 #include "openmc/tallies/filter_adjoint_root.h"
 #include "openmc/tallies/filter_match.h"
 #include "openmc/tallies/tally.h"
+#include "openmc/weight_windows.h"
 
 namespace openmc {
 
@@ -436,8 +437,10 @@ int64_t copy_id(int64_t id, int c)
 }
 
 //! Transport one shadow-tree neutron from a root, with weight w, on a stream
-//! keyed on key. Returns the number of tracks.
-int64_t grow_tree(const Root& root, double w, int64_t key)
+//! keyed on key. With ww_scale positive, the weight windows are scaled by it
+//! and played at birth. Returns the number of tracks.
+int64_t grow_tree(
+  const Root& root, double w, int64_t key, double ww_scale = 0.0)
 {
   SourceSite site;
   site.r = root.r;
@@ -450,6 +453,11 @@ int64_t grow_tree(const Root& root, double w, int64_t key)
   site.shadow_tag = pack_tag(root.cls, root.tag, root.ebin);
   site.shadow_t0 = 0.0;
   site.wgt_born = w;
+  if (ww_scale > 0.0) {
+    // apply_weight_window() scales the windows by wgt_born / wgt_ww_born
+    site.wgt_born = ww_scale;
+    site.wgt_ww_born = 1.0;
+  }
 
   Particle p;
   p.from_source(&site);
@@ -462,6 +470,8 @@ int64_t grow_tree(const Root& root, double w, int64_t key)
   p.current_work() = 1;
   init_particle_seeds(key, p.seeds());
   p.stream() = STREAM_TRACKING;
+  if (ww_scale > 0.0)
+    apply_weight_windows(p);
   transport_history_based_single_particle(p);
   return p.n_tracks();
 }
@@ -485,6 +495,7 @@ struct DetectorRoot {
   int cat;
   int origin_bin;
   vector<double> factor;
+  double ww_scale {0.0}; //!< weight-window scale, 0 without weight windows
 };
 
 //! Grow a root's detector tree: one generation, in which fission is
@@ -496,7 +507,8 @@ void run_detector_tree(const DetectorRoot& d)
   state.cat = d.cat;
   state.origin_bin = d.origin_bin;
   state.factor = d.factor.empty() ? nullptr : &d.factor;
-  const int64_t n = grow_tree(d.root, d.w, combine_ids({d.root.seed_id, 909}));
+  const int64_t n =
+    grow_tree(d.root, d.w, combine_ids({d.root.seed_id, 909}), d.ww_scale);
   state = DetectorTree {};
 #pragma omp atomic
   n_detector_histories += n;
@@ -1203,10 +1215,12 @@ void init()
     fatal_error("<adjoint_populations> is not compatible with the shared "
                 "secondary bank: shadow-tree sites are revived from the "
                 "particle's own secondary bank.");
-  if (settings::weight_windows_on)
-    fatal_error("<adjoint_populations> is not compatible with weight windows: "
-                "they would act on shadow-tree particles, whose weights are "
-                "set by their populations' target weights.");
+  // Weight windows act only in the detector trees: in the driver and the
+  // other trees they would fight the weights the populations' targets set
+  if (settings::weight_windows_on && settings::adjpop_detector_tallies.empty())
+    fatal_error("<adjoint_populations> applies weight windows only in its "
+                "detector trees, so with weight windows on it needs "
+                "'detector_tallies'.");
   if (settings::survival_biasing)
     fatal_error("<adjoint_populations> is not compatible with survival "
                 "biasing.");
@@ -1725,7 +1739,7 @@ void run_shadow_pass()
                              const vector<double>& factor) {
     const int b = origin_bin(r.origin);
     if (cat >= 0 && b >= 0)
-      det_roots.push_back({r, w, cat, b, factor});
+      det_roots.push_back({r, w, cat, b, factor, 0.0});
   };
   if (detectors_on())
     for (const auto& rw : roots)
@@ -1918,6 +1932,33 @@ void run_shadow_pass()
   // Detector trees, last: the scoring lists then hold the detector tallies
   // alone, and the driver's are put back after
   if (detectors_on()) {
+    // The weight windows are tuned to the detector but carry no absolute
+    // scale. As in CADIS, a window's centre c is taken as R / I with I the
+    // importance and R the source-averaged importance: per category, over its
+    // roots of weight w, the scale is mean(w / c). A root in an important
+    // region then starts above its window and is split at birth, one in an
+    // unimportant region below it and is rouletted.
+    if (settings::weight_windows_on) {
+      vector<double> sum(n_det_cat, 0.0);
+      vector<int64_t> count(n_det_cat, 0);
+      vector<double> centre(det_roots.size(), 0.0);
+      const auto neutron = ParticleType::neutron();
+      for (size_t i = 0; i < det_roots.size(); ++i) {
+        const auto& d = det_roots[i];
+        auto [found, ww] = search_weight_window(neutron, d.root.r, d.root.E);
+        if (found && ww.is_valid()) {
+          centre[i] = 0.5 * (ww.lower_weight + ww.upper_weight);
+          sum[d.cat] += d.w / centre[i];
+          ++count[d.cat];
+        }
+      }
+      for (size_t i = 0; i < det_roots.size(); ++i) {
+        auto& d = det_roots[i];
+        if (centre[i] > 0.0)
+          d.ww_scale = sum[d.cat] / count[d.cat];
+      }
+    }
+
     auto saved_grid = model::time_grid;
     setup_detector_tallies();
     const auto n_det = static_cast<int64_t>(det_roots.size());
@@ -2402,6 +2443,11 @@ void read_results(hid_t file_id)
   n_histories = histories;
   n_probe_histories = probe_histories;
   n_ray_segments = ray_segments;
+}
+
+bool weight_windows_act(const Particle& p)
+{
+  return settings::adjpop_n_generation <= 0 || in_detector_tree();
 }
 
 void detector_bins(FilterMatch& match)

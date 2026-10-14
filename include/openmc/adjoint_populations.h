@@ -224,6 +224,10 @@ void write_results(hid_t file_id);
 //! the master rank, after init().
 void read_results(hid_t file_id);
 
+//! Do weight windows act on this particle? With side populations on they act
+//! only in detector trees: the driver and the other trees stay analog.
+bool weight_windows_act(const Particle& p);
+
 //! AdjointRootFilter hook: the bins and weights of the score of the detector
 //! tree being grown on this thread (none outside detector trees)
 void detector_bins(FilterMatch& match);

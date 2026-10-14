@@ -219,3 +219,73 @@ def test_detector_tallies_share_mesh(run_in_tmpdir):
         'detector_tallies': [det, other]}
     with pytest.raises(RuntimeError, match='same mesh'):
         model.run()
+
+
+def radial_weight_windows(radius, n, decay):
+    """Weight windows on a cube of n^3 elements whose lower bounds fall as
+    exp(-r / decay): importance grows towards the detector shell."""
+    mesh = openmc.RegularMesh()
+    mesh.lower_left = (-radius,) * 3
+    mesh.upper_right = (radius,) * 3
+    mesh.dimension = (n,) * 3
+    half = radius / n
+    c = np.linspace(-radius + half, radius - half, n)
+    x, y, z = np.meshgrid(c, c, c, indexing='ij')
+    r = np.minimum(np.sqrt(x**2 + y**2 + z**2), radius - half)
+    lower = (0.5 * np.exp(-r / decay)).transpose(2, 1, 0).ravel()
+    return openmc.WeightWindows(mesh, lower_ww_bounds=lower,
+                                upper_bound_ratio=5.0,
+                                energy_bounds=[0.0, 2.0e7],
+                                particle_type='neutron')
+
+
+def test_weight_windows_act_in_detector_trees_only(run_in_tmpdir):
+    """Weight windows act only in the detector trees: the driver and the
+    kinetics trees, and every result they make, are the same to the bit with
+    and without them, while the detector trees are split and stay
+    unbiased."""
+    results = {}
+    for weight_windows_on in (False, True):
+        model, det, analog = detector_model()
+        if weight_windows_on:
+            model.settings.weight_windows = radial_weight_windows(12.0, 6, 6.0)
+            model.settings.weight_windows_on = True
+        sp_path = model.run(threads=1, **run_kwargs())
+        with openmc.StatePoint(sp_path) as sp:
+            tally = sp.get_tally(name='detector')
+            pops = sp.adjoint_populations
+            n_cat = pops.detector_categories[3]
+            results[weight_windows_on] = dict(
+                keff=sp.keff.nominal_value,
+                analog=sp.get_tally(name='analog').mean.copy(),
+                analog_sd=sp.get_tally(name='analog').std_dev.copy(),
+                weight=pops.weight.copy(),
+                source=pops.detector_source.copy(),
+                g=tally.mean.reshape(n_cat, 2).copy(),
+                sg=tally.std_dev.reshape(n_cat, 2).copy(),
+                histories=pops.n_detector_histories,
+            )
+
+    off, on = results[False], results[True]
+    assert on['keff'] == off['keff']
+    np.testing.assert_array_equal(on['analog'], off['analog'])
+    np.testing.assert_array_equal(on['weight'], off['weight'])
+    np.testing.assert_array_equal(on['source'], off['source'])
+    assert on['histories'] > off['histories']
+
+    n = 2000
+    s = on['source'].mean(axis=0)
+    folded = (on['g'] * s).sum() / n
+    sigma = np.hypot(np.sqrt(((on['sg'] * s) ** 2).sum()) / n,
+                     on['analog_sd'].ravel()[0])
+    assert abs(folded - on['analog'].ravel()[0]) < 4.0 * sigma
+
+
+def test_weight_windows_need_detector_tallies(run_in_tmpdir):
+    model, det, analog = detector_model()
+    model.tallies = [analog]
+    model.settings.adjoint_populations = {'n_generation': 1}
+    model.settings.weight_windows = radial_weight_windows(12.0, 6, 6.0)
+    model.settings.weight_windows_on = True
+    with pytest.raises(RuntimeError, match='needs\\s+.detector_tallies'):
+        model.run()

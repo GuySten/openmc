@@ -132,6 +132,10 @@ public:
   //! \param[in] p  Particle to get weight window for
   std::pair<bool, WeightWindow> get_weight_window(const Particle& p) const;
 
+  //! The weight window of a particle of a type at a position and energy
+  std::pair<bool, WeightWindow> get_weight_window(
+    ParticleType type, Position r, double E) const;
+
   std::array<int, 2> bounds_size() const;
 
   const vector<double>& energy_bounds() const { return energy_bounds_; }
@@ -251,6 +255,10 @@ void free_memory_weight_windows();
 //! Search weight window that apply to a particle
 //! \param[in]  p  Particle to search weight window for
 std::pair<bool, WeightWindow> search_weight_window(const Particle& p);
+
+//! Search the weight window of a particle of a type at a position and energy
+std::pair<bool, WeightWindow> search_weight_window(
+  ParticleType type, Position r, double E);
 
 //! Finalize variance reduction objects after all inputs have been read
 void finalize_variance_reduction();

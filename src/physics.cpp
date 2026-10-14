@@ -66,7 +66,7 @@ void collision(Particle& p)
     fatal_error("Unsupported particle PDG for collision sampling.");
   }
 
-  if (settings::weight_windows_on) {
+  if (settings::weight_windows_on && adjpop::weight_windows_act(p)) {
     auto [ww_found, ww] = search_weight_window(p);
     if (!ww_found && p.type() == ParticleType::neutron()) {
       // if the weight window is not valid, apply russian roulette for neutrons
@@ -172,7 +172,7 @@ void sample_neutron_reaction(Particle& p)
   }
 
   // Play russian roulette if there are no weight windows
-  if (!settings::weight_windows_on)
+  if (!settings::weight_windows_on || !adjpop::weight_windows_act(p))
     apply_russian_roulette(p);
 }
 

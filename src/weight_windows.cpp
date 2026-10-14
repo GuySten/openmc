@@ -8,6 +8,7 @@
 
 #include "openmc/tensor.h"
 
+#include "openmc/adjoint_populations.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/hdf5_interface.h"
@@ -277,13 +278,16 @@ void WeightWindows::set_mesh(const Mesh* mesh)
 std::pair<bool, WeightWindow> WeightWindows::get_weight_window(
   const Particle& p) const
 {
+  return get_weight_window(p.type(), p.r(), p.E());
+}
+
+std::pair<bool, WeightWindow> WeightWindows::get_weight_window(
+  ParticleType type, Position r, double E) const
+{
   // check for particle type
-  if (particle_type_ != p.type()) {
+  if (particle_type_ != type) {
     return {false, {}};
   }
-
-  // particle energy
-  double E = p.E();
 
   // check to make sure energy is in range, expects sorted energy values
   if (E < energy_bounds_.front() || E > energy_bounds_.back())
@@ -291,7 +295,7 @@ std::pair<bool, WeightWindow> WeightWindows::get_weight_window(
 
   // Get mesh index for particle's position
   const auto& mesh = this->mesh();
-  int mesh_bin = mesh->get_bin(p.r());
+  int mesh_bin = mesh->get_bin(r);
 
   // particle is outside the weight window mesh
   if (mesh_bin < 0)
@@ -932,9 +936,15 @@ void WeightWindowsGenerator::update() const
 
 std::pair<bool, WeightWindow> search_weight_window(const Particle& p)
 {
+  return search_weight_window(p.type(), p.r(), p.E());
+}
+
+std::pair<bool, WeightWindow> search_weight_window(
+  ParticleType type, Position r, double E)
+{
   // TODO: this is a linear search - should do something more clever
   for (const auto& ww : variance_reduction::weight_windows) {
-    auto [ww_found, weight_window] = ww->get_weight_window(p);
+    auto [ww_found, weight_window] = ww->get_weight_window(type, r, E);
     if (ww_found)
       return {true, weight_window};
   }
@@ -943,7 +953,7 @@ std::pair<bool, WeightWindow> search_weight_window(const Particle& p)
 
 void apply_weight_windows(Particle& p)
 {
-  if (!settings::weight_windows_on)
+  if (!settings::weight_windows_on || !adjpop::weight_windows_act(p))
     return;
 
   // Random ray rays are not Monte Carlo particles and must not be biased by
@@ -970,7 +980,7 @@ void apply_weight_windows(Particle& p)
 
 void apply_weight_window(Particle& p, WeightWindow weight_window)
 {
-  if (!weight_window.is_valid())
+  if (!weight_window.is_valid() || !adjpop::weight_windows_act(p))
     return;
 
   // skip dead or no energy

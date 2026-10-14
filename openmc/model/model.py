@@ -3115,6 +3115,7 @@ class Model:
                 chi = np.asarray(chi[0], dtype=float)
                 keep = chi > 0.0
                 source.append(openmc.IndependentSource(
+                    space=s.random_ray['ray_source'].space,
                     energy=openmc.stats.Discrete(mid[keep], chi[keep]),
                     constraints={'domains': [m]}))
         s.source = source
@@ -3139,7 +3140,7 @@ class Model:
         model.tallies = flux_targets
         s.weight_window_generators = openmc.WeightWindowGenerator(
             mesh, energy_bounds=energy_bounds, method='fw_cadis',
-            targets=flux_targets, max_realizations=batches)
+            targets=flux_targets, max_realizations=batches - inactive)
 
         with change_directory(cwd):
             model.run(**run_kwargs)

@@ -38,7 +38,8 @@ class _SourceSite(Structure):
                 ('n_collision', c_int),
                 ('shadow_depth', c_int),
                 ('shadow_tag', c_int),
-                ('shadow_t0', c_double)]
+                ('shadow_t0', c_double),
+                ('fission_nuclide', c_int)]
 
 # Define input type for numpy arrays that will be passed into C++ functions
 # Must be an int or double array, with single dimension that is contiguous

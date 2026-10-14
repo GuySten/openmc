@@ -44,19 +44,65 @@ from uncertainties import ufloat
 import openmc.checkvalue as cv
 
 
-def probe_line_energies(threshold, e_max, n, first=1.0e3):
+def photoneutron_threshold(nuclide, cross_sections=None):
+    """Photoneutron threshold of a nuclide, from its photonuclear data.
+
+    The lowest energy above which a reaction with neutron products has a
+    nonzero cross section: the tabulated point below its first nonzero value.
+
+    Parameters
+    ----------
+    nuclide : str
+        Name of the nuclide, e.g. 'Be9'
+    cross_sections : str or os.PathLike, optional
+        cross_sections.xml listing its photonuclear data;
+        openmc.config['cross_sections'] if None
+
+    Returns
+    -------
+    float
+        Threshold [eV]
+
+    """
+    import openmc.data
+    lib = openmc.data.DataLibrary.from_xml(cross_sections)
+    entry = lib.get_by_material(nuclide, data_type='photonuclear')
+    if entry is None:
+        raise ValueError(f'No photonuclear data for {nuclide} in the cross '
+                         'section library.')
+    data = openmc.data.IncidentPhotonuclear.from_hdf5(entry['path'])
+    threshold = np.inf
+    for rx in data.reactions.values():
+        if not any(p.particle == 'neutron' for p in rx.products):
+            continue
+        x, y = np.asarray(rx.xs.x), np.asarray(rx.xs.y)
+        nonzero = np.nonzero(y > 0.0)[0]
+        if nonzero.size:
+            threshold = min(threshold, x[max(nonzero[0] - 1, 0)])
+    if not np.isfinite(threshold):
+        raise ValueError(f'{nuclide} has no neutron-producing photonuclear '
+                         'reaction.')
+    return float(threshold)
+
+
+def probe_line_energies(threshold, e_max, n, first=1.0e3, cross_sections=None):
     """Probe line energies spaced evenly in photoneutron lethargy.
 
     Parameters
     ----------
-    threshold : float
-        Photoneutron threshold of the target [eV]
+    threshold : float or str
+        Photoneutron threshold of the target [eV], or the name of the target
+        nuclide (e.g. 'Be9'), whose threshold is then read from its
+        photonuclear data (:func:`photoneutron_threshold`)
     e_max : float
         Highest line [eV]
     n : int
         Number of lines
     first : float
         Energy of the lowest line above the threshold [eV]
+    cross_sections : str or os.PathLike, optional
+        cross_sections.xml for a nuclide name; openmc.config['cross_sections']
+        if None
 
     Returns
     -------
@@ -64,6 +110,8 @@ def probe_line_energies(threshold, e_max, n, first=1.0e3):
         Line energies [eV], threshold + geomspace(first, e_max - threshold, n)
 
     """
+    if isinstance(threshold, str):
+        threshold = photoneutron_threshold(threshold, cross_sections)
     cv.check_greater_than('e_max', e_max, threshold + first)
     cv.check_greater_than('n', n, 1)
     return threshold + np.geomspace(first, e_max - threshold, n)

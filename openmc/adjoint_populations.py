@@ -772,9 +772,9 @@ class AdjointPopulations:
 
     # -------------------------------------------------------------------------
 
-    def detector_response(self, tally, score=0, nuclide=0):
+    def detector_response(self, tally, score=0, nuclide=0, bins=None):
         """Per-batch detector responses of a detector tally, by root category
-        and origin, summed over its other filters' bins.
+        and origin, summed over the selected bins of its other filters.
 
         Parameters
         ----------
@@ -784,6 +784,20 @@ class AdjointPopulations:
             Score, by index or name
         nuclide : int or str
             Nuclide, by index or name
+        bins : dict, optional
+            Bins to keep of the tally's other filters, summed; filters not
+            listed are summed over all their bins. Keys are a filter of the
+            tally, its class or its ID; values are a bin index, a sequence of
+            indices, or a boolean mask over the filter's bins. For a
+            :class:`openmc.MeshFilter` the mask may also have the mesh's
+            shape (``mesh.dimension``), e.g. ``mesh.centroids`` tested for a
+            region. For example, the thermal group of an energy filter in a
+            ring of a cylindrical mesh::
+
+                r = mesh_filter.mesh.centroids[..., 0]   # for a RegularMesh
+                pops.detector_response(tally, bins={
+                    openmc.EnergyFilter: 0,
+                    openmc.MeshFilter: (r > 60.0) & (r < 77.0)})
 
         Returns
         -------
@@ -803,12 +817,47 @@ class AdjointPopulations:
              tally.num_scores))[:, :, nuclide, score]
         shape = [f.num_bins for f in tally.filters]
         values = values.reshape([self.n_batches] + shape)
-        i = [isinstance(f, openmc.AdjointRootFilter)
-             for f in tally.filters].index(True)
-        values = np.moveaxis(values, i + 1, 1)
-        values = values.reshape(self.n_batches, shape[i], -1).sum(axis=2)
+        i_root = [isinstance(f, openmc.AdjointRootFilter)
+                  for f in tally.filters].index(True)
+        for key, sel in (bins or {}).items():
+            j = self._filter_index(tally, key)
+            if j == i_root:
+                raise ValueError('The AdjointRootFilter bins are the result; '
+                                 'select only other filters.')
+            mask = self._bin_mask(tally.filters[j], sel)
+            values = np.compress(mask, values, axis=j + 1)
+            shape[j] = int(mask.sum())
+        values = np.moveaxis(values, i_root + 1, 1)
+        values = values.reshape(self.n_batches, shape[i_root], -1).sum(axis=2)
         return DetectorResponse(
             values.reshape(self.detector_source.shape), self)
+
+    @staticmethod
+    def _filter_index(tally, key):
+        """Position in the tally of a filter given as instance, class or ID."""
+        for j, f in enumerate(tally.filters):
+            if (f is key or (isinstance(key, type) and isinstance(f, key))
+                    or (isinstance(key, int) and f.id == key)):
+                return j
+        raise ValueError(f'Tally {tally.id} has no filter matching {key!r}.')
+
+    @staticmethod
+    def _bin_mask(f, sel):
+        """Boolean mask over a filter's bins from an index, indices or mask."""
+        import openmc
+        n = f.num_bins
+        sel = np.asarray(sel)
+        if sel.dtype == bool:
+            if isinstance(f, openmc.MeshFilter) and sel.shape == tuple(
+                    f.mesh.dimension):
+                sel = sel.ravel(order='F')
+            if sel.size != n:
+                raise ValueError(f'A mask over filter {f.id} needs {n} '
+                                 f'entries, not {sel.size}.')
+            return sel.ravel()
+        mask = np.zeros(n, dtype=bool)
+        mask[np.atleast_1d(sel).astype(int)] = True
+        return mask
 
     def depth_curve(self, quantity, **kwargs):
         """A quantity at every depth 1..n_generation, to check that the

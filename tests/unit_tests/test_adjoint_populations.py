@@ -306,6 +306,18 @@ def test_probe_line_energies():
     assert np.allclose(du, du[0])
 
 
+
+def test_probe_line_energies_from_nuclide():
+    """A nuclide name gives the threshold from its photonuclear data."""
+    try:
+        threshold = openmc.photoneutron_threshold('H2')
+    except (ValueError, KeyError, OSError, TypeError):
+        pytest.skip('No H2 photonuclear data in the cross section library.')
+    assert threshold == pytest.approx(2.2246e6, rel=1.0e-3)
+    e = openmc.probe_line_energies('H2', 12.6e6, 5)
+    assert e[0] == pytest.approx(threshold + 1.0e3)
+    assert e[-1] == pytest.approx(12.6e6)
+
 def _resonant_target():
     """A target with a smooth production cross section and a narrow
     resonance, on a grid that resolves it."""

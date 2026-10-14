@@ -343,3 +343,44 @@ def test_photon_importance_at_lines(run_in_tmpdir):
         folded = importance.fold([e], [1.0])
         assert folded.n == pytest.approx(expected, rel=1e-9)
         assert folded.s > 0.0
+
+
+def test_detector_response_bins(run_in_tmpdir):
+    """Selecting bins of a detector tally's other filters: the parts of a
+    split filter add up to the whole, and a mask selects like indices."""
+    model, det, analog = detector_model()
+    det.filters.insert(1, openmc.EnergyFilter([0.0, 0.625, 20.0e6]))
+    sp_path = model.run(**run_kwargs())
+    with openmc.StatePoint(sp_path) as sp:
+        tally = sp.get_tally(name='detector')
+        pops = sp.adjoint_populations
+        whole = pops.detector_response(tally).values
+        thermal = pops.detector_response(
+            tally, bins={openmc.EnergyFilter: 0}).values
+        fast = pops.detector_response(
+            tally, bins={tally.filters[1].id: [1]}).values
+        masked = pops.detector_response(
+            tally, bins={tally.filters[1]: np.array([True, False])}).values
+        assert np.allclose(thermal + fast, whole)
+        assert np.array_equal(masked, thermal)
+        assert thermal.sum() > 0.0 and fast.sum() > 0.0
+        with pytest.raises(ValueError):
+            pops.detector_response(tally, bins={openmc.AdjointRootFilter: 0})
+        with pytest.raises(ValueError):
+            pops.detector_response(tally, bins={openmc.MeshFilter: 0})
+
+
+def test_shared_root_filters_export_silently(run_in_tmpdir):
+    """Equal filters of different tallies are merged on export without an ID
+    warning."""
+    import warnings
+    tallies = []
+    for name in ('a', 'b'):
+        t = openmc.Tally(name=name)
+        t.filters = [openmc.AdjointRootFilter()]
+        t.scores = ['flux']
+        tallies.append(t)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        openmc.Tallies(tallies).export_to_xml()
+    assert tallies[0].filters[0].id == tallies[1].filters[0].id

@@ -3887,8 +3887,10 @@ class Tallies(cv.CheckedList):
                     already_written[f] = f.id
                 elif f.id != already_written[f]:
                     # Set the IDs of identical filters with different
-                    # user-defined IDs to the same value
-                    f.id = already_written[f]
+                    # user-defined IDs to the same value. The merge is
+                    # intended, so the ID is set without the warning about
+                    # an ID already in use.
+                    f._id = already_written[f]
 
     def _create_derivative_subelements(self, root_element):
         # Get a list of all derivatives referenced in a tally.

@@ -273,7 +273,7 @@ class StatePoint:
         """Adjoint side-population results, or None if not requested"""
         if self.run_mode == 'eigenvalue' and 'adjoint_populations' in self._f:
             return openmc.AdjointPopulations(
-                self._f['adjoint_populations'], self.keff.n)
+                self._f['adjoint_populations'], self.keff.n, self.n_particles)
         return None
 
     @property

@@ -242,6 +242,12 @@ vector<double> det_source;
 // every finished batch's
 vector<double> batch_ds, batches_ds;
 int64_t n_detector_histories {0};
+// Per detector tally: its accumulated sums at the last record, and every
+// finished batch's values [batch][filter bin][score], so that results
+// combining its bins (a spectrum folded over the lines) get batch
+// statistics. Kept on the master rank, with reduced tallies only.
+vector<vector<double>> det_last_sum;
+vector<vector<double>> batches_dt;
 // The detector tree being grown on each thread: its category, origin bin
 // and, for a ray tree, every ray line's factor
 struct DetectorTree {
@@ -1371,6 +1377,8 @@ void init()
   thread_det.assign(n_threads, DetectorTree {});
   thread_probe_origin.assign(n_threads, Position {});
   n_detector_histories = 0;
+  det_last_sum.assign(det_tallies.size(), {});
+  batches_dt.assign(det_tallies.size(), {});
 }
 
 void reset_generation()
@@ -2081,6 +2089,23 @@ void finalize_batch()
     batches_rj.insert(batches_rj.end(), batch_rj.begin(), batch_rj.end());
     batches_rf.insert(batches_rf.end(), batch_rf.begin(), batch_rf.end());
     batches_ds.insert(batches_ds.end(), batch_ds.begin(), batch_ds.end());
+    // The detector tallies were accumulated just before: this batch's values
+    // are the change of their sums
+    if (settings::reduce_tallies) {
+      for (size_t i = 0; i < det_tallies.size(); ++i) {
+        const auto& res = model::tallies[det_tallies[i]]->results_;
+        const size_t n = res.shape(0) * res.shape(1);
+        auto& last = det_last_sum[i];
+        last.resize(n, 0.0);
+        size_t k = 0;
+        for (size_t b = 0; b < res.shape(0); ++b)
+          for (size_t s = 0; s < res.shape(1); ++s, ++k) {
+            const double sum = res(b, s, TallyResult::SUM);
+            batches_dt[i].push_back(sum - last[k]);
+            last[k] = sum;
+          }
+      }
+    }
     ++n_batches_recorded;
   }
   std::fill(batch_w.begin(), batch_w.end(), 0.0);
@@ -2303,6 +2328,17 @@ void write_results(hid_t file_id)
     vector<int> cats {det_off_pn, det_off_probe, det_off_ray, n_det_cat};
     write_dataset(group, "detector_categories", cats);
     write_dataset(group, "n_detector_histories", n_detector_histories);
+    // [batch][filter bin][nuclide][score] of each detector tally
+    if (settings::reduce_tallies) {
+      vector<int> ids;
+      for (size_t i = 0; i < det_tallies.size(); ++i) {
+        const int id = model::tallies[det_tallies[i]]->id_;
+        ids.push_back(id);
+        write_dataset(
+          group, fmt::format("detector_tally_{}", id).c_str(), batches_dt[i]);
+      }
+      write_dataset(group, "detector_tally_ids", ids);
+    }
   }
   close_group(group);
 }
@@ -2411,6 +2447,26 @@ void read_results(hid_t file_id)
     ds = read_batches("detector_source", batch_ds);
     read_dataset(group, "n_detector_histories", detector_histories, true);
   }
+  // The detector tallies' per-batch values, and their sums read just before
+  // with the tallies, from which the next batch's are taken
+  vector<vector<double>> dt(det_tallies.size());
+  vector<vector<double>> dt_last(det_tallies.size());
+  if (detectors_on() && settings::reduce_tallies) {
+    for (size_t i = 0; i < det_tallies.size(); ++i) {
+      const auto& t = *model::tallies[det_tallies[i]];
+      const auto& res = t.results_;
+      const size_t n_values = res.shape(0) * res.shape(1);
+      const auto name = fmt::format("detector_tally_{}", t.id_);
+      check(object_exists(group, name.c_str()));
+      dt[i] = read_vector(name.c_str());
+      check(dt[i].size() == n * n_values);
+      dt_last[i].resize(n_values);
+      size_t k = 0;
+      for (size_t b = 0; b < res.shape(0); ++b)
+        for (size_t s = 0; s < res.shape(1); ++s, ++k)
+          dt_last[i][k] = res(b, s, TallyResult::SUM);
+    }
+  }
 
   check(object_exists(group, "ray_weight") == rays_on());
   vector<double> rw, rj, rf;
@@ -2439,6 +2495,8 @@ void read_results(hid_t file_id)
   batches_rf = std::move(rf);
   batches_ds = std::move(ds);
   n_detector_histories = detector_histories;
+  batches_dt = std::move(dt);
+  det_last_sum = std::move(dt_last);
   std::copy(sw.begin(), sw.end(), site_w);
   n_histories = histories;
   n_probe_histories = probe_histories;
@@ -2557,6 +2615,8 @@ void clear()
   thread_det.clear();
   thread_probe_origin.clear();
   n_detector_histories = 0;
+  det_last_sum.clear();
+  batches_dt.clear();
   nuclide_bin.clear();
   n_batches_recorded = 0;
   n_histories = 0;

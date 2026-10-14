@@ -26,7 +26,7 @@ from openmc.tally_derivative import *
 from openmc.tallies import *
 from openmc.mgxs_library import *
 from openmc.executor import *
-from openmc.adjoint_populations import AdjointPopulations
+from openmc.adjoint_populations import AdjointPopulations, DetectorResponse
 from openmc.photoneutron_probes import (
     PhotoneutronTarget, ProbeImportance, probe_line_energies)
 from openmc.statepoint import *

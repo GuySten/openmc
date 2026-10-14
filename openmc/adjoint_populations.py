@@ -69,6 +69,9 @@ class AdjointPopulations:
         The ``adjoint_populations`` group of a statepoint file
     keff : float
         Combined estimate of k of the calculation
+    n_particles : int, optional
+        Particles per generation, by which the detector signal is normalized
+        like the tallies
 
     Attributes
     ----------
@@ -151,12 +154,15 @@ class AdjointPopulations:
         prompt fission neutrons and the delayed groups.
     n_detector_histories : int
         Histories transported in detector trees
+    detector_batch_values : dict of int to numpy.ndarray
+        Each detector tally's values per batch, by tally ID, indexed [batch,
+        filter bin x nuclide x score] (flattened as in the tally)
     probe_trigger : tuple of float or None
         (threshold, floor) of the probe-importance trigger, if one was set
 
     """
 
-    def __init__(self, group, keff):
+    def __init__(self, group, keff, n_particles=None):
         self.n_generation = int(group['n_generation'][()])
         self.n_batches = int(group['n_batches'][()])
         self.photoneutrons = bool(group['photoneutrons'][()])
@@ -251,6 +257,13 @@ class AdjointPopulations:
             self.detector_source = group['detector_source'][()].reshape(
                 (self.n_batches, cats[3], n_origin))
             self.n_detector_histories = int(group['n_detector_histories'][()])
+        self.n_particles = n_particles
+        self.detector_batch_values = {}
+        if 'detector_tally_ids' in group:
+            for tid in group['detector_tally_ids'][()]:
+                values = group[f'detector_tally_{int(tid)}'][()]
+                self.detector_batch_values[int(tid)] = values.reshape(
+                    self.n_batches, -1)
 
         # The highest group any fission or delayed root was tagged with
         w = self.weight[:, :CLASS_PHOTONEUTRON].sum(axis=(0, 1, 3))
@@ -759,6 +772,44 @@ class AdjointPopulations:
 
     # -------------------------------------------------------------------------
 
+    def detector_response(self, tally, score=0, nuclide=0):
+        """Per-batch detector responses of a detector tally, by root category
+        and origin, summed over its other filters' bins.
+
+        Parameters
+        ----------
+        tally : openmc.Tally
+            A detector tally read from the same statepoint
+        score : int or str
+            Score, by index or name
+        nuclide : int or str
+            Nuclide, by index or name
+
+        Returns
+        -------
+        openmc.DetectorResponse
+
+        """
+        import openmc
+        if tally.id not in self.detector_batch_values:
+            raise ValueError(f'Tally {tally.id} has no per-batch detector '
+                             'values in the statepoint.')
+        if isinstance(score, str):
+            score = tally.scores.index(score)
+        if isinstance(nuclide, str):
+            nuclide = tally.get_nuclide_index(nuclide)
+        values = self.detector_batch_values[tally.id].reshape(
+            (self.n_batches, tally.num_filter_bins, tally.num_nuclides,
+             tally.num_scores))[:, :, nuclide, score]
+        shape = [f.num_bins for f in tally.filters]
+        values = values.reshape([self.n_batches] + shape)
+        i = [isinstance(f, openmc.AdjointRootFilter)
+             for f in tally.filters].index(True)
+        values = np.moveaxis(values, i + 1, 1)
+        values = values.reshape(self.n_batches, shape[i], -1).sum(axis=2)
+        return DetectorResponse(
+            values.reshape(self.detector_source.shape), self)
+
     def depth_curve(self, quantity, **kwargs):
         """A quantity at every depth 1..n_generation, to check that the
         importance has converged by the last depth.
@@ -778,6 +829,167 @@ class AdjointPopulations:
         method = getattr(self, quantity)
         return [method(depth=d, **kwargs)
                 for d in range(1, self.n_generation + 1)]
+
+
+class DetectorResponse:
+    """Detector response per unit source weight, per batch, by the category
+    of the detector trees' roots and the mesh element of their origin.
+
+    The detector trees are the non-multiplying response: the detector signal
+    a neutron born at the origin causes before it is absorbed or leaks,
+    fission counting as absorption. Folding it with a transient's sources,
+    prompt fission neutrons and the delayed-neutron and photoneutron
+    precursors' decay rates by origin, gives the signal split by what emitted
+    the neutrons.
+
+    Parameters
+    ----------
+    values : numpy.ndarray
+        Response per unit source weight, [batch, category, origin]
+    populations : openmc.AdjointPopulations
+        The side populations it came from
+
+    Attributes
+    ----------
+    values : numpy.ndarray
+        Response per unit source weight, [batch, category, origin]
+    source : numpy.ndarray
+        Source weight per generation, [batch, category, origin]
+
+    """
+
+    def __init__(self, values, populations):
+        self.values = np.asarray(values, float)
+        self._pops = populations
+        self.source = populations.detector_source
+        off_pn, off_probe, off_ray, n_cat = populations.detector_categories
+        self._off_pn, self._off_probe, self._off_ray = off_pn, off_probe, off_ray
+        self._n_cat = n_cat
+
+    @property
+    def n_batches(self):
+        return self.values.shape[0]
+
+    @property
+    def n_origins(self):
+        return self.values.shape[2]
+
+    def _mean(self, x):
+        n = x.shape[0]
+        m = x.mean(axis=0)
+        s = x.std(axis=0, ddof=1) / np.sqrt(n) if n > 1 else \
+            np.full_like(m, np.nan)
+        return np.array([ufloat(a, b) for a, b in zip(m.ravel(), s.ravel())]
+                        ).reshape(m.shape)
+
+    def category(self, index):
+        """Response per unit source weight of one category, per origin.
+
+        Returns
+        -------
+        numpy.ndarray of uncertainties.UFloat
+
+        """
+        return self._mean(self.values[:, index, :])
+
+    @property
+    def prompt(self):
+        """Response per prompt fission neutron, per origin"""
+        return self.category(0)
+
+    def delayed(self, group):
+        """Response per delayed neutron of a group (1 to 8), per origin"""
+        if not 1 <= group < self._off_pn:
+            raise ValueError(f'No delayed group {group}.')
+        return self.category(group)
+
+    @property
+    def photoneutrons(self):
+        """Response per driver photoneutron, [photoneutron bin, origin]: one
+        bin per energy group and fissioning-nuclide bin, and a last one for
+        those outside the groups (a single bin without groups)"""
+        return self._mean(self.values[:, self._off_pn:self._off_probe, :])
+
+    def signal(self):
+        """Steady-state detector signal per source particle by category,
+        summed over the origins: per batch, response times source weight,
+        normalized like the tallies. The probe and ray lines are not sources
+        of their own; fold them with :meth:`photon_importance`.
+
+        Returns
+        -------
+        dict of str to uncertainties.UFloat
+            'prompt', 'delayed 1' to 'delayed 8' (those with a source),
+            'photoneutrons' and 'total'
+
+        """
+        n = self._pops.n_particles
+        if n is None:
+            raise ValueError('The number of particles is unknown.')
+        s = (self.values * self.source).sum(axis=2) / n
+        parts = {'prompt': s[:, 0]}
+        for g in range(1, self._off_pn):
+            if self.source[:, g].any():
+                parts[f'delayed {g}'] = s[:, g]
+        if self._off_probe > self._off_pn:
+            parts['photoneutrons'] = s[:, self._off_pn:self._off_probe].sum(
+                axis=1)
+        parts['total'] = sum(v for k, v in parts.items())
+        return {k: self._mean(v[:, None])[0] for k, v in parts.items()}
+
+    def photon_importance(self, target, nuclide=None, origin=0, rtol=0.01,
+                          floor=1.0e-3, e_max=None, cross_sections=None):
+        """Detector response to a photon born at a fission event, as a
+        function of its energy, rebuilt from the probe (and ray) lines as
+        :meth:`AdjointPopulations.probe_importance` rebuilds the fission
+        importance.
+
+        Its :meth:`openmc.ProbeImportance.fold` of a gamma source per fission
+        is the detector response per unit fission weight (w/k
+        sigma_f/sigma_t) of the nuclide bin at the origin, with batch
+        statistics that keep the correlation of the lines.
+
+        Parameters
+        ----------
+        target : openmc.PhotoneutronTarget or openmc.Material
+            Cross sections of the medium that makes the photoneutrons
+        nuclide : str, optional
+            Fissioning-nuclide bin; may be omitted if there is only one
+        origin : int
+            Origin mesh element
+        rtol, floor, e_max, cross_sections
+            As for :meth:`AdjointPopulations.probe_importance`
+
+        Returns
+        -------
+        openmc.ProbeImportance
+
+        """
+        from openmc.photoneutron_probes import (ProbeImportance,
+                                                 PhotoneutronTarget)
+        pops = self._pops
+        pops._check_probes()
+        if not isinstance(target, PhotoneutronTarget):
+            target = PhotoneutronTarget.from_material(target, cross_sections)
+        j = pops._probe_bin(nuclide)
+        K = len(pops.probe_energies)
+        v = self.values[:, :, origin]
+        probe = v[:, self._off_probe:self._off_ray].reshape(
+            self.n_batches, -1, K, 3)[:, j]
+        ones = np.ones(self.n_batches)
+        name = pops.probe_fission_nuclides[j]
+        if self._n_cat > self._off_ray:
+            KR = len(pops.ray_photon_energies)
+            ray = v[:, self._off_ray:].reshape(self.n_batches, -1, KR)[:, j]
+            return ProbeImportance(pops.probe_energies, probe[:, :, 1],
+                                   probe[:, :, 2], ones, target, rtol=rtol,
+                                   floor=floor, e_max=e_max, name=name,
+                                   ray_lines=pops.ray_photon_energies,
+                                   ray_direct=ray)
+        return ProbeImportance(pops.probe_energies,
+                               probe[:, :, 0] + probe[:, :, 1],
+                               probe[:, :, 2], ones, target, rtol=rtol,
+                               floor=floor, e_max=e_max, name=name)
 
 
 def _ratio(a, b):

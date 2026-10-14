@@ -188,10 +188,12 @@ def test_restart(run_in_tmpdir):
     results = []
     for path in ('uninterrupted.h5', 'statepoint.10.h5'):
         with openmc.StatePoint(path) as sp:
+            pops = sp.adjoint_populations
             results.append((sp.get_tally(name='detector').mean,
-                            sp.adjoint_populations.detector_source))
-    np.testing.assert_array_equal(results[0][0], results[1][0])
-    np.testing.assert_array_equal(results[0][1], results[1][1])
+                            pops.detector_source,
+                            pops.detector_batch_values[det.id]))
+    for before, after in zip(*results):
+        np.testing.assert_array_equal(before, after)
 
 
 def test_filter_needs_detector_tally(run_in_tmpdir):
@@ -289,3 +291,55 @@ def test_weight_windows_need_detector_tallies(run_in_tmpdir):
     model.settings.weight_windows_on = True
     with pytest.raises(RuntimeError, match='needs\\s+.detector_tallies'):
         model.run()
+
+
+def test_detector_response_signal(run_in_tmpdir):
+    """The per-batch record of a detector tally gives back its means, and
+    the steady-state signal by category, summed, estimates the analog
+    tally."""
+    model, det, analog = detector_model()
+    sp_path = model.run(**run_kwargs())
+
+    with openmc.StatePoint(sp_path) as sp:
+        tally = sp.get_tally(name='detector')
+        a = sp.get_tally(name='analog')
+        response = sp.adjoint_populations.detector_response(tally, 'flux')
+        n_cat = sp.adjoint_populations.detector_categories[3]
+        mean = tally.mean.reshape(n_cat, 2)
+
+    np.testing.assert_allclose(response.values.mean(axis=0), mean,
+                               rtol=1e-10, atol=1e-14)
+    assert response.prompt[0].n == pytest.approx(mean[0, 0], rel=1e-10)
+    assert response.delayed(2)[1].n == pytest.approx(mean[2, 1], rel=1e-10)
+
+    signal = response.signal()
+    assert set(signal) == {'prompt', 'total'} | {f'delayed {g}'
+                                                 for g in range(1, 7)}
+    assert signal['prompt'].n > 0.9 * signal['total'].n
+    total = signal['total']
+    sigma = np.hypot(total.s, a.std_dev.ravel()[0])
+    assert abs(total.n - a.mean.ravel()[0]) < 4.0 * sigma
+
+
+def test_photon_importance_at_lines(run_in_tmpdir):
+    """The detector response rebuilt between the lines equals, at a ray
+    line, the rays' uncollided part plus the probes' collided parts there,
+    and its fold keeps batch statistics."""
+    model, det, _ = detector_model(photoneutrons=True)
+    sp_path = model.run(**run_kwargs())
+    heavy_water = model.materials[1]
+
+    with openmc.StatePoint(sp_path) as sp:
+        pops = sp.adjoint_populations
+        tally = sp.get_tally(name='detector')
+        response = pops.detector_response(tally)
+        off_pn, off_probe, off_ray, n_cat = pops.detector_categories
+
+    importance = response.photon_importance(heavy_water)
+    for k, e in enumerate(pops.probe_energies):
+        expected = (response.values[:, off_ray + k, 0] +
+                    response.values[:, off_probe + 3 * k + 1, 0] +
+                    response.values[:, off_probe + 3 * k + 2, 0]).mean()
+        folded = importance.fold([e], [1.0])
+        assert folded.n == pytest.approx(expected, rel=1e-9)
+        assert folded.s > 0.0

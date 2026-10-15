@@ -130,6 +130,7 @@ bool Particle::create_secondary(
                       : shadow_tag();
   bank.shadow_t0 = shadow_t0();
   bank.fission_nuclide = fission_nuclide();
+  bank.fission_generation = fission_generation();
 
   // A neutron emitted by a neutron reaction such as (n,2n) belongs to the same
   // generation as the neutron that produced it and keeps its lifetime clock and
@@ -184,6 +185,7 @@ void Particle::split(double wgt)
   bank.shadow_tag = shadow_tag();
   bank.shadow_t0 = shadow_t0();
   bank.fission_nuclide = fission_nuclide();
+  bank.fission_generation = fission_generation();
 
   local_secondary_bank().emplace_back(bank);
 }
@@ -244,6 +246,7 @@ void Particle::from_source(const SourceSite* src)
   shadow_tag() = src->shadow_tag;
   shadow_t0() = src->shadow_t0;
   fission_nuclide() = src->fission_nuclide;
+  fission_generation() = src->fission_generation;
 }
 
 void Particle::event_calculate_xs()

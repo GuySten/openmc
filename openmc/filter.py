@@ -28,7 +28,7 @@ _FILTER_TYPES = (
     'spatiallegendre', 'sphericalharmonics', 'zernike', 'zernikeradial', 'particle',
     'particleproduction', 'cellinstance', 'collision', 'time', 'parentnuclide',
     'weight', 'meshborn', 'meshsurface', 'meshmaterial', 'reaction',
-    'adjointroot',
+    'adjointroot', 'fissiongeneration',
 )
 
 def _mesh_current_names(mesh):
@@ -1480,6 +1480,49 @@ class CollisionFilter(Filter):
     def check_bins(self, bins):
         for x in bins:
             # Values should be integers
+            cv.check_type('filter value', x, Integral)
+            cv.check_greater_than('filter value', x, 0, equality=True)
+
+
+class FissionGenerationFilter(Filter):
+    """Bins tally events by the number of fissions in the particle's ancestry.
+
+    A source particle is in fission generation 0, as are its secondaries from
+    any reaction other than fission (a photoneutron, say, or the neutrons of
+    (n,2n), which OpenMC treats by weight); a neutron or photon born in a
+    fission is one generation below the particle that fissioned.  In a
+    fixed-source calculation the bins split a detector response by how many
+    fissions lie between it and the source: bin 0 is the source's own
+    contribution, the rest the fission chains it starts.  In an eigenvalue
+    calculation every generation's source sites start again at 0.
+
+    .. versionadded:: 0.16.0
+
+    Parameters
+    ----------
+    bins : Iterable of int
+        Fission generations, non-negative integers.  Events of particles in
+        any other generation are not counted.
+    filter_id : int
+        Unique identifier for the filter
+
+    Attributes
+    ----------
+    id : int
+        Unique identifier for the filter
+    bins : numpy.ndarray
+        Fission generations by which to filter
+    num_bins : int
+        The number of filter bins
+
+    """
+
+    def __init__(self, bins, filter_id=None):
+        self.bins = np.asarray(bins)
+        self.id = filter_id
+
+    def check_bins(self, bins):
+        for x in bins:
             cv.check_type('filter value', x, Integral)
             cv.check_greater_than('filter value', x, 0, equality=True)
 

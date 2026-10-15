@@ -19,7 +19,8 @@ from .mesh import _get_mesh
 __all__ = [
     'Filter', 'AzimuthalFilter', 'CellFilter', 'CellbornFilter', 'CellfromFilter',
     'CellInstanceFilter', 'CollisionFilter', 'DistribcellFilter', 'DelayedGroupFilter',
-    'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter', 'LegendreFilter',
+    'EnergyFilter', 'EnergyoutFilter', 'EnergyFunctionFilter',
+    'FissionGenerationFilter', 'LegendreFilter',
     'MaterialFilter', 'MaterialFromFilter', 'MeshFilter', 'MeshBornFilter',
     'MeshMaterialFilter', 'MeshSurfaceFilter', 'MuFilter', 'MuSurfaceFilter',
     'ParentNuclideFilter', 'ParticleFilter', 'ParticleProductionFilter', 'PolarFilter',
@@ -236,6 +237,10 @@ class CollisionFilter(Filter):
 
 class EnergyoutFilter(EnergyFilter):
     filter_type = 'energyout'
+
+
+class FissionGenerationFilter(Filter):
+    filter_type = 'fissiongeneration'
 
 
 class AzimuthalFilter(Filter):
@@ -721,6 +726,7 @@ _FILTER_TYPE_MAP = {
     'energy': EnergyFilter,
     'energyout': EnergyoutFilter,
     'energyfunction': EnergyFunctionFilter,
+    'fissiongeneration': FissionGenerationFilter,
     'legendre': LegendreFilter,
     'material': MaterialFilter,
     'materialfrom': MaterialFromFilter,

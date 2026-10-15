@@ -69,6 +69,11 @@ struct SourceSite {
   // inherited by its secondaries; -1 otherwise
   int fission_nuclide {-1};
 
+  // Number of fissions in the particle's ancestry since its source particle:
+  // a fission neutron or photon is one more than the particle that fissioned,
+  // every other secondary inherits it (FissionGenerationFilter)
+  int fission_generation {0};
+
   double lifetime {0.0}; //!< time since birth of the neutron's generation [s]
   // Birth position and cell of the particle a split copy was split from.
   // cell_born is C_NONE for every other site, which is then born at r.
@@ -544,6 +549,7 @@ private:
   double wgt_born_ {1.0};
   double E_born_ {0.0}; //!< energy at which this particle was started
   int fission_nuclide_ {-1}; //!< nuclide whose fission made this photon
+  int fission_generation_ {0}; //!< fissions in the ancestry since the source
   double wgt_ww_born_ {-1.0};
   double mu_;
   double time_ {0.0};
@@ -671,6 +677,8 @@ public:
   double E_born() const { return E_born_; }
   int& fission_nuclide() { return fission_nuclide_; }
   int fission_nuclide() const { return fission_nuclide_; }
+  int& fission_generation() { return fission_generation_; }
+  int fission_generation() const { return fission_generation_; }
   double wgt_born() const { return wgt_born_; }
 
   // Weight window value at birth

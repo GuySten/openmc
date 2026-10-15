@@ -144,7 +144,8 @@ attributes/sub-elements:
     The type of the filter. Accepted options are "cell", "cellfrom",
     "cellborn", "surface", "material", "universe", "energy", "energyout",
     "mu", "polar", "azimuthal", "mesh", "distribcell", "delayedgroup",
-    "energyfunction", "particle", and "particleproduction".
+    "energyfunction", "fissiongeneration", "particle", and
+    "particleproduction".
 
   :bins:
      A description of the bins for each type of filter can be found in
@@ -316,6 +317,18 @@ should be set to:
 :energyfunction:
   ``energyfunction`` filters do not use the ``bins`` entry.  Instead
   they use ``energy`` and ``y``.
+
+:fissiongeneration:
+  A list of fission generations, non-negative integers: the number of fissions
+  in a particle's ancestry since its source particle.  A source particle and
+  its secondaries from reactions other than fission are in generation 0; a
+  neutron or photon born in a fission is one generation below the particle
+  that fissioned.  Events of particles in other generations are not counted.
+  For instance, the contribution of the source particles themselves:
+
+  .. code-block:: xml
+
+      <filter type="fissiongeneration" bins="0" />
 
 :particle:
   A list of particle identifiers to tally, specified as strings (e.g.,

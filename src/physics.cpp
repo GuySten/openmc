@@ -281,6 +281,7 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.wgt_born = p.wgt_born();
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
+      site.fission_generation = p.fission_generation() + 1;
       p.local_secondary_bank().push_back(site);
       p.n_secondaries()++;
     }
@@ -1362,9 +1363,12 @@ void sample_secondary_photons(Particle& p, int i_nuclide)
     }
 
     // A fission photon remembers the nuclide that fissioned (adjoint side
-    // populations tally photoneutrons by it)
+    // populations tally photoneutrons by it) and is one fission generation
+    // below its parent
     if (created_photon && is_fission(rx->mt_)) {
       p.local_secondary_bank().back().fission_nuclide = i_nuclide;
+      p.local_secondary_bank().back().fission_generation =
+        p.fission_generation() + 1;
     }
 
     // Tag secondary particle with parent nuclide

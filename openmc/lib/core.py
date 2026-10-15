@@ -40,6 +40,7 @@ class _SourceSite(Structure):
                 ('shadow_tag', c_int),
                 ('shadow_t0', c_double),
                 ('fission_nuclide', c_int),
+                ('fission_generation', c_int),
                 ('lifetime', c_double),
                 ('r_born', c_double*3),
                 ('cell_born', c_int)]

@@ -20,6 +20,29 @@ from .volume import VolumeCalculation
 from .weight_windows import WeightWindows, WeightWindowGenerator, WeightWindowsList
 
 
+_SECONDS_PER_UNIT = {
+    's': 1.0, 'sec': 1.0,
+    'min': 60.0, 'minute': 60.0,
+    'h': 3600.0, 'hr': 3600.0, 'hour': 3600.0,
+    'd': 86400.0, 'day': 86400.0,
+    'a': 365.25*86400.0, 'year': 365.25*86400.0,
+}
+
+
+def _time_in_seconds(value) -> float:
+    """Convert a time given as a float in [s] or a (value, unit) tuple"""
+    if isinstance(value, Real):
+        time, unit = value, 's'
+    else:
+        cv.check_type('time', value, Sequence)
+        cv.check_length('time', value, 2, 2)
+        time, unit = value
+    cv.check_type('time', time, Real)
+    cv.check_greater_than('time', time, 0.0)
+    cv.check_value('time unit', unit, _SECONDS_PER_UNIT)
+    return float(time) * _SECONDS_PER_UNIT[unit]
+
+
 class RunMode(Enum):
     EIGENVALUE = 'eigenvalue'
     FIXED_SOURCE = 'fixed source'
@@ -88,10 +111,37 @@ class Settings:
         'survival_normalization' is a bool indicating whether or not the weight
         cutoff parameters will be applied relative to the particle's starting
         weight or to its current weight.
+    decay_sources : bool or dict
+        Produce photons, electrons, and positrons from the decay of
+        radionuclides left behind by neutron reactions, assuming steady-state
+        operation. Fission products and activation products are both included,
+        using the decay data and fission product yields of the depletion chain
+        given by ``openmc.config['chain_file']``. Requires photon transport.
+        Setting this to True uses the defaults: constant power for one year
+        and emission of all three particle types. A dictionary can be given
+        instead with any of the following keys:
+
+        :irradiation_time:
+            Time at constant power before the simulated state, as a float in
+            [s] or a (value, unit) tuple where the unit is one of 's', 'min',
+            'h', 'd', or 'a'
+        :timesteps:
+            Lengths of the steps of a piecewise-constant power history, as
+            floats in [s] or (value, unit) tuples. The simulated state is the
+            end of the last step.
+        :power:
+            Relative power during each step in ``timesteps``. Only ratios
+            matter; the power of the last step must be positive.
+        :particles:
+            Sequence of particle types to emit, from 'photon', 'electron', and
+            'positron'
+
+        .. versionadded:: 0.16.1
     delayed_photon_scaling : bool
         Indicate whether to scale the fission photon yield by (EGP + EGD)/EGP
         where EGP is the energy release of prompt photons and EGD is the energy
-        release of delayed photons.
+        release of delayed photons. The scaling is not applied to nuclides
+        whose delayed photons are produced by :attr:`decay_sources`.
 
         .. versionadded:: 0.12
     electron_treatment : {'led', 'ttb'}
@@ -492,6 +542,7 @@ class Settings:
         self._create_fission_neutrons = None
         self._create_delayed_neutrons = None
         self._delayed_photon_scaling = None
+        self._decay_sources = None
         self._material_cell_offsets = None
         self._log_grid_bins = None
 
@@ -1251,6 +1302,52 @@ class Settings:
         self._create_delayed_neutrons = create_delayed_neutrons
 
     @property
+    def decay_sources(self) -> bool | dict:
+        return self._decay_sources
+
+    @decay_sources.setter
+    def decay_sources(self, value: bool | dict | None):
+        if value is None or isinstance(value, bool):
+            self._decay_sources = value
+            return
+        cv.check_type('decay sources', value, Mapping)
+        for key in value:
+            cv.check_value('decay sources key', key,
+                           ('irradiation_time', 'timesteps', 'power',
+                            'particles'))
+        if 'irradiation_time' in value and 'timesteps' in value:
+            raise ValueError("Only one of 'irradiation_time' and 'timesteps' "
+                             "can be given for decay sources.")
+        if 'power' in value and 'timesteps' not in value:
+            raise ValueError("'power' requires 'timesteps' for decay sources.")
+
+        # Check times by converting them to seconds
+        if 'irradiation_time' in value:
+            _time_in_seconds(value['irradiation_time'])
+        if 'timesteps' in value:
+            timesteps = value['timesteps']
+            cv.check_type('decay source timesteps', timesteps, Iterable)
+            n_steps = len([_time_in_seconds(t) for t in timesteps])
+            if n_steps == 0:
+                raise ValueError('At least one decay source timestep must be '
+                                 'given.')
+            if 'power' in value:
+                power = value['power']
+                cv.check_iterable_type('decay source power', power, Real)
+                cv.check_length('decay source power', power, n_steps, n_steps)
+                for p in power:
+                    cv.check_greater_than('decay source power', p, 0.0, True)
+                cv.check_greater_than('final decay source power', power[-1],
+                                      0.0)
+        if 'particles' in value:
+            cv.check_type('decay source particles', value['particles'],
+                          Iterable, str)
+            for particle in value['particles']:
+                cv.check_value('decay source particle', particle,
+                               ('photon', 'electron', 'positron'))
+        self._decay_sources = dict(value)
+
+    @property
     def delayed_photon_scaling(self) -> bool:
         return self._delayed_photon_scaling
 
@@ -1908,6 +2005,32 @@ class Settings:
             elem = ET.SubElement(root, "create_delayed_neutrons")
             elem.text = str(self._create_delayed_neutrons).lower()
 
+    def _create_decay_sources_subelement(self, root):
+        value = self._decay_sources
+        if not value:
+            # An empty dictionary means that defaults are used
+            if value == {}:
+                ET.SubElement(root, "decay_sources")
+            return
+        elem = ET.SubElement(root, "decay_sources")
+        if value is True:
+            return
+        if 'irradiation_time' in value:
+            timesteps = [_time_in_seconds(value['irradiation_time'])]
+        elif 'timesteps' in value:
+            timesteps = [_time_in_seconds(t) for t in value['timesteps']]
+        else:
+            timesteps = None
+        if timesteps is not None:
+            subelem = ET.SubElement(elem, "timesteps")
+            subelem.text = ' '.join(str(t) for t in timesteps)
+        if 'power' in value:
+            subelem = ET.SubElement(elem, "power")
+            subelem.text = ' '.join(str(p) for p in value['power'])
+        if 'particles' in value:
+            subelem = ET.SubElement(elem, "particles")
+            subelem.text = ' '.join(value['particles'])
+
     def _create_delayed_photon_scaling_subelement(self, root):
         if self._delayed_photon_scaling is not None:
             elem = ET.SubElement(root, "delayed_photon_scaling")
@@ -2426,6 +2549,22 @@ class Settings:
         if text is not None:
             self.create_delayed_neutrons = text in ('true', '1')
 
+    def _decay_sources_from_xml_element(self, root):
+        elem = root.find('decay_sources')
+        if elem is None:
+            return
+        value = {}
+        timesteps = get_elem_list(elem, 'timesteps', float)
+        if timesteps is not None:
+            value['timesteps'] = timesteps
+        power = get_elem_list(elem, 'power', float)
+        if power is not None:
+            value['power'] = power
+        particles = get_elem_list(elem, 'particles', str)
+        if particles is not None:
+            value['particles'] = particles
+        self.decay_sources = value if value else True
+
     def _delayed_photon_scaling_from_xml_element(self, root):
         text = get_text(root, 'delayed_photon_scaling')
         if text is not None:
@@ -2644,6 +2783,7 @@ class Settings:
         self._create_create_fission_neutrons_subelement(element)
         self._create_create_delayed_neutrons_subelement(element)
         self._create_delayed_photon_scaling_subelement(element)
+        self._create_decay_sources_subelement(element)
         self._create_event_based_subelement(element)
         self._create_max_particles_in_flight_subelement(element)
         self._create_max_events_subelement(element)
@@ -2762,6 +2902,7 @@ class Settings:
         settings._create_fission_neutrons_from_xml_element(elem)
         settings._create_delayed_neutrons_from_xml_element(elem)
         settings._delayed_photon_scaling_from_xml_element(elem)
+        settings._decay_sources_from_xml_element(elem)
         settings._event_based_from_xml_element(elem)
         settings._max_particles_in_flight_from_xml_element(elem)
         settings._max_particle_events_from_xml_element(elem)

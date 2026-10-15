@@ -227,6 +227,35 @@ time.
 
     *Default*: Infinity
 
+-------------------------------
+``<decay_sources>`` Element
+-------------------------------
+
+The ``<decay_sources>`` element enables the emission of photons, electrons, and
+positrons from the decay of radionuclides produced by fission and neutron
+activation, assuming steady-state operation. Decay data and fission product
+yields are read from the depletion chain given by the ``OPENMC_CHAIN_FILE``
+environment variable. Photon transport must be enabled. An empty element uses
+the default values of all sub-elements. This element has the following
+sub-elements:
+
+  :timesteps:
+    Lengths of the steps of a piecewise-constant power history in [s]. The
+    simulated state is the end of the last step.
+
+    *Default*: 31557600 (one year)
+
+  :power:
+    Relative power during each step. The power of the last step must be
+    positive.
+
+    *Default*: 1.0 for each step
+
+  :particles:
+    Particle types to emit, from ``photon``, ``electron``, and ``positron``.
+
+    *Default*: photon electron positron
+
 ----------------------------
 ``<delayed_photon_scaling>``
 ----------------------------
@@ -234,7 +263,8 @@ time.
 Determines whether to scale the fission photon yield to account for delayed
 photon energy. The photon yields are scaled as (EGP + EGD)/EGP where EGP and EGD
 are the prompt and delayed photon components of energy release, respectively,
-from MF=1, MT=458 on an ENDF evaluation.
+from MF=1, MT=458 on an ENDF evaluation. The scaling is not applied to
+nuclides whose delayed fission photons are produced by ``<decay_sources>``.
 
   *Default*: true
 

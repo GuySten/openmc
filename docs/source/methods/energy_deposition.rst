@@ -203,6 +203,111 @@ where :math:`\gamma_i` is the atomic fraction of the :math:`i`-th element.
 Therefore, the energy deposited by charged particles should be attributed to
 a given element according to its fractional charge density.
 
+.. _methods_decay_sources:
+
+------------------------------
+Steady-State Decay Sources
+------------------------------
+
+Radionuclides produced by fission and by neutron activation emit photons,
+electrons, and positrons when they decay. In a reactor operating at steady
+state, short-lived radionuclides decay as fast as they are produced, so their
+emission accompanies the reactions that produce them. When decay sources are
+enabled (see :ref:`usersguide_steady_state_decay`), OpenMC models this by
+emitting the decay particles at the site of each neutron collision, analogous
+to the treatment of prompt secondary photons.
+
+Inventory per Reaction
+----------------------
+
+Consider a reaction channel :math:`c`, either fission of a nuclide at one of
+the incident energies tabulated in the fission product yields or an activation
+reaction listed in the depletion chain, that produces nuclide :math:`i` with
+yield (or branching ratio) :math:`y_{c,i}`. The reactor operates with a
+piecewise-constant power history: step :math:`s` lasts from :math:`t_s` to
+:math:`t_{s+1}` at a power :math:`P_s` relative to the power :math:`P_S` at the
+end of the history, which is the state being simulated. Assuming that the
+reaction rate is proportional to the power and that radionuclides are removed
+only by decay, the number of atoms of nuclide :math:`j` present at the end of
+the history per unit reaction rate is
+
+.. math::
+
+    a_{c,j} = \sum_i y_{c,i} \, G_{ij},
+
+where :math:`G_{ij}` is the inventory of nuclide :math:`j` resulting from unit
+production of nuclide :math:`i` at the final power. :math:`G_{ij}` is computed
+with transmutation trajectory analysis (TTA): the decay network starting from
+nuclide :math:`i` is unfolded into linear chains :math:`i = n_1 \to n_2 \to
+\cdots \to n_m = j`, each of which has the Bateman solution. Integrated over
+the power history, the contribution of one chain is
+
+.. math::
+
+    G_{ij} \mathrel{+}= \left( \prod_{k=1}^{m-1} b_k \lambda_k \right)
+    \sum_s \frac{P_s}{P_S} \sum_{k=1}^m \frac{1}{\prod_{l \ne k}
+    (\lambda_l - \lambda_k)} \int_{T - t_{s+1}}^{T - t_s} e^{-\lambda_k \tau}
+    d\tau,
+
+where :math:`\lambda_k` is the decay constant of the :math:`k`-th nuclide on the
+chain, :math:`b_k` is the branching ratio from the :math:`k`-th to the
+:math:`(k+1)`-th nuclide, and :math:`T = t_{S+1}` is the end of the history. A
+chain is not followed beyond a nuclide through which less than a fraction
+:math:`10^{-12}` of the produced atoms have passed by the end of the history.
+The number of atoms that have passed through the last nuclide of a chain is
+obtained from the same expression by appending a fictitious stable daughter.
+Since the decay network contains no cycles, every nuclide appears at most once
+on a chain. Different nuclides with nearly equal decay constants, for which the
+Bateman solution is singular, are handled by shifting one of the decay
+constants by a relative amount of :math:`10^{-8}`. The inventories
+:math:`G_{ij}` are computed once for each radionuclide that is produced and are
+shared among all reaction channels.
+
+Emission at Collisions
+----------------------
+
+The decay source of nuclide :math:`j` for particle type :math:`p` is
+:math:`S_j^p(E)`, normalized so that its integral is the emission rate per atom
+in the depletion chain. Each reaction event of channel :math:`c` is therefore
+accompanied by
+
+.. math::
+
+    Y_c^p = \sum_j a_{c,j} \int S_j^p(E) \, dE
+
+particles of type :math:`p`. At a neutron collision with nuclide :math:`i`, the
+expected number of particles of type :math:`p` emitted is
+
+.. math::
+
+    \frac{1}{\sigma_{t}} \left[ \sum_{c \in \text{fission}} f_c \sigma_f Y_c^p
+    + \sum_{c \in \text{activation}} k_{\text{eff}} \sigma_c Y_c^p \right],
+
+where the factors :math:`f_c` linearly interpolate the fission channels in the
+incident energy (outside of the range of tabulated yields, the closest channel
+is used). As for prompt photons from non-fission reactions, the weight of
+particles from activation is multiplied by :math:`k_{\text{eff}}` in
+eigenvalue calculations to properly balance energy release and deposition.
+For each emitted particle, a channel is sampled in proportion to its
+contribution, then an emitting nuclide :math:`j` with probability proportional
+to :math:`a_{c,j} \int S_j^p(E) dE`, and finally an energy from
+:math:`S_j^p(E)`. The direction is sampled isotropically and the emitting
+nuclide is recorded so that a :class:`~openmc.ParentNuclideFilter` can be used
+to tally the contribution of each radionuclide. Electrons and positrons are
+processed at their birth site like those from photon interactions.
+
+Consistency with Fission Energy Release
+---------------------------------------
+
+For fissionable nuclides with fission product yields in the depletion chain,
+delayed fission photons are produced explicitly from the decay of fission
+products, so the scaling of the prompt fission photon yield by
+:math:`(E_{\gamma,p} + E_{\gamma,d})/E_{\gamma,p}` is not applied to them. Other
+fissionable nuclides keep the scaling if it is enabled. When fission product
+electrons are emitted, the delayed beta energy :math:`E_{\beta}` is
+deposited by those electrons, and it is removed from the fission heating
+:math:`k_{i,f}` described above.
+
 ----------
 References
 ----------

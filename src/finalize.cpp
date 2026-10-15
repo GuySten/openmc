@@ -8,6 +8,7 @@
 #include "openmc/constants.h"
 #include "openmc/cross_sections.h"
 #include "openmc/dagmc.h"
+#include "openmc/decay_source.h"
 #include "openmc/eigenvalue.h"
 #include "openmc/event.h"
 #include "openmc/geometry.h"
@@ -49,6 +50,7 @@ void free_memory()
   free_memory_photon();
   free_memory_settings();
   free_memory_thermal();
+  free_memory_decay_sources();
   free_memory_chain();
   library_clear();
   nuclides_clear();
@@ -166,6 +168,8 @@ int openmc_finalize()
   settings::ufs_on = false;
   settings::urr_ptables_on = true;
   settings::use_decay_photons = false;
+  settings::decay_sources_on = false;
+  settings::decay_source_settings = DecaySourceSettings {};
   settings::use_shared_secondary_bank = false;
   settings::verbosity = -1;
   settings::weight_cutoff = 0.25;

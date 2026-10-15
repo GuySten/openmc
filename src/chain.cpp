@@ -46,11 +46,59 @@ ChainNuclide::ChainNuclide(pugi::xml_node node)
     reaction_products_[mt].push_back({rx_target, branching_ratio});
   }
 
+  // Read decay modes that lead to another nuclide. Spontaneous fission is
+  // skipped since its products are not given by the decay mode.
+  for (pugi::xml_node decay_node : node.children("decay")) {
+    if (!decay_node.attribute("target"))
+      continue;
+    std::string decay_type = get_node_value(decay_node, "type");
+    if (decay_type.find("sf") != std::string::npos)
+      continue;
+    double branching_ratio =
+      std::stod(get_node_value(decay_node, "branching_ratio"));
+    if (branching_ratio > 0.0) {
+      decay_products_.push_back(
+        {get_node_value(decay_node, "target"), branching_ratio});
+    }
+  }
+
+  // Read independent fission product yields, or the name of the nuclide whose
+  // yields are borrowed
+  pugi::xml_node fpy_node = node.child("neutron_fission_yields");
+  if (fpy_node) {
+    if (check_for_node(fpy_node, "parent")) {
+      fission_yield_parent_ = get_node_value(fpy_node, "parent");
+    }
+    for (pugi::xml_node yield_node : fpy_node.children("fission_yields")) {
+      FissionYields yields;
+      yields.energy = std::stod(get_node_value(yield_node, "energy"));
+      auto products = get_node_array<std::string>(yield_node, "products");
+      auto data = get_node_array<double>(yield_node, "data");
+      if (products.size() != data.size()) {
+        fatal_error(fmt::format(
+          "Fission yield products and data for {} in the chain file have "
+          "different lengths.",
+          name_));
+      }
+      for (size_t i = 0; i < products.size(); ++i) {
+        yields.products.push_back({products[i], data[i]});
+      }
+      fission_yields_.push_back(std::move(yields));
+    }
+  }
+
   for (pugi::xml_node source_node : node.children("source")) {
+    // Skip sources without data
+    if (check_for_node(source_node, "parameters") &&
+        get_node_value(source_node, "parameters", false, true).empty())
+      continue;
     auto particle = get_node_value(source_node, "particle");
     if (particle == "photon") {
       photon_energy_ = distribution_from_xml(source_node);
-      break;
+    } else if (particle == "electron") {
+      electron_energy_ = distribution_from_xml(source_node);
+    } else if (particle == "positron") {
+      positron_energy_ = distribution_from_xml(source_node);
     }
   }
 
@@ -61,6 +109,32 @@ ChainNuclide::ChainNuclide(pugi::xml_node node)
 ChainNuclide::~ChainNuclide()
 {
   data::chain_nuclide_map.erase(name_);
+}
+
+const Distribution* ChainNuclide::source(ParticleType type) const
+{
+  if (type == ParticleType::photon()) {
+    return photon_energy_.get();
+  } else if (type == ParticleType::electron()) {
+    return electron_energy_.get();
+  } else if (type == ParticleType::positron()) {
+    return positron_energy_.get();
+  }
+  return nullptr;
+}
+
+const vector<ChainNuclide::FissionYields>& ChainNuclide::fission_yields() const
+{
+  if (!fission_yield_parent_.empty()) {
+    auto it = data::chain_nuclide_map.find(fission_yield_parent_);
+    if (it == data::chain_nuclide_map.end()) {
+      fatal_error(fmt::format("Fission product yields for {} borrow from {}, "
+                              "which is not present in the chain file.",
+        name_, fission_yield_parent_));
+    }
+    return data::chain_nuclides[it->second]->fission_yields_;
+  }
+  return fission_yields_;
 }
 
 //==============================================================================

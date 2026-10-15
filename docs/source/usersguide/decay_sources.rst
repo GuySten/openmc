@@ -17,7 +17,9 @@ Finally, a photon transport calculation with a source based on the activity and
 energy spectrum of the activated materials is used to determine a desired
 physical response (e.g., a dose rate) at one or more locations of interest.
 OpenMC includes automation for both the R2S and D1S methods as described in the
-following sections.
+following sections. Radiation from the decay of fission and activation products
+during reactor operation can also be included directly in a transport
+calculation, as described in :ref:`usersguide_steady_state_decay`.
 
 Rigorous 2-Step (R2S) Calculations
 ==================================
@@ -275,3 +277,62 @@ relevant tallies. This can be done with the aid of the
 
     # Apply time correction factors
     tally = d1s.apply_time_correction(dose_tally, factors, time_index)
+
+.. _usersguide_steady_state_decay:
+
+Steady-State Decay Sources
+==========================
+
+During reactor operation, radionuclides produced by fission and by neutron
+activation decay while the reactor is running, emitting photons, electrons, and
+positrons. Delayed fission photons, beta particles from fission products, and
+decay radiation from activation products (e.g., :sup:`16`\ N in water or
+:sup:`28`\ Al in aluminum) contribute to heating and to the photon field, which
+matters for photonuclear reactions such as photoneutron production in heavy
+water or beryllium. These sources can be included in a coupled neutron-photon
+calculation with a single setting::
+
+    model.settings.photon_transport = True
+    model.settings.decay_sources = True
+
+OpenMC then emits decay particles at each neutron collision from the
+radionuclides that the reaction leaves behind, using the decay data and fission
+product yields of the :ref:`depletion chain <usersguide_data>` given by
+``openmc.config['chain_file']``. No other input is required: the radionuclide
+inventories are computed from the chain at initialization (see
+:ref:`methods_decay_sources`), and the emitting radionuclide of each particle
+can be tallied with a :class:`~openmc.ParentNuclideFilter`.
+
+By default, the reactor is assumed to have operated at constant power for one
+year, which brings short-lived radionuclides to saturation, and all three
+particle types are emitted. The irradiation time can be changed, e.g., for a
+zero-power facility that operated for a few hours::
+
+    model.settings.decay_sources = {'irradiation_time': (4, 'h')}
+
+A piecewise-constant power history can be given with the ``'timesteps'`` and
+``'power'`` keys. The simulated state is the end of the last step, and only the
+ratios of the power values matter::
+
+    # 100 days at full power, a 30-day outage, then 10 days at half power
+    model.settings.decay_sources = {
+        'timesteps': [(100, 'd'), (30, 'd'), (10, 'd')],
+        'power': [1.0, 0.0, 0.5]
+    }
+
+The particle types can be restricted with the ``'particles'`` key, e.g.,
+``{'particles': ['photon']}``. The following points should be kept in mind:
+
+- Decay particles are emitted where the radionuclide is produced. This is
+  appropriate for fuel and structures, but not for radionuclides carried away
+  by a flowing coolant before they decay.
+- Radionuclides are assumed to be removed only by decay; their burnout by
+  neutron absorption is neglected.
+- For fissionable nuclides with fission product yields in the chain, delayed
+  fission photons from decay replace the scaling of prompt fission photons
+  controlled by :attr:`Settings.delayed_photon_scaling`; other fissionable
+  nuclides keep the scaling. When fission product electrons are emitted,
+  delayed beta energy is removed from the neutron heating since it is
+  deposited by the electrons.
+- Decay sources cannot be combined with the D1S method
+  (:attr:`Settings.use_decay_photons`).

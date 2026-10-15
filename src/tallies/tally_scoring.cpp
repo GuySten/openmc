@@ -3,6 +3,7 @@
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/constants.h"
+#include "openmc/decay_source.h"
 #include "openmc/error.h"
 #include "openmc/ifp.h"
 #include "openmc/material.h"
@@ -266,12 +267,21 @@ double get_nuclide_neutron_heating(
   if (kerma == 0.0)
     return 0.0;
 
+  // When decay sources emit fission product electrons explicitly, their
+  // energy is deposited by the electrons rather than at the fission site
+  double kerma_betas = 0.0;
+  if (rxn_index == HEATING) {
+    kerma_betas = decay_source_beta_heating(p, i_nuclide);
+    kerma -= kerma_betas;
+  }
+
   if (settings::run_mode == RunMode::EIGENVALUE) {
     // Determine kerma for fission as (EFR + EB)*sigma_f
     double kerma_fission =
       nuc.fragments_
         ? ((*nuc.fragments_)(p.E_last()) + (*nuc.betas_)(p.E_last())) *
-            p.neutron_xs(i_nuclide).fission
+              p.neutron_xs(i_nuclide).fission -
+            kerma_betas
         : 0.0;
 
     // Determine non-fission kerma as difference

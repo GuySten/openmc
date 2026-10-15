@@ -248,3 +248,41 @@ def test_properties_file_load(tmp_path, mpi_intracomm):
             assert mat.get_density('atom/b-cm') == pytest.approx(
                 orig_density * density_factor, rel=1e-5
             )
+
+
+@pytest.mark.parametrize('value, expected', [
+    (True, True),
+    ({}, True),
+    ({'irradiation_time': (30, 'd')}, {'timesteps': [30*86400.0]}),
+    ({'timesteps': [(100, 'd'), 3600.0], 'power': [1.0, 0.5],
+      'particles': ['photon', 'electron']},
+     {'timesteps': [100*86400.0, 3600.0], 'power': [1.0, 0.5],
+      'particles': ['photon', 'electron']}),
+])
+def test_decay_sources(value, expected):
+    s = openmc.Settings()
+    s.decay_sources = value
+    elem = s.to_xml_element()
+    assert elem.find('decay_sources') is not None
+    assert openmc.Settings.from_xml_element(elem).decay_sources == expected
+
+    # Disabled decay sources are not written
+    s.decay_sources = False
+    assert s.to_xml_element().find('decay_sources') is None
+
+
+@pytest.mark.parametrize('value', [
+    {'temperature': 300.0},
+    {'power': [1.0]},
+    {'irradiation_time': 1.0, 'timesteps': [1.0]},
+    {'timesteps': [1.0, 2.0], 'power': [1.0]},
+    {'timesteps': [1.0, 2.0], 'power': [1.0, 0.0]},
+    {'timesteps': [1.0], 'power': [-1.0]},
+    {'irradiation_time': (1, 'week')},
+    {'irradiation_time': 0.0},
+    {'particles': ['neutron']},
+])
+def test_decay_sources_invalid(value):
+    s = openmc.Settings()
+    with pytest.raises(ValueError):
+        s.decay_sources = value

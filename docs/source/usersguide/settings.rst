@@ -219,6 +219,27 @@ distribution. This could be a probability mass function
 specified, a Watt fission spectrum with :math:`a` = 0.988 MeV and :math:`b` =
 2.249 MeV :sup:`-1` is used.
 
+Sources of beta particles can use the :class:`openmc.stats.BetaSpectrum`
+distribution, which gives the spectrum of a beta decay transition from its
+endpoint energy and the daughter nucleus. For example, a Sr90/Y90 source in
+secular equilibrium emits electrons from two unique first-forbidden
+transitions with equal intensities::
+
+  sr90 = openmc.stats.BetaSpectrum(
+      endpoint=546.0e3, atomic_number=39, mass_number=90,
+      forbiddenness=1, unique=True)
+  y90 = openmc.stats.BetaSpectrum(
+      endpoint=2279.8e3, atomic_number=40, mass_number=90,
+      forbiddenness=1, unique=True)
+  source = openmc.IndependentSource(
+      energy=openmc.stats.Mixture([1.0, 1.0], [sr90, y90]),
+      particle='electron')
+
+Electrons and positrons are not transported: their energy is deposited where
+they are born, and with photon transport enabled, their bremsstrahlung and
+annihilation photons are transported. A complete example is given in
+``examples/sr90_source``.
+
 The time distribution can be set equal to any univariate probability
 distribution. This could be a probability mass function
 (:class:`openmc.stats.Discrete`), a uniform distribution

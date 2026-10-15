@@ -11,7 +11,8 @@ import openmc
 import openmc.checkvalue as cv
 from openmc.exceptions import DataError
 from openmc.mixin import EqualityMixin
-from openmc.stats import Discrete, Tabular, Univariate, combine_distributions
+from openmc.stats import (BetaSpectrum, Discrete, Mixture, Tabular, Univariate,
+                          combine_distributions)
 from .data import gnds_name, zam
 from .function import INTERPOLATION_SCHEME
 from .endf import (
@@ -53,6 +54,82 @@ def _energy_integral(f):
         return np.sum(0.5*(x[1:] + x[:-1]) * y[:-1] * np.diff(x))
     dx = np.diff(x)
     return np.sum(dx/6.0 * ((2*x[:-1] + x[1:])*y[:-1] + (x[:-1] + 2*x[1:])*y[1:]))
+
+
+# Electron mass energy equivalent in [eV]
+_MASS_ELECTRON_EV = 0.51099895000e6
+
+
+def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy):
+    """Spectrum of beta particles from discrete transitions
+
+    Each transition is given a :class:`openmc.stats.BetaSpectrum`. Since the
+    data do not indicate whether forbidden transitions are unique, the allowed
+    shape is used, with a correction factor :math:`e^{aT}` shared by all
+    transitions such that the mean energy of the spectrum is preserved. Among
+    all spectra with the given mean energy and transition intensities, this is
+    the one closest to the allowed shapes in relative entropy.
+
+    Parameters
+    ----------
+    endpoints : sequence of float
+        Endpoint (maximum kinetic) energies of the transitions in [eV]
+    rates : sequence of float
+        Emission rate of each transition
+    Z : int
+        Atomic number of the daughter nucleus
+    A : int
+        Mass number of the daughter nucleus
+    positron : bool
+        Whether the beta particles are positrons
+    mean_energy : float
+        Mean kinetic energy of the beta particles in [eV] to preserve
+
+    Returns
+    -------
+    openmc.stats.Mixture
+        Mixture of beta spectra whose integral is the total emission rate
+
+    """
+    e_max = max(endpoints)
+    rates = np.asarray(rates, dtype=float)
+
+    # The correction multiplies the density by exp(a*(T - endpoint)), so the
+    # density of each transition is evaluated once at the quadrature points
+    quadrature = []
+    for e0 in endpoints:
+        spectrum = BetaSpectrum(e0, Z, A, positron)
+        T, weights = spectrum._quadrature()
+        quadrature.append((T, weights * spectrum._shape(T), e0))
+
+    def mean(b):
+        total = 0.0
+        for rate, (T, f, e0) in zip(rates, quadrature):
+            g = f * np.exp(b / e_max * (T - e0))
+            total += rate * np.sum(g * T) / np.sum(g)
+        return total / rates.sum()
+
+    # Find the correction that preserves the mean energy, which increases
+    # monotonically with b. The correction is bounded to keep the spectra
+    # meaningful for evaluations whose mean energy is inconsistent with the
+    # endpoints.
+    b = 0.0
+    if mean_energy > 0.0:
+        lo, hi = -100.0, 100.0
+        if mean_energy <= mean(lo):
+            b = lo
+        elif mean_energy >= mean(hi):
+            b = hi
+        else:
+            while hi - lo > 1e-9:
+                b = 0.5*(lo + hi)
+                if mean(b) < mean_energy:
+                    lo = b
+                else:
+                    hi = b
+    spectra = [BetaSpectrum(e0, Z, A, positron, b / e_max)
+               for e0 in endpoints]
+    return Mixture(list(rates), spectra)
 
 
 _RADIATION_TYPES = {
@@ -540,28 +617,39 @@ class Decay(EqualityMixin):
                     and spectra['discrete']
                     and particle in ('beta-', 'ec/beta+')):
                 # Discrete beta transitions are given by their endpoint
-                # energy (for EC/beta+, the electron capture decay energy),
-                # not by the energy of the emitted particles. For EC/beta+,
-                # the intensity includes electron capture and the positron
-                # intensity is given separately (RIS, see ENDF-102 Section
-                # 8.3). The emitted particles are represented at the
-                # evaluated average energy of the spectrum.
-                key = ('positron_intensity' if particle == 'ec/beta+'
-                       else 'intensity')
+                # energy (for EC/beta+, the electron capture decay energy,
+                # which includes the rest mass of the positron and of the
+                # electron it annihilates with). For EC/beta+, the intensity
+                # includes electron capture and the positron intensity is
+                # given separately (RIS, see ENDF-102 Section 8.3). Each
+                # transition is given a beta spectrum, corrected so that the
+                # evaluated average energy of the spectrum is preserved.
+                positron = particle == 'ec/beta+'
+                key = 'positron_intensity' if positron else 'intensity'
                 normalization = spectra['discrete_normalization'].n
-                yield_ = normalization * sum(
-                    d[key].n for d in spectra['discrete'])
+                endpoints = []
+                rates = []
+                for d in spectra['discrete']:
+                    endpoint = d['energy'].n
+                    if positron:
+                        endpoint -= 2.0*_MASS_ELECTRON_EV
+                    rate = decay_constant * normalization * d[key].n
+                    if endpoint > 0.0 and rate > 0.0:
+                        endpoints.append(endpoint)
+                        rates.append(rate)
                 energy = spectra['energy_average'].n
                 if spectra['continuous_flag'] == 'both':
                     # The average energy includes the continuous part
                     f = spectra['continuous']['probability']
                     energy -= spectra['continuous_normalization'].n * \
                         _energy_integral(f)
-                if yield_ > 0.0 and energy > 0.0:
-                    dist_discrete = Discrete(
-                        [energy / yield_], [decay_constant * yield_])
-                    sources.setdefault(particle_type, []).append(
-                        dist_discrete)
+                if endpoints:
+                    Z = self.nuclide['atomic_number']
+                    A = self.nuclide['mass_number']
+                    dist = _beta_spectra(
+                        endpoints, rates, Z - 1 if positron else Z + 1, A,
+                        positron, energy * decay_constant / sum(rates))
+                    sources.setdefault(particle_type, []).append(dist)
             elif (spectra['continuous_flag'] in ('discrete', 'both')
                     and spectra['discrete']):
                 energies = []

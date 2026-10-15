@@ -217,3 +217,67 @@ TEST_CASE("Test Normal XML constructor with truncation")
   REQUIRE(dist.upper() == 1.2e6);
   REQUIRE(dist.is_truncated());
 }
+
+TEST_CASE("Test beta spectrum distribution")
+{
+  // Mean energies computed with the Python implementation for an allowed
+  // transition, a positron transition, a shape correction, and unique first-
+  // and third-forbidden transitions (Sr90 and K40)
+  struct Case {
+    double endpoint;
+    int z;
+    int a;
+    bool positron;
+    double shape_factor;
+    int forbiddenness;
+    bool unique;
+    double mean;
+  };
+  Case cases[] = {
+    {546.0e3, 39, 90, false, 0.0, 1, true, 195599.6839646295},
+    {2279.8e3, 40, 90, false, 0.0, 0, false, 927970.6567935935},
+    {545.7e3, 10, 22, true, 0.0, 0, false, 216120.02959731114},
+    {1.0e6, 30, 70, false, 1e-6, 0, false, 409912.6991933826},
+    {1311.1e3, 20, 40, false, 0.0, 3, true, 584412.4165929504},
+  };
+
+  uint64_t seed = openmc::init_seed(0, 0);
+  for (const auto& c : cases) {
+    openmc::BetaSpectrum dist(c.endpoint, c.z, c.a, c.positron, c.shape_factor,
+      c.forbiddenness, c.unique);
+    REQUIRE_THAT(dist.mean(), Catch::Matchers::WithinRel(c.mean, 1e-8));
+
+    // Sampled energies are within the support and follow the density
+    constexpr int n_samples = 200000;
+    double sum = 0.0;
+    int n_outside = 0;
+    for (int i = 0; i < n_samples; ++i) {
+      double E = dist.sample(&seed).first;
+      if (E <= 0.0 || E >= c.endpoint)
+        ++n_outside;
+      sum += E;
+    }
+    REQUIRE(n_outside == 0);
+    REQUIRE_THAT(sum / n_samples, Catch::Matchers::WithinRel(c.mean, 0.01));
+
+    // The density is normalized
+    constexpr int n = 100000;
+    double integral = 0.0;
+    for (int i = 0; i < n; ++i) {
+      integral += dist.evaluate((i + 0.5) * c.endpoint / n) * c.endpoint / n;
+    }
+    REQUIRE_THAT(integral, Catch::Matchers::WithinRel(1.0, 1e-3));
+  }
+}
+
+TEST_CASE("Test beta spectrum distribution from XML")
+{
+  pugi::xml_document doc;
+  doc.load_string("<dist type=\"beta\" parameters=\"546000.0 39 90 0.0\" "
+                  "forbiddenness=\"1\" unique=\"true\"/>");
+  auto dist = openmc::distribution_from_xml(doc.child("dist"));
+  auto* beta = dynamic_cast<openmc::BetaSpectrum*>(dist.get());
+  REQUIRE(beta);
+  REQUIRE_THAT(
+    beta->mean(), Catch::Matchers::WithinRel(195599.6839646295, 1e-8));
+}

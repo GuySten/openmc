@@ -148,37 +148,69 @@ def test_sources(ba137m, nb90):
     assert len(set(sources.keys()) ^ {'positron', 'electron', 'photon'}) == 0
 
 
+def _beta_mean_energy(dist):
+    """Energy emission rate of the beta spectra in a decay source"""
+    return sum(p * d.mean() for p, d in zip(dist.probability, dist.distribution)
+               if isinstance(d, openmc.stats.BetaSpectrum))
+
+
 def test_beta_sources(endf_data):
     # Na22 decays by beta+ (90%) and electron capture. Positrons are emitted
-    # with the positron intensity at the evaluated average energy, which is
-    # below the endpoint energy of 546 keV.
+    # with the positron intensity and a spectrum that ends below the electron
+    # capture decay energy by twice the electron mass.
     na22 = openmc.data.Decay.from_endf(
         os.path.join(endf_data, 'decay', 'dec-011_Na_022.endf'))
     lam = na22.decay_constant.n
     spectrum = na22.spectra['ec/beta+']
     n_positron = sum(d['positron_intensity'].n for d in spectrum['discrete'])
     positron = na22.sources['positron']
-    assert isinstance(positron, openmc.stats.Discrete)
+    assert isinstance(positron, openmc.stats.Mixture)
     assert positron.integral() == pytest.approx(lam * n_positron)
-    mean = np.sum(positron.x * positron.p) / positron.integral()
-    assert mean == pytest.approx(spectrum['energy_average'].n / n_positron)
-    assert mean < 546e3
+    for d in positron.distribution:
+        assert isinstance(d, openmc.stats.BetaSpectrum)
+        assert d.positron
+    assert max(d.endpoint for d in positron.distribution) == pytest.approx(
+        2843020.0 - 1021997.9)
+
+    # The evaluated average energy is preserved
+    assert _beta_mean_energy(positron) / lam == pytest.approx(
+        spectrum['energy_average'].n, rel=1e-6)
 
     # Fe55 decays only by electron capture and emits no positrons
     fe55 = openmc.data.Decay.from_endf(
         os.path.join(endf_data, 'decay', 'dec-026_Fe_055.endf'))
     assert 'positron' not in fe55.sources
 
-    # The energy of Y90 electrons is the evaluated average energy of beta
-    # particles and conversion electrons
-    y90 = openmc.data.Decay.from_endf(
-        os.path.join(endf_data, 'decay', 'dec-039_Y_090.endf'))
-    lam = y90.decay_constant.n
-    electron = y90.sources['electron']
-    expected = sum(y90.spectra[t]['energy_average'].n for t in ('beta-', 'e-'))
-    assert np.sum(electron.x * electron.p) / lam == pytest.approx(
-        expected, rel=1e-3)
-    assert np.all(electron.x < 2279800.0)
+    # Sr90 and Y90 undergo unique first-forbidden decays whose average energy
+    # differs from that of the allowed shape, but the average energy of the
+    # evaluation is preserved
+    for name in ('dec-038_Sr_090.endf', 'dec-039_Y_090.endf'):
+        decay = openmc.data.Decay.from_endf(
+            os.path.join(endf_data, 'decay', name))
+        electron = decay.sources['electron']
+        mean = _beta_mean_energy(electron) / decay.decay_constant.n
+        assert mean == pytest.approx(
+            decay.spectra['beta-']['energy_average'].n, rel=1e-6)
+
+
+def test_beta_spectrum_forbidden(endf_data):
+    # With the shape factor of unique first-forbidden transitions, the average
+    # energy of Sr90 and Y90 beta particles agrees with the evaluation, which
+    # the allowed shape underestimates by 11% for Sr90
+    for name, Z, A in (('dec-038_Sr_090.endf', 39, 90),
+                       ('dec-039_Y_090.endf', 40, 90)):
+        decay = openmc.data.Decay.from_endf(
+            os.path.join(endf_data, 'decay', name))
+        spectrum = decay.spectra['beta-']
+        (transition,) = [d for d in spectrum['discrete']
+                         if d['intensity'].n > 0.99]
+        endpoint = transition['energy'].n
+        expected = spectrum['energy_average'].n / transition['intensity'].n
+        unique = openmc.stats.BetaSpectrum(
+            endpoint, Z, A, forbiddenness=1, unique=True)
+        assert unique.mean() == pytest.approx(expected, rel=5e-3)
+    allowed = openmc.stats.BetaSpectrum(endpoint, Z, A)
+    assert unique.mean() > allowed.mean()
 
 
 def test_decay_photon_energy():

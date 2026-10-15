@@ -2,7 +2,8 @@
 
 #include <algorithm> // for copy
 #include <array>
-#include <cmath>     // for sqrt, floor, max
+#include <cmath> // for sqrt, floor, max
+#include <complex>
 #include <iterator>  // for back_inserter
 #include <numeric>   // for accumulate
 #include <stdexcept> // for runtime_error
@@ -364,6 +365,181 @@ double Watt::evaluate(double x) const
   double c =
     2.0 / (std::sqrt(PI * b_) * std::pow(a_, 1.5) * std::exp(a_ * b_ / 4.0));
   return c * std::exp(-x / a_) * std::sinh(std::sqrt(b_ * x));
+}
+
+//==============================================================================
+// BetaSpectrum implementation
+//==============================================================================
+
+namespace {
+
+//! Real part of the logarithm of the gamma function of a complex argument,
+//! using the recurrence relation to shift the argument followed by the
+//! Stirling series
+double log_abs_gamma(std::complex<double> z)
+{
+  double shift = 0.0;
+  while (z.real() < 10.0) {
+    shift += std::log(std::abs(z));
+    z += 1.0;
+  }
+  std::complex<double> z2 = 1.0 / (z * z);
+  std::complex<double> series =
+    (1.0 / 12.0 +
+      z2 * (-1.0 / 360.0 + z2 * (1.0 / 1260.0 + z2 * (-1.0 / 1680.0 +
+                                                       z2 * (1.0 / 1188.0))))) /
+    z;
+  std::complex<double> result =
+    (z - 0.5) * std::log(z) - z + 0.5 * std::log(2.0 * PI) + series;
+  return result.real() - shift;
+}
+
+//! Gauss-Legendre nodes and weights on [-1, 1]
+void gauss_legendre(int n, vector<double>& x, vector<double>& w)
+{
+  x.resize(n);
+  w.resize(n);
+  for (int i = 0; i < n; ++i) {
+    // Initial guess followed by Newton iterations on the Legendre polynomial
+    double t = std::cos(PI * (i + 0.75) / (n + 0.5));
+    double dp;
+    for (int iter = 0; iter < 100; ++iter) {
+      double p0 = 1.0;
+      double p1 = t;
+      for (int k = 2; k <= n; ++k) {
+        double p2 = ((2 * k - 1) * t * p1 - (k - 1) * p0) / k;
+        p0 = p1;
+        p1 = p2;
+      }
+      dp = n * (t * p1 - p0) / (t * t - 1.0);
+      double dt = p1 / dp;
+      t -= dt;
+      if (std::abs(dt) < 1e-15)
+        break;
+    }
+    x[i] = t;
+    w[i] = 2.0 / ((1.0 - t * t) * dp * dp);
+  }
+}
+
+} // namespace
+
+BetaSpectrum::BetaSpectrum(pugi::xml_node node)
+{
+  auto params = get_node_array<double>(node, "parameters");
+  if (params.size() != 4)
+    openmc::fatal_error("Beta spectrum must have four parameters specified.");
+  endpoint_ = params[0];
+  atomic_number_ = static_cast<int>(params[1]);
+  mass_number_ = static_cast<int>(params[2]);
+  shape_factor_ = params[3];
+  positron_ =
+    check_for_node(node, "positron") && get_node_value_bool(node, "positron");
+  forbiddenness_ = check_for_node(node, "forbiddenness")
+                     ? std::stoi(get_node_value(node, "forbiddenness"))
+                     : 0;
+  unique_ =
+    check_for_node(node, "unique") && get_node_value_bool(node, "unique");
+  if (endpoint_ <= 0.0)
+    openmc::fatal_error("Beta spectrum endpoint must be positive.");
+  initialize();
+  read_bias_from_xml(node);
+}
+
+BetaSpectrum::BetaSpectrum(double endpoint, int atomic_number, int mass_number,
+  bool positron, double shape_factor, int forbiddenness, bool unique)
+  : endpoint_ {endpoint}, atomic_number_ {atomic_number},
+    mass_number_ {mass_number}, positron_ {positron},
+    shape_factor_ {shape_factor}, forbiddenness_ {forbiddenness},
+    unique_ {unique}
+{
+  initialize();
+}
+
+double BetaSpectrum::log_fermi(int k, double w, double p) const
+{
+  double alpha_z = atomic_number_ / FINE_STRUCTURE;
+  double gamma = std::sqrt(k * k - alpha_z * alpha_z);
+  double eta = (positron_ ? -alpha_z : alpha_z) * w / p;
+
+  // Nuclear radius in units of the reduced Compton wavelength of the electron
+  constexpr double REDUCED_COMPTON_FM {386.15926796};
+  double radius = 1.2 * std::cbrt(mass_number_) / REDUCED_COMPTON_FM;
+
+  // Double factorial (2k-1)!!
+  double double_factorial = 1.0;
+  for (int j = 3; j < 2 * k; j += 2) {
+    double_factorial *= j;
+  }
+
+  return (k - 1) * std::log(4.0) + std::log(2.0 * k * (k + gamma)) +
+         2.0 * std::log(double_factorial) +
+         2.0 * (gamma - k) * std::log(2.0 * p * radius) + PI * eta +
+         2.0 * log_abs_gamma(std::complex<double>(gamma, eta)) -
+         2.0 * std::lgamma(2.0 * gamma + 1.0);
+}
+
+double BetaSpectrum::shape(double T) const
+{
+  double w = 1.0 + T / MASS_ELECTRON_EV;
+  double p = std::sqrt(w * w - 1.0);
+  double q = (endpoint_ - T) / MASS_ELECTRON_EV;
+  double log_f0 = log_fermi(1, w, p);
+
+  // Shape factor of unique forbidden transitions
+  int n = unique_ ? forbiddenness_ : 0;
+  double c = 0.0;
+  for (int k = 0; k <= n; ++k) {
+    double ratio = (k == 0) ? 1.0 : std::exp(log_fermi(k + 1, w, p) - log_f0);
+    c += ratio * std::pow(p, 2 * k) * std::pow(q, 2 * (n - k)) /
+         (std::tgamma(2 * k + 2) * std::tgamma(2 * (n - k) + 2));
+  }
+
+  return std::exp(log_f0 + shape_factor_ * (T - endpoint_)) * p * w * q * q * c;
+}
+
+void BetaSpectrum::initialize()
+{
+  // Integrate with the substitution T = endpoint*u^2, which resolves the
+  // behavior of the density near zero kinetic energy
+  constexpr int N_QUADRATURE {256};
+  vector<double> x, w;
+  gauss_legendre(N_QUADRATURE, x, w);
+  norm_ = 0.0;
+  double first = 0.0;
+  for (int i = 0; i < N_QUADRATURE; ++i) {
+    double u = 0.5 * (x[i] + 1.0);
+    double T = endpoint_ * u * u;
+    double f = 0.5 * w[i] * 2.0 * endpoint_ * u * shape(T);
+    norm_ += f;
+    first += f * T;
+  }
+  mean_ = first / norm_;
+
+  // Height of the uniform envelope for rejection sampling from the density
+  // on a fine grid
+  height_ = 0.0;
+  for (int i = 1; i < 1024; ++i) {
+    double u = i / 1024.0;
+    height_ = std::max(height_, shape(endpoint_ * u * u));
+  }
+  height_ *= 1.05;
+}
+
+double BetaSpectrum::sample_unbiased(uint64_t* seed) const
+{
+  while (true) {
+    double T = endpoint_ * prn(seed);
+    if (T > 0.0 && height_ * prn(seed) < shape(T))
+      return T;
+  }
+}
+
+double BetaSpectrum::evaluate(double x) const
+{
+  if (x <= 0.0 || x >= endpoint_)
+    return 0.0;
+  return shape(x) / norm_;
 }
 
 //==============================================================================
@@ -751,6 +927,8 @@ UPtrDist distribution_from_xml(pugi::xml_node node)
     dist = UPtrDist {new Maxwell(node)};
   } else if (type == "watt") {
     dist = UPtrDist {new Watt(node)};
+  } else if (type == "beta") {
+    dist = UPtrDist {new BetaSpectrum(node)};
   } else if (type == "normal") {
     dist = UPtrDist {new Normal(node)};
   } else if (type == "discrete") {

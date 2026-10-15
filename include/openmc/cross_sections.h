@@ -34,6 +34,10 @@ public:
 
 using LibraryKey = std::pair<Library::Type, std::string>;
 
+//! Whether a library type in cross_sections.xml is supported
+//! \param[in] type Value of the type attribute, e.g. "neutron"
+bool is_known_library_type(const std::string& type);
+
 //==============================================================================
 // Global variable declarations
 //==============================================================================

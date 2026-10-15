@@ -43,6 +43,7 @@ Output Files
    :maxdepth: 1
 
    statepoint
+   photon_importance
    source
    collision_track
    summary

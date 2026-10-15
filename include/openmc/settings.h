@@ -149,6 +149,10 @@ extern int adjpop_energy_variable;
 //! Nuclides by whose fission the photoneutron roots are also tallied (the
 //! nuclide that fissioned to make the photon); the rest share one more bin
 extern vector<std::string> adjpop_fission_nuclides;
+//! Photoneutron targets of the probes and rays: photonuclear nuclides (e.g.
+//! Be9, H2) whose photoneutrons are scored apart; the rest share one more bin.
+//! Empty: one bin for every target.
+extern vector<std::string> adjpop_photoneutron_targets;
 //! Energies [eV] of the probe photon lines emitted at every driver fission
 //! event in the shadow pass (empty: no probes)
 extern vector<double> adjpop_probe_energies;

@@ -128,6 +128,7 @@ bool adjpop_perturbed_importance {false};
 vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
 vector<std::string> adjpop_fission_nuclides;
+vector<std::string> adjpop_photoneutron_targets;
 vector<double> adjpop_probe_energies;
 double adjpop_root_fraction {0.1};
 double adjpop_probe_fraction {1.0};
@@ -660,6 +661,14 @@ void read_settings_xml(pugi::xml_node root)
         if (adjpop_fission_nuclides.empty()) {
           fatal_error("<adjoint_populations> 'photoneutron_fission_nuclides' "
                       "must name at least one nuclide.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_targets")) {
+        adjpop_photoneutron_targets =
+          get_node_array<std::string>(node, "photoneutron_targets");
+        if (adjpop_photoneutron_targets.empty()) {
+          fatal_error("<adjoint_populations> 'photoneutron_targets' must name "
+                      "at least one nuclide.");
         }
       }
       if (check_for_node(node, "photoneutron_probe_energies")) {

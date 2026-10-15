@@ -168,6 +168,13 @@ class Settings:
             (:meth:`openmc.AdjointPopulations.probe_importance`).
             :func:`openmc.probe_line_energies` makes a comb spaced evenly in
             photoneutron lethargy.
+        :photoneutron_targets: Photoneutron targets of the probes and rays
+            (e.g. ['Be9', 'H2'] for beryllium and heavy water): photonuclear
+            nuclides whose photoneutrons are tallied apart, so that the
+            importance can be rebuilt with each target's own cross sections
+            and threshold; photoneutrons of every other nuclide share one more
+            bin, 'other' (sequence of str, requires
+            ``photoneutron_probe_energies``).
         :photoneutron_ray_neutron_energies: Photoneutron birth energies
             [eV] of the ray probes' comb (sequence of floats, strictly
             increasing, requires photoneutron_probe_energies). Turns on ray
@@ -1258,6 +1265,7 @@ class Settings:
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
+                            'photoneutron_targets',
                             'photoneutron_probe_energies',
                             'photoneutron_probe_fraction',
                             'photoneutron_ray_neutron_energies',
@@ -1350,17 +1358,17 @@ class Settings:
                                      'tally, each once.')
                 adjoint_populations = dict(adjoint_populations)
                 adjoint_populations[key] = ids
-            elif key == 'photoneutron_fission_nuclides':
+            elif key in ('photoneutron_fission_nuclides',
+                         'photoneutron_targets'):
                 if isinstance(value, str):
-                    raise TypeError('photoneutron_fission_nuclides must be a '
-                                    'sequence of nuclide names.')
-                cv.check_type('adjoint populations '
-                              'photoneutron_fission_nuclides', value,
-                              Iterable, str)
+                    raise TypeError(f'{key} must be a sequence of nuclide '
+                                    'names.')
+                cv.check_type(f'adjoint populations {key}', value, Iterable,
+                              str)
                 names = list(value)
                 if not names or len(set(names)) != len(names):
-                    raise ValueError('photoneutron_fission_nuclides must name '
-                                     'at least one nuclide, each once.')
+                    raise ValueError(f'{key} must name at least one nuclide, '
+                                     'each once.')
             else:
                 cv.check_type(f'adjoint populations {key}', value, bool)
         if adjoint_populations and 'n_generation' not in adjoint_populations:
@@ -2163,7 +2171,7 @@ class Settings:
                              'photoneutron_ray_neutron_energies'):
                     subelement.text = ' '.join(repr(float(e)) for e in value)
                 elif key in ('photoneutron_fission_nuclides',
-                             'detector_tallies'):
+                             'photoneutron_targets', 'detector_tallies'):
                     subelement.text = ' '.join(str(v) for v in value)
                 else:
                     subelement.text = str(value)
@@ -2738,9 +2746,11 @@ class Settings:
             text = get_text(elem, 'photoneutron_energy_variable')
             if text is not None:
                 value['photoneutron_energy_variable'] = text.strip()
-            text = get_text(elem, 'photoneutron_fission_nuclides')
-            if text is not None:
-                value['photoneutron_fission_nuclides'] = text.split()
+            for key in ('photoneutron_fission_nuclides',
+                        'photoneutron_targets'):
+                text = get_text(elem, key)
+                if text is not None:
+                    value[key] = text.split()
             text = get_text(elem, 'photoneutron_ray_neutron_energies')
             if text is not None:
                 value['photoneutron_ray_neutron_energies'] = [

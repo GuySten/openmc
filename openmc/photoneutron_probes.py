@@ -88,12 +88,18 @@ def photoneutron_threshold(nuclide, cross_sections=None):
 def probe_line_energies(threshold, e_max, n, first=1.0e3, cross_sections=None):
     """Probe line energies spaced evenly in photoneutron lethargy.
 
+    For several photoneutron targets (e.g. beryllium and heavy water, with
+    the setting ``photoneutron_targets``) the comb is the union of one comb
+    per threshold, so that every target has lines spaced evenly in its own
+    photoneutron lethargy.
+
     Parameters
     ----------
-    threshold : float or str
+    threshold : float or str, or iterable of float or str
         Photoneutron threshold of the target [eV], or the name of the target
         nuclide (e.g. 'Be9'), whose threshold is then read from its
-        photonuclear data (:func:`photoneutron_threshold`)
+        photonuclear data (:func:`photoneutron_threshold`); or several, one
+        per target (e.g. ['Be9', 'H2'])
     e_max : float
         Highest line [eV]
     n : int
@@ -107,9 +113,19 @@ def probe_line_energies(threshold, e_max, n, first=1.0e3, cross_sections=None):
     Returns
     -------
     numpy.ndarray
-        Line energies [eV], threshold + geomspace(first, e_max - threshold, n)
+        Line energies [eV], threshold + geomspace(first, e_max - threshold, n),
+        or the sorted union of these over the thresholds (lines closer than
+        1e-6 relative merged)
 
     """
+    if not isinstance(threshold, (str, Real)):
+        combs = [probe_line_energies(t, e_max, n, first, cross_sections)
+                 for t in threshold]
+        if not combs:
+            raise ValueError('No threshold given.')
+        e = np.sort(np.concatenate(combs))
+        keep = np.concatenate([[True], np.diff(e) > 1.0e-6 * e[1:]])
+        return e[keep]
     if isinstance(threshold, str):
         threshold = photoneutron_threshold(threshold, cross_sections)
     cv.check_greater_than('e_max', e_max, threshold + first)
@@ -165,7 +181,8 @@ class PhotoneutronTarget:
         return np.interp(E, self.energy, self.sigma_removal)
 
     @classmethod
-    def from_material(cls, material, cross_sections=None, e_max=20.0e6):
+    def from_material(cls, material, cross_sections=None, e_max=20.0e6,
+                      nuclides=None, exclude=None):
         """Cross sections of a material from the photon and photonuclear data
         of a cross_sections.xml, as OpenMC forms them in transport.
 
@@ -177,6 +194,14 @@ class PhotoneutronTarget:
             cross_sections.xml; openmc.config['cross_sections'] if None
         e_max : float
             Highest energy of the grid [eV]
+        nuclides : iterable of str, optional
+            Only these nuclides' photoneutrons count in the production cross
+            section (one photoneutron-target bin, e.g. ['H2'] in heavy
+            water); all if None. The removal cross section is the whole
+            material's.
+        exclude : iterable of str, optional
+            These nuclides' photoneutrons do not count (the 'other' bin: the
+            named targets excluded)
 
         Returns
         -------
@@ -210,10 +235,13 @@ class PhotoneutronTarget:
                     removal.append((n, xs))
                     if hasattr(xs, 'x'):
                         grid.append(np.asarray(xs.x))
+        keep = None if nuclides is None else set(nuclides)
+        drop = set() if exclude is None else set(exclude)
         for name, n in densities.items():
             entry = library.get_by_material(name, data_type='photonuclear')
             if entry is None:
                 continue
+            counts = (keep is None or name in keep) and name not in drop
             data = openmc.data.IncidentPhotonuclear.from_hdf5(entry['path'])
             for rx in data.reactions.values():
                 xs = rx.xs
@@ -222,7 +250,7 @@ class PhotoneutronTarget:
                 if not rx.redundant:
                     removal.append((n, xs))
                 for prod in rx.products:
-                    if prod.particle == 'neutron':
+                    if prod.particle == 'neutron' and counts:
                         production.append((n, xs, prod.yield_))
         if not production:
             raise ValueError(f'Material {material.name!r} has no photoneutron '
@@ -259,8 +287,13 @@ class ProbeImportance:
         coherent scattering) and the rays' part is given separately.
     fission_importance : numpy.ndarray
         Summed fission-root weight per batch at the same depth, [batch]
-    target : PhotoneutronTarget
-        Cross sections of the photoneutron target
+    target : PhotoneutronTarget or dict of str to PhotoneutronTarget
+        Cross sections of the photoneutron target; or, for photoneutrons
+        tallied by target (the setting ``photoneutron_targets``), one per
+        target bin, with ``direct``, ``scattered`` and ``ray_direct`` then
+        dicts with the same keys. Each target's parts are interpolated on the
+        lines above its own threshold, and the importance is the sum of the
+        targets' rebuilt parts.
     rtol : float
         Tolerance of linear interpolation of the refined table (the table is
         refined to half of it at 20 points per interval, for a margin)
@@ -286,6 +319,12 @@ class ProbeImportance:
         Importance on the grid and its batch standard deviation
     rtol, floor : float
     name : str
+    targets : dict of str to PhotoneutronTarget
+        The photoneutron targets ('all' for a single one)
+    target : PhotoneutronTarget
+        The target of lowest threshold (the only one if there is one)
+    threshold : float
+        The lowest photoneutron threshold [eV]
 
     """
 
@@ -294,29 +333,46 @@ class ProbeImportance:
                  ray_lines=None, ray_direct=None):
         self.lines = np.asarray(lines, float)
         self._fission = np.asarray(fission_importance, float)
-        self.target = target
+        single = isinstance(target, PhotoneutronTarget)
+        self.targets = {'all': target} if single else dict(target)
+        if not self.targets:
+            raise ValueError('No photoneutron target given.')
+        if single:
+            direct, scattered = {'all': direct}, {'all': scattered}
+            ray_direct = None if ray_direct is None else {'all': ray_direct}
+        self.target = min(self.targets.values(), key=lambda t: t.threshold)
+        self.threshold = self.target.threshold
         self.rtol = float(rtol)
         self.floor = float(floor)
         self.name = name
         self.ray_lines = None if ray_lines is None else \
             np.asarray(ray_lines, float)
         grids = [self.lines] + ([] if ray_lines is None else [self.ray_lines])
-        if min(g[0] for g in grids) <= target.threshold:
+        if single and min(g[0] for g in grids) <= target.threshold:
             raise ValueError('Every probe line must lie above the target '
                              'threshold.')
+        for key, t in self.targets.items():
+            if np.count_nonzero(self.lines > t.threshold) < 2:
+                raise ValueError(
+                    f'Photoneutron target {key!r} (threshold '
+                    f'{t.threshold:.6g} eV) needs at least two probe lines '
+                    'above its threshold (openmc.probe_line_energies with '
+                    'several thresholds makes a comb for each).')
         self.e_max = float(max(g[-1] for g in grids) if e_max is None
                            else e_max)
 
-        # The parts, each on its own lines, as node values per batch of a
-        # smooth function: 'A' = I Sigma'/sigma for the photoneutrons made at
-        # the line energy, 'B' = I Sigma' for those made after an
-        # energy-changing collision. A line where sigma vanishes carries no
-        # 'A' part.
+        # The parts, each on its own lines and with its own target, as node
+        # values per batch of a smooth function: 'A' = I Sigma'/sigma for the
+        # photoneutrons made at the line energy, 'B' = I Sigma' for those
+        # made after an energy-changing collision. A line where sigma
+        # vanishes carries no 'A' part; a target takes only the lines above
+        # its threshold.
         self._parts = []
-        self._add_part('A', self.lines, direct)
-        self._add_part('B', self.lines, scattered)
-        if ray_lines is not None:
-            self._add_part('A', self.ray_lines, ray_direct)
+        for key, t in self.targets.items():
+            self._add_part('A', self.lines, direct[key], t)
+            self._add_part('B', self.lines, scattered[key], t)
+            if ray_lines is not None:
+                self._add_part('A', self.ray_lines, ray_direct[key], t)
 
         self.energy = self._refine()
         self.mean, self.std_dev = self._statistics(self.energy)
@@ -324,8 +380,10 @@ class ProbeImportance:
     # ------------------------------------------------------------------------
     # The rebuilt function
 
-    def _add_part(self, kind, lines, data):
-        t = self.target
+    def _add_part(self, kind, lines, data, t):
+        data = np.atleast_2d(np.asarray(data, float))
+        above = lines > t.threshold
+        lines, data = lines[above], data[:, above]
         s = t.sigma_at(lines)
         r = t.sigma_removal_at(lines)
         if kind == 'A':
@@ -334,21 +392,22 @@ class ProbeImportance:
         else:
             scale = r
         self._parts.append((kind, lines, np.log(lines - t.threshold), scale,
-                            np.atleast_2d(np.asarray(data, float))))
+                            data, t))
 
     def _coefficients(self, E):
         """One matrix C per part such that the importance at E, per batch,
         is sum(C @ I_part) / I_F."""
         E = np.atleast_1d(np.asarray(E, float))
-        thr = self.target.threshold
-        above = E > thr
-        u = np.log(np.where(above, E - thr, 1.0))
-        s = self.target.sigma_at(E)
-        r = self.target.sigma_removal_at(E)
-        inv = np.where(above & (r > 0.0), 1.0 / np.where(r > 0.0, r, 1.0), 0.0)
         rows = np.arange(E.size)
         out = []
-        for kind, lines, lu, scale, _ in self._parts:
+        for kind, lines, lu, scale, _, target in self._parts:
+            thr = target.threshold
+            above = E > thr
+            u = np.log(np.where(above, E - thr, 1.0))
+            s = target.sigma_at(E)
+            r = target.sigma_removal_at(E)
+            inv = np.where(above & (r > 0.0),
+                           1.0 / np.where(r > 0.0, r, 1.0), 0.0)
             # Linear interpolation weights in lethargy, held flat above the
             # last line; below the first line A is held and B falls linearly
             # in E to zero at the threshold
@@ -402,11 +461,17 @@ class ProbeImportance:
     def _tolerance(self, values, scale):
         return self.rtol * np.maximum(np.abs(values), self.floor * scale)
 
+    def _energy_grid(self):
+        """Union of the targets' cross-section grids."""
+        return np.unique(np.concatenate([t.energy
+                                         for t in self.targets.values()]))
+
     def _refine(self, n_check=20, max_rounds=60):
-        t = self.target
-        lo = t.threshold
+        e = self._energy_grid()
+        lo = self.threshold
         hi = self.e_max
-        seeds = [t.energy[(t.energy > lo) & (t.energy < hi)], [lo, hi]] + \
+        seeds = [e[(e > lo) & (e < hi)], [lo, hi]] + \
+            [[t.threshold] for t in self.targets.values()] + \
             [part[1] for part in self._parts]
         grid = np.unique(np.concatenate(seeds))
         grid = grid[(grid >= lo) & (grid <= hi)]
@@ -486,10 +551,10 @@ class ProbeImportance:
             num += self._folded_numerators(e, y)
         if continuum is not None:
             ce, cp = (np.asarray(v, float) for v in continuum)
-            t = self.target.energy
+            t = self._energy_grid()
             x = np.unique(np.concatenate(
                 [ce, t[(t >= ce[0]) & (t <= ce[-1])]]))
-            x = x[x > self.target.threshold]
+            x = x[x > self.threshold]
             if x.size > 1:
                 p = np.interp(x, ce, cp, left=0.0, right=0.0)
                 w = np.zeros_like(x)
@@ -509,7 +574,7 @@ class ProbeImportance:
             Discrete lines [eV] and their intensities per fission
         continuum : tuple of numpy.ndarray, optional
             (energy [eV], intensity per fission per eV), integrated with the
-            trapezoidal rule on the union of its grid and the target's
+            trapezoidal rule on the union of its grid and the targets'
 
         Returns
         -------

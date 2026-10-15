@@ -69,6 +69,16 @@ sub-elements:
 
     *Default*: none
 
+  :photoneutron_targets:
+    Space-separated photonuclear nuclide names (e.g. ``Be9 H2`` for beryllium
+    and heavy water) whose photoneutrons from the probes and rays are
+    recorded apart, so that each target's importance can be rebuilt with its
+    own cross sections and threshold. Photoneutrons of every other nuclide
+    share one more bin, ``other``. Every listed nuclide must have photonuclear
+    data in the model. Requires ``photoneutron_probe_energies``.
+
+    *Default*: none (one bin for every target)
+
   :photoneutron_probe_energies:
     Space-separated energies [eV], strictly increasing, of a comb of probe
     photon lines. At every recorded fission event the shadow pass emits one

@@ -435,3 +435,30 @@ def test_detector_weight_windows(run_in_tmpdir):
     folded = (g * source).sum() / n
     sigma = np.hypot(np.sqrt(((sg * source) ** 2).sum()) / n, a_sd)
     assert abs(folded - a_mean) < 4.0 * sigma
+
+
+def test_photon_importance_by_target(run_in_tmpdir):
+    """With the photoneutrons tallied by target, the probe and ray detector
+    categories carry the target too, and the detector response rebuilt per
+    target matches the single-target one where only the deuteron makes
+    photoneutrons (below the oxygen thresholds)."""
+    model, det, _ = detector_model(photoneutrons=True)
+    model.settings.adjoint_populations['photoneutron_targets'] = ['H2']
+    sp_path = model.run(**run_kwargs())
+    heavy_water = model.materials[1]
+
+    with openmc.StatePoint(sp_path) as sp:
+        pops = sp.adjoint_populations
+        tally = sp.get_tally(name='detector')
+        response = pops.detector_response(tally)
+        off_pn, off_probe, off_ray, n_cat = pops.detector_categories
+    assert pops.probe_targets == ['H2', 'other']
+    K, KR, T = len(pops.probe_energies), len(pops.ray_photon_energies), 2
+    assert off_ray - off_probe == K * T * 3
+    assert n_cat - off_ray == KR * T
+
+    by_target = response.photon_importance({'H2': heavy_water})
+    single = response.photon_importance(heavy_water)
+    for e in pops.probe_energies:
+        assert by_target.fold([e], [1.0]).n == pytest.approx(
+            single.fold([e], [1.0]).n, rel=1e-9)

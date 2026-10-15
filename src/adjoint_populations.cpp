@@ -66,6 +66,14 @@ int n_nbins()
            ? 1
            : static_cast<int>(settings::adjpop_fission_nuclides.size()) + 1;
 }
+//! Photoneutron-target bins of the probes and rays: one per listed target
+//! nuclide and one for the rest; 1 (no split) if none are listed
+int n_targets()
+{
+  return settings::adjpop_photoneutron_targets.empty()
+           ? 1
+           : static_cast<int>(settings::adjpop_photoneutron_targets.size()) + 1;
+}
 //! Energy groups of the combined tally: 1 (no split) if no edges are given
 int n_egroups()
 {
@@ -95,10 +103,10 @@ bool probes_on()
 //! Probe labels: 0 uncollided, 1 after coherent scattering only, 2 after an
 //! energy-changing collision (or a secondary photon)
 constexpr int N_PROBE_LABEL = 3;
-//! Probe bins: nuclide bin x line x label
+//! Probe bins: nuclide bin x line x photoneutron target x label
 int n_probe_bins()
 {
-  return n_nbins() * n_lines() * N_PROBE_LABEL;
+  return n_nbins() * n_lines() * n_targets() * N_PROBE_LABEL;
 }
 int n_probe_depth_bins()
 {
@@ -125,11 +133,11 @@ bool rays_requested()
   return !settings::adjpop_ray_neutron_energies.empty() ||
          settings::adjpop_ray_comb_points > 0;
 }
-//! Ray scores: per line (nuclide bin x line) and per comb energy (nuclide
-//! bin x comb energy), each by depth
+//! Ray scores: per line (nuclide bin x line x photoneutron target) and per
+//! comb energy (nuclide bin x comb energy), each by depth
 int n_ray_line_bins()
 {
-  return rays_on() ? n_nbins() * n_ray_lines() * n_depth() : 0;
+  return rays_on() ? n_nbins() * n_ray_lines() * n_targets() * n_depth() : 0;
 }
 int n_ray_comb_bins()
 {
@@ -138,6 +146,10 @@ int n_ray_comb_bins()
 
 // Bin of each nuclide in data::nuclides (the "rest" bin if not listed)
 vector<int> nuclide_bin;
+
+// Photoneutron-target bin of each nuclide in data::photonuclears (the "rest"
+// bin if not listed)
+vector<int> target_bin;
 
 // Roots and fission events recorded by the driver this generation
 vector<vector<Root>> thread_roots;
@@ -182,6 +194,7 @@ struct Channel {
   int i_rx;
   int i_prod;
   double share;
+  int target; //!< photoneutron-target bin
 };
 vector<double> ray_sigt;              // [material][line]
 vector<double> ray_sign;              // [material][line]
@@ -226,8 +239,9 @@ int64_t n_probe_histories {0};
 // Detector trees. Categories: 0 prompt fission neutrons, 1..N_TAG-1 delayed
 // groups, then the driver's photoneutrons (by energy group and nuclide bin,
 // the last for those outside the groups), the probe bins (nuclide bin x line
-// x label) and the ray bins (nuclide bin x ray line). Each category is split
-// by the origin mesh element (one bin without a mesh).
+// x photoneutron target x label) and the ray bins (nuclide bin x ray line x
+// photoneutron target). Each category is split by the origin mesh element
+// (one bin without a mesh).
 vector<int> det_tallies;   // indices of the detector tallies
 int32_t det_mesh {C_NONE}; // index of the origin mesh
 int n_det_mesh {1};        // origin bins
@@ -303,13 +317,13 @@ void score_ebin(int ebin, int depth, double w)
   thread_ew[i] += w;
 }
 
-//! A probe tree's score: its bin is (nuclide bin x line) in the ebin field of
-//! the tag and the scattered flag in its tag field
+//! A probe tree's score: its bin is (nuclide bin x line) x n_targets() +
+//! target in the ebin field of the tag and the label in its tag field
 void score_probe(int ebin, int flag, int depth, double w)
 {
-  const size_t i = static_cast<size_t>(thread_num()) * n_probe_depth_bins() +
-                   (static_cast<size_t>(ebin) * N_PROBE_LABEL + flag) * n_depth() +
-                   depth;
+  const size_t i =
+    static_cast<size_t>(thread_num()) * n_probe_depth_bins() +
+    (static_cast<size_t>(ebin) * N_PROBE_LABEL + flag) * n_depth() + depth;
   thread_pw[i] += w;
 }
 
@@ -344,7 +358,7 @@ int origin_bin(const Position& r)
 }
 
 //! Detector category of a root, -1 if it grows no detector tree. A ray
-//! root's is its nuclide bin's first ray line.
+//! root's is its nuclide bin's first (ray line, photoneutron target).
 int detector_category(const Root& r)
 {
   switch (r.cls) {
@@ -358,19 +372,28 @@ int detector_category(const Root& r)
   case CLASS_PROBE:
     return det_off_probe + r.ebin * N_PROBE_LABEL + r.tag;
   case CLASS_RAY:
-    return det_off_ray + (r.ebin / n_comb()) * n_ray_lines();
+    return det_off_ray + (r.ebin / n_comb()) * n_ray_lines() * n_targets();
   default:
     return -1;
   }
 }
 
-//! Target (site) weight of a class
+//! Photoneutron-target bin of a nuclide in data::photonuclears
+int target_of(int i_pn)
+{
+  return (i_pn >= 0 && i_pn < static_cast<int>(target_bin.size()))
+           ? target_bin[i_pn]
+           : n_targets() - 1;
+}
+
+//! Target (site) weight of a class. A probe tree's bin is (nuclide bin x
+//! line) x n_targets() + target; its site weight is the line's.
 double target_weight(int cls, int ebin = -1)
 {
   if (cls == CLASS_RAY)
     return ray_site_w[ebin / std::max(n_comb(), 1)];
   if (cls == CLASS_PROBE)
-    return probe_site_w[ebin];
+    return probe_site_w[ebin / n_targets()];
   return site_w[cls];
 }
 
@@ -650,7 +673,8 @@ void emit_delayed(const FissionRecord& f, vector<std::pair<Root, double>>& out,
 }
 
 //! A ray probe's photoneutron root: the root, the nuclide bin, and every
-//! line's factor on the tree's score (divided by the root's raw weight)
+//! (line, photoneutron target)'s factor on the tree's score (divided by the
+//! root's raw weight), [line][target]
 struct RayRoot {
   Root root;
   int nbin;
@@ -748,7 +772,8 @@ void init_rays()
             if (!(y > 0.0))
               continue;
             const double share = mat.atom_density_(i) * xs * y;
-            ray_channels[m * K + k].push_back({i_pn, r, q, share});
+            ray_channels[m * K + k].push_back(
+              {i_pn, r, q, share, target_of(i_pn)});
             sn += share;
           }
         }
@@ -999,9 +1024,13 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   const Direction un = rotate_angle(ub, mu, nullptr, &s);
 
   // Per line: the angular density at mu and the comb weights of its
-  // photoneutron energy, over its channels
-  vector<double> fk(K, 0.0);
+  // photoneutron energy, over its channels; the same per photoneutron target
+  // unnormalized (wt), from which each target's share of a line's factor is
+  // taken below
+  const int T = n_targets();
+  vector<double> fk(K, 0.0), sk(K, 0.0);
   vector<double> wc(static_cast<size_t>(K) * M, 0.0);
+  vector<double> wt(static_cast<size_t>(K) * T * M, 0.0);
   for (int k = 0; k < K; ++k) {
     if (!(pk[k] > 0.0))
       continue;
@@ -1014,6 +1043,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
       const int nr = lab_density(rx.products_[c.i_prod], rx.scatter_in_cm_, Ek,
         nuc.awr_, mu, &s, dens, E_lab);
       ssum += c.share;
+      const size_t kt = (static_cast<size_t>(k) * T + c.target) * M;
       for (int q = 0; q < nr; ++q) {
         if (!(dens[q] > 0.0))
           continue;
@@ -1024,6 +1054,8 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
         wc[static_cast<size_t>(k) * M + j0] += c.share * dens[q] * w0;
         wc[static_cast<size_t>(k) * M + j0 + 1] +=
           c.share * dens[q] * (1.0 - w0);
+        wt[kt + j0] += c.share * dens[q] * w0;
+        wt[kt + j0 + 1] += c.share * dens[q] * (1.0 - w0);
       }
     }
     if (!(ssum > 0.0) || !(fsum > 0.0))
@@ -1031,6 +1063,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
     for (int j = 0; j < M; ++j)
       wc[static_cast<size_t>(k) * M + j] /= fsum;
     fk[k] = fsum / ssum;
+    sk[k] = ssum;
   }
 
   // Line weights: the birth point was drawn from the lines' mixture,
@@ -1073,11 +1106,21 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
   }
   const double qj = q[jc] / qs;
 
-  out.factor.assign(K, 0.0);
+  // Line k's factor is b_k wc_k(jc) / qj, linear in the line's channels:
+  // b_k wc_k(jc) = w Ysum 2 / psum (p_k / s_k) sum_c share_c dens_c comb_c(jc),
+  // with p_k / s_k = exp(-tau_k). Each target's factor takes its own
+  // channels' part of that sum, so the targets' factors add up to the line's.
+  out.factor.assign(static_cast<size_t>(K) * T, 0.0);
   double R = 0.0;
   for (int k = 0; k < K; ++k) {
-    out.factor[k] = b[k] * wc[static_cast<size_t>(k) * M + jc] / qj;
-    R += out.factor[k];
+    if (!(b[k] > 0.0) || !(sk[k] > 0.0))
+      continue;
+    const double a = w_ray * Ysum * 2.0 / psum * pk[k] / sk[k] / qj;
+    for (int t = 0; t < T; ++t) {
+      const double f = a * wt[(static_cast<size_t>(k) * T + t) * M + jc];
+      out.factor[static_cast<size_t>(k) * T + t] = f;
+      R += f;
+    }
   }
   R /= K;
   if (!(R > 0.0))
@@ -1176,16 +1219,20 @@ void run_one_ray_tree(const RayRoot& rr, double w)
   std::fill(buf.begin(), buf.end(), 0.0);
   run_one_tree(rr.root, w);
   const int K = n_ray_lines();
+  const int T = n_targets();
   const size_t nd = n_depth();
   const size_t lines = static_cast<size_t>(t) * n_ray_line_bins();
   const size_t comb = static_cast<size_t>(t) * n_ray_comb_bins();
   for (int k = 0; k < K; ++k) {
-    const double a = rr.factor[k];
-    if (a == 0.0)
-      continue;
-    const size_t base = lines + (static_cast<size_t>(rr.nbin) * K + k) * nd;
-    for (size_t d = 0; d < nd; ++d)
-      thread_rw[base + d] += buf[d] * a;
+    for (int g = 0; g < T; ++g) {
+      const double a = rr.factor[static_cast<size_t>(k) * T + g];
+      if (a == 0.0)
+        continue;
+      const size_t base =
+        lines + ((static_cast<size_t>(rr.nbin) * K + k) * T + g) * nd;
+      for (size_t d = 0; d < nd; ++d)
+        thread_rw[base + d] += buf[d] * a;
+    }
   }
   const size_t cb = comb + static_cast<size_t>(rr.root.ebin) * nd;
   for (size_t d = 0; d < nd; ++d)
@@ -1260,6 +1307,21 @@ void init()
         name));
     nuclide_bin[it->second] = k;
   }
+  target_bin.assign(data::photonuclears.size(), n_targets() - 1);
+  for (int k = 0;
+       k < static_cast<int>(settings::adjpop_photoneutron_targets.size());
+       ++k) {
+    const auto& name = settings::adjpop_photoneutron_targets[k];
+    auto it = data::photonuclear_map.find(name);
+    if (it == data::photonuclear_map.end())
+      fatal_error(fmt::format("<adjoint_populations> photoneutron target {} "
+                              "has no photonuclear data in the model.",
+        name));
+    target_bin[it->second] = k;
+  }
+  if (!settings::adjpop_photoneutron_targets.empty() && !probes_on())
+    fatal_error("<adjoint_populations> photoneutron_targets require "
+                "photoneutron_probe_energies.");
   thread_ew.assign(static_cast<size_t>(n_threads) * n_ebin_bins(), 0.0);
   batch_ew.assign(n_ebin_bins(), 0.0);
   batches_ew.clear();
@@ -1366,7 +1428,8 @@ void init()
   det_off_pn = N_TAG;
   det_off_probe = det_off_pn + det_n_pn;
   det_off_ray = det_off_probe + n_probe_bins();
-  n_det_cat = det_off_ray + (rays_on() ? n_nbins() * n_ray_lines() : 0);
+  n_det_cat =
+    det_off_ray + (rays_on() ? n_nbins() * n_ray_lines() * n_targets() : 0);
   for (auto& f : model::tally_filters)
     if (auto* g = dynamic_cast<AdjointRootFilter*>(f.get()))
       g->set_n_bins(n_det_cat * n_det_mesh);
@@ -1453,7 +1516,8 @@ bool record_photoneutron(
   return true;
 }
 
-bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
+bool record_probe_photoneutron(
+  Particle& p, double wgt, Direction u, double E, int i_pn)
 {
   if (p.shadow_depth() < 0 || !p.type().is_photon() ||
       tag_class(p.shadow_tag()) != CLASS_PROBE)
@@ -1479,7 +1543,7 @@ bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E)
   r.wgt = wgt;
   r.cls = CLASS_PROBE;
   r.tag = p.shadow_tag() % N_TAG;
-  r.ebin = tag_ebin(p.shadow_tag());
+  r.ebin = tag_ebin(p.shadow_tag()) * n_targets() + target_of(i_pn);
   r.seed_id =
     combine_ids({p.id(), p.n_tracks(), p.n_event(), bits(E), bits(wgt), 505});
   thread_probe_roots[thread_num()].push_back(r);
@@ -1679,13 +1743,17 @@ void run_shadow_pass()
       // gets w/k sigma_f/sigma_t per event
       const double wf = f.wgt * f.sigma_f_to_t;
       const int nb = nuclide_bin_of(f.i_nuclide);
+      // (and every photoneutron target of the line)
+      const int T = n_targets();
       if (probes_on())
         for (int k = 0; k < K; ++k)
-          for (int l = 0; l < N_PROBE_LABEL; ++l)
-            add(det_off_probe + (nb * K + k) * N_PROBE_LABEL + l, b, wf);
+          for (int t = 0; t < T; ++t)
+            for (int l = 0; l < N_PROBE_LABEL; ++l)
+              add(det_off_probe + ((nb * K + k) * T + t) * N_PROBE_LABEL + l, b,
+                wf);
       if (rays_on())
-        for (int k = 0; k < KR; ++k)
-          add(det_off_ray + nb * KR + k, b, wf);
+        for (int k = 0; k < KR * T; ++k)
+          add(det_off_ray + nb * KR * T + k, b, wf);
     }
     for (const auto& r : photo)
       add(detector_category(r), origin_bin(r.origin), r.wgt);
@@ -1811,20 +1879,26 @@ void run_shadow_pass()
     // its lines, half in proportion to their photoneutron weight and half
     // equally, so that a line that makes few photoneutrons still gets roots
     // of its own; each root is rouletted to its line's target
+    // (A root's bin is (nuclide bin x line) x n_targets() + target: the
+    // targets share their line's budget.)
     const int K = n_lines();
-    vector<double> raw_probe(nb, 0.0), raw_line(static_cast<size_t>(nb) * K, 0.0);
+    const int T = n_targets();
+    vector<double> raw_probe(nb, 0.0),
+      raw_line(static_cast<size_t>(nb) * K, 0.0);
     vector<int64_t> n_probe(nb, 0), n_line(static_cast<size_t>(nb) * K, 0);
     for (const auto& r : probe_roots) {
-      raw_probe[r.ebin / K] += r.wgt;
-      ++n_probe[r.ebin / K];
-      raw_line[r.ebin] += r.wgt;
-      ++n_line[r.ebin];
+      const int line = r.ebin / T;
+      raw_probe[line / K] += r.wgt;
+      ++n_probe[line / K];
+      raw_line[line] += r.wgt;
+      ++n_line[line];
     }
     const vector<double> bin_target =
       share_targets(raw_probe, n_probe, m_probe_root);
     for (int b = 0; b < nb; ++b) {
-      const double m_b = (bin_target[b] > 0.0) ? raw_probe[b] / bin_target[b]
-                                               : static_cast<double>(n_probe[b]);
+      const double m_b = (bin_target[b] > 0.0)
+                           ? raw_probe[b] / bin_target[b]
+                           : static_cast<double>(n_probe[b]);
       int live = 0;
       for (int k = 0; k < K; ++k)
         live += n_line[static_cast<size_t>(b) * K + k] > 0;
@@ -1846,7 +1920,7 @@ void run_shadow_pass()
     vector<std::pair<Root, double>> kept;
     for (const auto& r : probe_roots) {
       const double w =
-        roulette_to(r.wgt, probe_root_target[r.ebin], r.seed_id);
+        roulette_to(r.wgt, probe_root_target[r.ebin / T], r.seed_id);
       if (w > 0.0)
         kept.emplace_back(r, w);
     }
@@ -2168,11 +2242,13 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
   double worst = 0.0;
   vector<double> x(nb);
   vector<double> rr(KR), s(KR);
+  const size_t T = n_targets();
   auto probe_sum = [&](size_t jb, size_t k) {
     double v = 0.0;
-    // With rays, label 0 is theirs (or a check of them)
-    for (int l = rays_on() ? 1 : 0; l < N_PROBE_LABEL; ++l)
-      v += batches_pw[((jb * K + k) * N_PROBE_LABEL + l) * nd + L];
+    // Every target; with rays, label 0 is theirs (or a check of them)
+    for (size_t g = 0; g < T; ++g)
+      for (int l = rays_on() ? 1 : 0; l < N_PROBE_LABEL; ++l)
+        v += batches_pw[(((jb * K + k) * T + g) * N_PROBE_LABEL + l) * nd + L];
     return v;
   };
   for (int j = 0; j < n_check; ++j) {
@@ -2188,7 +2264,8 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
         if (t > 0.0)
           v += probe_sum(jb, k + 1) * t;
         if (rays_on())
-          v += batches_rw[(jb * KR + i) * nd + L];
+          for (size_t g = 0; g < T; ++g)
+            v += batches_rw[((jb * KR + i) * T + g) * nd + L];
         x[b] = v;
         mx += v;
       }
@@ -2285,7 +2362,13 @@ void write_results(hid_t file_id)
     names += settings::adjpop_fission_nuclides.empty() ? "all" : "other";
     write_dataset(group, "probe_fission_nuclides", names);
     write_dataset(group, "probe_energies", settings::adjpop_probe_energies);
-    // [batch][nuclide bin][line][label][depth], flattened; label 0
+    // Photoneutron-target bins: the listed targets and "other", or "all"
+    std::string targets;
+    for (const auto& n : settings::adjpop_photoneutron_targets)
+      targets += n + " ";
+    targets += settings::adjpop_photoneutron_targets.empty() ? "all" : "other";
+    write_dataset(group, "probe_targets", targets);
+    // [batch][nuclide bin][line][target][label][depth], flattened; label 0
     // uncollided (empty with rays on: see ray_weight), 1 after coherent
     // scattering only, 2 after an energy-changing collision
     write_dataset(group, "probe_n_labels", N_PROBE_LABEL);
@@ -2312,7 +2395,8 @@ void write_results(hid_t file_id)
     write_dataset(group, "ray_neutron_energies", ray_comb);
     write_dataset(group, "ray_photon_energies", ray_lines);
     write_dataset(group, "ray_refinement", settings::adjpop_ray_refinement);
-    // [batch][nuclide bin][line][depth]: uncollided photoneutron importance
+    // [batch][nuclide bin][line][target][depth]: uncollided photoneutron
+    // importance
     write_dataset(group, "ray_weight", batches_rw);
     // [batch][nuclide bin][comb energy][depth]: the trees by comb energy
     write_dataset(group, "ray_comb_weight", batches_rj);
@@ -2438,9 +2522,16 @@ void read_results(hid_t file_id)
   vector<double> pw, pf;
   int64_t probe_histories = 0;
   if (probes_on()) {
+    std::string targets;
+    for (const auto& n : settings::adjpop_photoneutron_targets)
+      targets += n + " ";
+    targets += settings::adjpop_photoneutron_targets.empty() ? "all" : "other";
     check(read_vector("probe_energies") == settings::adjpop_probe_energies &&
           read_string("probe_fission_nuclides") ==
-            names + (by_nuclide ? "other" : "all"));
+            names + (by_nuclide ? "other" : "all") &&
+          (object_exists(group, "probe_targets")
+              ? read_string("probe_targets") == targets
+              : targets == "all"));
     pw = read_batches("probe_weight", batch_pw);
     pf = read_batches("probe_fission_weight", batch_pf);
     read_dataset(group, "n_probe_histories", probe_histories, true);
@@ -2557,13 +2648,17 @@ std::string detector_bin_label(int bin)
               : fmt::format("photoneutron group {}", cat - det_off_pn);
   } else if (cat < det_off_ray) {
     const int i = cat - det_off_probe;
-    const int line = (i / N_PROBE_LABEL) % std::max(n_lines(), 1);
-    label = fmt::format("probe nuclide bin {} line {} label {}",
-      (i / N_PROBE_LABEL) / std::max(n_lines(), 1), line, i % N_PROBE_LABEL);
+    const int T = n_targets();
+    const int kt = i / N_PROBE_LABEL;
+    const int line = (kt / T) % std::max(n_lines(), 1);
+    label = fmt::format("probe nuclide bin {} line {} target {} label {}",
+      (kt / T) / std::max(n_lines(), 1), line, kt % T, i % N_PROBE_LABEL);
   } else {
     const int i = cat - det_off_ray;
-    label = fmt::format("ray nuclide bin {} line {}",
-      i / std::max(n_ray_lines(), 1), i % std::max(n_ray_lines(), 1));
+    const int T = n_targets();
+    label = fmt::format("ray nuclide bin {} line {} target {}",
+      (i / T) / std::max(n_ray_lines(), 1),
+      (i / T) % std::max(n_ray_lines(), 1), i % T);
   }
   if (det_mesh != C_NONE)
     label += ", origin " + model::meshes[det_mesh]->bin_label(b);

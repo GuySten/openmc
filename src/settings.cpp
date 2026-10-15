@@ -1358,9 +1358,6 @@ void read_settings_xml(pugi::xml_node root)
     if (!settings::run_CE) {
       fatal_error("Decay sources require continuous-energy cross sections.");
     }
-    if (!settings::photon_transport) {
-      fatal_error("Decay sources require photon transport to be enabled.");
-    }
   }
 
   // If weight windows are on, also enable shared secondary bank (unless

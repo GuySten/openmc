@@ -289,24 +289,39 @@ positrons. Delayed fission photons, beta particles from fission products, and
 decay radiation from activation products (e.g., :sup:`16`\ N in water or
 :sup:`28`\ Al in aluminum) contribute to heating and to the photon field, which
 matters for photonuclear reactions such as photoneutron production in heavy
-water or beryllium. These sources can be included in a coupled neutron-photon
-calculation with a single setting::
+water or beryllium. These sources can be included with a single setting::
 
-    model.settings.photon_transport = True
     model.settings.decay_sources = True
 
-OpenMC then emits decay particles at each neutron collision from the
-radionuclides that the reaction leaves behind, using the decay data and fission
-product yields of the :ref:`depletion chain <usersguide_data>` given by
-``openmc.config['chain_file']``. No other input is required: the radionuclide
-inventories are computed from the chain at initialization (see
-:ref:`methods_decay_sources`), and the emitting radionuclide of each particle
-can be tallied with a :class:`~openmc.ParentNuclideFilter`.
+OpenMC then accounts for the decay of the radionuclides left behind by each
+neutron reaction, using the decay data and fission product yields of the
+:ref:`depletion chain <usersguide_data>` given by ``openmc.config['chain_file']``.
+No other input is required: the radionuclide inventories are computed from the
+chain at initialization (see :ref:`methods_decay_sources`).
 
-By default, the reactor is assumed to have operated at constant power for one
-year, which brings short-lived radionuclides to saturation, and all three
-particle types are emitted. The irradiation time can be changed, e.g., for a
-zero-power facility that operated for a few hours::
+- With photon transport enabled (:attr:`Settings.photon_transport`), decay
+  photons, electrons, and positrons are emitted at each neutron collision and
+  transported like other secondary particles. The emitting radionuclide of each
+  particle can be tallied with a :class:`~openmc.ParentNuclideFilter`.
+- Without photon transport, no particles are emitted and the decay energy is
+  deposited locally in the ``heating`` and ``heating-local`` scores. The
+  ``heating`` score includes the kinetic energy of decay electrons and
+  positrons, and the ``heating-local`` score also includes decay photons and
+  positron annihilation. In both cases, the delayed fission energy from the
+  evaluated data is replaced by that of the decay sources.
+
+By default, the reactor is assumed to have operated at constant power for an
+infinitely long time, so that each radionuclide decays as fast as it is
+produced, and all three particle types are included. This is the assumption
+behind the delayed fission energy release of evaluated nuclear data.
+Radionuclides with half-lives longer than 1000 years are treated as stable:
+they never approach equilibrium during operation, and their decay is a property
+of the material composition (e.g., as computed by a depletion calculation)
+rather than of the current reaction rates. The cutoff can be changed with the
+``'half_life_cutoff'`` key.
+
+A finite irradiation time can be given instead, e.g., for a zero-power facility
+that operated for a few hours::
 
     model.settings.decay_sources = {'irradiation_time': (4, 'h')}
 
@@ -326,13 +341,28 @@ The particle types can be restricted with the ``'particles'`` key, e.g.,
 - Decay particles are emitted where the radionuclide is produced. This is
   appropriate for fuel and structures, but not for radionuclides carried away
   by a flowing coolant before they decay.
+- As for delayed neutrons, decay particles are emitted after a delay equal to
+  the time between the reaction and the decay, sampled from the ages of the
+  decaying atoms implied by the power history. Delays can therefore be long and
+  interact with time cutoffs and time-dependent tallies
+  (:class:`~openmc.TimeFilter`) accordingly.
 - Radionuclides are assumed to be removed only by decay; their burnout by
   neutron absorption is neglected.
+- Decay sources emit only photons, electrons, and positrons. Delayed neutrons
+  are produced from the fission data as usual and are not affected.
 - For fissionable nuclides with fission product yields in the chain, delayed
   fission photons from decay replace the scaling of prompt fission photons
   controlled by :attr:`Settings.delayed_photon_scaling`; other fissionable
-  nuclides keep the scaling. When fission product electrons are emitted,
-  delayed beta energy is removed from the neutron heating since it is
-  deposited by the electrons.
+  nuclides keep the scaling.
 - Decay sources cannot be combined with the D1S method
   (:attr:`Settings.use_decay_photons`).
+
+The depletion chain must contain decay data for the fission and activation
+products of interest, so a complete chain should be used rather than a
+simplified one. Chain files generated with older versions of OpenMC represent
+beta transitions by their endpoint energies, which overestimates the energy of
+decay electrons and labels electron capture as positron emission. OpenMC
+detects such data because the energy of decay electrons and positrons then
+exceeds the total decay energy of many nuclides; in that case, only photons are
+produced and a warning recommends regenerating the chain with
+:meth:`openmc.deplete.Chain.from_endf`. Photon decay data are not affected.

@@ -6,11 +6,13 @@
 #include <algorithm> // for sort, any_of
 #include <cmath>     // for exp, expm1
 #include <map>
+#include <numeric> // for accumulate
 #include <utility> // for pair
 
 #include <fmt/core.h>
 
 #include "openmc/chain.h"
+#include "openmc/constants.h"
 #include "openmc/distribution_multi.h" // for isotropic_direction
 #include "openmc/endf.h"               // for is_fission
 #include "openmc/error.h"
@@ -37,8 +39,44 @@ DecaySourceSettings decay_source_settings;
 namespace data {
 
 vector<NuclideDecaySource> decay_sources;
+DecayHistory decay_history;
+vector<DecayTrajectory> decay_trajectories;
 
 } // namespace data
+
+//==============================================================================
+// DecayHistory implementation
+//==============================================================================
+
+DecayHistory::DecayHistory(const DecaySourceSettings& s)
+  : infinite {s.timesteps.empty()}, half_life_cutoff {s.half_life_cutoff}
+{
+  // An infinitely long irradiation at constant power is represented by a
+  // single step extending infinitely far into the past
+  if (infinite) {
+    power = {1.0};
+    start = {INFTY};
+    end = {0.0};
+    produced = INFTY;
+    return;
+  }
+
+  double total_time = 0.0;
+  for (double dt : s.timesteps) {
+    total_time += dt;
+  }
+
+  double final_power = s.power.back();
+  double t = 0.0;
+  for (size_t i = 0; i < s.timesteps.size(); ++i) {
+    double p = s.power[i] / final_power;
+    power.push_back(p);
+    start.push_back(total_time - t);
+    t += s.timesteps[i];
+    end.push_back(total_time - t);
+    produced += p * s.timesteps[i];
+  }
+}
 
 //==============================================================================
 // Transmutation trajectory analysis
@@ -66,36 +104,6 @@ constexpr double TTA_CUTOFF {1.0e-12};
 //! Maximum number of nuclides on a trajectory
 constexpr int TTA_MAX_DEPTH {100};
 
-//! Irradiation history in the form used by the Bateman solution
-struct History {
-  vector<double> power; //!< Power relative to the final power
-  vector<double> start; //!< Time from start of each step to end of history
-  vector<double> end;   //!< Time from end of each step to end of history
-  double produced;      //!< Atoms produced per unit final production rate
-};
-
-History make_history(const DecaySourceSettings& s)
-{
-  History h;
-  double total_time = 0.0;
-  for (double dt : s.timesteps) {
-    total_time += dt;
-  }
-
-  double final_power = s.power.back();
-  double t = 0.0;
-  h.produced = 0.0;
-  for (size_t i = 0; i < s.timesteps.size(); ++i) {
-    double p = s.power[i] / final_power;
-    h.power.push_back(p);
-    h.start.push_back(total_time - t);
-    t += s.timesteps[i];
-    h.end.push_back(total_time - t);
-    h.produced += p * s.timesteps[i];
-  }
-  return h;
-}
-
 //! Integral of exp(-lambda*t) for t from a to b
 double exp_integral(double lambda, double a, double b)
 {
@@ -104,38 +112,66 @@ double exp_integral(double lambda, double a, double b)
   return std::exp(-lambda * a) * -std::expm1(-lambda * (b - a)) / lambda;
 }
 
-//! Number of atoms of the last nuclide on a linear decay trajectory at the end
-//! of the history, per unit production rate of the first nuclide at the final
-//! power and per unit product of branching ratios along the trajectory
+//! Coefficients of the exponentials in the Bateman solution for the last
+//! nuclide on a linear decay trajectory produced at unit rate. The response to
+//! production at time zero is the sum of coeff[k]*exp(-lambda[k]*t).
 //!
 //! \param lambda Decay constants of the nuclides on the trajectory in [1/s]
-//! \param h Irradiation history
-double bateman(const vector<double>& lambda, const History& h)
+vector<double> bateman_coefficients(const vector<double>& lambda)
 {
   int n = lambda.size();
-  double result = 0.0;
+  vector<double> coeff(n, 1.0);
   for (int k = 0; k < n; ++k) {
-    // Coefficient of the k-th exponential. The decay constants of the parents
-    // in the numerator are paired with the differences in the denominator to
-    // avoid overflow on long trajectories.
-    double coeff = 1.0;
+    // The decay constants of the parents in the numerator are paired with the
+    // differences in the denominator to avoid overflow on long trajectories
     int j = 0;
     for (int m = 0; m < n; ++m) {
       if (m == k)
         continue;
-      coeff *= lambda[j++] / (lambda[m] - lambda[k]);
+      coeff[k] *= lambda[j++] / (lambda[m] - lambda[k]);
     }
+  }
+  return coeff;
+}
 
-    // Integrate the response over the history
-    double f = 0.0;
-    for (size_t s = 0; s < h.power.size(); ++s) {
-      if (h.power[s] > 0.0) {
-        f += h.power[s] * exp_integral(lambda[k], h.end[s], h.start[s]);
-      }
-    }
-    result += coeff * f;
+//! Integral of the Bateman response for delays from a to b
+double bateman_integral(
+  const vector<double>& lambda, const vector<double>& coeff, double a, double b)
+{
+  double result = 0.0;
+  for (int k = 0; k < lambda.size(); ++k) {
+    result += coeff[k] * exp_integral(lambda[k], a, b);
   }
   return result;
+}
+
+//! Number of atoms of the last nuclide on a linear decay trajectory at the end
+//! of the history that were produced during each step, per unit production
+//! rate of the first nuclide at the final power and per unit product of
+//! branching ratios along the trajectory
+//!
+//! \param lambda Decay constants of the nuclides on the trajectory in [1/s]
+//! \param h Irradiation history
+vector<double> bateman_steps(
+  const vector<double>& lambda, const DecayHistory& h)
+{
+  auto coeff = bateman_coefficients(lambda);
+  vector<double> atoms(h.power.size(), 0.0);
+  for (size_t s = 0; s < h.power.size(); ++s) {
+    if (h.power[s] > 0.0) {
+      atoms[s] = std::max(
+        h.power[s] * bateman_integral(lambda, coeff, h.end[s], h.start[s]),
+        0.0);
+    }
+  }
+  return atoms;
+}
+
+//! Total over the history of bateman_steps
+double bateman(const vector<double>& lambda, const DecayHistory& h)
+{
+  auto atoms = bateman_steps(lambda, h);
+  return std::accumulate(atoms.begin(), atoms.end(), 0.0);
 }
 
 //! Shift a decay constant away from those already on a trajectory
@@ -152,6 +188,16 @@ double separate_decay_constant(double lambda, const vector<double>& others)
       }
     }
   }
+  return lambda;
+}
+
+//! Decay constant of a chain nuclide, treating nuclides with half-lives above
+//! the cutoff as stable
+double decay_constant(int i_chain, const DecayHistory& h)
+{
+  double lambda = data::chain_nuclides[i_chain]->decay_constant();
+  if (lambda > 0.0 && std::log(2.0) / lambda > h.half_life_cutoff)
+    return 0.0;
   return lambda;
 }
 
@@ -204,9 +250,10 @@ vector<int> find_reactions(const Nuclide& nuc, int mt)
 }
 
 //! Create a channel from the radionuclides left behind by one reaction event
-//! \param inventory Atoms of each radionuclide per unit reaction rate [s]
+//! \param production Amount of each decay trajectory per reaction, indexed by
+//!   position in data::decay_trajectories
 //! \return Channel with emission yields and sampling distributions
-DecaySourceChannel make_channel(const std::map<int, double>& inventory)
+DecaySourceChannel make_channel(const std::map<int, double>& production)
 {
   const auto& s = settings::decay_source_settings;
   DecaySourceChannel channel;
@@ -215,21 +262,25 @@ DecaySourceChannel make_channel(const std::map<int, double>& inventory)
       continue;
 
     vector<double> rates;
-    for (const auto& [i_chain, atoms] : inventory) {
+    for (const auto& [i_traj, amount] : production) {
+      const auto& traj = data::decay_trajectories[i_traj];
       const auto* dist =
-        data::chain_nuclides[i_chain]->source(DECAY_PARTICLES[t]);
+        data::chain_nuclides[traj.nuclide]->source(DECAY_PARTICLES[t]);
       if (!dist)
         continue;
       // The source integral is the emission rate in [particles/s/atom]
-      double rate = atoms * dist->integral();
+      double rate = amount * traj.atoms * dist->integral();
       if (rate > 0.0) {
-        channel.nuclides[t].push_back(i_chain);
+        channel.trajectories[t].push_back(i_traj);
         rates.push_back(rate);
+        channel.decay_energy[t] +=
+          amount * traj.atoms *
+          data::chain_nuclides[traj.nuclide]->source_energy(DECAY_PARTICLES[t]);
       }
     }
     if (!rates.empty()) {
-      channel.nuclide_dist[t].assign(rates);
-      channel.yield[t] = channel.nuclide_dist[t].integral();
+      channel.trajectory_dist[t].assign(rates);
+      channel.yield[t] = channel.trajectory_dist[t].integral();
     }
   }
   return channel;
@@ -284,6 +335,47 @@ std::pair<int, double> fission_interpolation(
   return {i, f};
 }
 
+//! Disable electron and positron emission if the chain represents beta
+//! transitions by their endpoint energies, as in chain files generated with
+//! older versions of OpenMC. Such data are detected because the energy of
+//! decay electrons and positrons, including annihilation, exceeds the total
+//! decay energy of many nuclides.
+void check_charged_particle_sources()
+{
+  auto& s = settings::decay_source_settings;
+  if (!s.particles[1] && !s.particles[2])
+    return;
+
+  int n_checked = 0;
+  int n_inconsistent = 0;
+  for (const auto& nuc : data::chain_nuclides) {
+    double lambda = nuc->decay_constant();
+    double e = nuc->source_energy(ParticleType::electron()) +
+               nuc->source_energy(ParticleType::positron());
+    const auto* positron = nuc->source(ParticleType::positron());
+    if (positron) {
+      e += 2.0 * MASS_ELECTRON_EV * positron->integral();
+    }
+    if (lambda == 0.0 || nuc->decay_energy() <= 0.0 || e == 0.0)
+      continue;
+    ++n_checked;
+    if (e / lambda > 1.05 * nuc->decay_energy() + 1.0e3)
+      ++n_inconsistent;
+  }
+
+  if (n_inconsistent > 0.1 * n_checked) {
+    warning(fmt::format(
+      "The electron and positron decay sources in the depletion chain exceed "
+      "the decay energy of {} of {} nuclides, which indicates that beta "
+      "transitions are represented by their endpoint energies. Only photons "
+      "will be produced by decay sources. Regenerate the chain with "
+      "openmc.deplete.Chain.from_endf to include electrons and positrons.",
+      n_inconsistent, n_checked));
+    s.particles[1] = false;
+    s.particles[2] = false;
+  }
+}
+
 } // namespace
 
 //==============================================================================
@@ -296,17 +388,27 @@ void read_decay_source_settings(pugi::xml_node node)
   auto& s = settings::decay_source_settings;
   s = DecaySourceSettings {};
 
+  // Without timesteps, the irradiation at constant power is infinitely long
   if (check_for_node(node, "timesteps")) {
     s.timesteps = get_node_array<double>(node, "timesteps");
     s.power.assign(s.timesteps.size(), 1.0);
+    if (s.timesteps.empty()) {
+      fatal_error("At least one timestep must be given for decay sources.");
+    }
   }
   if (check_for_node(node, "power")) {
+    if (s.timesteps.empty()) {
+      fatal_error("Decay source power values require timesteps.");
+    }
     s.power = get_node_array<double>(node, "power");
   }
-
-  if (s.timesteps.empty()) {
-    fatal_error("At least one timestep must be given for decay sources.");
+  if (check_for_node(node, "half_life_cutoff")) {
+    s.half_life_cutoff = std::stod(get_node_value(node, "half_life_cutoff"));
+    if (s.half_life_cutoff <= 0.0) {
+      fatal_error("Decay source half-life cutoff must be positive.");
+    }
   }
+
   if (s.power.size() != s.timesteps.size()) {
     fatal_error(fmt::format("Number of decay source timesteps ({}) does not "
                             "match the number of power values ({}).",
@@ -320,7 +422,7 @@ void read_decay_source_settings(pugi::xml_node node)
       fatal_error("Decay source power values must not be negative.");
     }
   }
-  if (s.power.back() <= 0.0) {
+  if (!s.power.empty() && s.power.back() <= 0.0) {
     fatal_error("The power at the end of the decay source history must be "
                 "positive since it corresponds to the simulated state.");
   }
@@ -337,17 +439,19 @@ void read_decay_source_settings(pugi::xml_node node)
       s.particles[it - DECAY_PARTICLES.begin()] = true;
     }
   }
+
+  // Read the decay data needed from the depletion chain
+  read_chain_decay_source_data();
+  check_charged_particle_sources();
 }
 
-std::unordered_map<int, double> decay_inventory(
-  int i_chain, const DecaySourceSettings& s)
+vector<DecayTrajectory> find_decay_trajectories(
+  int i_chain, const DecayHistory& h)
 {
-  std::unordered_map<int, double> inventory;
-  double lambda = data::chain_nuclides[i_chain]->decay_constant();
+  vector<DecayTrajectory> trajectories;
+  double lambda = decay_constant(i_chain, h);
   if (lambda == 0.0)
-    return inventory;
-
-  History h = make_history(s);
+    return trajectories;
 
   // Node of a trajectory being followed
   struct Node {
@@ -362,15 +466,30 @@ std::unordered_map<int, double> decay_inventory(
     stack.pop_back();
 
     // Atoms of the last nuclide on the trajectory at the end of the history
-    double atoms = node.branching_ratio * bateman(node.lambda, h);
-    inventory[node.nuclides.back()] += std::max(atoms, 0.0);
+    DecayTrajectory traj;
+    traj.nuclide = node.nuclides.back();
+    traj.branching_ratio = node.branching_ratio;
+    traj.lambda = node.lambda;
+    traj.step_atoms = bateman_steps(node.lambda, h);
+    for (auto& atoms : traj.step_atoms) {
+      atoms *= node.branching_ratio;
+    }
+    traj.atoms =
+      std::accumulate(traj.step_atoms.begin(), traj.step_atoms.end(), 0.0);
+    if (traj.atoms > 0.0) {
+      trajectories.push_back(std::move(traj));
+    }
 
-    // Atoms that have decayed out of the last nuclide, obtained as the
-    // inventory of a fictitious stable daughter
-    auto lambda_passed = node.lambda;
-    lambda_passed.push_back(0.0);
-    double passed = node.branching_ratio * bateman(lambda_passed, h);
-    if (passed < TTA_CUTOFF * h.produced)
+    // Fraction of the produced atoms that have decayed out of the last
+    // nuclide, obtained from the inventory of a fictitious stable daughter.
+    // With an infinitely long irradiation, all atoms have decayed out.
+    double passed = node.branching_ratio;
+    if (!h.infinite) {
+      auto lambda_passed = node.lambda;
+      lambda_passed.push_back(0.0);
+      passed *= bateman(lambda_passed, h) / h.produced;
+    }
+    if (passed < TTA_CUTOFF)
       continue;
     if (node.nuclides.size() >= TTA_MAX_DEPTH) {
       warning(fmt::format("Decay trajectory starting from {} exceeds {} "
@@ -386,8 +505,7 @@ std::unordered_map<int, double> decay_inventory(
       if (it == data::chain_nuclide_map.end())
         continue;
       int i_daughter = it->second;
-      double lambda_daughter =
-        data::chain_nuclides[i_daughter]->decay_constant();
+      double lambda_daughter = decay_constant(i_daughter, h);
       if (lambda_daughter == 0.0)
         continue;
 
@@ -404,7 +522,83 @@ std::unordered_map<int, double> decay_inventory(
       stack.push_back(std::move(daughter));
     }
   }
+  return trajectories;
+}
+
+std::unordered_map<int, double> decay_inventory(
+  int i_chain, const DecaySourceSettings& s)
+{
+  std::unordered_map<int, double> inventory;
+  for (const auto& traj : find_decay_trajectories(i_chain, DecayHistory(s))) {
+    inventory[traj.nuclide] += traj.atoms;
+  }
   return inventory;
+}
+
+double sample_decay_delay(
+  const DecayTrajectory& traj, const DecayHistory& h, uint64_t* seed)
+{
+  // With an infinitely long irradiation, the delay is the sum of the times
+  // spent in each nuclide on the trajectory, which are exponentially
+  // distributed
+  if (h.infinite) {
+    double delay = 0.0;
+    for (double lambda : traj.lambda) {
+      delay -= std::log(prn(seed)) / lambda;
+    }
+    return delay;
+  }
+
+  // Sample the step of the history during which the atom was produced
+  double cutoff = prn(seed) * traj.atoms;
+  double prob = 0.0;
+  int s = 0;
+  for (int i = 0; i < traj.step_atoms.size(); ++i) {
+    if (traj.step_atoms[i] <= 0.0)
+      continue;
+    s = i;
+    prob += traj.step_atoms[i];
+    if (prob > cutoff)
+      break;
+  }
+  double a = h.end[s];
+  double b = h.start[s];
+  double xi = prn(seed);
+
+  // With a single nuclide, the delay follows a truncated exponential
+  const auto& lambda = traj.lambda;
+  if (lambda.size() == 1) {
+    return a - std::log1p(xi * std::expm1(-lambda[0] * (b - a))) / lambda[0];
+  }
+
+  // Otherwise, invert the cumulative distribution of the Bateman response
+  // within the step with Newton's method safeguarded by bisection
+  auto coeff = bateman_coefficients(lambda);
+  double target = xi * bateman_integral(lambda, coeff, a, b);
+  double lo = a;
+  double hi = b;
+  double t = 0.5 * (a + b);
+  for (int iter = 0; iter < 100; ++iter) {
+    double f = bateman_integral(lambda, coeff, a, t) - target;
+    if (f > 0.0) {
+      hi = t;
+    } else {
+      lo = t;
+    }
+    double df = 0.0;
+    for (int k = 0; k < lambda.size(); ++k) {
+      df += coeff[k] * std::exp(-lambda[k] * t);
+    }
+    double t_new = (df > 0.0) ? t - f / df : 0.5 * (lo + hi);
+    if (!(t_new > lo && t_new < hi)) {
+      t_new = 0.5 * (lo + hi);
+    }
+    if (std::abs(t_new - t) <= 1.0e-10 * t_new) {
+      return t_new;
+    }
+    t = t_new;
+  }
+  return t;
 }
 
 bool decay_sources_produce_fission_photons(const std::string& name)
@@ -415,7 +609,20 @@ bool decay_sources_produce_fission_photons(const std::string& name)
   auto it = data::chain_nuclide_map.find(name);
   if (it == data::chain_nuclide_map.end())
     return false;
-  return !data::chain_nuclides[it->second]->fission_yields().empty();
+
+  // Fission products need decay photon data, which is checked for the
+  // nuclides produced directly
+  for (const auto& yields :
+    data::chain_nuclides[it->second]->fission_yields()) {
+    for (const auto& product : yields.products) {
+      auto jt = data::chain_nuclide_map.find(product.name);
+      if (jt != data::chain_nuclide_map.end() &&
+          data::chain_nuclides[jt->second]->photon_energy()) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 void finalize_decay_sources()
@@ -434,11 +641,13 @@ void finalize_decay_sources()
 
   const auto& s = settings::decay_source_settings;
   data::decay_sources.resize(data::nuclides.size());
+  data::decay_history = DecayHistory(s);
+  data::decay_trajectories.clear();
 
-  // Inventories left behind by production of each radionuclide are shared
-  // among channels, e.g., fission products of different fissionable nuclides
-  std::unordered_map<int, std::unordered_map<int, double>> cache;
-  auto add_inventory = [&](std::map<int, double>& inventory,
+  // Trajectories starting from each produced radionuclide are shared among
+  // channels, e.g., fission products of different fissionable nuclides
+  std::unordered_map<int, vector<int>> cache;
+  auto add_inventory = [&](std::map<int, double>& production,
                          const std::string& name, double amount) {
     auto it = data::chain_nuclide_map.find(name);
     if (it == data::chain_nuclide_map.end() || amount <= 0.0)
@@ -446,10 +655,15 @@ void finalize_decay_sources()
     int i_chain = it->second;
     auto cached = cache.find(i_chain);
     if (cached == cache.end()) {
-      cached = cache.emplace(i_chain, decay_inventory(i_chain, s)).first;
+      vector<int> indices;
+      for (auto& traj : find_decay_trajectories(i_chain, data::decay_history)) {
+        indices.push_back(data::decay_trajectories.size());
+        data::decay_trajectories.push_back(std::move(traj));
+      }
+      cached = cache.emplace(i_chain, std::move(indices)).first;
     }
-    for (const auto& [j_chain, atoms] : cached->second) {
-      inventory[j_chain] += amount * atoms;
+    for (int i_traj : cached->second) {
+      production[i_traj] += amount;
     }
   };
 
@@ -513,8 +727,10 @@ void finalize_decay_sources()
       }
       std::sort(source.fission.begin(), source.fission.end(),
         [](const auto& a, const auto& b) { return a.energy < b.energy; });
-      source.fission_electrons = std::any_of(source.fission.begin(),
-        source.fission.end(), [](const auto& c) { return c.yield[1] > 0.0; });
+      for (const auto& channel : source.fission) {
+        source.fission_photons |= channel.yield[0] > 0.0;
+        source.fission_electrons |= channel.yield[1] > 0.0;
+      }
     }
 
     if (!source.empty())
@@ -598,36 +814,101 @@ void sample_decay_sources(Particle& p, int i_nuclide)
         found = check_channel(source.activation[i], -1);
       }
 
-      // Sample the emitting radionuclide, then the energy from its spectrum
-      int i_chain =
-        channel->nuclides[t][channel->nuclide_dist[t].sample(p.current_seed())];
+      // Sample the decay trajectory, then the energy from the spectrum of the
+      // emitting radionuclide
+      const auto& traj = data::decay_trajectories
+        [channel->trajectories[t][channel->trajectory_dist[t].sample(
+          p.current_seed())]];
       const auto* dist =
-        data::chain_nuclides[i_chain]->source(DECAY_PARTICLES[t]);
+        data::chain_nuclides[traj.nuclide]->source(DECAY_PARTICLES[t]);
       auto [E, wgt] = dist->sample(p.current_seed());
 
-      // Decay particles are emitted isotropically
+      // Decay particles are emitted isotropically after the delay between
+      // the reaction and the decay, as for delayed neutrons
       Direction u = isotropic_direction(p.current_seed());
+      double delay =
+        sample_decay_delay(traj, data::decay_history, p.current_seed());
       if (p.create_secondary(p.wgt() * wgt, u, E, DECAY_PARTICLES[t])) {
-        p.local_secondary_bank().back().parent_nuclide = i_chain;
+        auto& site = p.local_secondary_bank().back();
+        site.parent_nuclide = traj.nuclide;
+        site.time += delay;
       }
     }
   }
 }
 
-double decay_source_beta_heating(const Particle& p, int i_nuclide)
+DecayHeating decay_source_heating(const Particle& p, int i_nuclide, int mt)
 {
-  if (!settings::decay_sources_on || i_nuclide >= data::decay_sources.size() ||
-      !data::decay_sources[i_nuclide].fission_electrons)
-    return 0.0;
+  DecayHeating heating;
+  if (!settings::decay_sources_on || i_nuclide >= data::decay_sources.size())
+    return heating;
+  const auto& source = data::decay_sources[i_nuclide];
+  if (source.empty())
+    return heating;
+
+  // With photon transport, decay particles are emitted and deposit their own
+  // energy, so 'heating-local' is not modified
+  bool local = !settings::photon_transport;
+  if (!local && mt != HEATING)
+    return heating;
+
+  // Kinetic energy of decay particles deposited locally. Without photon
+  // transport, 'heating' includes only charged particles while
+  // 'heating-local' also includes photons and the annihilation of positrons.
+  bool include_photons = local && mt == HEATING_LOCAL;
+  auto deposited = [&](const DecaySourceChannel& c) {
+    if (!local)
+      return 0.0;
+    double e = c.decay_energy[1] + c.decay_energy[2];
+    if (include_photons) {
+      e += c.decay_energy[0] + 2.0 * MASS_ELECTRON_EV * c.yield[2];
+    }
+    return e;
+  };
+
   const auto& nuc = *data::nuclides[i_nuclide];
-  if (!nuc.betas_)
-    return 0.0;
-  return (*nuc.betas_)(p.E_last()) * p.neutron_xs(i_nuclide).fission;
+  const auto& micro = p.neutron_xs(i_nuclide);
+  double E = p.E_last();
+
+  if (!source.fission.empty()) {
+    // Remove the delayed energy from the fission heating number for the
+    // particle types produced by decay sources
+    if (nuc.betas_ && source.fission_electrons) {
+      heating.fission -= (*nuc.betas_)(E)*micro.fission;
+    }
+    if (include_photons && nuc.delayed_photons_ && source.fission_photons) {
+      heating.fission -= (*nuc.delayed_photons_)(E)*micro.fission;
+    }
+
+    // Add the energy of decay particles deposited locally
+    if (local) {
+      auto [i, f] = fission_interpolation(source.fission, E);
+      double e = (1.0 - f) * deposited(source.fission[i]);
+      if (f > 0.0)
+        e += f * deposited(source.fission[i + 1]);
+      heating.fission += e * micro.fission;
+    }
+  }
+
+  // Add the energy of decay particles from activation products deposited
+  // locally. Weighting by keff is applied with the other non-fission heating.
+  if (local && micro.index_temp >= 0) {
+    for (const auto& channel : source.activation) {
+      double xs = 0.0;
+      for (int i_rx : channel.reactions) {
+        xs += nuc.reactions_[i_rx]->xs(micro);
+      }
+      heating.activation += xs * deposited(channel);
+    }
+  }
+  return heating;
 }
 
 void free_memory_decay_sources()
 {
   data::decay_sources.clear();
+  data::decay_trajectories.clear();
+  data::decay_history = DecayHistory {};
 }
 
 } // namespace openmc

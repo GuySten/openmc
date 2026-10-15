@@ -267,21 +267,12 @@ double get_nuclide_neutron_heating(
   if (kerma == 0.0)
     return 0.0;
 
-  // When decay sources emit fission product electrons explicitly, their
-  // energy is deposited by the electrons rather than at the fission site
-  double kerma_betas = 0.0;
-  if (rxn_index == HEATING) {
-    kerma_betas = decay_source_beta_heating(p, i_nuclide);
-    kerma -= kerma_betas;
-  }
-
   if (settings::run_mode == RunMode::EIGENVALUE) {
     // Determine kerma for fission as (EFR + EB)*sigma_f
     double kerma_fission =
       nuc.fragments_
         ? ((*nuc.fragments_)(p.E_last()) + (*nuc.betas_)(p.E_last())) *
-              p.neutron_xs(i_nuclide).fission -
-            kerma_betas
+            p.neutron_xs(i_nuclide).fission
         : 0.0;
 
     // Determine non-fission kerma as difference
@@ -293,6 +284,13 @@ double get_nuclide_neutron_heating(
     // calculations", Proc. PHYSOR, Cambridge, UK, Mar 29-Apr 2, 2020.
     kerma = simulation::keff * kerma_non_fission + kerma_fission;
   }
+
+  // Decay sources replace delayed fission energy and add the decay energy of
+  // activation products, which is weighted like other non-fission heating
+  auto decay = decay_source_heating(p, i_nuclide, rxn_index);
+  double k =
+    (settings::run_mode == RunMode::EIGENVALUE) ? simulation::keff : 1.0;
+  kerma += decay.fission + k * decay.activation;
   return kerma;
 }
 
@@ -571,6 +569,16 @@ double get_nuclide_xs(const Particle& p, int i_nuclide, int score_bin)
       // Stedry, "Self-consistent energy normalization for quasistatic reactor
       // calculations", Proc. PHYSOR, Cambridge, UK, Mar 29-Apr 2, 2020.
       xs = simulation::keff * kerma_non_fission + kerma_fission;
+    }
+
+    // Decay sources replace delayed fission energy and add the decay energy
+    // of activation products, which is weighted like other non-fission
+    // heating
+    if (score_bin == HEATING_LOCAL) {
+      auto decay = decay_source_heating(p, i_nuclide, HEATING_LOCAL);
+      double k =
+        (settings::run_mode == RunMode::EIGENVALUE) ? simulation::keff : 1.0;
+      xs += decay.fission + k * decay.activation;
     }
     return xs;
   } else {

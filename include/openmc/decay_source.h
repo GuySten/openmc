@@ -23,23 +23,62 @@ namespace openmc {
 //! Number of particle types that can be emitted (photon, electron, positron)
 constexpr int N_DECAY_PARTICLES {3};
 
-//! Default irradiation time in [s] (one Julian year)
-constexpr double DEFAULT_IRRADIATION_TIME {365.25 * 24.0 * 3600.0};
+//! Default half-life above which nuclides are treated as stable in [s]
+//! (1000 Julian years)
+constexpr double DEFAULT_HALF_LIFE_CUTOFF {1000.0 * 365.25 * 24.0 * 3600.0};
 
 //==============================================================================
 //! Settings for steady-state decay sources
 //==============================================================================
 
 struct DecaySourceSettings {
-  //! Lengths of the steps of the irradiation history in [s]
-  vector<double> timesteps {DEFAULT_IRRADIATION_TIME};
+  //! Lengths of the steps of the irradiation history in [s]. When empty, the
+  //! irradiation at constant power is infinitely long.
+  vector<double> timesteps;
 
   //! Relative power during each step. The simulated state corresponds to the
   //! power at the end of the history.
-  vector<double> power {1.0};
+  vector<double> power;
+
+  //! Nuclides with longer half-lives in [s] are treated as stable since they
+  //! do not approach equilibrium during operation; their decay is a property
+  //! of the material composition rather than of the reaction rates
+  double half_life_cutoff {DEFAULT_HALF_LIFE_CUTOFF};
 
   //! Whether photons, electrons, and positrons are emitted
   array<bool, N_DECAY_PARTICLES> particles {true, true, true};
+};
+
+//==============================================================================
+//! Irradiation history in the form used by the Bateman solution
+//==============================================================================
+
+struct DecayHistory {
+  DecayHistory() = default;
+  explicit DecayHistory(const DecaySourceSettings& s);
+
+  bool infinite {true}; //!< Whether the irradiation is infinitely long
+  double half_life_cutoff {DEFAULT_HALF_LIFE_CUTOFF}; //!< See settings
+  vector<double> power;  //!< Power of each step relative to the final power
+  vector<double> start;  //!< Time from start of each step to end of history [s]
+  vector<double> end;    //!< Time from end of each step to end of history [s]
+  double produced {0.0}; //!< Atoms produced per unit final production rate [s]
+};
+
+//==============================================================================
+//! A linear decay trajectory from a produced radionuclide to an emitting one.
+//! The inventory of a radionuclide is the sum over the trajectories that end
+//! at it, and the delay between the production of the first nuclide and the
+//! decay of the last one is sampled from the trajectory.
+//==============================================================================
+
+struct DecayTrajectory {
+  int nuclide;               //!< Chain index of the last (emitting) nuclide
+  double branching_ratio;    //!< Product of branching ratios along trajectory
+  vector<double> lambda;     //!< Decay constants along trajectory [1/s]
+  vector<double> step_atoms; //!< Atoms present at the end of the history per
+                             //!< unit final production rate from each step [s]
+  double atoms;              //!< Sum of step_atoms [s]
 };
 
 //==============================================================================
@@ -57,11 +96,15 @@ struct DecaySourceChannel {
   //! Particles emitted per reaction event for each particle type
   array<double, N_DECAY_PARTICLES> yield {};
 
-  //! Chain indices of emitting radionuclides for each particle type
-  array<vector<int>, N_DECAY_PARTICLES> nuclides;
+  //! Kinetic energy emitted per reaction event for each particle type [eV]
+  array<double, N_DECAY_PARTICLES> decay_energy {};
 
-  //! Distribution for sampling the emitting radionuclide
-  array<DiscreteIndex, N_DECAY_PARTICLES> nuclide_dist;
+  //! Indices in data::decay_trajectories of the trajectories ending at
+  //! radionuclides that emit each particle type
+  array<vector<int>, N_DECAY_PARTICLES> trajectories;
+
+  //! Distribution for sampling the trajectory
+  array<DiscreteIndex, N_DECAY_PARTICLES> trajectory_dist;
 };
 
 //==============================================================================
@@ -72,8 +115,9 @@ struct NuclideDecaySource {
   vector<DecaySourceChannel> fission;    //!< Fission channels sorted by energy
   vector<DecaySourceChannel> activation; //!< Activation channels
 
-  //! Whether fission product decay electrons are emitted explicitly, in which
-  //! case delayed beta energy is removed from the fission heating
+  //! Whether fission channels produce photons and electrons, which then
+  //! replace the delayed photon and beta energy of the fission data
+  bool fission_photons {false};
   bool fission_electrons {false};
 
   bool empty() const { return fission.empty() && activation.empty(); }
@@ -95,21 +139,37 @@ namespace data {
 //! Decay sources for each transport nuclide
 extern vector<NuclideDecaySource> decay_sources;
 
+//! Irradiation history used by decay sources
+extern DecayHistory decay_history;
+
+//! Decay trajectories referenced by decay source channels
+extern vector<DecayTrajectory> decay_trajectories;
+
 } // namespace data
 
 //==============================================================================
 // Non-member functions
 //==============================================================================
 
-//! Read settings for steady-state decay sources
+//! Read settings for steady-state decay sources and the decay data they need
+//! from the depletion chain
 //! \param node XML node for <decay_sources>
 void read_decay_source_settings(pugi::xml_node node);
 
-//! Compute the radionuclide inventory left behind by production of a nuclide
+//! Find the decay trajectories starting from a produced nuclide
 //!
-//! The inventory is computed with transmutation trajectory analysis (TTA) of
-//! the decay chain, assuming the nuclide is produced at a rate proportional
-//! to the power history and that the radionuclides are removed only by decay.
+//! The decay network is unfolded with transmutation trajectory analysis (TTA)
+//! assuming the nuclide is produced at a rate proportional to the power
+//! history and that the radionuclides are removed only by decay. Trajectories
+//! ending at stable nuclides are not included.
+//!
+//! \param i_chain Index of produced nuclide in the depletion chain
+//! \param h Irradiation history
+//! \return Trajectories with their inventories
+vector<DecayTrajectory> find_decay_trajectories(
+  int i_chain, const DecayHistory& h);
+
+//! Compute the radionuclide inventory left behind by production of a nuclide
 //!
 //! \param i_chain Index of produced nuclide in the depletion chain
 //! \param s Irradiation history
@@ -117,6 +177,19 @@ void read_decay_source_settings(pugi::xml_node node);
 //!   history per unit production rate at the final power, in [s]
 std::unordered_map<int, double> decay_inventory(
   int i_chain, const DecaySourceSettings& s);
+
+//! Sample the delay between production and decay along a trajectory
+//!
+//! The delay follows the distribution of the ages of the atoms that decay at
+//! the end of the history, i.e., the Bateman kernel of the trajectory
+//! weighted by the power history.
+//!
+//! \param traj Decay trajectory
+//! \param h Irradiation history the trajectory was computed with
+//! \param seed Pseudorandom number seed pointer
+//! \return Delay in [s]
+double sample_decay_delay(
+  const DecayTrajectory& traj, const DecayHistory& h, uint64_t* seed);
 
 //! Whether decay sources produce delayed fission photons for a nuclide, in
 //! which case they replace scaling of the prompt fission photon yield
@@ -132,11 +205,25 @@ void finalize_decay_sources();
 //! \param i_nuclide Index of nuclide that the particle collided with
 void sample_decay_sources(Particle& p, int i_nuclide);
 
-//! Delayed beta heating to remove from the fission heating number
+//! Change in the neutron heating number due to decay sources
+//!
+//! With photon transport, decay electrons replace the delayed beta energy of
+//! the fission heating number. Without photon transport, no particles are
+//! emitted and the decay energy is deposited locally: for 'heating', the
+//! kinetic energy of decay electrons and positrons replaces the delayed beta
+//! energy, and for 'heating-local', the energy of all decay particles,
+//! including positron annihilation, replaces the delayed beta and photon
+//! energy. Activation channels add the decay energy of activation products.
+struct DecayHeating {
+  double fission {0.0};    //!< Change in fission heating [eV-b]
+  double activation {0.0}; //!< Heating from activation products [eV-b]
+};
+
 //! \param p Particle that is colliding
 //! \param i_nuclide Index of nuclide
-//! \return Delayed beta heating in [eV-b]
-double decay_source_beta_heating(const Particle& p, int i_nuclide);
+//! \param mt MT of the heating score (HEATING or HEATING_LOCAL)
+//! \return Change in heating number
+DecayHeating decay_source_heating(const Particle& p, int i_nuclide, int mt);
 
 void free_memory_decay_sources();
 

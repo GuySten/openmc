@@ -215,7 +215,8 @@ state, short-lived radionuclides decay as fast as they are produced, so their
 emission accompanies the reactions that produce them. When decay sources are
 enabled (see :ref:`usersguide_steady_state_decay`), OpenMC models this by
 emitting the decay particles at the site of each neutron collision, analogous
-to the treatment of prompt secondary photons.
+to the treatment of prompt secondary photons, or by depositing their energy
+locally when photons are not transported.
 
 Inventory per Reaction
 ----------------------
@@ -251,7 +252,13 @@ the power history, the contribution of one chain is
 
 where :math:`\lambda_k` is the decay constant of the :math:`k`-th nuclide on the
 chain, :math:`b_k` is the branching ratio from the :math:`k`-th to the
-:math:`(k+1)`-th nuclide, and :math:`T = t_{S+1}` is the end of the history. A
+:math:`(k+1)`-th nuclide, and :math:`T = t_{S+1}` is the end of the history. By
+default, the history is a single step of infinite length, for which the
+contribution of a chain reduces to :math:`(\prod_{k=1}^{m-1} b_k) / \lambda_m`,
+i.e., each nuclide decays as fast as it is produced. Nuclides with half-lives
+above a cutoff (1000 years by default) are treated as stable, since they do not
+approach equilibrium during operation; otherwise, an infinitely long
+irradiation would bring entire actinide decay series into equilibrium. A
 chain is not followed beyond a nuclide through which less than a fraction
 :math:`10^{-12}` of the produced atoms have passed by the end of the history.
 The number of atoms that have passed through the last nuclide of a chain is
@@ -288,13 +295,29 @@ incident energy (outside of the range of tabulated yields, the closest channel
 is used). As for prompt photons from non-fission reactions, the weight of
 particles from activation is multiplied by :math:`k_{\text{eff}}` in
 eigenvalue calculations to properly balance energy release and deposition.
+Fission product decay is weighted like fission, and activation like other
+non-fission reactions, consistent with the treatment of the fission heating
+number and of prompt photons.
+
 For each emitted particle, a channel is sampled in proportion to its
-contribution, then an emitting nuclide :math:`j` with probability proportional
-to :math:`a_{c,j} \int S_j^p(E) dE`, and finally an energy from
-:math:`S_j^p(E)`. The direction is sampled isotropically and the emitting
-nuclide is recorded so that a :class:`~openmc.ParentNuclideFilter` can be used
-to tally the contribution of each radionuclide. Electrons and positrons are
-processed at their birth site like those from photon interactions.
+contribution, then a decay chain ending at an emitting nuclide :math:`j` with
+probability proportional to its contribution to :math:`a_{c,j} \int S_j^p(E)
+dE`, and finally an energy from :math:`S_j^p(E)`. The direction is sampled
+isotropically and the emitting nuclide is recorded so that a
+:class:`~openmc.ParentNuclideFilter` can be used to tally the contribution of
+each radionuclide. Electrons and positrons are processed at their birth site
+like those from photon interactions.
+
+As delayed neutrons are emitted after the decay of their precursor, decay
+particles are emitted after a delay :math:`\tau` between the reaction and the
+decay. Its distribution is that of the ages of the atoms of nuclide :math:`j`
+decaying at the end of the history along the sampled chain, i.e., the integrand
+of the expression for :math:`G_{ij}` above. The step of the power history
+during which the atom was produced is sampled first, then the delay within the
+step by inverting the integral of the Bateman response, which is analytic for a
+single nuclide and is otherwise solved with Newton's method safeguarded by
+bisection. For an infinitely long irradiation, the delay is simply the sum of
+exponentially distributed times spent in each nuclide of the chain.
 
 Consistency with Fission Energy Release
 ---------------------------------------
@@ -307,6 +330,17 @@ fissionable nuclides keep the scaling if it is enabled. When fission product
 electrons are emitted, the delayed beta energy :math:`E_{\beta}` is
 deposited by those electrons, and it is removed from the fission heating
 :math:`k_{i,f}` described above.
+
+Without photon transport, decay particles are not emitted, and the energy they
+carry is deposited at the collision site instead. For each channel, the energy
+emitted per reaction, :math:`\sum_j a_{c,j} \int E S_j^p(E) dE`, is
+precomputed. The ``heating`` score (MT=301) replaces :math:`E_{\beta}` with the
+kinetic energy of decay electrons and positrons, and the ``heating-local`` score
+(MT=901) replaces :math:`E_{\beta} + E_{\gamma,d}` with the energy of all decay
+particles, including :math:`2 m_e c^2` for the annihilation of each positron.
+Activation channels add their decay energy to both scores, weighted by
+:math:`k_{\text{eff}}` in eigenvalue calculations like other non-fission
+heating.
 
 ----------
 References

@@ -55,7 +55,15 @@ def model():
     decay.filters = [particle_filter, parent_filter]
     decay.scores = ['flux', 'heating']
 
-    model.tallies = [heating, decay]
+    # Decay particles are emitted after the delay between reaction and decay
+    delay = openmc.Tally()
+    delay.filters = [
+        openmc.ParticleFilter(['photon']),
+        openmc.TimeFilter([0.0, 1.0, 1.0e4, 1.0e8, 1.0e12])
+    ]
+    delay.scores = ['flux']
+
+    model.tallies = [heating, decay, delay]
     return model
 
 

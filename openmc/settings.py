@@ -112,13 +112,16 @@ class Settings:
         cutoff parameters will be applied relative to the particle's starting
         weight or to its current weight.
     decay_sources : bool or dict
-        Produce photons, electrons, and positrons from the decay of
+        Include photons, electrons, and positrons from the decay of
         radionuclides left behind by neutron reactions, assuming steady-state
         operation. Fission products and activation products are both included,
         using the decay data and fission product yields of the depletion chain
-        given by ``openmc.config['chain_file']``. Requires photon transport.
-        Setting this to True uses the defaults: constant power for one year
-        and emission of all three particle types. A dictionary can be given
+        given by ``openmc.config['chain_file']``. With photon transport, decay
+        particles are emitted at neutron collisions; otherwise, their energy
+        is deposited locally in the 'heating' and 'heating-local' scores.
+        Setting this to True uses the defaults: an infinitely long irradiation
+        at constant power, nuclides with half-lives above 1000 years treated as
+        stable, and all three particle types. A dictionary can be given
         instead with any of the following keys:
 
         :irradiation_time:
@@ -132,6 +135,11 @@ class Settings:
         :power:
             Relative power during each step in ``timesteps``. Only ratios
             matter; the power of the last step must be positive.
+        :half_life_cutoff:
+            Half-life above which nuclides are treated as stable, as a float in
+            [s] or a (value, unit) tuple. Such nuclides do not approach
+            equilibrium during operation, and their decay is a property of the
+            material composition rather than of the reaction rates.
         :particles:
             Sequence of particle types to emit, from 'photon', 'electron', and
             'positron'
@@ -1314,7 +1322,7 @@ class Settings:
         for key in value:
             cv.check_value('decay sources key', key,
                            ('irradiation_time', 'timesteps', 'power',
-                            'particles'))
+                            'half_life_cutoff', 'particles'))
         if 'irradiation_time' in value and 'timesteps' in value:
             raise ValueError("Only one of 'irradiation_time' and 'timesteps' "
                              "can be given for decay sources.")
@@ -1324,6 +1332,8 @@ class Settings:
         # Check times by converting them to seconds
         if 'irradiation_time' in value:
             _time_in_seconds(value['irradiation_time'])
+        if 'half_life_cutoff' in value:
+            _time_in_seconds(value['half_life_cutoff'])
         if 'timesteps' in value:
             timesteps = value['timesteps']
             cv.check_type('decay source timesteps', timesteps, Iterable)
@@ -2027,6 +2037,9 @@ class Settings:
         if 'power' in value:
             subelem = ET.SubElement(elem, "power")
             subelem.text = ' '.join(str(p) for p in value['power'])
+        if 'half_life_cutoff' in value:
+            subelem = ET.SubElement(elem, "half_life_cutoff")
+            subelem.text = str(_time_in_seconds(value['half_life_cutoff']))
         if 'particles' in value:
             subelem = ET.SubElement(elem, "particles")
             subelem.text = ' '.join(value['particles'])
@@ -2560,6 +2573,9 @@ class Settings:
         power = get_elem_list(elem, 'power', float)
         if power is not None:
             value['power'] = power
+        cutoff = get_text(elem, 'half_life_cutoff')
+        if cutoff is not None:
+            value['half_life_cutoff'] = float(cutoff)
         particles = get_elem_list(elem, 'particles', str)
         if particles is not None:
             value['particles'] = particles

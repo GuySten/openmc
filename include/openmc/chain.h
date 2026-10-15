@@ -11,6 +11,7 @@
 #include "pugixml.hpp"
 
 #include "openmc/angle_energy.h" // for AngleEnergy
+#include "openmc/array.h"
 #include "openmc/distribution.h" // for UPtrDist
 #include "openmc/memory.h"       // for unique_ptr
 #include "openmc/particle_type.h"
@@ -40,6 +41,11 @@ public:
   ChainNuclide(pugi::xml_node node);
   ~ChainNuclide();
 
+  //! Read the decay modes, fission product yields, and electron and positron
+  //! sources that are needed only by decay sources
+  //! \param node XML node of the nuclide in the chain file
+  void read_decay_source_data(pugi::xml_node node);
+
   //! Compute the decay constant for the nuclide
   //! \return Decay constant in [1/s], zero for a stable nuclide
   double decay_constant() const
@@ -48,6 +54,7 @@ public:
   }
 
   const std::string& name() const { return name_; }
+  double decay_energy() const { return decay_energy_; }
   const Distribution* photon_energy() const { return photon_energy_.get(); }
 
   //! Decay source of a given particle type
@@ -56,15 +63,23 @@ public:
   //!   [particles/s/atom], or nullptr if the nuclide does not emit it
   const Distribution* source(ParticleType type) const;
 
+  //! Energy emission rate of the decay source of a given particle type.
+  //! Available after read_decay_source_data() is called.
+  //! \param type Particle type
+  //! \return Integral of energy times the source in [eV/s/atom]
+  double source_energy(ParticleType type) const;
+
   const std::unordered_map<int, vector<Product>>& reaction_products() const
   {
     return reaction_products_;
   }
 
-  //! Decay modes leading to other nuclides with their branching ratios
+  //! Decay modes leading to other nuclides with their branching ratios.
+  //! Available after read_decay_source_data() is called.
   const vector<Product>& decay_products() const { return decay_products_; }
 
-  //! Independent fission product yields, resolving borrowed yields
+  //! Independent fission product yields, resolving borrowed yields.
+  //! Available after read_decay_source_data() is called.
   const vector<FissionYields>& fission_yields() const;
 
 private:
@@ -80,6 +95,8 @@ private:
   UPtrDist photon_energy_;               //!< Decay photon energy distribution
   UPtrDist electron_energy_;             //!< Decay electron energy distribution
   UPtrDist positron_energy_;             //!< Decay positron energy distribution
+  array<double, 3> source_energy_ {}; //!< Energy emission rates of the photon,
+                                      //!< electron, and positron sources
 };
 
 //==============================================================================
@@ -129,6 +146,9 @@ extern vector<unique_ptr<ChainNuclide>> chain_nuclides;
 //==============================================================================
 
 void read_chain_file_xml();
+
+//! Read the data needed by decay sources for nuclides already in the chain
+void read_chain_decay_source_data();
 
 void free_memory_chain();
 

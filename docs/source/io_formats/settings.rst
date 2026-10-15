@@ -231,19 +231,20 @@ time.
 ``<decay_sources>`` Element
 -------------------------------
 
-The ``<decay_sources>`` element enables the emission of photons, electrons, and
-positrons from the decay of radionuclides produced by fission and neutron
-activation, assuming steady-state operation. Decay data and fission product
-yields are read from the depletion chain given by the ``OPENMC_CHAIN_FILE``
-environment variable. Photon transport must be enabled. An empty element uses
-the default values of all sub-elements. This element has the following
+The ``<decay_sources>`` element enables the decay of radionuclides produced by
+fission and neutron activation, assuming steady-state operation. With photon
+transport, decay photons, electrons, and positrons are emitted at neutron
+collisions; otherwise, their energy is deposited locally in heating scores.
+Decay data and fission product yields are read from the depletion chain given
+by the ``OPENMC_CHAIN_FILE`` environment variable. An empty element uses the
+default values of all sub-elements. This element has the following
 sub-elements:
 
   :timesteps:
     Lengths of the steps of a piecewise-constant power history in [s]. The
     simulated state is the end of the last step.
 
-    *Default*: 31557600 (one year)
+    *Default*: None (infinitely long irradiation at constant power)
 
   :power:
     Relative power during each step. The power of the last step must be
@@ -251,8 +252,13 @@ sub-elements:
 
     *Default*: 1.0 for each step
 
+  :half_life_cutoff:
+    Half-life in [s] above which nuclides are treated as stable.
+
+    *Default*: 3.15576e10 (1000 years)
+
   :particles:
-    Particle types to emit, from ``photon``, ``electron``, and ``positron``.
+    Particle types to include, from ``photon``, ``electron``, and ``positron``.
 
     *Default*: photon electron positron
 

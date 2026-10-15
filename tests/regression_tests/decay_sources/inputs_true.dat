@@ -48,6 +48,12 @@
     <filter id="3" type="parentnuclide">
       <bins>I135 Xe135 Co58 Ni57 Ni65</bins>
     </filter>
+    <filter id="4" type="particle">
+      <bins>photon</bins>
+    </filter>
+    <filter id="5" type="time">
+      <bins>0.0 1.0 10000.0 100000000.0 1000000000000.0</bins>
+    </filter>
     <tally id="1">
       <filters>1 2</filters>
       <scores>heating</scores>
@@ -55,6 +61,10 @@
     <tally id="2">
       <filters>1 3</filters>
       <scores>flux heating</scores>
+    </tally>
+    <tally id="3">
+      <filters>4 5</filters>
+      <scores>flux</scores>
     </tally>
   </tallies>
 </model>

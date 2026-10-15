@@ -258,6 +258,8 @@ def test_properties_file_load(tmp_path, mpi_intracomm):
       'particles': ['photon', 'electron']},
      {'timesteps': [100*86400.0, 3600.0], 'power': [1.0, 0.5],
       'particles': ['photon', 'electron']}),
+    ({'half_life_cutoff': (100, 'a')},
+     {'half_life_cutoff': 100*365.25*86400.0}),
 ])
 def test_decay_sources(value, expected):
     s = openmc.Settings()
@@ -280,6 +282,7 @@ def test_decay_sources(value, expected):
     {'timesteps': [1.0], 'power': [-1.0]},
     {'irradiation_time': (1, 'week')},
     {'irradiation_time': 0.0},
+    {'half_life_cutoff': -1.0},
     {'particles': ['neutron']},
 ])
 def test_decay_sources_invalid(value):

@@ -59,16 +59,60 @@ def _energy_integral(f):
 # Electron mass energy equivalent in [eV]
 _MASS_ELECTRON_EV = 0.51099895000e6
 
+# Tolerance in [eV] for identifying the transition that feeds the daughter
+# state of a decay mode from its Q-value
+_Q_VALUE_TOLERANCE = 5.0e3
 
-def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy):
+
+def _spin_parity(nuclide):
+    """Spin and parity of a nuclide, or None if either is unknown"""
+    spin = nuclide.get('spin')
+    parity = nuclide.get('parity')
+    # ENDF-102 specifies that unknown spin should be reported as -77.777
+    if spin is None or spin < 0.0 or parity not in (-1.0, 1.0):
+        return None
+    return spin, parity
+
+
+def _transition_shape(initial, final):
+    """Forbiddenness and uniqueness of a beta transition
+
+    Parameters
+    ----------
+    initial : tuple of float
+        Spin and parity of the initial state
+    final : tuple of float
+        Spin and parity of the final state
+
+    Returns
+    -------
+    int
+        Order of forbiddenness
+    bool
+        Whether the transition is unique forbidden
+
+    """
+    delta_j = round(abs(initial[0] - final[0]))
+    delta_pi = round(initial[1] * final[1])
+    if delta_j <= 1:
+        # Allowed or non-unique first forbidden
+        return (0, False) if delta_pi == 1 else (1, False)
+    if delta_pi == (-1)**(delta_j - 1):
+        # Unique transition of order n, with delta J = n + 1
+        return delta_j - 1, True
+    return delta_j, False
+
+
+def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy, shapes=None):
     """Spectrum of beta particles from discrete transitions
 
-    Each transition is given a :class:`openmc.stats.BetaSpectrum`. Since the
-    data do not indicate whether forbidden transitions are unique, the allowed
-    shape is used, with a correction factor :math:`e^{aT}` shared by all
-    transitions such that the mean energy of the spectrum is preserved. Among
-    all spectra with the given mean energy and transition intensities, this is
-    the one closest to the allowed shapes in relative entropy.
+    Each transition is given a :class:`openmc.stats.BetaSpectrum`, with the
+    shape factor of unique forbidden transitions where indicated and the
+    allowed shape otherwise. A correction factor :math:`e^{aT}` shared by all
+    transitions is applied such that the mean energy of the spectrum is
+    preserved. Among all spectra with the given mean energy and transition
+    intensities, this is the one closest to the uncorrected shapes in relative
+    entropy.
 
     Parameters
     ----------
@@ -84,6 +128,9 @@ def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy):
         Whether the beta particles are positrons
     mean_energy : float
         Mean kinetic energy of the beta particles in [eV] to preserve
+    shapes : sequence of tuple, optional
+        Order of forbiddenness and whether the transition is unique for each
+        transition. If not given, all transitions have the allowed shape.
 
     Returns
     -------
@@ -96,9 +143,14 @@ def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy):
 
     # The correction multiplies the density by exp(a*(T - endpoint)), so the
     # density of each transition is evaluated once at the quadrature points
+    if shapes is None:
+        shapes = [(0, False)]*len(endpoints)
+    # Non-unique forbidden transitions have the allowed shape
+    shapes = [(n, True) if unique else (0, False) for n, unique in shapes]
     quadrature = []
-    for e0 in endpoints:
-        spectrum = BetaSpectrum(e0, Z, A, positron)
+    for e0, (n, unique) in zip(endpoints, shapes):
+        spectrum = BetaSpectrum(e0, Z, A, positron, forbiddenness=n,
+                                unique=unique)
         T, weights = spectrum._quadrature()
         quadrature.append((T, weights * spectrum._shape(T), e0))
 
@@ -127,8 +179,9 @@ def _beta_spectra(endpoints, rates, Z, A, positron, mean_energy):
                     lo = b
                 else:
                     hi = b
-    spectra = [BetaSpectrum(e0, Z, A, positron, b / e_max)
-               for e0 in endpoints]
+    spectra = [BetaSpectrum(e0, Z, A, positron, b / e_max, forbiddenness=n,
+                            unique=unique)
+               for e0, (n, unique) in zip(endpoints, shapes)]
     return Mixture(list(rates), spectra)
 
 
@@ -593,6 +646,69 @@ class Decay(EqualityMixin):
     @cached_property
     def sources(self):
         """Radioactive decay source distributions"""
+        return self.get_sources()
+
+    def _final_states(self, transitions):
+        """Daughter state fed by each discrete beta transition
+
+        The transition with an energy closest to the Q-value of a decay mode
+        feeds the daughter state of that mode, which is the ground state or an
+        isomer. Other transitions feed excited states.
+
+        Parameters
+        ----------
+        transitions : list of dict
+            Discrete transitions of a beta- or EC/beta+ spectrum
+
+        Returns
+        -------
+        list of str or None
+            Name of the daughter state fed by each transition, if known
+
+        """
+        states = [None]*len(transitions)
+        for mode in self.modes:
+            q_value = mode.energy.n
+            distance = [abs(d['energy'].n - q_value)
+                        if d['from_mode'] == mode.modes else np.inf
+                        for d in transitions]
+            if not distance:
+                continue
+            i = int(np.argmin(distance))
+            # Allow for rounding of the Q-value and transition energy
+            if distance[i] <= _Q_VALUE_TOLERANCE:
+                states[i] = mode.daughter
+        return states
+
+    def get_sources(self, decay_data=None):
+        """Radioactive decay source distributions
+
+        Beta particles from discrete transitions are given the shape of a
+        unique forbidden transition where the transition is known to be one,
+        and the allowed shape otherwise, with a correction that preserves the
+        evaluated average energy. Since the transition types in ENDF-6
+        evaluations give only the order of forbiddenness, unique transitions
+        are identified from the spins and parities of the initial and final
+        states. These are known for transitions to the ground state or an
+        isomer of the daughter nuclide when decay data for the daughter state
+        is given. Non-unique forbidden transitions, whose shape depends on
+        nuclear matrix elements, are given the allowed shape.
+
+        .. versionadded:: 0.16.1
+
+        Parameters
+        ----------
+        decay_data : Mapping of str to openmc.data.Decay, optional
+            Decay data for daughter states indexed by name, e.g., 'Y90' or
+            'Ba137_m1'
+
+        Returns
+        -------
+        dict
+            Distribution of the energy of each type of particle emitted, where
+            the probabilities are emission rates in [Bq/atom]
+
+        """
         sources = {}
         name = self.nuclide['name']
         decay_constant = self.decay_constant.n
@@ -629,7 +745,10 @@ class Decay(EqualityMixin):
                 normalization = spectra['discrete_normalization'].n
                 endpoints = []
                 rates = []
-                for d in spectra['discrete']:
+                shapes = []
+                initial = _spin_parity(self.nuclide)
+                states = self._final_states(spectra['discrete'])
+                for d, state in zip(spectra['discrete'], states):
                     endpoint = d['energy'].n
                     if positron:
                         endpoint -= 2.0*_MASS_ELECTRON_EV
@@ -637,6 +756,13 @@ class Decay(EqualityMixin):
                     if endpoint > 0.0 and rate > 0.0:
                         endpoints.append(endpoint)
                         rates.append(rate)
+                        final = None
+                        if decay_data is not None and state in decay_data:
+                            final = _spin_parity(decay_data[state].nuclide)
+                        if initial is None or final is None:
+                            shapes.append((0, False))
+                        else:
+                            shapes.append(_transition_shape(initial, final))
                 energy = spectra['energy_average'].n
                 if spectra['continuous_flag'] == 'both':
                     # The average energy includes the continuous part
@@ -648,7 +774,8 @@ class Decay(EqualityMixin):
                     A = self.nuclide['mass_number']
                     dist = _beta_spectra(
                         endpoints, rates, Z - 1 if positron else Z + 1, A,
-                        positron, energy * decay_constant / sum(rates))
+                        positron, energy * decay_constant / sum(rates),
+                        shapes)
                     sources.setdefault(particle_type, []).append(dist)
             elif (spectra['continuous_flag'] in ('discrete', 'both')
                     and spectra['discrete']):

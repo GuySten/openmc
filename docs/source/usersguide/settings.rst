@@ -240,6 +240,15 @@ they are born, and with photon transport enabled, their bremsstrahlung and
 annihilation photons are transported. A complete example is given in
 ``examples/sr90_source``.
 
+Depletion chains generated with :meth:`openmc.deplete.Chain.from_endf` describe
+the beta particles emitted by each radionuclide with beta spectra. Since
+evaluations give only the order of forbiddenness of a transition, unique
+forbidden transitions are identified from the spins and parities of the parent
+and of the daughter state, which are known for transitions to the ground state
+or an isomer of the daughter. Other transitions are given the allowed shape. In
+either case, the spectra are corrected to preserve the average energy of the
+evaluation.
+
 The time distribution can be set equal to any univariate probability
 distribution. This could be a probability mass function
 (:class:`openmc.stats.Discrete`), a uniform distribution

@@ -213,6 +213,76 @@ def test_beta_spectrum_forbidden(endf_data):
     assert unique.mean() > allowed.mean()
 
 
+
+@pytest.mark.parametrize('initial, final, expected', [
+    ((0.5, 1.0), (0.5, 1.0), (0, False)),   # H3: allowed
+    ((7.0, 1.0), (6.0, 1.0), (0, False)),
+    ((1.0, -1.0), (0.0, 1.0), (1, False)),  # Bi210: non-unique first
+    ((0.0, 1.0), (2.0, -1.0), (1, True)),   # Sr90: unique first
+    ((2.0, 1.0), (0.0, 1.0), (2, False)),   # Cl36: non-unique second
+    ((3.0, 1.0), (0.0, 1.0), (2, True)),    # Na22: unique second
+    ((4.0, -1.0), (0.0, 1.0), (3, True)),   # K40: unique third
+    ((4.5, 1.0), (0.5, 1.0), (4, False)),   # In115: non-unique fourth
+])
+def test_transition_shape(initial, final, expected):
+    assert openmc.data.decay._transition_shape(initial, final) == expected
+
+
+def test_beta_spectrum_unique_inferred(endf_data):
+    # Unique forbidden transitions are identified from the spins and parities
+    # of the parent and of the daughter state fed by the transition, which are
+    # known from the decay data of the daughter
+    names = ['Sr_090', 'Y_090', 'Zr_090', 'K_040', 'Ca_040', 'Ar_040',
+             'Cs_137', 'Ba_137', 'Ba_137m1']
+    decay_data = {}
+    for name in names:
+        Z = openmc.data.ATOMIC_NUMBER[name.split('_')[0]]
+        filename = os.path.join(endf_data, 'decay', f'dec-{Z:03}_{name}.endf')
+        decay = openmc.data.Decay.from_endf(filename)
+        decay_data[decay.nuclide['name']] = decay
+
+    def beta_spectra(name, particle='electron'):
+        sources = decay_data[name].get_sources(decay_data)
+        return {round(d.endpoint): d for d in sources[particle].distribution
+                if isinstance(d, openmc.stats.BetaSpectrum)}
+
+    # Sr90 (0+ -> 2-) and Y90 (2- -> 0+) undergo unique first-forbidden
+    # transitions, whose shape reproduces the evaluated average energy with
+    # only a small correction
+    for name, endpoint in (('Sr90', 546000), ('Y90', 2279800)):
+        spectrum = beta_spectra(name)[endpoint]
+        assert spectrum.forbiddenness == 1
+        assert spectrum.unique
+        assert abs(spectrum.shape_factor * endpoint) < 0.01
+
+    # The K40 transition to Ca40 (4- -> 0+) is unique third forbidden, although
+    # the evaluation lists it as allowed
+    k40 = decay_data['K40']
+    (transition,) = k40.spectra['beta-']['discrete']
+    assert transition['type'] == 'allowed'
+    spectrum = beta_spectra('K40')[1311070]
+    assert (spectrum.forbiddenness, spectrum.unique) == (3, True)
+
+    # The main Cs137 transition feeds the Ba137 isomer (7/2+ -> 11/2-) and is
+    # unique first forbidden, while the transition to the ground state
+    # (7/2+ -> 3/2+) is non-unique second forbidden and has the allowed shape
+    spectra = beta_spectra('Cs137')
+    main, ground = spectra[513971], spectra[1175630]
+    assert (main.forbiddenness, main.unique) == (1, True)
+    assert (ground.forbiddenness, ground.unique) == (0, False)
+
+    # The evaluated average energy is preserved
+    cs137 = decay_data['Cs137']
+    electron = cs137.get_sources(decay_data)['electron']
+    assert _beta_mean_energy(electron) / cs137.decay_constant.n == \
+        pytest.approx(cs137.spectra['beta-']['energy_average'].n, rel=1e-6)
+
+    # Without decay data for the daughters, the allowed shape is used
+    for d in cs137.sources['electron'].distribution:
+        if isinstance(d, openmc.stats.BetaSpectrum):
+            assert not d.unique
+
+
 def test_decay_photon_energy():
     # If chain file is not set, we should get a data error
     if 'chain_file' in openmc.config:

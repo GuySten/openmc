@@ -673,9 +673,13 @@ class AdjointPopulations:
         ('photon_importance'), ``version`` (1, 0), ``nuclides`` (the bin
         names, 'other' for every fissioning nuclide not named), ``depth``,
         ``n_batches``, ``keff`` and ``threshold`` (of the photoneutron target
-        [eV]); the dataset ``fission_importance`` [batch], the fission-root
-        importance I_F of each batch; and one group per bin, ``nuclides/<name>``,
-        with
+        [eV]); the datasets ``fission_importance`` [batch], the fission-root
+        importance I_F of each batch, ``delayed_importance`` [batch, group],
+        the delayed-root importance of each delayed group, and
+        ``fission_lifetime`` [batch], the lifetime-weighted fission-root sum
+        T_F, so that beta_eff = mean(delayed_importance) / mean(I_F) and the
+        generation time mean(T_F) / (k mean(I_F)) pair with the importance
+        batch by batch; and one group per bin, ``nuclides/<name>``, with
 
         - ``energy`` [eV]: a grid on which linear interpolation of the
           importance is within rtol of the rebuilt function;
@@ -738,6 +742,9 @@ class AdjointPopulations:
             f.attrs['rtol'] = rtol
             f.attrs['floor'] = floor
             f['fission_importance'] = tables[names[0]]._fission
+            f['delayed_importance'] = self.weight[:, CLASS_DELAYED, 1:, d]
+            f['fission_lifetime'] = \
+                self.weight_t0[:, CLASS_FISSION, :, d].sum(axis=1)
             for j, name in enumerate(names):
                 imp = tables[name]
                 g = f.create_group(f'nuclides/{name}')

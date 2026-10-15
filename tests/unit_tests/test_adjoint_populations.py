@@ -539,13 +539,16 @@ def test_export_photon_importance(run_in_tmpdir):
     rng = np.random.default_rng(3)
     w = np.zeros((n_b, 5, 9, L + 1))
     w[:, CLASS_FISSION, 0] = rng.uniform(90.0, 110.0, n_b)[:, None]
+    w[:, CLASS_DELAYED, 1:7] = rng.uniform(0.05, 0.2, (n_b, 6, L + 1))
+    wt = np.zeros_like(w)
+    wt[:, CLASS_FISSION, 0] = rng.uniform(4e-3, 6e-3, (n_b, L + 1))
     pw = np.zeros((n_b, 2, K, 2, L + 1))
     for j, scale in enumerate((1.0, 0.3)):
         noise = rng.uniform(0.9, 1.1, (n_b, K))
         pw[:, j, :, 0, L] = 100.0 * scale * d * noise
         pw[:, j, :, 1, L] = 100.0 * scale * sc * noise
     pf = np.column_stack([np.full(n_b, 30.0), np.full(n_b, 10.0)])
-    _write('ap.h5', w, np.zeros_like(w))
+    _write('ap.h5', w, wt)
     with h5py.File('ap.h5', 'a') as f:
         g = f['adjoint_populations']
         g['probe_energies'] = lines
@@ -564,6 +567,13 @@ def test_export_photon_importance(run_in_tmpdir):
         assert f.attrs['threshold'] == pytest.approx(t.threshold)
         i_f = f['fission_importance'][()]
         assert np.allclose(i_f, w[:, CLASS_FISSION].sum(axis=1)[:, L])
+        i_d = f['delayed_importance'][()]
+        assert i_d.shape == (n_b, 8)
+        assert i_d.sum(axis=1).mean() / i_f.mean() == \
+            pytest.approx(ap.beta_eff(depth=L).n)
+        t_f = f['fission_lifetime'][()]
+        assert t_f.mean() / (1.02 * i_f.mean()) == \
+            pytest.approx(ap.generation_time(depth=L).n)
         for name, frac in (('U235', 0.75), ('other', 0.25)):
             g = f[f'nuclides/{name}']
             imp = tables[name]

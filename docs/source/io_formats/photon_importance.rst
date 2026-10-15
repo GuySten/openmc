@@ -40,6 +40,13 @@ with :math:`I_j` linearly interpolated on its grid. Over any set of batches,
 
 :Datasets: - **fission_importance** (*double[]*) -- Fission-root importance
              of each batch at **depth**.
+           - **delayed_importance** (*double[][]*) -- Delayed-root importance
+             of each batch and delayed group, [batch, group]; with
+             **fission_importance** it gives :math:`\beta_\mathrm{eff}` per
+             group, paired with the photon importance batch by batch.
+           - **fission_lifetime** (*double[]*) -- Lifetime-weighted
+             fission-root sum of each batch; the generation time is its mean
+             over :math:`k` times the mean of **fission_importance**.
 
 **/nuclides/<name>/**
 

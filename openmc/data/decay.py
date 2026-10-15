@@ -33,6 +33,28 @@ _DECAY_MODES = {
     10: ('unknown', None)
 }
 
+
+def _energy_integral(f):
+    """Integral of energy times a tabulated spectrum
+
+    Parameters
+    ----------
+    f : openmc.data.Tabulated1D
+        Spectrum with histogram or linear-linear interpolation
+
+    Returns
+    -------
+    float
+        Integral of E*f(E)
+
+    """
+    x, y = f.x, f.y
+    if INTERPOLATION_SCHEME[f.interpolation[0]] == 'histogram':
+        return np.sum(0.5*(x[1:] + x[:-1]) * y[:-1] * np.diff(x))
+    dx = np.diff(x)
+    return np.sum(dx/6.0 * ((2*x[:-1] + x[1:])*y[:-1] + (x[:-1] + 2*x[1:])*y[1:]))
+
+
 _RADIATION_TYPES = {
     0: 'gamma',
     1: 'beta-',
@@ -515,6 +537,30 @@ class Decay(EqualityMixin):
 
             # Create distribution for discrete
             if (spectra['continuous_flag'] in ('discrete', 'both')
+                    and spectra['discrete']
+                    and particle in ('beta-', 'ec/beta+')):
+                # Discrete beta transitions are given by their endpoint
+                # energy (for EC/beta+, the transition energy), not by the
+                # energy of the emitted particles. Only a fraction of EC/beta+
+                # transitions emit a positron. The emitted particles are
+                # represented at the evaluated average energy of the spectrum.
+                key = ('positron_intensity' if particle == 'ec/beta+'
+                       else 'intensity')
+                normalization = spectra['discrete_normalization'].n
+                yield_ = normalization * sum(
+                    d[key].n for d in spectra['discrete'])
+                energy = spectra['energy_average'].n
+                if spectra['continuous_flag'] == 'both':
+                    # The average energy includes the continuous part
+                    f = spectra['continuous']['probability']
+                    energy -= spectra['continuous_normalization'].n * \
+                        _energy_integral(f)
+                if yield_ > 0.0 and energy > 0.0:
+                    dist_discrete = Discrete(
+                        [energy / yield_], [decay_constant * yield_])
+                    sources.setdefault(particle_type, []).append(
+                        dist_discrete)
+            elif (spectra['continuous_flag'] in ('discrete', 'both')
                     and spectra['discrete']):
                 energies = []
                 intensities = []

@@ -662,6 +662,93 @@ class AdjointPopulations:
                                          rtol=rtol, floor=floor, e_max=e_max)
                 for n in self.probe_fission_nuclides}
 
+    def export_photon_importance(self, path, target, depth=None, rtol=1.0e-3,
+                                 floor=1.0e-3, e_max=None,
+                                 cross_sections=None):
+        """Write the photon importance of every fissioning-nuclide bin and
+        the bins' fission fractions to an HDF5 file, for folding with
+        delayed-photon sources outside OpenMC (e.g. glowup).
+
+        The file holds, at the root, the attributes ``filetype``
+        ('photon_importance'), ``version`` (1, 0), ``nuclides`` (the bin
+        names, 'other' for every fissioning nuclide not named), ``depth``,
+        ``n_batches``, ``keff`` and ``threshold`` (of the photoneutron target
+        [eV]); the dataset ``fission_importance`` [batch], the fission-root
+        importance I_F of each batch; and one group per bin, ``nuclides/<name>``,
+        with
+
+        - ``energy`` [eV]: a grid on which linear interpolation of the
+          importance is within rtol of the rebuilt function;
+        - ``importance``, ``std_dev``: the importance I_j(E) on the grid,
+          the photoneutron reactivity (per unit fission-neutron importance)
+          that a photon line of unit intensity per fission of the bin's
+          nuclides adds, and its batch standard deviation;
+        - ``batch_numerator`` [batch, energy]: its per-batch numerators, so
+          that I_j(E) = mean(batch_numerator) / mean(fission_importance)
+          over any set of batches;
+        - ``fission_weight`` [batch]: the collision estimate of the bin's
+          fissions per batch, with the attribute ``fission_fraction``, the
+          bin's share of all fissions.
+
+        A delayed-photon source S_j(E) per fission of bin j then gives
+        beta_ph = sum_j integral S_j(E) I_j(E) dE; I_j / fission_fraction is
+        the importance of one photon born at an average fission of the bin.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            File to write
+        target : openmc.PhotoneutronTarget or openmc.Material
+            The medium that makes the photoneutrons, as for
+            :meth:`probe_importance`
+        depth : int, optional
+            Depth at which the importance is read; n_generation if None
+        rtol : float
+            Tolerance of linear interpolation of the tables
+        floor : float
+            Fraction of the largest importance below which the tolerance is
+            absolute
+        e_max : float, optional
+            Top of the tables [eV]; the highest line if None
+        cross_sections : str or os.PathLike, optional
+            cross_sections.xml for a material target
+
+        """
+        import h5py
+        from openmc import __version__
+        from openmc.photoneutron_probes import PhotoneutronTarget
+        self._check_probes()
+        if not isinstance(target, PhotoneutronTarget):
+            target = PhotoneutronTarget.from_material(target, cross_sections)
+        d = self._depth(depth)
+        tables = self.probe_importances(target, depth=d, rtol=rtol,
+                                        floor=floor, e_max=e_max)
+        names = self.probe_fission_nuclides
+        fw = self.probe_fission_weight
+        total = fw.sum()
+        with h5py.File(path, 'w') as f:
+            f.attrs['filetype'] = np.bytes_('photon_importance')
+            f.attrs['version'] = np.array([1, 0])
+            f.attrs['openmc_version'] = np.bytes_(__version__)
+            f.attrs['nuclides'] = np.array([n.encode() for n in names])
+            f.attrs['depth'] = d
+            f.attrs['n_batches'] = self.n_batches
+            f.attrs['keff'] = self.keff
+            f.attrs['threshold'] = target.threshold
+            f.attrs['rtol'] = rtol
+            f.attrs['floor'] = floor
+            f['fission_importance'] = tables[names[0]]._fission
+            for j, name in enumerate(names):
+                imp = tables[name]
+                g = f.create_group(f'nuclides/{name}')
+                g['energy'] = imp.energy
+                g['importance'] = imp.mean
+                g['std_dev'] = imp.std_dev
+                g['batch_numerator'] = imp._batch_numerators(imp.energy)
+                g['fission_weight'] = fw[:, j]
+                g.attrs['fission_fraction'] = \
+                    fw[:, j].sum() / total if total > 0 else 0.0
+
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""
         self._check_photoneutrons()

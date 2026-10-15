@@ -528,6 +528,56 @@ def test_probe_importances_per_nuclide(run_in_tmpdir):
                        rtol=0.03, atol=1e-12)
 
 
+def test_export_photon_importance(run_in_tmpdir):
+    """The exported tables are those of probe_importances, their per-batch
+    numerators give them back over I_F, and the fission fractions are the
+    bins' shares of the probes' fission weight."""
+    t = _resonant_target()
+    K, L, n_b = 20, 2, 4
+    lines = openmc.probe_line_energies(t.threshold, 12.6e6, K)
+    d, sc = _smooth_parts(t, lines)
+    rng = np.random.default_rng(3)
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = rng.uniform(90.0, 110.0, n_b)[:, None]
+    pw = np.zeros((n_b, 2, K, 2, L + 1))
+    for j, scale in enumerate((1.0, 0.3)):
+        noise = rng.uniform(0.9, 1.1, (n_b, K))
+        pw[:, j, :, 0, L] = 100.0 * scale * d * noise
+        pw[:, j, :, 1, L] = 100.0 * scale * sc * noise
+    pf = np.column_stack([np.full(n_b, 30.0), np.full(n_b, 10.0)])
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = lines
+        g['probe_fission_nuclides'] = 'U235 other'
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = pf.ravel()
+    ap = _read('ap.h5', 1.02)
+    ap.export_photon_importance('imp.h5', t, depth=L, rtol=0.01)
+    tables = ap.probe_importances(t, depth=L, rtol=0.01)
+    with h5py.File('imp.h5', 'r') as f:
+        assert f.attrs['filetype'] == b'photon_importance'
+        assert list(f.attrs['version']) == [1, 0]
+        assert [n.decode() for n in f.attrs['nuclides']] == ['U235', 'other']
+        assert f.attrs['depth'] == L
+        assert f.attrs['keff'] == pytest.approx(1.02)
+        assert f.attrs['threshold'] == pytest.approx(t.threshold)
+        i_f = f['fission_importance'][()]
+        assert np.allclose(i_f, w[:, CLASS_FISSION].sum(axis=1)[:, L])
+        for name, frac in (('U235', 0.75), ('other', 0.25)):
+            g = f[f'nuclides/{name}']
+            imp = tables[name]
+            assert np.allclose(g['energy'][()], imp.energy)
+            assert np.allclose(g['importance'][()], imp.mean)
+            assert np.allclose(g['std_dev'][()], imp.std_dev)
+            num = g['batch_numerator'][()]
+            assert num.shape == (n_b, imp.energy.size)
+            assert np.allclose(num.mean(axis=0) / i_f.mean(), imp.mean)
+            assert g.attrs['fission_fraction'] == pytest.approx(frac)
+            assert np.allclose(g['fission_weight'][()],
+                               pf[:, 0 if name == 'U235' else 1])
+
+
 def test_budget_and_trigger_settings_roundtrip(run_in_tmpdir):
     s = openmc.Settings()
     value = {'n_generation': 5, 'photoneutrons': True,

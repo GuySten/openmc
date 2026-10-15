@@ -107,9 +107,15 @@ void create_fission_sites(Particle& p)
   // the expected number of fission sites produced
   double weight = settings::ufs_on ? ufs_get_weight(p) : 1.0;
 
+  // In eigenvalue mode the sites are the next generation's source: they carry
+  // equal weight and their number follows the parent's weight. In fixed-source
+  // mode they are secondaries of the same history and carry the parent's
+  // weight, so that a low-weight neutron still starts its chain.
+  bool eigenvalue = (settings::run_mode == RunMode::EIGENVALUE);
+
   // Determine the expected number of neutrons produced
-  double nu_t = p.wgt() / simulation::keff * weight * p.macro_xs().nu_fission /
-                p.macro_xs().total;
+  double nu_t = (eigenvalue ? p.wgt() / simulation::keff * weight : 1.0) *
+                p.macro_xs().nu_fission / p.macro_xs().total;
 
   // Sample the number of neutrons produced
   int nu = static_cast<int>(nu_t);
@@ -132,7 +138,7 @@ void create_fission_sites(Particle& p)
 
   // Determine whether to place fission sites into the shared fission bank
   // or the secondary particle bank.
-  bool use_fission_bank = (settings::run_mode == RunMode::EIGENVALUE);
+  bool use_fission_bank = eigenvalue;
 
   // Counter for the number of fission sites successfully stored to the shared
   // fission bank or the secondary particle bank
@@ -144,7 +150,7 @@ void create_fission_sites(Particle& p)
     site.r = p.r();
     site.particle = ParticleType::neutron();
     site.time = p.time();
-    site.wgt = 1. / weight;
+    site.wgt = eigenvalue ? 1. / weight : p.wgt();
 
     // Sample the cosine of the angle, assuming fission neutrons are emitted
     // isotropically
@@ -246,7 +252,7 @@ void create_fission_sites(Particle& p)
 
   // Store the total weight banked for analog fission tallies
   p.n_bank() = nu;
-  p.wgt_bank() = nu / weight;
+  p.wgt_bank() = eigenvalue ? nu / weight : nu * p.wgt();
   for (size_t d = 0; d < MAX_DELAYED_GROUPS; d++) {
     p.n_delayed_bank(d) = nu_d[d];
   }

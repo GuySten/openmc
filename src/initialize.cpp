@@ -172,50 +172,51 @@ void initialize_mpi(MPI_Comm intracomm)
   mpi::master = (mpi::rank == 0);
 
   // Create bank datatype
+  // PROFILING ONLY: the field list depends on OPENMC_PROFILE_SOURCESITE_MINIMAL
+  // and OPENMC_PROFILE_SOURCESITE_PAD (see particle_data.h)
   SourceSite b;
-  MPI_Aint disp[15];
-  MPI_Get_address(&b.r, &disp[0]);
-  MPI_Get_address(&b.u, &disp[1]);
-  MPI_Get_address(&b.E, &disp[2]);
-  MPI_Get_address(&b.time, &disp[3]);
-  MPI_Get_address(&b.wgt, &disp[4]);
-  MPI_Get_address(&b.delayed_group, &disp[5]);
-  MPI_Get_address(&b.surf_id, &disp[6]);
-  MPI_Get_address(&b.particle, &disp[7]);
-  MPI_Get_address(&b.parent_nuclide, &disp[8]);
-  MPI_Get_address(&b.parent_id, &disp[9]);
-  MPI_Get_address(&b.progeny_id, &disp[10]);
-  MPI_Get_address(&b.wgt_born, &disp[11]);
-  MPI_Get_address(&b.wgt_ww_born, &disp[12]);
-  MPI_Get_address(&b.n_split, &disp[13]);
-  MPI_Get_address(&b.n_collision, &disp[14]);
-  for (int i = 14; i >= 0; --i) {
-    disp[i] -= disp[0];
+  vector<MPI_Aint> disp;
+  vector<int> blocks;
+  vector<MPI_Datatype> types;
+  auto add_field = [&](const void* addr, int count, MPI_Datatype type) {
+    MPI_Aint a;
+    MPI_Get_address(addr, &a);
+    disp.push_back(a);
+    blocks.push_back(count);
+    types.push_back(type);
+  };
+  add_field(&b.r, 3, MPI_DOUBLE);
+  add_field(&b.u, 3, MPI_DOUBLE);
+  add_field(&b.E, 1, MPI_DOUBLE);
+  add_field(&b.time, 1, MPI_DOUBLE);
+  add_field(&b.wgt, 1, MPI_DOUBLE);
+  add_field(&b.delayed_group, 1, MPI_INT);
+  add_field(&b.surf_id, 1, MPI_INT);
+  add_field(&b.particle, 1, MPI_INT);
+#ifndef OPENMC_PROFILE_SOURCESITE_MINIMAL
+  add_field(&b.parent_nuclide, 1, MPI_INT);
+#endif
+  add_field(&b.parent_id, 1, MPI_INT64_T);
+  add_field(&b.progeny_id, 1, MPI_INT64_T);
+#ifndef OPENMC_PROFILE_SOURCESITE_MINIMAL
+  add_field(&b.wgt_born, 1, MPI_DOUBLE);
+  add_field(&b.wgt_ww_born, 1, MPI_DOUBLE);
+  add_field(&b.n_split, 1, MPI_INT64_T);
+  add_field(&b.n_collision, 1, MPI_INT);
+#endif
+#if OPENMC_PROFILE_SOURCESITE_PAD > 0
+  add_field(b.profile_pad, OPENMC_PROFILE_SOURCESITE_PAD, MPI_BYTE);
+#endif
+  MPI_Aint base = disp[0];
+  for (auto& d : disp) {
+    d -= base;
   }
 
-  // Block counts for each field
-  int blocks[] = {3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
-
-  // Types for each field
-  MPI_Datatype types[] = {
-    MPI_DOUBLE,  // r (3 doubles)
-    MPI_DOUBLE,  // u (3 doubles)
-    MPI_DOUBLE,  // E
-    MPI_DOUBLE,  // time
-    MPI_DOUBLE,  // wgt
-    MPI_INT,     // delayed_group
-    MPI_INT,     // surf_id
-    MPI_INT,     // particle (enum)
-    MPI_INT,     // parent_nuclide
-    MPI_INT64_T, // parent_id
-    MPI_INT64_T, // progeny_id
-    MPI_DOUBLE,  // wgt_born
-    MPI_DOUBLE,  // wgt_ww_born
-    MPI_INT64_T, // n_split
-    MPI_INT      // n_collision
-  };
-
-  MPI_Type_create_struct(15, blocks, disp, types, &mpi::source_site);
+  MPI_Datatype site_struct;
+  MPI_Type_create_struct(static_cast<int>(disp.size()), blocks.data(),
+    disp.data(), types.data(), &site_struct);
+  MPI_Type_create_resized(site_struct, 0, sizeof(SourceSite), &mpi::source_site);
+  MPI_Type_free(&site_struct);
   MPI_Type_commit(&mpi::source_site);
 
   CollisionTrackSite bc;

@@ -31,6 +31,44 @@ constexpr double CACHE_INVALID {-1.0};
 //==========================================================================
 // Aliases and type definitions
 
+//==============================================================================
+// PROFILING ONLY (branch sourcesite-profiling): build parameters used to
+// measure how bank memory and run time depend on sizeof(SourceSite). They are
+// set through CMAKE_CXX_FLAGS and are not meant for production use:
+//
+//   -DOPENMC_PROFILE_SOURCESITE_PAD=<N>   append N bytes of padding
+//   -DOPENMC_PROFILE_SOURCESITE_MINIMAL   drop parent_nuclide, wgt_born,
+//       wgt_ww_born, n_split and n_collision (reads return the default value).
+//       Only valid for runs that do not use these fields (no weight windows,
+//       no D1S decay photons, no collision filters on secondaries).
+//
+// Note: the ctypes mirror in openmc/lib/core.py is not adjusted, so openmc.lib
+// source-bank access is invalid in these builds.
+//==============================================================================
+
+#ifndef OPENMC_PROFILE_SOURCESITE_PAD
+#define OPENMC_PROFILE_SOURCESITE_PAD 0
+#endif
+
+#ifdef OPENMC_PROFILE_SOURCESITE_MINIMAL
+template<int V>
+struct SiteDefaultInt {
+  static constexpr int value = V;
+};
+struct SiteDefaultOne {
+  static constexpr double value = 1.0;
+};
+struct SiteDefaultMinusOne {
+  static constexpr double value = -1.0;
+};
+
+template<typename T, typename Default>
+struct DroppedSiteField {
+  constexpr operator T() const { return static_cast<T>(Default::value); }
+  const DroppedSiteField& operator=(T) const { return *this; }
+};
+#endif
+
 //! Saved ("banked") state of a particle
 //! NOTE: This structure's MPI type is built in initialize_mpi() of
 //! initialize.cpp. Any changes made to the struct here must also be
@@ -49,13 +87,29 @@ struct SourceSite {
   ParticleType particle;
 
   // Extra attributes that don't show up in source written to file
+#ifndef OPENMC_PROFILE_SOURCESITE_MINIMAL
   int parent_nuclide {-1};
+#endif
   int64_t parent_id {0};
   int64_t progeny_id {0};
+#ifndef OPENMC_PROFILE_SOURCESITE_MINIMAL
   double wgt_born {1.0};
   double wgt_ww_born {-1.0};
   int64_t n_split {0};
   int n_collision {0};
+#else
+  // PROFILING ONLY: optional fields replaced by stateless static members that
+  // discard writes and read back their default value
+  static constexpr DroppedSiteField<int, SiteDefaultInt<-1>> parent_nuclide {};
+  static constexpr DroppedSiteField<double, SiteDefaultOne> wgt_born {};
+  static constexpr DroppedSiteField<double, SiteDefaultMinusOne> wgt_ww_born {};
+  static constexpr DroppedSiteField<int64_t, SiteDefaultInt<0>> n_split {};
+  static constexpr DroppedSiteField<int, SiteDefaultInt<0>> n_collision {};
+#endif
+#if OPENMC_PROFILE_SOURCESITE_PAD > 0
+  // PROFILING ONLY: padding to vary sizeof(SourceSite)
+  char profile_pad[OPENMC_PROFILE_SOURCESITE_PAD];
+#endif
 };
 
 struct CollisionTrackSite {

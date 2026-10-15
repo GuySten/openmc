@@ -540,10 +540,12 @@ class Decay(EqualityMixin):
                     and spectra['discrete']
                     and particle in ('beta-', 'ec/beta+')):
                 # Discrete beta transitions are given by their endpoint
-                # energy (for EC/beta+, the transition energy), not by the
-                # energy of the emitted particles. Only a fraction of EC/beta+
-                # transitions emit a positron. The emitted particles are
-                # represented at the evaluated average energy of the spectrum.
+                # energy (for EC/beta+, the electron capture decay energy),
+                # not by the energy of the emitted particles. For EC/beta+,
+                # the intensity includes electron capture and the positron
+                # intensity is given separately (RIS, see ENDF-102 Section
+                # 8.3). The emitted particles are represented at the
+                # evaluated average energy of the spectrum.
                 key = ('positron_intensity' if particle == 'ec/beta+'
                        else 'intensity')
                 normalization = spectra['discrete_normalization'].n

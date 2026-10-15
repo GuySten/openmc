@@ -109,17 +109,28 @@ class AdjointPopulations:
     probe_fission_nuclides : list of str or None
         Names of the probes' fissioning-nuclide bins ('other' last, or a
         single 'all')
+    probe_targets : list of str or None
+        Names of the photoneutron-target bins: the nuclides of the setting
+        ``photoneutron_targets`` and 'other', or a single 'all'
     probe_weight : numpy.ndarray or None
         Summed probe-root weight, indexed [batch, nuclide bin, line, label,
-        depth]. With three labels: 0 uncollided (empty when rays were on),
-        1 after coherent scattering only, 2 after an energy-changing
-        collision. Files written before the labels have two: 0 at the line
-        energy (uncollided or coherent), 1 after an energy-changing collision
+        depth], summed over the photoneutron targets. With three labels: 0
+        uncollided (empty when rays were on), 1 after coherent scattering
+        only, 2 after an energy-changing collision. Files written before the
+        labels have two: 0 at the line energy (uncollided or coherent), 1
+        after an energy-changing collision
+    probe_weight_by_target : numpy.ndarray or None
+        As probe_weight, by photoneutron target: [batch, nuclide bin, line,
+        target, label, depth]
     probe_n_labels : int or None
         Number of probe labels (2 or 3)
     ray_weight : numpy.ndarray or None
         Summed uncollided photoneutron-root weight of the ray probes,
-        indexed [batch, nuclide bin, ray line, depth], if rays were on
+        indexed [batch, nuclide bin, ray line, depth], summed over the
+        photoneutron targets, if rays were on
+    ray_weight_by_target : numpy.ndarray or None
+        As ray_weight, by photoneutron target: [batch, nuclide bin, ray line,
+        target, depth]
     ray_photon_energies : numpy.ndarray or None
         The rays' line energies [eV]: the probe lines, each interval
         subdivided ray_refinement times
@@ -190,7 +201,9 @@ class AdjointPopulations:
         self.probe_energies = None
         self.probe_n_labels = None
         self.probe_fission_nuclides = None
+        self.probe_targets = None
         self.probe_weight = None
+        self.probe_weight_by_target = None
         self.probe_fission_weight = None
         if 'probe_energies' in group:
             self.probe_energies = group['probe_energies'][()]
@@ -200,14 +213,23 @@ class AdjointPopulations:
             nn = len(self.probe_fission_nuclides)
             self.probe_n_labels = int(group['probe_n_labels'][()]) \
                 if 'probe_n_labels' in group else 2
-            self.probe_weight = group['probe_weight'][()].reshape(
+            if 'probe_targets' in group:
+                t = group['probe_targets'][()]
+                self.probe_targets = (t.decode() if isinstance(t, bytes)
+                                      else str(t)).split()
+            else:
+                self.probe_targets = ['all']
+            self.probe_weight_by_target = group['probe_weight'][()].reshape(
                 (self.n_batches, nn, len(self.probe_energies),
-                 self.probe_n_labels, self.n_generation + 1))
+                 len(self.probe_targets), self.probe_n_labels,
+                 self.n_generation + 1))
+            self.probe_weight = self.probe_weight_by_target.sum(axis=3)
             self.probe_fission_weight = \
                 group['probe_fission_weight'][()].reshape(self.n_batches, nn)
         self.probe_trigger = tuple(float(x) for x in group['probe_trigger'][()]) \
             if 'probe_trigger' in group else None
         self.ray_weight = None
+        self.ray_weight_by_target = None
         self.ray_comb_weight = None
         self.ray_neutron_energies = None
         self.ray_fission_weight = None
@@ -221,8 +243,10 @@ class AdjointPopulations:
                 if 'ray_photon_energies' in group else self.probe_energies
             self.ray_refinement = int(group['ray_refinement'][()]) \
                 if 'ray_refinement' in group else 1
-            self.ray_weight = group['ray_weight'][()].reshape(
-                (self.n_batches, nn, len(self.ray_photon_energies), nd))
+            self.ray_weight_by_target = group['ray_weight'][()].reshape(
+                (self.n_batches, nn, len(self.ray_photon_energies),
+                 len(self.probe_targets), nd))
+            self.ray_weight = self.ray_weight_by_target.sum(axis=3)
             self.ray_comb_weight = group['ray_comb_weight'][()].reshape(
                 (self.n_batches, nn, len(self.ray_neutron_energies), nd))
             self.ray_fission_weight = \
@@ -596,10 +620,19 @@ class AdjointPopulations:
 
         Parameters
         ----------
-        target : openmc.PhotoneutronTarget or openmc.Material
+        target : openmc.PhotoneutronTarget or openmc.Material, or dict
             Cross sections of the medium that makes the photoneutrons, or the
             material itself (its cross sections are then formed with
-            :meth:`openmc.PhotoneutronTarget.from_material`)
+            :meth:`openmc.PhotoneutronTarget.from_material`). With the
+            photoneutrons tallied by target (the setting
+            ``photoneutron_targets``, e.g. ['Be9', 'H2']), a dict from each
+            target bin to its medium, e.g. {'Be9': beryllium, 'H2':
+            heavy_water}: a material then counts only that nuclide's
+            photoneutrons (the 'other' bin's, all but the named targets'), and
+            every target is rebuilt with its own cross sections and threshold.
+            The 'other' bin may be left out; its share is then reported in a
+            warning and dropped. A single target with the photoneutrons
+            tallied by target takes their sum.
         nuclide : str, optional
             Fissioning-nuclide bin; may be omitted if there is only one
         depth : int, optional
@@ -622,16 +655,33 @@ class AdjointPopulations:
             interpolable within rtol; calling it interpolates the table
 
         """
-        from openmc.photoneutron_probes import (ProbeImportance,
-                                                 PhotoneutronTarget)
-        if not isinstance(target, PhotoneutronTarget):
-            target = PhotoneutronTarget.from_material(target, cross_sections)
+        from openmc.photoneutron_probes import ProbeImportance
         self._check_probes()
+        target = self._resolve_targets(target, cross_sections)
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
         name = self.probe_fission_nuclides[j]
-        if self.ray_weight is not None and self.probe_n_labels == 3:
+        rays = self.ray_weight is not None and self.probe_n_labels == 3
+        if isinstance(target, dict):
+            direct, scattered, ray_direct = {}, {}, {}
+            for key in target:
+                t = self.probe_targets.index(key)
+                w = self.probe_weight_by_target[:, j, :, t, :, d]
+                if rays:
+                    direct[key], scattered[key] = w[:, :, 1], w[:, :, 2]
+                    ray_direct[key] = self.ray_weight_by_target[:, j, :, t, d]
+                elif self.probe_n_labels == 2:
+                    direct[key], scattered[key] = w[:, :, 0], w[:, :, 1]
+                else:
+                    direct[key] = w[:, :, 0] + w[:, :, 1]
+                    scattered[key] = w[:, :, 2]
+            return ProbeImportance(
+                self.probe_energies, direct, scattered, i_f, target,
+                rtol=rtol, floor=floor, e_max=e_max, name=name,
+                ray_lines=self.ray_photon_energies if rays else None,
+                ray_direct=ray_direct if rays else None)
+        if rays:
             # The rays on their own lines, the probes' parts on theirs
             w = self.probe_weight[:, j, :, :, d]
             return ProbeImportance(self.probe_energies, w[:, :, 1], w[:, :, 2],
@@ -654,13 +704,68 @@ class AdjointPopulations:
             One linearly interpolable table per nuclide bin
 
         """
-        from openmc.photoneutron_probes import PhotoneutronTarget
         self._check_probes()
-        if not isinstance(target, PhotoneutronTarget):
-            target = PhotoneutronTarget.from_material(target, cross_sections)
+        target = self._resolve_targets(target, cross_sections)
         return {n: self.probe_importance(target, nuclide=n, depth=depth,
                                          rtol=rtol, floor=floor, e_max=e_max)
                 for n in self.probe_fission_nuclides}
+
+    def _resolve_targets(self, target, cross_sections=None):
+        """The photoneutron target(s) of probe_importance: one
+        PhotoneutronTarget, or a dict from target bin to PhotoneutronTarget
+        when the photoneutrons were tallied by target."""
+        import warnings
+        from openmc.photoneutron_probes import PhotoneutronTarget
+
+        def single(t):
+            return t if isinstance(t, PhotoneutronTarget) else \
+                PhotoneutronTarget.from_material(t, cross_sections)
+
+        if not isinstance(target, dict):
+            return single(target)
+        bins = self.probe_targets
+        if bins == ['all']:
+            if len(target) != 1:
+                raise ValueError(
+                    'The calculation did not tally the photoneutrons by '
+                    "target: set adjoint_populations['photoneutron_targets'] "
+                    'to name them, or give a single target.')
+            return single(next(iter(target.values())))
+        named = [b for b in bins if b != 'other']
+        unknown = set(target) - set(bins)
+        if unknown:
+            raise ValueError(f'No photoneutron target bin {sorted(unknown)}: '
+                             f'{bins}.')
+        missing = [b for b in named if b not in target]
+        if missing:
+            raise ValueError(f'No medium given for the photoneutron target '
+                             f'bins {missing}.')
+        out = {}
+        for b in bins:
+            if b not in target:
+                # 'other' left out: report its share of the probe weight
+                t = bins.index(b)
+                w = self.probe_weight_by_target[..., t, :, :].sum()
+                if self.ray_weight_by_target is not None:
+                    w += self.ray_weight_by_target[..., t, :].sum()
+                total = self.probe_weight.sum() + (
+                    0.0 if self.ray_weight is None else self.ray_weight.sum())
+                if w > 0.0:
+                    warnings.warn(
+                        f"The 'other' photoneutron target bin holds "
+                        f"{w / total:.3%} of the probe weight and no medium was "
+                        'given for it: it is left out.')
+                continue
+            t = target[b]
+            if not isinstance(t, PhotoneutronTarget):
+                if b == 'other':
+                    t = PhotoneutronTarget.from_material(
+                        t, cross_sections, exclude=named)
+                else:
+                    t = PhotoneutronTarget.from_material(
+                        t, cross_sections, nuclides=[b])
+            out[b] = t
+        return out
 
     def export_photon_importance(self, path, target, depth=None, rtol=1.0e-3,
                                  floor=1.0e-3, e_max=None,
@@ -672,8 +777,8 @@ class AdjointPopulations:
         The file holds, at the root, the attributes ``filetype``
         ('photon_importance'), ``version`` (1, 0), ``nuclides`` (the bin
         names, 'other' for every fissioning nuclide not named), ``depth``,
-        ``n_batches``, ``keff`` and ``threshold`` (of the photoneutron target
-        [eV]); the datasets ``fission_importance`` [batch], the fission-root
+        ``n_batches``, ``keff`` and ``threshold`` (of the photoneutron target,
+        the lowest of the targets' [eV]); the datasets ``fission_importance`` [batch], the fission-root
         importance I_F of each batch, ``delayed_importance`` [batch, group],
         the delayed-root importance of each delayed group, and
         ``fission_lifetime`` [batch], the lifetime-weighted fission-root sum
@@ -702,9 +807,9 @@ class AdjointPopulations:
         ----------
         path : str or os.PathLike
             File to write
-        target : openmc.PhotoneutronTarget or openmc.Material
-            The medium that makes the photoneutrons, as for
-            :meth:`probe_importance`
+        target : openmc.PhotoneutronTarget or openmc.Material, or dict
+            The medium (or, by photoneutron target, the media) that makes
+            the photoneutrons, as for :meth:`probe_importance`
         depth : int, optional
             Depth at which the importance is read; n_generation if None
         rtol : float
@@ -720,10 +825,8 @@ class AdjointPopulations:
         """
         import h5py
         from openmc import __version__
-        from openmc.photoneutron_probes import PhotoneutronTarget
         self._check_probes()
-        if not isinstance(target, PhotoneutronTarget):
-            target = PhotoneutronTarget.from_material(target, cross_sections)
+        target = self._resolve_targets(target, cross_sections)
         d = self._depth(depth)
         tables = self.probe_importances(target, depth=d, rtol=rtol,
                                         floor=floor, e_max=e_max)
@@ -738,7 +841,7 @@ class AdjointPopulations:
             f.attrs['depth'] = d
             f.attrs['n_batches'] = self.n_batches
             f.attrs['keff'] = self.keff
-            f.attrs['threshold'] = target.threshold
+            f.attrs['threshold'] = tables[names[0]].threshold
             f.attrs['rtol'] = rtol
             f.attrs['floor'] = floor
             f['fission_importance'] = tables[names[0]]._fission

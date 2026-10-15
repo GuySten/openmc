@@ -760,3 +760,137 @@ def test_fold_batches():
     sub = openmc.ProbeImportance(lines, imp._parts[0][4][idx], imp._parts[1][4][idx],
                                  f[idx], t)
     assert sub.fold(*src).n == pytest.approx(num[idx].mean() / f[idx].mean(), rel=1e-12)
+
+
+def test_photoneutron_target_settings(run_in_tmpdir):
+    s = openmc.Settings()
+    value = {'n_generation': 5, 'photoneutrons': True,
+             'photoneutron_targets': ['Be9', 'H2'],
+             'photoneutron_probe_energies': [2.3e6, 3e6, 5e6]}
+    s.adjoint_populations = value
+    s.export_to_xml()
+    assert openmc.Settings.from_xml().adjoint_populations == value
+    for bad in ([], 'Be9', ['Be9', 'Be9']):
+        with pytest.raises((TypeError, ValueError)):
+            s.adjoint_populations = {'n_generation': 3,
+                                     'photoneutron_targets': bad}
+
+
+def test_probe_line_energies_several_thresholds():
+    """One comb per threshold, merged: each target keeps lines spaced evenly
+    in its own photoneutron lethargy."""
+    thr = [1.6647e6, 2.2246e6]
+    e = openmc.probe_line_energies(thr, 12.6e6, 9)
+    assert np.all(np.diff(e) > 0)
+    for t in thr:
+        for c in openmc.probe_line_energies(t, 12.6e6, 9):
+            assert np.isclose(e, c, rtol=1e-9).any()
+    # the two combs share their top line
+    assert e.size == 17
+
+
+def _deuteron_target():
+    """A smooth target with a higher threshold, like the deuteron."""
+    thr = 2.2246e6
+    e = np.unique(np.concatenate([np.linspace(1.0e6, 12.6e6, 300), [thr]]))
+    sigma = np.where(e > thr,
+                     2e-4 * np.sqrt(np.clip(e - thr, 0.0, None) / 1e6), 0.0)
+    removal = 0.1 * (e / 2e6) ** -0.5 + sigma
+    return openmc.PhotoneutronTarget(e, sigma, removal)
+
+
+def _target_parts(target, E):
+    """_smooth_parts above the target's threshold, zero below it."""
+    d, s = np.zeros_like(E), np.zeros_like(E)
+    above = E > target.threshold
+    d[above], s[above] = _smooth_parts(target, E[above])
+    return d, s
+
+
+def test_probe_importance_two_targets():
+    """Two photoneutron targets, each rebuilt with its own cross sections on
+    the lines above its own threshold: the importance is their sum, exact
+    for smooth factors; below the higher threshold only the lower target
+    adds to it."""
+    be, deut = _resonant_target(), _deuteron_target()
+    targets = {'Be9': be, 'H2': deut}
+    lines = openmc.probe_line_energies([be.threshold, deut.threshold],
+                                       12.6e6, 30)
+    n_b = 3
+    direct, scattered = {}, {}
+    for key, t in targets.items():
+        d, s = _target_parts(t, lines)
+        direct[key], scattered[key] = np.tile(d, (n_b, 1)), np.tile(s, (n_b, 1))
+    imp = openmc.ProbeImportance(lines, direct, scattered, np.ones(n_b),
+                                 targets, rtol=0.01)
+    assert imp.target is be and imp.threshold == be.threshold
+    E = np.concatenate([np.linspace(lines[0], lines[-1], 3000),
+                        2.431e6 + np.linspace(-2e3, 2e3, 101)])
+    # Exact between each target's lines (below its first line its scattered
+    # part is a ramp to its threshold)
+    first_d = lines[lines > deut.threshold][0]
+    E = E[(E <= deut.threshold) | (E >= first_d)]
+    ref = sum(np.add(*_target_parts(t, E)) for t in targets.values())
+    assert np.allclose(imp.rebuilt(E), ref, rtol=1e-9)
+    low = E <= deut.threshold
+    assert np.allclose(imp.rebuilt(E[low]), np.add(*_target_parts(be, E[low])),
+                       rtol=1e-9)
+    assert imp.interpolation_error(n_points=20, energies=E) < 0.01
+    # Every target needs two lines above its threshold
+    few = lines[lines < deut.threshold + 1.2e3]     # one line above H2's
+    with pytest.raises(ValueError, match='H2'):
+        openmc.ProbeImportance(
+            few, {k: v[:, :few.size] for k, v in direct.items()},
+            {k: v[:, :few.size] for k, v in scattered.items()},
+            np.ones(n_b), targets)
+
+
+def test_probe_importance_by_target(run_in_tmpdir):
+    """A file tallied by photoneutron target: probe_weight and ray_weight are
+    the sums over the targets, a dict of targets rebuilds each with its own
+    cross sections, a single target their sum, and the 'other' bin may be
+    left out with a warning."""
+    be, deut = _resonant_target(), _deuteron_target()
+    lines = openmc.probe_line_energies([be.threshold, deut.threshold],
+                                       12.6e6, 12)
+    K, M, L, n_b, T = lines.size, 4, 2, 3, 3
+    w = np.zeros((n_b, 5, 9, L + 1))
+    w[:, CLASS_FISSION, 0] = 100.0
+    pw = np.zeros((n_b, 1, K, T, 3, L + 1))
+    rw = np.zeros((n_b, 1, K, T, L + 1))
+    for t, target in enumerate((be, deut)):
+        d, s = _target_parts(target, lines)
+        rw[:, 0, :, t, L] = 100.0 * d
+        pw[:, 0, :, t, 2, L] = 100.0 * s
+    pw[:, 0, :, 2, 2, L] = 1e-3          # a little 'other'
+    _write('ap.h5', w, np.zeros_like(w))
+    with h5py.File('ap.h5', 'a') as f:
+        g = f['adjoint_populations']
+        g['probe_energies'] = lines
+        g['probe_fission_nuclides'] = 'all'
+        g['probe_targets'] = 'Be9 H2 other'
+        g['probe_n_labels'] = 3
+        g['probe_weight'] = pw.ravel()
+        g['probe_fission_weight'] = np.ones((n_b, 1)).ravel()
+        g['ray_neutron_energies'] = np.geomspace(1e3, 6e6, M)
+        g['ray_weight'] = rw.ravel()
+        g['ray_comb_weight'] = np.zeros((n_b, 1, M, L + 1)).ravel()
+        g['ray_fission_weight'] = np.ones((n_b, 1)).ravel()
+    ap = _read('ap.h5', 1.0)
+    assert ap.probe_targets == ['Be9', 'H2', 'other']
+    assert np.allclose(ap.probe_weight, pw.sum(axis=3))
+    assert np.allclose(ap.ray_weight, rw.sum(axis=3))
+    with pytest.warns(UserWarning, match="'other'"):
+        imp = ap.probe_importance({'Be9': be, 'H2': deut}, depth=L)
+    E = np.linspace(lines[0], lines[-1], 500)
+    first_d = lines[lines > deut.threshold][0]
+    E = E[(E <= deut.threshold) | (E >= first_d)]
+    ref = sum(np.add(*_target_parts(t, E)) for t in (be, deut))
+    assert np.allclose(imp.rebuilt(E), ref, rtol=1e-9)
+    # A single target takes the sum of the bins
+    single = ap.probe_importance(be, depth=L)
+    assert single.target is be
+    with pytest.raises(ValueError, match='No medium'):
+        ap.probe_importance({'Be9': be}, depth=L)
+    with pytest.raises(ValueError, match='No photoneutron target bin'):
+        ap.probe_importance({'Be9': be, 'H2': deut, 'C13': be}, depth=L)

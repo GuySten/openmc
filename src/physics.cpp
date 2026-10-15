@@ -1689,7 +1689,7 @@ double emit_photonuclear_product(Particle& p,
         group = static_cast<int>(idx);
     }
     if (adjpop::record_photoneutron(p, wgt, u, E, group) ||
-        adjpop::record_probe_photoneutron(p, wgt, u, E)) {
+        adjpop::record_probe_photoneutron(p, wgt, u, E, nuc.index_)) {
       p.bank_second_E() += E;
       return E;
     }

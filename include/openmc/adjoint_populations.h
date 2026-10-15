@@ -21,8 +21,9 @@
 //!    particle, labelled 0 while uncollided, 1 after coherent scattering
 //!    only, and 2 after an energy-changing collision (and on every secondary
 //!    photon it makes). Its photoneutrons become probe roots, tagged by
-//!    fissioning nuclide, line and label, so that the importance of a photon
-//!    of any energy can be rebuilt from the lines.
+//!    fissioning nuclide, line, photoneutron target (the nuclide that made
+//!    the photoneutron, with photoneutron_targets) and label, so that the
+//!    importance of a photon of any energy can be rebuilt from the lines.
 //!  - ray probes (optional, with probes): at every recorded fission event
 //!    (rouletted) an uncollided ray is walked through the geometry; every
 //!    line's uncollided photoneutron production along it is exact, and one
@@ -154,10 +155,13 @@ bool record_photoneutron(
   Particle& p, double wgt, Direction u, double E, int delayed_group);
 
 //! Probe-photon hook for a photoneutron leaving a probe photon (or one of its
-//! secondary photons): record it as a probe root.
+//! secondary photons): record it as a probe root, in the bin of its
+//! photoneutron target.
+//! \param[in] i_pn index of the target nuclide in data::photonuclears
 //! \return true if the photoneutron was taken as a root and must not be
 //! banked as a secondary
-bool record_probe_photoneutron(Particle& p, double wgt, Direction u, double E);
+bool record_probe_photoneutron(
+  Particle& p, double wgt, Direction u, double E, int i_pn);
 
 //! Probe-photon hook after an energy-changing scattering: label 2
 void mark_scattered(Particle& p);

@@ -1159,7 +1159,8 @@ variable and whose sub-elements/attributes are as follows:
 
 :type:
   The type of the distribution. Valid options are "uniform", "discrete",
-  "tabular", "maxwell", "watt", "mixture", and "decay_spectrum". The "uniform"
+  "tabular", "maxwell", "watt", "beta", "mixture", and "decay_spectrum". The
+  "uniform"
   option produces variates sampled from a uniform distribution over a finite
   interval. The "discrete" option produces random variates that can assume a
   finite number of values (i.e., a distribution characterized by a probability
@@ -1168,7 +1169,9 @@ variable and whose sub-elements/attributes are as follows:
   linearly-interpolated between tabulated points. The "watt" option produces
   random variates is sampled from a Watt fission spectrum (only used for
   energies). The "maxwell" option produce variates sampled from a Maxwell
-  fission spectrum (only used for energies). The "mixture" option produces
+  fission spectrum (only used for energies). The "beta" option produces kinetic
+  energies sampled from the spectrum of beta particles of a beta decay
+  transition. The "mixture" option produces
   samples from univariate sub-distributions with given probabilities. The
   "decay_spectrum" option produces photon energies sampled from decay photon
   spectra in a depletion chain (only used for energies).
@@ -1201,6 +1204,12 @@ variable and whose sub-elements/attributes are as follows:
   number :math:`a` that parameterizes the distribution :math:`p(x) dx = c x
   e^{-x/a} dx`.
 
+  For a "beta" distribution, ``parameters`` should be given as four numbers:
+  the endpoint energy in [eV], the atomic and mass numbers of the daughter
+  nucleus, and the coefficient :math:`a` in [1/eV] of a shape correction
+  :math:`e^{a T}`. See :class:`openmc.stats.BetaSpectrum` for the form of the
+  distribution.
+
   .. note:: The above format should be used even when using the multi-group
             :ref:`energy_mode`.
 
@@ -1209,6 +1218,22 @@ variable and whose sub-elements/attributes are as follows:
   "linear-linear" thereby specifying how tabular points are to be interpolated.
 
   *Default*: histogram
+
+:positron:
+  For a "beta" distribution, whether the beta particles are positrons.
+
+  *Default*: false
+
+:forbiddenness:
+  For a "beta" distribution, the order of forbiddenness of the transition.
+
+  *Default*: 0
+
+:unique:
+  For a "beta" distribution, whether the transition is unique forbidden, in
+  which case the shape factor of unique forbidden transitions is applied.
+
+  *Default*: false
 
 :pair:
   For a "mixture" distribution, this element provides a distribution and its

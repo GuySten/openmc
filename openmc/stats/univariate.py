@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from functools import cache
 from math import sqrt, pi, exp, log
-from numbers import Real
+from numbers import Integral, Real
 from pathlib import Path
 from warnings import warn
 
@@ -116,6 +116,8 @@ class Univariate(EqualityMixin, ABC):
             return Maxwell.from_xml_element(elem)
         elif distribution == 'watt':
             return Watt.from_xml_element(elem)
+        elif distribution == 'beta':
+            return BetaSpectrum.from_xml_element(elem)
         elif distribution == 'normal':
             return Normal.from_xml_element(elem)
         elif distribution == 'muir':
@@ -1051,6 +1053,326 @@ class Watt(Univariate):
         params = get_elem_list(elem, "parameters", float)
         bias_dist = cls._read_bias_from_xml(elem)
         return cls(*map(float, params), bias=bias_dist)
+
+
+# Constants used for beta spectra
+_MASS_ELECTRON_EV = 0.51099895000e6  # electron mass energy equivalent [eV]
+_FINE_STRUCTURE = 137.035999084  # inverse fine structure constant
+_REDUCED_COMPTON_FM = 386.15926796  # reduced Compton wavelength [fm]
+
+
+class BetaSpectrum(Univariate):
+    r"""Energy spectrum of beta particles from a beta decay transition.
+
+    The kinetic energy :math:`T` of beta particles from a transition with
+    endpoint energy :math:`T_0` has the density function
+
+    .. math::
+        p(T) dT = c F_0(Z, W) \, p W q^2 C(W) e^{a T} dT
+
+    where :math:`W = 1 + T/m_e c^2` and :math:`p = \sqrt{W^2 - 1}` are the total
+    energy and momentum of the beta particle in units of the electron mass,
+    :math:`q = (T_0 - T)/m_e c^2` is the momentum of the neutrino,
+    :math:`F_0(Z, W)` is the relativistic Fermi function with finite nuclear
+    size for a daughter nucleus of atomic number :math:`Z` and mass number
+    :math:`A`, :math:`C(W)` is the shape factor, and :math:`e^{a T}` is an
+    optional correction, e.g., to preserve an evaluated average energy. The
+    Fermi function accounts for the Coulomb field of the daughter nucleus,
+    which decelerates electrons and accelerates positrons.
+
+    The shape factor is unity for allowed transitions and, as an
+    approximation, for non-unique forbidden transitions, whose shape depends on
+    nuclear matrix elements. For a unique transition of order :math:`n`
+    (:math:`\Delta J = n + 1` with a change of parity if :math:`n` is odd), it
+    is
+
+    .. math::
+        C(W) = \sum_{k=0}^{n} \frac{\lambda_{k+1} \, p^{2k} q^{2(n-k)}}
+        {(2k+1)! \, (2(n-k)+1)!}
+
+    where :math:`\lambda_k = F_{k-1}/F_0` are ratios of generalized Fermi
+    functions.
+
+    .. versionadded:: 0.16.1
+
+    Parameters
+    ----------
+    endpoint : float
+        Endpoint (maximum kinetic) energy in [eV]
+    atomic_number : int
+        Atomic number of the daughter nucleus
+    mass_number : int
+        Mass number of the daughter nucleus
+    positron : bool
+        Whether the beta particles are positrons
+    shape_factor : float
+        Coefficient :math:`a` of the shape correction in [1/eV]
+    forbiddenness : int
+        Order of forbiddenness :math:`n` of the transition
+    unique : bool
+        Whether the transition is unique forbidden
+    bias : openmc.stats.Univariate, optional
+        Distribution for biased sampling.
+
+    Attributes
+    ----------
+    endpoint : float
+        Endpoint (maximum kinetic) energy in [eV]
+    atomic_number : int
+        Atomic number of the daughter nucleus
+    mass_number : int
+        Mass number of the daughter nucleus
+    positron : bool
+        Whether the beta particles are positrons
+    shape_factor : float
+        Coefficient :math:`a` of the shape correction in [1/eV]
+    forbiddenness : int
+        Order of forbiddenness :math:`n` of the transition
+    unique : bool
+        Whether the transition is unique forbidden
+    support : tuple of float
+        A 2-tuple (lower, upper) defining the interval over which the
+        distribution is nonzero-valued
+    bias : openmc.stats.Univariate or None
+        Distribution for biased sampling
+
+    """
+
+    # Number of Gauss-Legendre points for integrals of the density
+    _N_QUADRATURE = 256
+
+    def __init__(self, endpoint: float, atomic_number: int, mass_number: int,
+                 positron: bool = False, shape_factor: float = 0.0,
+                 forbiddenness: int = 0, unique: bool = False,
+                 bias: Univariate | None = None):
+        self.endpoint = endpoint
+        self.atomic_number = atomic_number
+        self.mass_number = mass_number
+        self.positron = positron
+        self.shape_factor = shape_factor
+        self.forbiddenness = forbiddenness
+        self.unique = unique
+        super().__init__(bias)
+
+    def __len__(self):
+        return 7
+
+    @property
+    def endpoint(self):
+        return self._endpoint
+
+    @endpoint.setter
+    def endpoint(self, endpoint):
+        cv.check_type('beta spectrum endpoint', endpoint, Real)
+        cv.check_greater_than('beta spectrum endpoint', endpoint, 0.0)
+        self._endpoint = float(endpoint)
+        self._norm = None
+
+    @property
+    def atomic_number(self):
+        return self._atomic_number
+
+    @atomic_number.setter
+    def atomic_number(self, atomic_number):
+        cv.check_type('beta spectrum atomic number', atomic_number, Real)
+        cv.check_greater_than('beta spectrum atomic number', atomic_number,
+                              0, True)
+        self._atomic_number = int(atomic_number)
+        self._norm = None
+
+    @property
+    def mass_number(self):
+        return self._mass_number
+
+    @mass_number.setter
+    def mass_number(self, mass_number):
+        cv.check_type('beta spectrum mass number', mass_number, Real)
+        cv.check_greater_than('beta spectrum mass number', mass_number, 0)
+        self._mass_number = int(mass_number)
+        self._norm = None
+
+    @property
+    def positron(self):
+        return self._positron
+
+    @positron.setter
+    def positron(self, positron):
+        cv.check_type('beta spectrum positron', positron, bool)
+        self._positron = positron
+        self._norm = None
+
+    @property
+    def shape_factor(self):
+        return self._shape_factor
+
+    @shape_factor.setter
+    def shape_factor(self, shape_factor):
+        cv.check_type('beta spectrum shape factor', shape_factor, Real)
+        self._shape_factor = float(shape_factor)
+        self._norm = None
+
+    @property
+    def forbiddenness(self):
+        return self._forbiddenness
+
+    @forbiddenness.setter
+    def forbiddenness(self, forbiddenness):
+        cv.check_type('beta spectrum forbiddenness', forbiddenness, Integral)
+        cv.check_greater_than('beta spectrum forbiddenness', forbiddenness,
+                              0, True)
+        self._forbiddenness = int(forbiddenness)
+        self._norm = None
+
+    @property
+    def unique(self):
+        return self._unique
+
+    @unique.setter
+    def unique(self, unique):
+        cv.check_type('beta spectrum unique', unique, bool)
+        self._unique = unique
+        self._norm = None
+
+    @property
+    def support(self):
+        return (0.0, self.endpoint)
+
+    def _log_fermi(self, k, w, p):
+        """Logarithm of the generalized Fermi function F_{k-1}"""
+        from scipy.special import loggamma
+        alpha_z = self.atomic_number / _FINE_STRUCTURE
+        gamma = np.sqrt(k*k - alpha_z*alpha_z)
+        eta = (-alpha_z if self.positron else alpha_z) * w / p
+        radius = 1.2 * self.mass_number**(1/3) / _REDUCED_COMPTON_FM
+        double_factorial = np.prod(np.arange(1, 2*k, 2, dtype=float))
+        return ((k - 1)*np.log(4.0) + np.log(2.0*k*(k + gamma))
+                + 2.0*np.log(double_factorial)
+                + 2.0*(gamma - k)*np.log(2.0*p*radius)
+                + np.pi*eta
+                + 2.0*np.real(loggamma(gamma + 1j*eta))
+                - 2.0*np.real(loggamma(2.0*gamma + 1.0)))
+
+    def _shape(self, T):
+        """Unnormalized density at kinetic energies 0 < T < endpoint"""
+        from math import factorial
+        T = np.asarray(T, dtype=float)
+        w = 1.0 + T/_MASS_ELECTRON_EV
+        p = np.sqrt(w*w - 1.0)
+        q = (self.endpoint - T) / _MASS_ELECTRON_EV
+        log_f0 = self._log_fermi(1, w, p)
+
+        # Shape factor of unique forbidden transitions
+        n = self.forbiddenness if self.unique else 0
+        c = np.zeros_like(T)
+        for k in range(n + 1):
+            ratio = 1.0 if k == 0 else np.exp(
+                self._log_fermi(k + 1, w, p) - log_f0)
+            c += (ratio * p**(2*k) * q**(2*(n - k))
+                  / (factorial(2*k + 1) * factorial(2*(n - k) + 1)))
+
+        return (np.exp(log_f0 + self.shape_factor*(T - self.endpoint))
+                * p * w * q**2 * c)
+
+    def _quadrature(self):
+        """Quadrature points and weights on [0, endpoint]
+
+        The substitution T = endpoint*u^2 resolves the behavior of the density
+        near zero kinetic energy.
+        """
+        x, wx = np.polynomial.legendre.leggauss(self._N_QUADRATURE)
+        u = 0.5*(x + 1.0)
+        T = self.endpoint * u**2
+        weights = 0.5*wx * 2.0*self.endpoint*u
+        return T, weights
+
+    def _normalization(self):
+        if self._norm is None:
+            T, weights = self._quadrature()
+            self._norm = np.sum(weights * self._shape(T))
+        return self._norm
+
+    def evaluate(self, x):
+        x = np.asarray(x, dtype=float)
+        result = np.zeros_like(x)
+        inside = (x > 0.0) & (x < self.endpoint)
+        result[inside] = self._shape(x[inside]) / self._normalization()
+        return result if result.ndim else float(result)
+
+    def mean(self) -> float:
+        """Return the mean kinetic energy of the distribution
+
+        Returns
+        -------
+        float
+            Mean kinetic energy in [eV]
+        """
+        T, weights = self._quadrature()
+        return np.sum(weights * T * self._shape(T)) / self._normalization()
+
+    def _sample_unbiased(self, n_samples=1, seed=None):
+        rng = np.random.RandomState(seed)
+
+        # Rejection sampling with a uniform envelope whose height is found
+        # from the density on a fine grid
+        grid = self.endpoint * (np.arange(1, 1024) / 1024)**2
+        height = 1.05 * self._shape(grid).max()
+        samples = np.empty(0)
+        while samples.size < n_samples:
+            n = 2*(n_samples - samples.size) + 16
+            T = rng.uniform(0.0, self.endpoint, n)
+            accept = rng.uniform(0.0, height, n) < self._shape(T)
+            samples = np.concatenate((samples, T[accept]))
+        return samples[:n_samples]
+
+    def to_xml_element(self, element_name: str):
+        """Return XML representation of the beta spectrum
+
+        Parameters
+        ----------
+        element_name : str
+            XML element name
+
+        Returns
+        -------
+        element : lxml.etree._Element
+            XML element containing beta spectrum data
+
+        """
+        element = ET.Element(element_name)
+        element.set("type", "beta")
+        element.set("parameters", f'{self.endpoint} {self.atomic_number} '
+                    f'{self.mass_number} {self.shape_factor}')
+        if self.positron:
+            element.set("positron", "true")
+        if self.forbiddenness > 0:
+            element.set("forbiddenness", str(self.forbiddenness))
+        if self.unique:
+            element.set("unique", "true")
+        self._append_bias_to_xml(element)
+        return element
+
+    @classmethod
+    def from_xml_element(cls, elem: ET.Element):
+        """Generate beta spectrum from an XML element
+
+        Parameters
+        ----------
+        elem : lxml.etree._Element
+            XML element
+
+        Returns
+        -------
+        openmc.stats.BetaSpectrum
+            Beta spectrum generated from XML element
+
+        """
+        endpoint, z, a, shape_factor = get_elem_list(elem, "parameters", float)
+        positron = get_text(elem, "positron") in ('true', '1')
+        forbiddenness = int(get_text(elem, "forbiddenness", 0))
+        unique = get_text(elem, "unique") in ('true', '1')
+        bias_dist = cls._read_bias_from_xml(elem)
+        return cls(endpoint, int(z), int(a), positron, shape_factor,
+                   forbiddenness, unique, bias=bias_dist)
 
 
 class Normal(Univariate):
@@ -2506,22 +2828,22 @@ class DecaySpectrum(Univariate):
 
 
 def combine_distributions(
-    dists: Sequence[Discrete | Tabular | Mixture],
+    dists: Sequence[Univariate],
     probs: Sequence[float]
 ):
     """Combine distributions with specified probabilities
 
-    This function can be used to combine multiple instances of
-    :class:`~openmc.stats.Discrete`, :class:`~openmc.stats.Tabular` and
-    :class:`~openmc.stats.Mixture` of them. Multiple discrete distributions are
-    merged into a single distribution and the remainder of the distributions are
-    put into a :class:`~openmc.stats.Mixture` distribution.
+    This function can be used to combine multiple univariate distributions,
+    including :class:`~openmc.stats.Mixture` distributions, which are
+    flattened. Multiple discrete distributions are merged into a single
+    distribution and the remainder of the distributions are put into a
+    :class:`~openmc.stats.Mixture` distribution.
 
     .. versionadded:: 0.13.1
 
     Parameters
     ----------
-    dists : sequence of openmc.stats.Discrete, openmc.stats.Tabular, or openmc.stats.Mixture
+    dists : sequence of openmc.stats.Univariate
         Distributions to combine
     probs : sequence of float
         Probability (or intensity) of each distribution
@@ -2530,7 +2852,7 @@ def combine_distributions(
     new_probs = []
     new_dists = []
     for i, dist in enumerate(dists):
-        cv.check_type(f'dists[{i}]', dist, (Discrete, Tabular, Mixture))
+        cv.check_type(f'dists[{i}]', dist, Univariate)
         cv.check_type(f'probs[{i}]', probs[i], Real)
         cv.check_greater_than(f'probs[{i}]', probs[i], 0.0)
         if isinstance(dist, Mixture):
@@ -2539,7 +2861,10 @@ def combine_distributions(
                      "to combine_distributions. The bias will be discarded "
                      "during flattening.")
             for j, d in enumerate(dist.distribution):
-                cv.check_type(f'dists[{i}].distribution[{j}]', d, (Discrete, Tabular))
+                cv.check_type(f'dists[{i}].distribution[{j}]', d, Univariate)
+                if isinstance(d, Mixture):
+                    raise ValueError('Nested Mixture distributions cannot be '
+                                     'combined.')
                 new_probs.append(probs[i]*dist.probability[j])
                 new_dists.append(d)
         else:
@@ -2551,7 +2876,7 @@ def combine_distributions(
 
     # Get list of discrete/continuous distribution indices
     discrete_index = [i for i, d in enumerate(dists) if isinstance(d, Discrete)]
-    cont_index = [i for i, d in enumerate(dists) if isinstance(d, Tabular)]
+    cont_index = [i for i, d in enumerate(dists) if not isinstance(d, Discrete)]
 
     cont_dists = [dists[i] for i in cont_index]
     cont_probs = [probs[i] for i in cont_index]
@@ -2566,7 +2891,7 @@ def combine_distributions(
         else:
             return combined_dist
     else:
-        if len(cont_dists) == 1:
+        if len(cont_dists) == 1 and isinstance(cont_dists[0], Tabular):
             dist = cont_dists[0]
             return Tabular(dist.x, dist.p * cont_probs[0],
                            dist.interpolation, bias=dist.bias)

@@ -436,7 +436,7 @@ class Chain:
                 for br, (type_, target) in zip(branch_ratios, branch_ids):
                     nuclide.add_decay_mode(type_, target, br)
 
-                nuclide.sources = data.sources
+                nuclide.sources = data.get_sources(decay_data)
 
             fissionable = False
             if parent in reactions:

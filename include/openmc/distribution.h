@@ -265,6 +265,67 @@ private:
 };
 
 //==============================================================================
+//! Energy spectrum of beta particles from a beta decay transition, with
+//! density c*F0(Z,W)*p*W*q^2*C(W)*exp(a*T), where F0 is the relativistic Fermi
+//! function with finite nuclear size, W and p are the total energy and
+//! momentum of the beta particle and q is the momentum of the neutrino in
+//! units of the electron mass, C(W) is the shape factor of unique forbidden
+//! transitions (unity otherwise), and exp(a*T) is a shape correction
+//==============================================================================
+
+class BetaSpectrum : public Distribution {
+public:
+  explicit BetaSpectrum(pugi::xml_node node);
+  BetaSpectrum(double endpoint, int atomic_number, int mass_number,
+    bool positron, double shape_factor = 0.0, int forbiddenness = 0,
+    bool unique = false);
+
+  //! Evaluate probability density, f(x), at a point
+  //! \param x Kinetic energy in [eV]
+  //! \return f(x)
+  double evaluate(double x) const override;
+
+  //! Mean kinetic energy in [eV]
+  double mean() const { return mean_; }
+
+  double endpoint() const { return endpoint_; }
+
+protected:
+  //! Sample a value (unbiased) from the distribution
+  //! \param seed Pseudorandom number seed pointer
+  //! \return Sampled kinetic energy in [eV]
+  double sample_unbiased(uint64_t* seed) const override;
+
+private:
+  //! Unnormalized density at a kinetic energy between zero and the endpoint
+  double shape(double T) const;
+
+  //! Logarithm of the generalized Fermi function F_{k-1}
+  double log_fermi(int k, double w, double p) const;
+
+  //! Compute the normalization, mean, and height of the sampling envelope
+  void initialize();
+
+  double endpoint_;     //!< Endpoint (maximum kinetic) energy [eV]
+  int atomic_number_;   //!< Atomic number of daughter nucleus
+  int mass_number_;     //!< Mass number of daughter nucleus
+  bool positron_;       //!< Whether the beta particles are positrons
+  double shape_factor_; //!< Coefficient of shape correction [1/eV]
+  int forbiddenness_;   //!< Order of forbiddenness
+  bool unique_;         //!< Whether the transition is unique forbidden
+  double norm_;         //!< Integral of the unnormalized density
+  double mean_;         //!< Mean kinetic energy [eV]
+  double height_;       //!< Height of the rejection sampling envelope
+
+  // Terms of the generalized Fermi functions F_{k-1} that do not depend on
+  // energy, indexed by k - 1
+  double log_radius_;          //!< Logarithm of twice the nuclear radius
+  vector<double> fermi_gamma_; //!< gamma_k = sqrt(k^2 - (alpha Z)^2)
+  vector<double> fermi_const_; //!< Energy-independent part of ln F_{k-1}
+  vector<double> shape_coeff_; //!< 1/((2k+1)!(2(n-k)+1)!) for k = 0..n
+};
+
+//==============================================================================
 //! Normal distribution with optional truncation bounds.
 //!
 //! The standard normal PDF is 1/(sqrt(2*pi)*sigma) *

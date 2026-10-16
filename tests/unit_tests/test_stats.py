@@ -1147,3 +1147,65 @@ def test_decay_spectrum_clip(decay_spectrum_chain):
     d_empty = openmc.stats.DecaySpectrum({'Xe136': 1e-3}, volume=10.0)
     d_empty.clip(inplace=True)
     assert d_empty.nuclides == {}
+
+
+def test_beta_spectrum():
+    d = openmc.stats.BetaSpectrum(2279.8e3, 40, 90)
+    assert d.support == (0.0, 2279.8e3)
+    assert len(d) == 7
+
+    # The density is normalized and vanishes outside of the support
+    x = np.linspace(0.0, d.endpoint, 100001)
+    assert np.trapezoid(d.evaluate(x), x) == pytest.approx(1.0, rel=1e-4)
+    assert d.evaluate(-1.0) == 0.0
+    assert d.evaluate(d.endpoint + 1.0) == 0.0
+
+    # Samples follow the density
+    samples, weights = d.sample(100000, seed=1)
+    assert np.all((samples > 0.0) & (samples < d.endpoint))
+    assert np.all(weights == 1.0)
+    assert samples.mean() == pytest.approx(d.mean(), rel=0.01)
+
+    # The Coulomb field decelerates electrons and accelerates positrons
+    e = openmc.stats.BetaSpectrum(1.0e6, 30, 70)
+    p = openmc.stats.BetaSpectrum(1.0e6, 30, 70, positron=True)
+    assert p.mean() > e.mean()
+
+    # A positive shape correction increases the mean energy
+    tilted = openmc.stats.BetaSpectrum(1.0e6, 30, 70, shape_factor=1e-6)
+    assert tilted.mean() > e.mean()
+
+    # Without a Coulomb field, the ratios of the generalized Fermi functions
+    # of unique forbidden transitions are unity, so the shape factor of a
+    # unique first-forbidden transition is (p^2 + q^2)/6
+    allowed = openmc.stats.BetaSpectrum(1.0e6, 0, 1)
+    unique = openmc.stats.BetaSpectrum(1.0e6, 0, 1, forbiddenness=1,
+                                       unique=True)
+    T = np.array([2.0e5, 5.0e5, 8.0e5])
+    w = 1.0 + T/0.51099895e6
+    p2 = w*w - 1.0
+    q2 = ((1.0e6 - T)/0.51099895e6)**2
+    ratio = unique.evaluate(T) / allowed.evaluate(T)
+    expected = (p2 + q2) / 6
+    assert ratio / ratio[0] == pytest.approx(expected / expected[0])
+
+    # Non-unique forbidden transitions use the allowed shape
+    nonunique = openmc.stats.BetaSpectrum(1.0e6, 0, 1, forbiddenness=1)
+    assert nonunique.mean() == pytest.approx(allowed.mean())
+
+    # Round trip through XML
+    d = openmc.stats.BetaSpectrum(546.0e3, 39, 90, False, 1e-7, 1, True)
+    elem = d.to_xml_element('distribution')
+    d2 = openmc.stats.Univariate.from_xml_element(elem)
+    assert isinstance(d2, openmc.stats.BetaSpectrum)
+    assert (d2.endpoint, d2.atomic_number, d2.mass_number, d2.positron,
+            d2.shape_factor, d2.forbiddenness, d2.unique) == \
+        (546.0e3, 39, 90, False, 1e-7, 1, True)
+    pos = openmc.stats.BetaSpectrum(1.0e6, 10, 22, positron=True)
+    pos2 = openmc.stats.Univariate.from_xml_element(pos.to_xml_element('d'))
+    assert pos2.positron and not pos2.unique and pos2.forbiddenness == 0
+
+    with pytest.raises(ValueError):
+        openmc.stats.BetaSpectrum(-1.0, 1, 1)
+    with pytest.raises(ValueError):
+        openmc.stats.BetaSpectrum(1.0e6, 1, 1, forbiddenness=-1)

@@ -378,11 +378,12 @@ namespace {
 //! Stirling series
 double log_abs_gamma(std::complex<double> z)
 {
-  double shift = 0.0;
+  double product = 1.0;
   while (z.real() < 10.0) {
-    shift += std::log(std::abs(z));
+    product *= std::abs(z);
     z += 1.0;
   }
+  double shift = std::log(product);
   std::complex<double> z2 = 1.0 / (z * z);
   std::complex<double> series =
     (1.0 / 12.0 +
@@ -395,7 +396,7 @@ double log_abs_gamma(std::complex<double> z)
 }
 
 //! Gauss-Legendre nodes and weights on [-1, 1]
-void gauss_legendre(int n, vector<double>& x, vector<double>& w)
+void compute_gauss_legendre(int n, vector<double>& x, vector<double>& w)
 {
   x.resize(n);
   w.resize(n);
@@ -420,6 +421,20 @@ void gauss_legendre(int n, vector<double>& x, vector<double>& w)
     x[i] = t;
     w[i] = 2.0 / ((1.0 - t * t) * dp * dp);
   }
+}
+
+//! Number of points of the Gauss-Legendre rule for beta spectra
+constexpr int BETA_QUADRATURE {256};
+
+//! Gauss-Legendre rule for beta spectra, computed once
+const std::pair<vector<double>, vector<double>>& beta_quadrature()
+{
+  static const auto rule = [] {
+    std::pair<vector<double>, vector<double>> r;
+    compute_gauss_legendre(BETA_QUADRATURE, r.first, r.second);
+    return r;
+  }();
+  return rule;
 }
 
 } // namespace
@@ -459,24 +474,10 @@ BetaSpectrum::BetaSpectrum(double endpoint, int atomic_number, int mass_number,
 double BetaSpectrum::log_fermi(int k, double w, double p) const
 {
   double alpha_z = atomic_number_ / FINE_STRUCTURE;
-  double gamma = std::sqrt(k * k - alpha_z * alpha_z);
+  double gamma = fermi_gamma_[k - 1];
   double eta = (positron_ ? -alpha_z : alpha_z) * w / p;
-
-  // Nuclear radius in units of the reduced Compton wavelength of the electron
-  constexpr double REDUCED_COMPTON_FM {386.15926796};
-  double radius = 1.2 * std::cbrt(mass_number_) / REDUCED_COMPTON_FM;
-
-  // Double factorial (2k-1)!!
-  double double_factorial = 1.0;
-  for (int j = 3; j < 2 * k; j += 2) {
-    double_factorial *= j;
-  }
-
-  return (k - 1) * std::log(4.0) + std::log(2.0 * k * (k + gamma)) +
-         2.0 * std::log(double_factorial) +
-         2.0 * (gamma - k) * std::log(2.0 * p * radius) + PI * eta +
-         2.0 * log_abs_gamma(std::complex<double>(gamma, eta)) -
-         2.0 * std::lgamma(2.0 * gamma + 1.0);
+  return fermi_const_[k - 1] + 2.0 * (gamma - k) * (std::log(p) + log_radius_) +
+         PI * eta + 2.0 * log_abs_gamma(std::complex<double>(gamma, eta));
 }
 
 double BetaSpectrum::shape(double T) const
@@ -491,8 +492,8 @@ double BetaSpectrum::shape(double T) const
   double c = 0.0;
   for (int k = 0; k <= n; ++k) {
     double ratio = (k == 0) ? 1.0 : std::exp(log_fermi(k + 1, w, p) - log_f0);
-    c += ratio * std::pow(p, 2 * k) * std::pow(q, 2 * (n - k)) /
-         (std::tgamma(2 * k + 2) * std::tgamma(2 * (n - k) + 2));
+    c +=
+      ratio * std::pow(p, 2 * k) * std::pow(q, 2 * (n - k)) * shape_coeff_[k];
   }
 
   return std::exp(log_f0 + shape_factor_ * (T - endpoint_)) * p * w * q * q * c;
@@ -500,29 +501,49 @@ double BetaSpectrum::shape(double T) const
 
 void BetaSpectrum::initialize()
 {
+  // Terms of the generalized Fermi functions that do not depend on energy
+  constexpr double REDUCED_COMPTON_FM {386.15926796};
+  double radius = 1.2 * std::cbrt(mass_number_) / REDUCED_COMPTON_FM;
+  log_radius_ = std::log(2.0 * radius);
+  double alpha_z = atomic_number_ / FINE_STRUCTURE;
+  int n = unique_ ? forbiddenness_ : 0;
+  fermi_gamma_.resize(n + 1);
+  fermi_const_.resize(n + 1);
+  shape_coeff_.resize(n + 1);
+  double double_factorial = 1.0; // (2k-1)!!
+  for (int k = 1; k <= n + 1; ++k) {
+    if (k > 1)
+      double_factorial *= 2 * k - 1;
+    double gamma = std::sqrt(k * k - alpha_z * alpha_z);
+    fermi_gamma_[k - 1] = gamma;
+    fermi_const_[k - 1] =
+      (k - 1) * std::log(4.0) + std::log(2.0 * k * (k + gamma)) +
+      2.0 * std::log(double_factorial) - 2.0 * std::lgamma(2.0 * gamma + 1.0);
+  }
+  for (int k = 0; k <= n; ++k) {
+    shape_coeff_[k] =
+      1.0 / (std::tgamma(2 * k + 2) * std::tgamma(2 * (n - k) + 2));
+  }
+
   // Integrate with the substitution T = endpoint*u^2, which resolves the
-  // behavior of the density near zero kinetic energy
-  constexpr int N_QUADRATURE {256};
-  vector<double> x, w;
-  gauss_legendre(N_QUADRATURE, x, w);
+  // behavior of the density near zero kinetic energy. The height of the
+  // uniform envelope for rejection sampling is the maximum of the density at
+  // the quadrature points, which are closely spaced compared with the width
+  // of the spectrum, with a margin.
+  const auto& [x, w] = beta_quadrature();
   norm_ = 0.0;
+  height_ = 0.0;
   double first = 0.0;
-  for (int i = 0; i < N_QUADRATURE; ++i) {
+  for (int i = 0; i < BETA_QUADRATURE; ++i) {
     double u = 0.5 * (x[i] + 1.0);
     double T = endpoint_ * u * u;
-    double f = 0.5 * w[i] * 2.0 * endpoint_ * u * shape(T);
+    double density = shape(T);
+    double f = 0.5 * w[i] * 2.0 * endpoint_ * u * density;
     norm_ += f;
     first += f * T;
+    height_ = std::max(height_, density);
   }
   mean_ = first / norm_;
-
-  // Height of the uniform envelope for rejection sampling from the density
-  // on a fine grid
-  height_ = 0.0;
-  for (int i = 1; i < 1024; ++i) {
-    double u = i / 1024.0;
-    height_ = std::max(height_, shape(endpoint_ * u * u));
-  }
   height_ *= 1.05;
 }
 

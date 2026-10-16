@@ -316,6 +316,13 @@ private:
   double norm_;         //!< Integral of the unnormalized density
   double mean_;         //!< Mean kinetic energy [eV]
   double height_;       //!< Height of the rejection sampling envelope
+
+  // Terms of the generalized Fermi functions F_{k-1} that do not depend on
+  // energy, indexed by k - 1
+  double log_radius_;          //!< Logarithm of twice the nuclear radius
+  vector<double> fermi_gamma_; //!< gamma_k = sqrt(k^2 - (alpha Z)^2)
+  vector<double> fermi_const_; //!< Energy-independent part of ln F_{k-1}
+  vector<double> shape_coeff_; //!< 1/((2k+1)!(2(n-k)+1)!) for k = 0..n
 };
 
 //==============================================================================

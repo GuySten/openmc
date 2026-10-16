@@ -10,7 +10,7 @@
 #include <fmt/core.h>
 #include <pugixml.hpp>
 
-#include "openmc/distribution.h" // for distribution_from_xml
+#include "openmc/distribution.h" // for BetaSpectrum, distribution_from_xml
 #include "openmc/error.h"
 #include "openmc/reaction.h"
 #include "openmc/xml_interface.h" // for get_node_value
@@ -78,6 +78,10 @@ double source_energy_integral(pugi::xml_node node)
       result += p * source_energy_integral(pair.child("dist"));
     }
     return result;
+  }
+  if (type == "beta") {
+    // Beta spectra are normalized, so the energy integral is the mean energy
+    return BetaSpectrum(node).mean();
   }
 
   auto params = get_node_array<double>(node, "parameters");

@@ -36,6 +36,17 @@ const char* CHAIN_XML = R"(
   <nuclide name="F" half_life="10.0" decay_modes="1" reactions="0">
     <decay type="beta-" target="D" branching_ratio="1.0"/>
   </nuclide>
+  <nuclide name="G" half_life="1.0e3" decay_modes="1" reactions="0">
+    <decay type="beta+" target="D" branching_ratio="1.0"/>
+    <source type="mixture" particle="positron">
+      <pair probability="2.0e-3">
+        <dist type="beta" parameters="1000000.0 10 22 1e-07" positron="true"/>
+      </pair>
+      <pair probability="1.0e-3">
+        <dist type="discrete"><parameters>200000.0 1.0</parameters></dist>
+      </pair>
+    </source>
+  </nuclide>
   <nuclide name="D" decay_modes="0" reactions="0">
     <source type="discrete" particle="neutron">
       <parameters>500000.0 1.0</parameters>
@@ -303,5 +314,11 @@ TEST_CASE("Energy emission rate of decay sources")
   REQUIRE_THAT(e.source_energy(openmc::ParticleType::electron()),
     WithinRel(100000.0 * 0.5e-12 + 300000.0 * 0.25e-12, 1e-12));
   REQUIRE(e.source_energy(openmc::ParticleType::photon()) == 0.0);
+
+  // Beta spectra are normalized, so they contribute their mean energy (from
+  // openmc.stats.BetaSpectrum) times the emission rate
+  const auto& g = *openmc::data::chain_nuclides[index("G")];
+  REQUIRE_THAT(g.source_energy(openmc::ParticleType::positron()),
+    WithinRel(413686.4024729679 * 2.0e-3 + 200000.0 * 1.0e-3, 1e-8));
   openmc::free_memory_chain();
 }

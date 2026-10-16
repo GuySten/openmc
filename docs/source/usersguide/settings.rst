@@ -705,6 +705,11 @@ can be selected::
 
   settings.electron_treatment = 'led'
 
+Photons, electrons, and positrons from the decay of fission and activation
+products during operation can be included with the
+:attr:`Settings.decay_sources` attribute as described in
+:ref:`usersguide_steady_state_decay`.
+
 .. note::
    Some features related to photon transport are not currently implemented,
    including:

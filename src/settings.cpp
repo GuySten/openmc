@@ -15,6 +15,7 @@
 #include "openmc/collision_track.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
+#include "openmc/decay_source.h"
 #include "openmc/distribution.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/distribution_spatial.h"
@@ -1346,6 +1347,17 @@ void read_settings_xml(pugi::xml_node root)
   if (check_for_node(root, "use_decay_photons")) {
     settings::use_decay_photons =
       get_node_value_bool(root, "use_decay_photons");
+  }
+
+  if (check_for_node(root, "decay_sources")) {
+    read_decay_source_settings(root.child("decay_sources"));
+    if (settings::use_decay_photons) {
+      fatal_error("Decay sources cannot be used together with the D1S "
+                  "method (use_decay_photons).");
+    }
+    if (!settings::run_CE) {
+      fatal_error("Decay sources require continuous-energy cross sections.");
+    }
   }
 
   // If weight windows are on, also enable shared secondary bank (unless

@@ -13,6 +13,7 @@ set(TEST_NAMES
   test_surface
   test_tensor
   test_geometry
+  test_decay_source
   # Add additional unit test files here
 )
 

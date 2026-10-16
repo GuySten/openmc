@@ -3,6 +3,7 @@
 #include "openmc/capi.h"
 #include "openmc/constants.h"
 #include "openmc/container_util.h"
+#include "openmc/decay_source.h"
 #include "openmc/error.h"
 #include "openmc/file_utils.h"
 #include "openmc/geometry_aux.h"
@@ -340,6 +341,9 @@ void finalize_cross_sections()
 
       // Read continuous-energy cross sections from HDF5
       read_ce_cross_sections(nuc_temps, thermal_temps);
+
+      // Build steady-state decay sources now that nuclides are loaded
+      finalize_decay_sources();
     } else {
       // Create material macroscopic data for MGXS
       set_mg_interface_nuclides_and_temps();

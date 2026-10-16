@@ -4,6 +4,7 @@
 #include "openmc/bremsstrahlung.h"
 #include "openmc/chain.h"
 #include "openmc/constants.h"
+#include "openmc/decay_source.h"
 #include "openmc/distribution_multi.h"
 #include "openmc/eigenvalue.h"
 #include "openmc/endf.h"
@@ -141,6 +142,12 @@ void sample_neutron_reaction(Particle& p)
   // Create secondary photons
   if (settings::photon_transport) {
     sample_secondary_photons(p, i_nuclide);
+
+    // Create photons, electrons, and positrons from the decay of
+    // radionuclides left behind by the reaction
+    if (settings::decay_sources_on) {
+      sample_decay_sources(p, i_nuclide);
+    }
   }
 
   // If survival biasing is being used, the following subroutine adjusts the
@@ -651,7 +658,7 @@ void sample_photon_product(
         // For fission, artificially increase the photon yield to account
         // for delayed photons
         double f = 1.0;
-        if (settings::delayed_photon_scaling) {
+        if (nuc->delayed_photon_scaling_) {
           if (is_fission(rx->mt_)) {
             if (nuc->prompt_photons_ && nuc->delayed_photons_) {
               double energy_prompt = (*nuc->prompt_photons_)(p.E());

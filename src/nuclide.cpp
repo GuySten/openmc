@@ -3,6 +3,7 @@
 #include "openmc/capi.h"
 #include "openmc/container_util.h"
 #include "openmc/cross_sections.h"
+#include "openmc/decay_source.h"
 #include "openmc/endf.h"
 #include "openmc/error.h"
 #include "openmc/hdf5_interface.h"
@@ -361,6 +362,11 @@ Nuclide::~Nuclide()
 void Nuclide::create_derived(
   const Function1D* prompt_photons, const Function1D* delayed_photons)
 {
+  // Delayed fission photons are represented by scaling the prompt fission
+  // photon yield unless they are produced explicitly by decay sources
+  delayed_photon_scaling_ = settings::delayed_photon_scaling &&
+                            !decay_sources_produce_fission_photons(name_);
+
   for (const auto& grid : grid_) {
     // Allocate and initialize cross section
     xs_.push_back(tensor::zeros<double>({grid.energy.size(), 5}));
@@ -386,7 +392,7 @@ void Nuclide::create_derived(
             // For fission, artificially increase the photon yield to
             // account for delayed photons
             double f = 1.0;
-            if (settings::delayed_photon_scaling) {
+            if (delayed_photon_scaling_) {
               if (is_fission(rx->mt_)) {
                 if (prompt_photons && delayed_photons) {
                   double energy_prompt = (*prompt_photons)(E);

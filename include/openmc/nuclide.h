@@ -107,11 +107,13 @@ public:
   unique_ptr<WindowedMultipole> multipole_;
 
   // Fission data
-  bool fissionable_ {false};         //!< Whether nuclide is fissionable
-  bool has_partial_fission_ {false}; //!< has partial fission reactions?
-  vector<Reaction*> fission_rx_;     //!< Fission reactions
-  int n_precursor_ {0};              //!< Number of delayed neutron precursors
-  unique_ptr<Function1D> total_nu_;  //!< Total neutron yield
+  bool fissionable_ {false};            //!< Whether nuclide is fissionable
+  bool delayed_photon_scaling_ {false}; //!< Whether to scale the fission
+                                        //!< photon yield for delayed photons
+  bool has_partial_fission_ {false};    //!< has partial fission reactions?
+  vector<Reaction*> fission_rx_;        //!< Fission reactions
+  int n_precursor_ {0};             //!< Number of delayed neutron precursors
+  unique_ptr<Function1D> total_nu_; //!< Total neutron yield
   unique_ptr<Function1D> fission_q_prompt_; //!< Prompt fission energy release
   unique_ptr<Function1D>
     fission_q_recov_; //!< Recoverable fission energy release

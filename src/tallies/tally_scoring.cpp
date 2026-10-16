@@ -3,6 +3,7 @@
 #include "openmc/bank.h"
 #include "openmc/capi.h"
 #include "openmc/constants.h"
+#include "openmc/decay_source.h"
 #include "openmc/error.h"
 #include "openmc/ifp.h"
 #include "openmc/material.h"
@@ -283,6 +284,13 @@ double get_nuclide_neutron_heating(
     // calculations", Proc. PHYSOR, Cambridge, UK, Mar 29-Apr 2, 2020.
     kerma = simulation::keff * kerma_non_fission + kerma_fission;
   }
+
+  // Decay sources replace delayed fission energy and add the decay energy of
+  // activation products, which is weighted like other non-fission heating
+  auto decay = decay_source_heating(p, i_nuclide, rxn_index);
+  double k =
+    (settings::run_mode == RunMode::EIGENVALUE) ? simulation::keff : 1.0;
+  kerma += decay.fission + k * decay.activation;
   return kerma;
 }
 
@@ -561,6 +569,16 @@ double get_nuclide_xs(const Particle& p, int i_nuclide, int score_bin)
       // Stedry, "Self-consistent energy normalization for quasistatic reactor
       // calculations", Proc. PHYSOR, Cambridge, UK, Mar 29-Apr 2, 2020.
       xs = simulation::keff * kerma_non_fission + kerma_fission;
+    }
+
+    // Decay sources replace delayed fission energy and add the decay energy
+    // of activation products, which is weighted like other non-fission
+    // heating
+    if (score_bin == HEATING_LOCAL) {
+      auto decay = decay_source_heating(p, i_nuclide, HEATING_LOCAL);
+      double k =
+        (settings::run_mode == RunMode::EIGENVALUE) ? simulation::keff : 1.0;
+      xs += decay.fission + k * decay.activation;
     }
     return xs;
   } else {

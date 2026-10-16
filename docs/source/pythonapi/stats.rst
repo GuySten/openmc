@@ -18,6 +18,7 @@ Univariate Probability Distributions
    openmc.stats.PowerLaw
    openmc.stats.Maxwell
    openmc.stats.Watt
+   openmc.stats.BetaSpectrum
    openmc.stats.Tabular
    openmc.stats.Legendre
    openmc.stats.Mixture

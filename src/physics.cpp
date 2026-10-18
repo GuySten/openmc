@@ -314,6 +314,14 @@ void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
   }
 }
 
+//! Does this photon emit its photoneutrons at expected weight at every
+//! collision? With photoneutron_biasing, and always for a probe photon, whose
+//! rare analog photoneutrons would each carry its whole weight.
+bool forced_photoneutrons(const Particle& p)
+{
+  return settings::photoneutron_biasing || adjpop::is_probe_photon(p);
+}
+
 void sample_photon_reaction(Particle& p)
 {
   // Kill photon if below energy cutoff -- an extra check is made here because
@@ -327,10 +335,10 @@ void sample_photon_reaction(Particle& p)
   }
 
   if (settings::photonuclear_physics && p.macro_xs().photonuclear > 0.0) {
-    // With biasing on, every photon collision emits one photoneutron carrying
-    // the expected weight, whether or not the photon is actually absorbed
-    // photonuclearly. This is a production bias only.
-    if (settings::photoneutron_biasing && p.macro_xs().neutron_prod > 0.0)
+    // With biasing on (or for a probe photon), every photon collision emits
+    // one photoneutron carrying the expected weight, whether or not the photon
+    // is actually absorbed photonuclearly. This is a production bias only.
+    if (forced_photoneutrons(p) && p.macro_xs().neutron_prod > 0.0)
       emit_forced_photoneutron(p);
 
     // The absorption of the photon itself is always analog. Reducing the
@@ -1484,7 +1492,7 @@ void photonuclear_collision(Particle& p)
 
     // Neutrons are emitted here only in analog mode. With biasing on they were
     // already emitted, at expected weight, for this and every other collision.
-    if (is_neutron && settings::photoneutron_biasing)
+    if (is_neutron && forced_photoneutrons(p))
       continue;
 
     // For photofission the neutron multiplicity is handled as a whole, since
@@ -1510,7 +1518,7 @@ void photonuclear_collision(Particle& p)
       emit_photonuclear_product(p, *nuc, *rx, product, wgt);
   }
 
-  if (is_fission_rx && !settings::photoneutron_biasing) {
+  if (is_fission_rx && !forced_photoneutrons(p)) {
     double nu_t = nuc->nu(p.E(), PhotonuclearInteraction::EmissionMode::total);
     int n_emit = static_cast<int>(nu_t);
     if (prn(p.current_seed()) < nu_t - n_emit)

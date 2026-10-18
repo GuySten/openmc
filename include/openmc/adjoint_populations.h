@@ -163,6 +163,12 @@ bool record_photoneutron(
 bool record_probe_photoneutron(
   Particle& p, double wgt, Direction u, double E, int i_pn);
 
+//! Is this particle a probe photon (or a photon a probe made)? Its
+//! photoneutrons are always emitted at expected weight at every collision
+//! (as with photoneutron_biasing), since they are all it is for and it
+//! scores no tally.
+bool is_probe_photon(const Particle& p);
+
 //! Is a photon of energy E, carried or made by this probe photon (or one of
 //! its secondary photons), below every photoneutron threshold of the model?
 //! It can then make no photoneutron, nor can anything it makes, so it is

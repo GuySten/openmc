@@ -1353,6 +1353,12 @@ bool record_photoneutron(
   return true;
 }
 
+bool is_probe_photon(const Particle& p)
+{
+  return p.shadow_depth() >= 0 && p.type().is_photon() &&
+         tag_class(p.shadow_tag()) == CLASS_PROBE;
+}
+
 bool probe_photon_spent(const Particle& p, double E)
 {
   return E < probe_kill_energy && p.shadow_depth() >= 0 &&

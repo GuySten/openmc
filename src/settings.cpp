@@ -125,6 +125,7 @@ int ifp_n_generation {-1};
 int adjpop_n_generation {0};
 bool adjpop_photoneutrons {false};
 bool adjpop_perturbed_importance {false};
+bool adjpop_branchless {false};
 vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
 vector<std::string> adjpop_fission_nuclides;
@@ -643,6 +644,9 @@ void read_settings_xml(pugi::xml_node root)
       if (check_for_node(node, "perturbed_importance")) {
         adjpop_perturbed_importance =
           get_node_value_bool(node, "perturbed_importance");
+      }
+      if (check_for_node(node, "branchless")) {
+        adjpop_branchless = get_node_value_bool(node, "branchless");
       }
       if (check_for_node(node, "photoneutron_energy_bins")) {
         adjpop_energy_bins =

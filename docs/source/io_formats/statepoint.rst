@@ -185,6 +185,8 @@ Present only if adjoint side populations were requested.
              population.
            - **perturbed_importance** (*int*) -- Whether photoneutron branches
              were grown.
+           - **branchless** (*int*) -- Whether the trees were grown with
+             branchless collisions.
            - **probe_kill_energy** (*double*) -- With probes, the lowest
              photoneutron threshold of the model [eV]; probe photons below it
              were killed.

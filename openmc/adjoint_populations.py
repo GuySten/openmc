@@ -80,6 +80,8 @@ class AdjointPopulations:
         Whether photoneutrons were taken as a population
     perturbed_importance : bool
         Whether photoneutron branches were grown in the trees
+    branchless : bool
+        Whether the trees were grown with branchless collisions
     keff : float
         k used to form the ratios
     weight : numpy.ndarray
@@ -160,6 +162,8 @@ class AdjointPopulations:
         self.photoneutrons = bool(group['photoneutrons'][()])
         self.perturbed_importance = bool(group['perturbed_importance'][()]) \
             if 'perturbed_importance' in group else False
+        self.branchless = bool(group['branchless'][()]) \
+            if 'branchless' in group else False
         n_class = int(group['n_class'][()])
         n_tag = int(group['n_tag'][()])
         shape = (self.n_batches, n_class, n_tag, self.n_generation + 1)

@@ -145,7 +145,9 @@ sub-elements:
     the importance of a photon of any energy can be rebuilt
     (:class:`openmc.ProbeImportance`). A probe photon, or a photon it makes,
     below the lowest photoneutron threshold of the model can make no
-    photoneutron and is killed; the probes score no tally. Requires ``photoneutrons`` and photon
+    photoneutron and is killed; the probes score no tally. A probe photon
+    emits its photoneutrons at expected weight at every collision, as with
+    ``<photoneutron_biasing>``, whatever that setting. Requires ``photoneutrons`` and photon
     transport, and every line must lie between the photon energy cutoff and
     the highest photon energy.
 

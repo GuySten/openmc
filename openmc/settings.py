@@ -141,6 +141,12 @@ class Settings:
             branches, giving the change of the importance function that the
             change of beta_eff and of the generation time need (bool,
             requires photoneutrons). Default is False.
+        :branchless: Grow every tree but the detector trees with branchless
+            collisions: one neutron line per tree that scores the next
+            generation's expected weight at every collision and continues as
+            either its fission neutron or the scattered neutron, its weight
+            scaled by (nu Sigma_f / k + Sigma_s) / Sigma_t, so that it never
+            branches (bool). Default is False.
         :photoneutron_energy_bins: Energy-group edges [eV] by which the
             photoneutron roots' importance is also tallied (sequence of
             floats, requires photoneutrons). Photoneutrons outside the edges
@@ -1261,7 +1267,7 @@ class Settings:
         for key, value in adjoint_populations.items():
             cv.check_value('adjoint populations key', key,
                            ('n_generation', 'photoneutrons',
-                            'perturbed_importance',
+                            'perturbed_importance', 'branchless',
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
@@ -2740,6 +2746,9 @@ class Settings:
             text = get_text(elem, 'perturbed_importance')
             if text is not None:
                 value['perturbed_importance'] = text in ('true', '1')
+            text = get_text(elem, 'branchless')
+            if text is not None:
+                value['branchless'] = text in ('true', '1')
             text = get_text(elem, 'photoneutron_energy_bins')
             if text is not None:
                 value['photoneutron_energy_bins'] = [float(x) for x in text.split()]

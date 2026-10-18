@@ -185,6 +185,8 @@ Present only if adjoint side populations were requested.
              population.
            - **perturbed_importance** (*int*) -- Whether photoneutron branches
              were grown.
+           - **branchless** (*int*) -- Whether the trees were grown with
+             branchless collisions.
            - **weight** (*double[]*) -- Summed weight per batch, population,
              tag and depth (0 to n_generation), in that order.
            - **weight_t0** (*double[]*) -- As **weight**, times the lifetime

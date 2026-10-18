@@ -105,8 +105,99 @@ void collision(Particle& p)
   }
 }
 
+//! Sample a nuclide of the particle's material in proportion to its atom
+//! density times xs(micro cross sections), whose sum over the material is sum
+template<typename XS>
+int sample_nuclide_by(Particle& p, double sum, XS xs)
+{
+  const double cutoff = prn(p.current_seed()) * sum;
+  const auto& mat {model::materials[p.material()]};
+  const int n = mat->nuclide_.size();
+  int last = -1;
+  double prob = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const int i_nuclide = mat->nuclide_[i];
+    const double x = xs(p.neutron_xs(i_nuclide));
+    if (!(x > 0.0))
+      continue;
+    last = i_nuclide;
+    prob += mat->atom_density(i, p.density_mult()) * x;
+    if (prob >= cutoff)
+      return i_nuclide;
+  }
+  // Roundoff in the sum: the last nuclide with a share
+  if (last >= 0)
+    return last;
+  p.write_restart();
+  throw std::runtime_error {"Did not sample any nuclide during collision."};
+}
+
+void sample_branchless_tree_collision(Particle& p)
+{
+  const auto& macro = p.macro_xs();
+
+  // Photons below the root, from an analog collision nuclide, before the
+  // weight changes
+  if (settings::photon_transport && adjpop::tree_makes_photons(p)) {
+    sample_secondary_photons(p, sample_nuclide(p));
+  }
+
+  // The next generation's expected weight, scored at every collision as
+  // create_tree_sites() would bank it
+  const double F = macro.nu_fission / simulation::keff;
+  const double S = macro.total - macro.absorption;
+  adjpop::score_branchless_sites(p, p.wgt() * F / macro.total);
+
+  // The line goes on with the weight of what the collision makes: fission
+  // neutrons and scattered neutrons, or at the last depth (whose sites are
+  // only scored) scattered neutrons alone
+  const bool last = p.shadow_depth() + 1 >= settings::adjpop_n_generation;
+  const double G = last ? S : F + S;
+  if (!(G > 0.0)) {
+    p.wgt() = 0.0;
+    p.event() = TallyEvent::ABSORB;
+    return;
+  }
+  const double wgt = p.wgt() * G / macro.total;
+
+  if (!last && prn(p.current_seed()) * G < F) {
+    const int i_nuclide = sample_nuclide_by(p, macro.nu_fission,
+      [](const NuclideMicroXS& m) { return m.nu_fission; });
+    p.event_nuclide() = i_nuclide;
+    const auto& rx = sample_fission(i_nuclide, p);
+    p.event_mt() = rx.mt_;
+    adjpop::continue_as_fission_neutron(p, i_nuclide, rx, wgt);
+  } else {
+    const int i_nuclide = sample_nuclide_by(
+      p, S, [](const NuclideMicroXS& m) { return m.total - m.absorption; });
+    p.event_nuclide() = i_nuclide;
+    p.wgt() = wgt;
+    const auto& ncrystal_mat = model::materials[p.material()]->ncrystal_mat();
+    if (ncrystal_mat && p.E() < NCRYSTAL_MAX_ENERGY) {
+      ncrystal_mat.scatter(p);
+    } else {
+      scatter(p, i_nuclide);
+    }
+  }
+
+  // Advance URR seed stream 'N' times after energy changes
+  if (p.E() != p.E_last()) {
+    advance_prn_seed(data::nuclides.size(), &p.seeds(STREAM_URR_PTABLE));
+  }
+
+  // The weight drifts with the factors: roulette it about the root's
+  if (p.wgt() < settings::weight_cutoff * p.wgt_born())
+    russian_roulette(p, settings::weight_survive * p.wgt_born());
+}
+
 void sample_neutron_reaction(Particle& p)
 {
+  // A branchless shadow-tree line does not bank sites or absorb
+  if (adjpop::tree_branchless(p)) {
+    sample_branchless_tree_collision(p);
+    return;
+  }
+
   // Sample a nuclide within the material
   int i_nuclide = sample_nuclide(p);
 

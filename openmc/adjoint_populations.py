@@ -87,6 +87,8 @@ class AdjointPopulations:
         Whether the trees were grown with branchless collisions
     branchless_split : float
         Weight, over the root's, above which a branchless line was split
+    branchless_depth : int
+        First depth whose tree neutrons collided branchlessly
     keff : float
         k used to form the ratios
     weight : numpy.ndarray
@@ -187,6 +189,8 @@ class AdjointPopulations:
             if 'branchless' in group else False
         self.branchless_split = float(group['branchless_split'][()]) \
             if 'branchless_split' in group else 0.0
+        self.branchless_depth = int(group['branchless_depth'][()]) \
+            if 'branchless_depth' in group else 0
         n_class = int(group['n_class'][()])
         n_tag = int(group['n_tag'][()])
         shape = (self.n_batches, n_class, n_tag, self.n_generation + 1)

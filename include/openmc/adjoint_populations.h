@@ -52,7 +52,9 @@
 //! as its fission neutron (one depth down) or as the scattered neutron, in
 //! proportion to the two terms. At the last depth it only scatters, with the
 //! factor Sigma_s / Sigma_t. A line heavier than branchless_split times its
-//! root's weight is split into copies of about the root's weight.
+//! root's weight is split into copies of about the root's weight. With
+//! branchless_depth d, the generations above depth d branch as usual and
+//! every site they bank at depth d starts a branchless line.
 //!
 //! Per batch, and per population, tag and depth, the module accumulates the
 //! summed weight and the summed weight times lifetime stamp. Ratios --
@@ -202,8 +204,8 @@ int secondary_photon_tag(int shadow_tag);
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx);
 
 //! Does this shadow-tree neutron collide branchlessly? With branchless on,
-//! every tree neutron does except in the detector trees, which do not
-//! multiply.
+//! every tree neutron from branchless_depth down does, except in the
+//! detector trees, which do not multiply.
 bool tree_branchless(const Particle& p);
 
 //! Branchless hook at a tree neutron's collision: score w_next, the expected

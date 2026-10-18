@@ -2,6 +2,7 @@
 
 import shutil
 
+import h5py
 import numpy as np
 import openmc
 import pytest
@@ -52,6 +53,16 @@ def run_kwargs():
     if config['mpi']:
         return {'mpi_args': [config['mpiexec'], '-n', config['mpi_np']]}
     return {}
+
+
+def test_probe_photons_killed_below_threshold(model, run_in_tmpdir):
+    """Probe photons are killed below the lowest photoneutron threshold of
+    the model, H2's"""
+    sp_path = model.run(**run_kwargs())
+    with h5py.File(sp_path, 'r') as f:
+        e_kill = f['adjoint_populations/probe_kill_energy'][()]
+    # H2(gamma,n) opens at its Q value; U235 and O16 open far higher
+    assert e_kill == pytest.approx(2.2246e6, rel=1e-3)
 
 
 def test_ray_and_probe_fission_weights_agree(model, run_in_tmpdir):

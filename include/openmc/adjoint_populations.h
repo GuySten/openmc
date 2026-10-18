@@ -178,6 +178,12 @@ bool record_photoneutron(
 bool record_probe_photoneutron(
   Particle& p, double wgt, Direction u, double E, int i_pn);
 
+//! Is a photon of energy E, carried or made by this probe photon (or one of
+//! its secondary photons), below every photoneutron threshold of the model?
+//! It can then make no photoneutron, nor can anything it makes, so it is
+//! killed (a probe scores no tally). The caller checks that it is a photon.
+bool probe_photon_spent(const Particle& p, double E);
+
 //! Probe-photon hook after an energy-changing scattering: label 2
 void mark_scattered(Particle& p);
 

@@ -183,6 +183,10 @@ vector<double> batches_pw;
 vector<double> batch_pf;
 vector<double> batches_pf;
 
+// Lowest photon energy at which any photonuclear nuclide of the model makes
+// neutrons: probe photons below it are killed
+double probe_kill_energy {0.0};
+
 // Probe roots recorded by the probe photons of this shadow pass
 vector<vector<Root>> thread_probe_roots;
 
@@ -1325,6 +1329,31 @@ void init()
   thread_ew.assign(static_cast<size_t>(n_threads) * n_ebin_bins(), 0.0);
   batch_ew.assign(n_ebin_bins(), 0.0);
   batches_ew.clear();
+  // A reaction with a neutron product makes none below the grid point before
+  // its first nonzero cross section (linear interpolation), so a photon below
+  // that point of every such reaction can make no photoneutron
+  probe_kill_energy = 0.0;
+  if (probes_on()) {
+    probe_kill_energy = INFTY;
+    for (const auto& nuc : data::photonuclears) {
+      for (const auto& rx : nuc->reactions_) {
+        if (std::none_of(rx->products_.begin(), rx->products_.end(),
+              [](const ReactionProduct& prod) {
+                return prod.particle_ == ParticleType::neutron();
+              }))
+          continue;
+        const auto& v = rx->xs_.value;
+        for (size_t k = 0; k < v.size(); ++k) {
+          if (v[k] > 0.0) {
+            const int j = rx->xs_.threshold + static_cast<int>(k);
+            probe_kill_energy =
+              std::min(probe_kill_energy, nuc->energy_[std::max(j - 1, 0)]);
+            break;
+          }
+        }
+      }
+    }
+  }
   if (probes_on()) {
     if (!settings::adjpop_photoneutrons)
       fatal_error("<adjoint_populations> photoneutron_probe_energies require "
@@ -1514,6 +1543,12 @@ bool record_photoneutron(
     {generation_key(), p.id(), p.n_tracks(), p.n_event(), bits(E), 202});
   thread_roots[thread_num()].push_back(r);
   return true;
+}
+
+bool probe_photon_spent(const Particle& p, double E)
+{
+  return E < probe_kill_energy && p.shadow_depth() >= 0 &&
+         tag_class(p.shadow_tag()) == CLASS_PROBE;
 }
 
 bool record_probe_photoneutron(
@@ -2314,6 +2349,8 @@ void write_results(hid_t file_id)
     group, "photoneutrons", static_cast<int>(settings::adjpop_photoneutrons));
   write_dataset(group, "perturbed_importance",
     static_cast<int>(settings::adjpop_perturbed_importance));
+  if (probes_on())
+    write_dataset(group, "probe_kill_energy", probe_kill_energy);
   // [batch][class][tag][depth], flattened
   write_dataset(group, "weight", batches_w);
   write_dataset(group, "weight_t0", batches_wt);

@@ -1827,7 +1827,11 @@ double emit_photonuclear_product(Particle& p,
 
   // Create the secondary particle
   if (p.create_secondary(wgt, u, E, product.particle_) && branch_tag >= 0) {
-    p.local_secondary_bank().back().shadow_tag = branch_tag;
+    auto& site = p.local_secondary_bank().back();
+    site.shadow_tag = branch_tag;
+    // A branch is rouletted to a target of its own, which is the weight a
+    // branchless line of it is rouletted and split about
+    site.wgt_born = wgt;
   }
 
   return E;

@@ -51,6 +51,7 @@ def reflected_sphere(branchless, photoneutrons=False):
         adjoint_populations.update({
             'n_generation': 2,
             'photoneutrons': True,
+            'perturbed_importance': True,
             'photoneutron_probe_energies': [2.4e6, 2.8e6, 3.2e6],
             'photoneutron_ray_comb_points': 3,
             'photoneutron_probe_fraction': 20.0,
@@ -105,21 +106,27 @@ def test_kinetics_match_branching(run_in_tmpdir):
 
 
 def test_photoneutrons_match_branching(run_in_tmpdir):
-    """The probe lines' reactivity, direct (the rays') and scattered"""
+    """The probe lines' reactivity, direct (the rays') and scattered, and the
+    photoneutron branches' changes of beta_eff and the generation time"""
     results = {}
     for branchless in (False, True):
         model = reflected_sphere(branchless, photoneutrons=True)
         sp_path = model.run(path=f'branchless_{branchless}.xml',
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
-            results[branchless] = sp.adjoint_populations.probe_reactivity()
+            pops = sp.adjoint_populations
+            results[branchless] = (pops.probe_reactivity(),
+                                   [pops.delta_beta_eff(),
+                                    pops.delta_generation_time()])
 
-    for part_a, part_b in zip(results[False], results[True]):
+    for part_a, part_b in zip(results[False][0], results[True][0]):
         for a, b in zip(part_a, part_b):
             assert agree(a, b)
     # The rays make every line's direct part
-    for a, b in zip(results[False][0], results[True][0]):
+    for a, b in zip(results[False][0][0], results[True][0][0]):
         assert a.n > 0.0 and b.n > 0.0
+    for a, b in zip(results[False][1], results[True][1]):
+        assert agree(a, b)
 
 
 def test_refuses_neutron_energy_max(run_in_tmpdir):

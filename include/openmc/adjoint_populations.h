@@ -51,7 +51,8 @@
 //! (nu Sigma_f / k + Sigma_s) / Sigma_t whatever happens next, and continues
 //! as its fission neutron (one depth down) or as the scattered neutron, in
 //! proportion to the two terms. At the last depth it only scatters, with the
-//! factor Sigma_s / Sigma_t.
+//! factor Sigma_s / Sigma_t. A line heavier than branchless_split times its
+//! root's weight is split into copies of about the root's weight.
 //!
 //! Per batch, and per population, tag and depth, the module accumulates the
 //! summed weight and the summed weight times lifetime stamp. Ratios --

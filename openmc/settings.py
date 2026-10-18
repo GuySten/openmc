@@ -147,6 +147,10 @@ class Settings:
             either its fission neutron or the scattered neutron, its weight
             scaled by (nu Sigma_f / k + Sigma_s) / Sigma_t, so that it never
             branches (bool). Default is False.
+        :branchless_split: Weight, over the root's, above which a branchless
+            line is split into copies of about the root's weight, so that a
+            leak does not end the whole tree (float, 0 to never split).
+            Default is 2.0.
         :photoneutron_energy_bins: Energy-group edges [eV] by which the
             photoneutron roots' importance is also tallied (sequence of
             floats, requires photoneutrons). Photoneutrons outside the edges
@@ -1261,6 +1265,7 @@ class Settings:
             cv.check_value('adjoint populations key', key,
                            ('n_generation', 'photoneutrons',
                             'perturbed_importance', 'branchless',
+                            'branchless_split',
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
@@ -1336,6 +1341,11 @@ class Settings:
                     f'adjoint populations {key}', value,
                     2 if key == 'photoneutron_ray_comb_points' else 1,
                     equality=True)
+            elif key == 'branchless_split':
+                cv.check_type(f'adjoint populations {key}', value, Real)
+                if not (value == 0.0 or value > 1.0):
+                    raise ValueError('branchless_split must be 0 or greater '
+                                     'than 1.')
             elif key == 'photoneutron_probe_trigger_floor':
                 cv.check_type(f'adjoint populations {key}', value, Real)
                 cv.check_greater_than(f'adjoint populations {key}', value,
@@ -2761,7 +2771,8 @@ class Settings:
             for key in ('root_fraction', 'photoneutron_probe_root_fraction',
                         'photoneutron_ray_root_fraction',
                         'photoneutron_probe_trigger',
-                        'photoneutron_probe_trigger_floor'):
+                        'photoneutron_probe_trigger_floor',
+                        'branchless_split'):
                 text = get_text(elem, key)
                 if text is not None:
                     value[key] = float(text)

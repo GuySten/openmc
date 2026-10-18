@@ -187,6 +187,8 @@ Present only if adjoint side populations were requested.
              were grown.
            - **branchless** (*int*) -- Whether the trees were grown with
              branchless collisions.
+           - **branchless_split** (*double*) -- Weight, over the root's, above
+             which a branchless line was split (0: never).
            - **probe_kill_energy** (*double*) -- With probes, the lowest
              photoneutron threshold of the model [eV]; probe photons below it
              were killed.

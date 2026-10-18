@@ -2053,6 +2053,7 @@ void write_results(hid_t file_id)
     static_cast<int>(settings::adjpop_perturbed_importance));
   write_dataset(
     group, "branchless", static_cast<int>(settings::adjpop_branchless));
+  write_dataset(group, "branchless_split", settings::adjpop_branchless_split);
   if (probes_on())
     write_dataset(group, "probe_kill_energy", probe_kill_energy);
   // [batch][class][tag][depth], flattened

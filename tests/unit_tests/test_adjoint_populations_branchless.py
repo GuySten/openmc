@@ -2,6 +2,7 @@
 the trees' expected scores are those of the branching trees, so every
 estimator must agree with the branching run within statistics."""
 
+import h5py
 import numpy as np
 import openmc
 import pytest
@@ -139,6 +140,19 @@ def test_photoneutrons_match_branching(run_in_tmpdir):
         assert a.n > 0.0 and b.n > 0.0
     for a, b in zip(results[False][1], results[True][1]):
         assert agree(a, b)
+
+
+def test_probe_photons_killed_below_threshold(run_in_tmpdir):
+    """Probe photons are killed below the lowest photoneutron threshold of
+    the model, H2's"""
+    model = reflected_sphere(False, photoneutrons=True)
+    model.settings.batches = 4
+    model.settings.inactive = 1
+    sp_path = model.run(**run_kwargs())
+    with h5py.File(sp_path, 'r') as f:
+        e_kill = f['adjoint_populations/probe_kill_energy'][()]
+    # H2(gamma,n) opens at its Q value; U235 and O16 open far higher
+    assert e_kill == pytest.approx(2.2246e6, rel=1e-3)
 
 
 def test_refuses_branchless_depth_beyond_trees(run_in_tmpdir):

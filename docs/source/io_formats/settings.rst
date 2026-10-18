@@ -125,7 +125,9 @@ sub-elements:
     other roots, and are recorded by fissioning-nuclide bin (those of
     ``photoneutron_fission_nuclides``, or one bin), line and flag. From these
     the importance of a photon of any energy can be rebuilt
-    (:class:`openmc.ProbeImportance`). Requires ``photoneutrons`` and photon
+    (:class:`openmc.ProbeImportance`). A probe photon, or a photon it makes,
+    below the lowest photoneutron threshold of the model can make no
+    photoneutron and is killed; the probes score no tally. Requires ``photoneutrons`` and photon
     transport, and every line must lie between the photon energy cutoff and
     the highest photon energy.
 

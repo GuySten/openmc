@@ -191,6 +191,9 @@ Present only if adjoint side populations were requested.
              which a branchless line was split (0: never).
            - **branchless_depth** (*int*) -- First depth whose tree neutrons
              collided branchlessly.
+           - **probe_kill_energy** (*double*) -- With probes, the lowest
+             photoneutron threshold of the model [eV]; probe photons below it
+             were killed.
            - **weight** (*double[]*) -- Summed weight per batch, population,
              tag and depth (0 to n_generation), in that order.
            - **weight_t0** (*double[]*) -- As **weight**, times the lifetime

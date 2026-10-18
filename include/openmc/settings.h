@@ -150,6 +150,12 @@ extern double adjpop_branchless_split;
 //! First depth whose tree neutrons collide branchlessly; the generations
 //! above it branch
 extern int adjpop_branchless_depth;
+//! Branching tree neutrons score the next generation's expected weight at
+//! every collision; their banked sites only continue the tree
+extern bool adjpop_expected_scores;
+//! Branching tree neutrons capture implicitly (survival biasing), rouletted
+//! about the weight their tree banks sites at
+extern bool adjpop_implicit_capture;
 //! Energy-group edges [eV] for the photoneutron-root importance (empty: off)
 extern vector<double> adjpop_energy_bins;
 //! What adjpop_energy_bins bins: 0 = the birth energy of the photon that made

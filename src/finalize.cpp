@@ -120,6 +120,8 @@ int openmc_finalize()
   settings::adjpop_branchless = false;
   settings::adjpop_branchless_split = 2.0;
   settings::adjpop_branchless_depth = 0;
+  settings::adjpop_expected_scores = false;
+  settings::adjpop_implicit_capture = false;
   settings::adjpop_energy_bins.clear();
   settings::adjpop_energy_variable = 0;
   settings::adjpop_fission_nuclides.clear();

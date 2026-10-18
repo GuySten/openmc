@@ -155,6 +155,12 @@ class Settings:
             branchlessly; the generations above it branch, and every site
             they bank at this depth starts a branchless line (int, lower
             than n_generation). Default is 0.
+        :expected_scores: Branching tree neutrons score the next
+            generation's expected weight at every collision, their banked
+            sites only continuing the tree (bool). Default is False.
+        :implicit_capture: Branching tree neutrons survive capture at
+            reduced weight, rouletted about the weight their tree banks sites
+            at (bool). Default is False.
         :photoneutron_energy_bins: Energy-group edges [eV] by which the
             photoneutron roots' importance is also tallied (sequence of
             floats, requires photoneutrons). Photoneutrons outside the edges
@@ -1277,6 +1283,7 @@ class Settings:
                            ('n_generation', 'photoneutrons',
                             'perturbed_importance', 'branchless',
                             'branchless_split', 'branchless_depth',
+                            'expected_scores', 'implicit_capture',
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
@@ -2764,9 +2771,10 @@ class Settings:
             text = get_text(elem, 'perturbed_importance')
             if text is not None:
                 value['perturbed_importance'] = text in ('true', '1')
-            text = get_text(elem, 'branchless')
-            if text is not None:
-                value['branchless'] = text in ('true', '1')
+            for key in ('branchless', 'expected_scores', 'implicit_capture'):
+                text = get_text(elem, key)
+                if text is not None:
+                    value[key] = text in ('true', '1')
             text = get_text(elem, 'photoneutron_energy_bins')
             if text is not None:
                 value['photoneutron_energy_bins'] = [float(x) for x in text.split()]

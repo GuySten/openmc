@@ -56,6 +56,12 @@
 //! branchless_depth d, the generations above depth d branch as usual and
 //! every site they bank at depth d starts a branchless line.
 //!
+//! The branching generations can integrate out part of their noise:
+//! with expected_scores a tree neutron scores the next generation's expected
+//! weight at every collision, its banked sites only continuing the tree, and
+//! with implicit_capture it survives capture at reduced weight, rouletted
+//! about the weight its tree banks sites at.
+//!
 //! Per batch, and per population, tag and depth, the module accumulates the
 //! summed weight and the summed weight times lifetime stamp. Ratios --
 //! beta_eff per group, generation time, the photoneutron fraction and its
@@ -214,9 +220,18 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx);
 //! detector trees, which do not multiply.
 bool tree_branchless(const Particle& p);
 
-//! Branchless hook at a tree neutron's collision: score w_next, the expected
-//! weight of the next generation (a collision estimate), at the next depth
-void score_branchless_sites(const Particle& p, double w_next);
+//! Does this branching tree neutron score expected next-generation weights
+//! (expected_scores)? Never in the detector trees.
+bool tree_expected_scores(const Particle& p);
+
+//! Does this branching tree neutron capture implicitly (implicit_capture)?
+//! Never in the detector trees.
+bool tree_implicit_capture(const Particle& p);
+
+//! Hook at a tree neutron's collision, branchless or with expected scores:
+//! score w_next, the expected weight of the next generation (a collision
+//! estimate), at the next depth
+void score_expected_sites(const Particle& p, double w_next);
 
 //! Branchless hook when a tree neutron continues as the fission neutron of
 //! its collision: the particle becomes that neutron, one depth down, with

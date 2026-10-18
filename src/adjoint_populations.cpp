@@ -1291,17 +1291,21 @@ void init()
   if (settings::adjpop_perturbed_importance && !settings::adjpop_photoneutrons)
     fatal_error("<adjoint_populations> perturbed_importance requires "
                 "photoneutrons to be on.");
-  if (settings::adjpop_branchless) {
+  if (settings::adjpop_branchless || settings::adjpop_expected_scores ||
+      settings::adjpop_implicit_capture) {
     if (!settings::run_CE)
-      fatal_error("<adjoint_populations> branchless collisions need "
-                  "continuous-energy transport.");
-    // A tree line continues as its fission neutron, so a fission neutron the
-    // cutoffs would reject could not be left out of the depth's score
+      fatal_error("<adjoint_populations> branchless collisions, expected "
+                  "scores and implicit capture need continuous-energy "
+                  "transport.");
+    // An expected score counts every fission neutron of the collision, so a
+    // fission neutron the cutoffs would reject could not be left out of it
     const int neutron = ParticleType::neutron().transport_index();
-    if (settings::energy_max[neutron] < INFTY ||
-        settings::time_cutoff[neutron] < INFTY)
-      fatal_error("<adjoint_populations> branchless collisions are not "
-                  "compatible with a neutron <energy_max> or time cutoff.");
+    if ((settings::adjpop_branchless || settings::adjpop_expected_scores) &&
+        (settings::energy_max[neutron] < INFTY ||
+          settings::time_cutoff[neutron] < INFTY))
+      fatal_error("<adjoint_populations> branchless collisions and expected "
+                  "scores are not compatible with a neutron <energy_max> or "
+                  "time cutoff.");
   }
 
   const int n_threads = num_threads();
@@ -1639,6 +1643,11 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
     return;
 
   const int depth = p.shadow_depth() + 1;
+  // With expected scores the collision has scored the depth already, and the
+  // last depth's sites, only ever scored, need not be sampled
+  const bool expected = tree_expected_scores(p);
+  if (expected && depth >= settings::adjpop_n_generation)
+    return;
   // IFP's generation-time weight: the lifetime the depth-0 ancestor had
   // reached at the fission that started this line
   const double t0 = (p.shadow_depth() == 0) ? p.lifetime() : p.shadow_t0();
@@ -1657,16 +1666,18 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
     if (site.delayed_group > 0 && site.time > settings::time_cutoff[neutron])
       continue;
 
-    score_tree(cls, tag, ebin, depth, w_site, t0);
+    if (!expected)
+      score_tree(cls, tag, ebin, depth, w_site, t0);
     if (depth < settings::adjpop_n_generation) {
       site.shadow_depth = depth;
       site.shadow_tag = p.shadow_tag();
       site.shadow_t0 = t0;
       site.wgt_born = p.wgt_born();
-      // A branchless line starts here: it is rouletted and split about the
-      // weight its tree banks sites at
-      if (settings::adjpop_branchless &&
-          depth >= settings::adjpop_branchless_depth)
+      // A branchless line, or a neutron that captures implicitly, is
+      // rouletted (and split) about the weight its tree banks sites at
+      if ((settings::adjpop_branchless &&
+            depth >= settings::adjpop_branchless_depth) ||
+          settings::adjpop_implicit_capture)
         site.wgt_born = w_site;
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
@@ -1682,7 +1693,19 @@ bool tree_branchless(const Particle& p)
          !in_detector_tree();
 }
 
-void score_branchless_sites(const Particle& p, double w_next)
+bool tree_expected_scores(const Particle& p)
+{
+  return settings::adjpop_expected_scores && p.shadow_depth() >= 0 &&
+         !in_detector_tree();
+}
+
+bool tree_implicit_capture(const Particle& p)
+{
+  return settings::adjpop_implicit_capture && p.shadow_depth() >= 0 &&
+         !in_detector_tree();
+}
+
+void score_expected_sites(const Particle& p, double w_next)
 {
   if (!(w_next > 0.0))
     return;
@@ -2414,6 +2437,10 @@ void write_results(hid_t file_id)
     group, "branchless", static_cast<int>(settings::adjpop_branchless));
   write_dataset(group, "branchless_split", settings::adjpop_branchless_split);
   write_dataset(group, "branchless_depth", settings::adjpop_branchless_depth);
+  write_dataset(group, "expected_scores",
+    static_cast<int>(settings::adjpop_expected_scores));
+  write_dataset(group, "implicit_capture",
+    static_cast<int>(settings::adjpop_implicit_capture));
   if (probes_on())
     write_dataset(group, "probe_kill_energy", probe_kill_energy);
   // [batch][class][tag][depth], flattened

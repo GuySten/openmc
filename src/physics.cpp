@@ -150,7 +150,7 @@ void sample_branchless_tree_collision(Particle& p)
   // create_tree_sites() would bank it
   const double F = macro.nu_fission / simulation::keff;
   const double S = macro.total - macro.absorption;
-  adjpop::score_branchless_sites(p, p.wgt() * F / macro.total);
+  adjpop::score_expected_sites(p, p.wgt() * F / macro.total);
 
   // The line goes on with the weight of what the collision makes: fission
   // neutrons and scattered neutrons, or at the last depth (whose sites are
@@ -211,6 +211,13 @@ void sample_neutron_reaction(Particle& p)
   if (adjpop::tree_branchless(p)) {
     sample_branchless_tree_collision(p);
     return;
+  }
+
+  // A tree neutron with expected scores scores the next generation's expected
+  // weight here, before the collision's nuclide is sampled
+  if (adjpop::tree_expected_scores(p)) {
+    adjpop::score_expected_sites(p, p.wgt() * p.macro_xs().nu_fission /
+                                      simulation::keff / p.macro_xs().total);
   }
 
   // Sample a nuclide within the material
@@ -280,6 +287,11 @@ void sample_neutron_reaction(Particle& p)
   // Play russian roulette if there are no weight windows
   if (!settings::weight_windows_on || !adjpop::weight_windows_act(p))
     apply_russian_roulette(p);
+  // A tree neutron that captures implicitly is rouletted about the weight its
+  // tree banks sites at
+  if (adjpop::tree_implicit_capture(p) &&
+      p.wgt() < settings::weight_cutoff * p.wgt_born())
+    russian_roulette(p, settings::weight_survive * p.wgt_born());
 }
 
 void create_fission_sites(Particle& p, int i_nuclide, const Reaction& rx)
@@ -873,6 +885,14 @@ void sample_photon_product(
 
 void absorption(Particle& p, int i_nuclide)
 {
+  // A tree neutron that captures implicitly survives at reduced weight; a
+  // shadow particle scores no k estimate
+  if (adjpop::tree_implicit_capture(p)) {
+    p.wgt() -= p.wgt() * p.neutron_xs(i_nuclide).absorption /
+               p.neutron_xs(i_nuclide).total;
+    return;
+  }
+
   if (settings::survival_biasing) {
     // Determine weight absorbed in survival biasing
     const double wgt_absorb = p.wgt() * p.neutron_xs(i_nuclide).absorption /

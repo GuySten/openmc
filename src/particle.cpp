@@ -96,6 +96,9 @@ bool Particle::create_secondary(
   if (E < settings::energy_cutoff[idx]) {
     return false;
   }
+  if (type.is_photon() && adjpop::probe_photon_spent(*this, E)) {
+    return false;
+  }
 
   // If energy is above the maximum energy for this particle type, don't create
   // secondary particle. Its energy is treated as having left the problem

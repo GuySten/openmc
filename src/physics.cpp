@@ -84,6 +84,10 @@ void collision(Particle& p)
                           p.E() > settings::energy_max[type])) {
     p.wgt() = 0.0;
   }
+  // A probe photon below every photoneutron threshold has nothing left to do
+  if (p.type().is_photon() && adjpop::probe_photon_spent(p, p.E())) {
+    p.wgt() = 0.0;
+  }
 
   // Display information about collision
   if (settings::verbosity >= 10 || p.trace()) {

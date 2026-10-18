@@ -185,6 +185,9 @@ Present only if adjoint side populations were requested.
              population.
            - **perturbed_importance** (*int*) -- Whether photoneutron branches
              were grown.
+           - **probe_kill_energy** (*double*) -- With probes, the lowest
+             photoneutron threshold of the model [eV]; probe photons below it
+             were killed.
            - **weight** (*double[]*) -- Summed weight per batch, population,
              tag and depth (0 to n_generation), in that order.
            - **weight_t0** (*double[]*) -- As **weight**, times the lifetime

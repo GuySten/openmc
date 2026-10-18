@@ -188,6 +188,17 @@ void sample_branchless_tree_collision(Particle& p)
   // The weight drifts with the factors: roulette it about the root's
   if (p.wgt() < settings::weight_cutoff * p.wgt_born())
     russian_roulette(p, settings::weight_survive * p.wgt_born());
+  // A line much heavier than its root is split into copies of about the
+  // root's weight, so that one leak does not end all of it
+  const double split = settings::adjpop_branchless_split;
+  if (split > 0.0 && p.wgt() > split * p.wgt_born()) {
+    const int n = std::min(
+      static_cast<int>(std::ceil(p.wgt() / p.wgt_born())), adjpop::MAX_SPLIT);
+    const double w = p.wgt() / n;
+    for (int i = 1; i < n; ++i)
+      p.split(w);
+    p.wgt() = w;
+  }
 }
 
 void sample_neutron_reaction(Particle& p)

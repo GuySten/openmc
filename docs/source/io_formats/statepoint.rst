@@ -187,6 +187,8 @@ Present only if adjoint side populations were requested.
              were grown.
            - **branchless** (*int*) -- Whether the trees were grown with
              branchless collisions.
+           - **branchless_split** (*double*) -- Weight, over the root's, above
+             which a branchless line was split (0: never).
            - **weight** (*double[]*) -- Summed weight per batch, population,
              tag and depth (0 to n_generation), in that order.
            - **weight_t0** (*double[]*) -- As **weight**, times the lifetime

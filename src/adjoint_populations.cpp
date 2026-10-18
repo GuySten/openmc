@@ -2371,6 +2371,7 @@ void write_results(hid_t file_id)
     static_cast<int>(settings::adjpop_perturbed_importance));
   write_dataset(
     group, "branchless", static_cast<int>(settings::adjpop_branchless));
+  write_dataset(group, "branchless_split", settings::adjpop_branchless_split);
   // [batch][class][tag][depth], flattened
   write_dataset(group, "weight", batches_w);
   write_dataset(group, "weight_t0", batches_wt);

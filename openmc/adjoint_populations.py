@@ -85,6 +85,8 @@ class AdjointPopulations:
         Whether photoneutron branches were grown in the trees
     branchless : bool
         Whether the trees were grown with branchless collisions
+    branchless_split : float
+        Weight, over the root's, above which a branchless line was split
     keff : float
         k used to form the ratios
     weight : numpy.ndarray
@@ -183,6 +185,8 @@ class AdjointPopulations:
             if 'perturbed_importance' in group else False
         self.branchless = bool(group['branchless'][()]) \
             if 'branchless' in group else False
+        self.branchless_split = float(group['branchless_split'][()]) \
+            if 'branchless_split' in group else 0.0
         n_class = int(group['n_class'][()])
         n_tag = int(group['n_tag'][()])
         shape = (self.n_batches, n_class, n_tag, self.n_generation + 1)

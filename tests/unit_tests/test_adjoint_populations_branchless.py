@@ -68,32 +68,40 @@ def agree(a, b, n_sigma=4.0):
 
 def test_settings_roundtrip(run_in_tmpdir):
     s = openmc.Settings()
-    value = {'n_generation': 3, 'branchless': True}
+    value = {'n_generation': 3, 'branchless': True, 'branchless_split': 3.0}
     s.adjoint_populations = value
     s.export_to_xml()
     assert openmc.Settings.from_xml().adjoint_populations == value
     with pytest.raises(TypeError):
         s.adjoint_populations = {'n_generation': 3, 'branchless': 1}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3, 'branchless_split': 0.5}
 
 
 def test_kinetics_match_branching(run_in_tmpdir):
-    """beta_eff and the generation time, at every depth"""
+    """beta_eff and the generation time, at every depth, with and without
+    splitting the heavy lines"""
     results = {}
-    for branchless in (False, True):
+    for branchless, split in ((False, None), (True, 0.0), (True, 2.0)):
         model = reflected_sphere(branchless)
-        sp_path = model.run(path=f'branchless_{branchless}.xml',
+        if split is not None:
+            model.settings.adjoint_populations['branchless_split'] = split
+        sp_path = model.run(path=f'branchless_{branchless}_{split}.xml',
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
             pops = sp.adjoint_populations
             assert pops.branchless == branchless
-            results[branchless] = (
+            if split is not None:
+                assert pops.branchless_split == split
+            results[split] = (
                 [pops.beta_eff(depth=d) for d in range(1, 5)],
                 [pops.generation_time(depth=d) for d in range(1, 5)])
 
-    for quantity in range(2):
-        for a, b in zip(results[False][quantity], results[True][quantity]):
-            assert a.n > 0.0 and b.n > 0.0
-            assert agree(a, b)
+    for split in (0.0, 2.0):
+        for quantity in range(2):
+            for a, b in zip(results[None][quantity], results[split][quantity]):
+                assert a.n > 0.0 and b.n > 0.0
+                assert agree(a, b)
 
 
 def test_photoneutrons_match_branching(run_in_tmpdir):

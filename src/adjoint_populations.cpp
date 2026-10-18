@@ -1472,6 +1472,11 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.shadow_tag = p.shadow_tag();
       site.shadow_t0 = t0;
       site.wgt_born = p.wgt_born();
+      // A branchless line starts here: it is rouletted and split about the
+      // weight its tree banks sites at
+      if (settings::adjpop_branchless &&
+          depth >= settings::adjpop_branchless_depth)
+        site.wgt_born = w_site;
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
       p.local_secondary_bank().push_back(site);
@@ -1481,7 +1486,8 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
 
 bool tree_branchless(const Particle& p)
 {
-  return settings::adjpop_branchless && p.shadow_depth() >= 0;
+  return settings::adjpop_branchless &&
+         p.shadow_depth() >= settings::adjpop_branchless_depth;
 }
 
 void score_branchless_sites(const Particle& p, double w_next)
@@ -2054,6 +2060,7 @@ void write_results(hid_t file_id)
   write_dataset(
     group, "branchless", static_cast<int>(settings::adjpop_branchless));
   write_dataset(group, "branchless_split", settings::adjpop_branchless_split);
+  write_dataset(group, "branchless_depth", settings::adjpop_branchless_depth);
   if (probes_on())
     write_dataset(group, "probe_kill_energy", probe_kill_energy);
   // [batch][class][tag][depth], flattened

@@ -189,6 +189,8 @@ Present only if adjoint side populations were requested.
              branchless collisions.
            - **branchless_split** (*double*) -- Weight, over the root's, above
              which a branchless line was split (0: never).
+           - **branchless_depth** (*int*) -- First depth whose tree neutrons
+             collided branchlessly.
            - **probe_kill_energy** (*double*) -- With probes, the lowest
              photoneutron threshold of the model [eV]; probe photons below it
              were killed.

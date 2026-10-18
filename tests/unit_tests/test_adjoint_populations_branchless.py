@@ -72,7 +72,8 @@ def agree(a, b, n_sigma=4.0):
 
 def test_settings_roundtrip(run_in_tmpdir):
     s = openmc.Settings()
-    value = {'n_generation': 3, 'branchless': True, 'branchless_split': 3.0}
+    value = {'n_generation': 3, 'branchless': True, 'branchless_split': 3.0,
+             'branchless_depth': 1}
     s.adjoint_populations = value
     s.export_to_xml()
     assert openmc.Settings.from_xml().adjoint_populations == value
@@ -80,30 +81,37 @@ def test_settings_roundtrip(run_in_tmpdir):
         s.adjoint_populations = {'n_generation': 3, 'branchless': 1}
     with pytest.raises(ValueError):
         s.adjoint_populations = {'n_generation': 3, 'branchless_split': 0.5}
+    with pytest.raises(ValueError):
+        s.adjoint_populations = {'n_generation': 3, 'branchless_depth': -1}
 
 
 def test_kinetics_match_branching(run_in_tmpdir):
     """beta_eff and the generation time, at every depth, with and without
-    splitting the heavy lines"""
+    splitting the heavy lines, and branching above depth 1"""
+    variants = {'branching': {},
+                'no split': {'branchless_split': 0.0},
+                'split': {'branchless_split': 2.0},
+                'from depth 1': {'branchless_depth': 1}}
     results = {}
-    for branchless, split in ((False, None), (True, 0.0), (True, 2.0)):
-        model = reflected_sphere(branchless)
-        if split is not None:
-            model.settings.adjoint_populations['branchless_split'] = split
-        sp_path = model.run(path=f'branchless_{branchless}_{split}.xml',
+    for name, extra in variants.items():
+        model = reflected_sphere(name != 'branching')
+        model.settings.adjoint_populations.update(extra)
+        sp_path = model.run(path=f'{name.replace(" ", "_")}.xml',
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
             pops = sp.adjoint_populations
-            assert pops.branchless == branchless
-            if split is not None:
-                assert pops.branchless_split == split
-            results[split] = (
+            assert pops.branchless == (name != 'branching')
+            if 'branchless_split' in extra:
+                assert pops.branchless_split == extra['branchless_split']
+            assert pops.branchless_depth == extra.get('branchless_depth', 0)
+            results[name] = (
                 [pops.beta_eff(depth=d) for d in range(1, 5)],
                 [pops.generation_time(depth=d) for d in range(1, 5)])
 
-    for split in (0.0, 2.0):
+    for name in variants:
         for quantity in range(2):
-            for a, b in zip(results[None][quantity], results[split][quantity]):
+            for a, b in zip(results['branching'][quantity],
+                            results[name][quantity]):
                 assert a.n > 0.0 and b.n > 0.0
                 assert agree(a, b)
 
@@ -131,6 +139,15 @@ def test_photoneutrons_match_branching(run_in_tmpdir):
         assert a.n > 0.0 and b.n > 0.0
     for a, b in zip(results[False][1], results[True][1]):
         assert agree(a, b)
+
+
+def test_refuses_branchless_depth_beyond_trees(run_in_tmpdir):
+    model = reflected_sphere(True)
+    model.settings.batches = 3
+    model.settings.inactive = 1
+    model.settings.adjoint_populations['branchless_depth'] = 4
+    with pytest.raises(RuntimeError, match='branchless_depth'):
+        model.run(**run_kwargs())
 
 
 def test_refuses_neutron_energy_max(run_in_tmpdir):

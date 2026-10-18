@@ -127,6 +127,7 @@ bool adjpop_photoneutrons {false};
 bool adjpop_perturbed_importance {false};
 bool adjpop_branchless {false};
 double adjpop_branchless_split {2.0};
+int adjpop_branchless_depth {0};
 vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
 vector<std::string> adjpop_fission_nuclides;
@@ -648,6 +649,14 @@ void read_settings_xml(pugi::xml_node root)
       }
       if (check_for_node(node, "branchless")) {
         adjpop_branchless = get_node_value_bool(node, "branchless");
+      }
+      if (check_for_node(node, "branchless_depth")) {
+        adjpop_branchless_depth =
+          std::stoi(get_node_value(node, "branchless_depth"));
+        if (adjpop_branchless_depth < 0 ||
+            adjpop_branchless_depth >= adjpop_n_generation)
+          fatal_error("<adjoint_populations> 'branchless_depth' must be "
+                      "non-negative and lower than 'n_generation'.");
       }
       if (check_for_node(node, "branchless_split")) {
         adjpop_branchless_split =

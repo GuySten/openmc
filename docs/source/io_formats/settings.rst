@@ -69,6 +69,15 @@ sub-elements:
 
     *Default*: 2.0
 
+  :branchless_depth:
+    First depth whose tree neutrons collide branchlessly. The generations
+    above it branch as without ``branchless``, and every site they bank at
+    this depth starts a branchless line of the sites' weight. Branching the
+    first generations keeps the root's own flight scoring depth 1 at every
+    collision until it is absorbed. Must be lower than ``n_generation``.
+
+    *Default*: 0
+
   :photoneutron_energy_bins:
     Energy-group edges [eV], strictly increasing, by which the photoneutron
     roots' summed weight is also recorded at every depth. The ungrouped sums

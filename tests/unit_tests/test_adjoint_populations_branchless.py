@@ -5,6 +5,7 @@ estimator must agree with the branching run within statistics."""
 import numpy as np
 import openmc
 import pytest
+from openmc.adjoint_populations import CLASS_FISSION_BRANCH
 
 from tests.regression_tests import config
 
@@ -48,6 +49,8 @@ def reflected_sphere(branchless, photoneutrons=False):
         model.settings.inactive = 2
         model.settings.photon_transport = True
         model.settings.photonuclear_physics = True
+        # So that the trees' photons make photoneutron branches
+        model.settings.photoneutron_biasing = True
         adjoint_populations.update({
             'n_generation': 2,
             'photoneutrons': True,
@@ -115,6 +118,7 @@ def test_photoneutrons_match_branching(run_in_tmpdir):
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
             pops = sp.adjoint_populations
+            assert pops.weight[:, CLASS_FISSION_BRANCH].sum() > 0.0
             results[branchless] = (pops.probe_reactivity(),
                                    [pops.delta_beta_eff(),
                                     pops.delta_generation_time()])

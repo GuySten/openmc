@@ -3,6 +3,7 @@
 Implements two different forms of CRAM for use in openmc.deplete.
 """
 
+from fractions import Fraction
 from functools import partial
 import math
 import numbers
@@ -335,7 +336,8 @@ class ShiftedIPFCramSolver(IPFCramSolver):
                             diag_pivot_thresh=0.0).solve for th in thetas]
             # exp(-shift dt), with the rounding error of the product kept
             product = shift * step_dt
-            factor = math.exp(-product) * (1.0 - math.fma(shift, step_dt, -product))
+            error = float(Fraction(shift) * Fraction(step_dt) - Fraction(product))
+            factor = math.exp(-product) * (1.0 - error)
             position[subset] = np.arange(subset.size)
             local = position[members]
             groups.append((subset, local, members, solvers, factor,

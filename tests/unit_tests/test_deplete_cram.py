@@ -9,7 +9,8 @@ import pytest
 import scipy.sparse as sp
 from pytest import approx
 from openmc.deplete.cram import (CRAM16, CRAM48, Cram16Solver, Cram48Solver,
-                                  IPFCramSolver)
+                                  IPFCramSolver, ShiftedCram16Solver,
+                                  ShiftedCram48Solver)
 
 
 def test_CRAM16():
@@ -98,3 +99,70 @@ def test_substeps_self_convergence():
         assert err < prev_err, \
             f"substeps={s} error {err:.2e} not less than previous {prev_err:.2e}"
         prev_err = err
+
+
+def _chain_matrix(rates, branches):
+    """Transmutation matrix from removal rates and (parent, daughter, rate)."""
+    n = len(rates)
+    mat = sp.lil_matrix((n, n))
+    for i, rate in enumerate(rates):
+        mat[i, i] = -rate
+    for parent, daughter, rate in branches:
+        mat[daughter, parent] += rate
+    return sp.csc_matrix(mat)
+
+
+@pytest.mark.parametrize("decay", [10.0, 150.0, 300.0, 700.0])
+def test_shifted_deep_single_decay(decay):
+    """A nuclide followed far below CRAM's absolute error, to 1e-304."""
+    lam = np.log(2) / 30.0
+    mat = _chain_matrix([lam], [])
+    dt = decay / lam
+    z = ShiftedCram48Solver(mat, np.array([1.0]), dt)
+    assert z[0] == approx(np.exp(-lam * dt), rel=1e-12, abs=0)
+    # plain CRAM48 loses it below ~1e-31
+    if decay > 100.0:
+        plain = CRAM48(mat, np.array([1.0]), dt)[0]
+        assert abs(plain / np.exp(-lam * dt) - 1.0) > 1e-3
+
+
+def test_shifted_deep_chain():
+    """A(1 s) -> B(10 s) -> stable C: B to 1e-90, A underflows to zero."""
+    la, lb = np.log(2), np.log(2) / 10.0
+    mat = _chain_matrix([la, lb, 0.0], [(0, 1, la), (1, 2, lb)])
+    for dt in (100.0, 500.0, 3000.0):
+        z = ShiftedCram48Solver(mat, np.array([1.0, 0.0, 0.0]), dt)
+        a = np.exp(-la * dt)
+        b = la / (la - lb) * (np.exp(-lb * dt) - a)
+        assert z[1] == approx(b, rel=1e-12, abs=0)
+        assert z[2] == approx(1.0 - a - b, rel=1e-12, abs=0)
+        if a > 1e-300:
+            assert z[0] == approx(a, rel=1e-12, abs=0)
+        else:
+            assert z[0] == 0.0
+
+
+def test_shifted_capture_loop():
+    """A <-> B loop leaking to stable C: the slowest mode sets the shift."""
+    a, b, c = 1.0, 2.0, 0.5
+    mat = _chain_matrix([a, b + c, 0.0], [(0, 1, a), (1, 0, b), (1, 2, c)])
+    tr, det = -(a + b + c), a * c
+    l1 = 0.5 * (tr + np.sqrt(tr * tr - 4.0 * det))
+    l2 = 0.5 * (tr - np.sqrt(tr * tr - 4.0 * det))
+    c1 = -(a + l2) / (b * (l1 - l2))
+    for dt in (200.0, 1500.0, 4000.0):
+        z = ShiftedCram48Solver(mat, np.array([1.0, 0.0, 0.0]), dt)
+        slow = c1 * np.exp(l1 * dt)
+        assert z[0] == approx(slow * b, rel=1e-11, abs=0)
+        assert z[1] == approx(slow * (a + l1), rel=1e-11, abs=0)
+
+
+@pytest.mark.parametrize("substeps", [1, 3])
+def test_shifted_matches_plain_without_deep_decay(substeps):
+    """Nothing decays by more than exp(-50): the shift changes nothing."""
+    x = np.array([1.0, 1.0])
+    mat = sp.csr_matrix([[-1.0, 0.0], [-2.0, -3.0]])
+    for solver, plain in ((ShiftedCram16Solver, Cram16Solver),
+                          (ShiftedCram48Solver, Cram48Solver)):
+        z = solver(mat, x, 0.1, substeps=substeps)
+        assert z == approx(plain(mat, x, 0.1, substeps=substeps), rel=1e-14, abs=0)

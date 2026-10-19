@@ -4,16 +4,19 @@ Implements two different forms of CRAM for use in openmc.deplete.
 """
 
 from functools import partial
+import math
 import numbers
 
 import numpy as np
-from scipy.sparse.linalg import spsolve, splu
+from scipy.sparse.csgraph import connected_components
+from scipy.sparse.linalg import LinearOperator, eigs, spsolve, splu
 
 from openmc.checkvalue import check_type, check_length, check_greater_than
 from .abc import DepSystemSolver
 from .._sparse_compat import csc_array, eye_array
 
-__all__ = ["CRAM16", "CRAM48", "Cram16Solver", "Cram48Solver", "IPFCramSolver"]
+__all__ = ["CRAM16", "CRAM48", "Cram16Solver", "Cram48Solver", "IPFCramSolver",
+           "ShiftedIPFCramSolver", "ShiftedCram16Solver", "ShiftedCram48Solver"]
 
 
 class IPFCramSolver(DepSystemSolver):
@@ -203,3 +206,306 @@ Cram48Solver = IPFCramSolver(c48_alpha, c48_theta, c48_alpha0)
 del c48_alpha, c48_alpha0, c48_theta, alpha_r, alpha_i, theta_r, theta_i
 
 CRAM48 = Cram48Solver.__call__
+
+
+class ShiftedIPFCramSolver(IPFCramSolver):
+    r"""IPF CRAM with a spectral shift for each nuclide
+
+    CRAM's error is absolute: about :math:`\alpha_0` times the atoms a
+    nuclide can draw on, so a nuclide whose atoms decay by more than about
+    :math:`\alpha_0` within one interval is lost in the approximation error.
+    For any :math:`\mu`,
+
+    .. math::
+
+        e^{\Delta t A} = e^{-\mu \Delta t}\, e^{\Delta t (A + \mu I)},
+
+    and CRAM may be applied to the second factor as long as the spectrum of
+    :math:`A + \mu I` stays on the non-positive real axis. A nuclide depends
+    only on itself and its ancestors, so it is solved with :math:`\mu` equal
+    to the slowest decay rate among them (the Perron root of each strongly
+    connected block, such as a capture loop). Nuclides are grouped in levels
+    of :math:`e^{-L}`, each solved once over its ancestors, which makes the
+    error relative for every nuclide down to the bottom of the double range.
+
+    Parameters
+    ----------
+    alpha : numpy.ndarray
+        Complex residues of poles used in the factorization.
+    theta : numpy.ndarray
+        Complex poles. Must have an equal size as ``alpha``.
+    alpha0 : float
+        Limit of the approximation at infinity
+    level : float, optional
+        Width :math:`L` of a shift level: a nuclide drops by at most
+        :math:`e^{-L}` relative to its shift.
+
+    """
+
+    def __init__(self, alpha, theta, alpha0, level=50.0):
+        super().__init__(alpha, theta, alpha0)
+        check_type("level", level, numbers.Real)
+        check_greater_than("level", level, 0.0)
+        self.level = float(level)
+
+    def __call__(self, A, n0, dt, substeps=1):
+        """Solve depletion equations using IPF CRAM with spectral shifts
+
+        Parameters
+        ----------
+        A : scipy.sparse.csc_array
+            Sparse transmutation matrix ``A[j, i]`` desribing rates at
+            which isotope ``i`` transmutes to isotope ``j``
+        n0 : numpy.ndarray
+            Initial compositions, typically given in number of atoms in some
+            material or an atom density
+        dt : float
+            Time [s] of the specific interval to be solved
+        substeps : int, optional
+            Number of substeps per depletion interval.
+
+        Returns
+        -------
+        numpy.ndarray
+            Final compositions after ``dt``
+
+        """
+        check_type("substeps", substeps, numbers.Integral)
+        check_greater_than("substeps", substeps, 0)
+
+        A = csc_array(A, dtype=np.float64)
+        step_dt = dt / substeps
+        levels, graph, node_rate = _shift_levels(A, n0, step_dt, self.level)
+        threshold = -math.log(self.alpha0) + 10.0
+        groups = []
+        position = np.empty(A.shape[0], dtype=int)
+        for shift, members, subset in levels:
+            dropped = _negligible_sources(graph, node_rate, members, subset,
+                                          shift, step_dt, threshold)
+            # Subsets come in topological order, so the shifted matrices are
+            # block lower triangular. Factoring them as they are, with
+            # diagonal pivots, makes each solve a forward substitution that
+            # keeps the round-off of every nuclide relative to its own
+            # value; partial pivoting would route a nuclide through the rows
+            # of its descendants and leak their round-off into it.
+            sub = csc_array(step_dt * A[subset][:, subset])
+            ident = eye_array(subset.size, format='csc')
+            thetas = [theta - shift * step_dt for theta in self.theta]
+            solvers = [splu(csc_array(sub - th * ident), permc_spec='NATURAL',
+                            diag_pivot_thresh=0.0).solve for th in thetas]
+            # exp(-shift dt), with the rounding error of the product kept
+            product = shift * step_dt
+            factor = math.exp(-product) * (1.0 - math.fma(shift, step_dt, -product))
+            position[subset] = np.arange(subset.size)
+            local = position[members]
+            groups.append((subset, local, members, solvers, factor,
+                           position[dropped]))
+
+        y = np.asarray(n0, dtype=np.float64).copy()
+        for _ in range(substeps):
+            out = np.zeros_like(y)
+            for subset, local, members, solvers, factor, dropped in groups:
+                u = y[subset]
+                u[dropped] = 0.0
+                for alpha, solve in zip(self.alpha, solvers):
+                    u = u + 2 * np.real(alpha * solve(u))
+                u *= self.alpha0
+                out[members] = u[local] * factor
+            y = out
+        return y
+
+
+def _shift_levels(A, n0, dt, width):
+    r"""Shift levels of a transmutation matrix for one interval.
+
+    Returns a list of ``(shift, members, subset)``: the shift :math:`\mu`,
+    the nuclides that take their result from it, and the ancestor-closed set
+    of nuclides to solve, in topological order (parents first). The first
+    entry, with zero shift, covers every nuclide not assigned elsewhere;
+    nuclides that must have underflowed are left out and come back as zero.
+    """
+    n = A.shape[0]
+    n0 = np.asarray(n0, dtype=np.float64)
+    coo = A.tocoo()
+    off = coo.row != coo.col
+    # graph[j, i] != 0 when nuclide j produces nuclide i
+    graph = csc_array((np.ones(off.sum()), (coo.col[off], coo.row[off])),
+                      shape=(n, n)).tocsr()
+    everyone = np.arange(n)
+
+    # Nuclides that hold or receive atoms
+    active = n0 != 0.0
+    frontier = active.copy()
+    while frontier.any():
+        reached = (graph.T @ frontier.astype(np.float64)) != 0.0
+        frontier = reached & ~active
+        active |= frontier
+    largest = np.abs(n0).max() if n0.size else 0.0
+
+    # Strongly connected blocks, and every nuclide's rank in a topological
+    # order of the blocks
+    nblocks, label = connected_components(graph, directed=True,
+                                          connection='strong')
+    parent_blocks = [set() for _ in range(nblocks)]
+    rows, cols = graph.nonzero()          # edge rows -> cols
+    for j, i in zip(rows, cols):
+        if label[j] != label[i]:
+            parent_blocks[label[i]].add(label[j])
+    order = _topological(nblocks, parent_blocks)
+    block_rank = np.empty(nblocks, dtype=int)
+    block_rank[order] = np.arange(nblocks)
+    rank = block_rank[label]
+    by_rank = np.argsort(rank, kind='stable')
+    if not active.any() or largest == 0.0:
+        return [(0.0, everyone, by_rank)], graph, -A.diagonal()
+
+    # The decay rate of each block's slowest mode
+    diag = A.diagonal()
+    block_rate = np.empty(nblocks)
+    members_of = [[] for _ in range(nblocks)]
+    for i in range(n):
+        members_of[label[i]].append(i)
+    for b, members in enumerate(members_of):
+        if len(members) == 1:
+            block_rate[b] = -diag[members[0]]
+        else:
+            idx = np.array(members)
+            block_rate[b] = -_perron_root(A[idx][:, idx])
+
+    # Propagate the slowest rate from ancestors that hold or receive atoms,
+    # in topological order
+    rate = np.full(nblocks, np.inf)
+    block_active = np.zeros(nblocks, dtype=bool)
+    block_active[label[active]] = True
+    for b in order:
+        if not block_active[b]:
+            continue
+        slowest = block_rate[b]
+        for p in parent_blocks[b]:
+            slowest = min(slowest, rate[p])     # inactive parents are inf
+        rate[b] = max(0.0, slowest)
+
+    decay = rate[label] * dt
+    cutoff = math.log(largest) + 745.0 + 69.0
+    level = np.where(active, np.floor(decay / width), 0.0)
+    negligible = active & (decay > cutoff)
+    level[negligible] = -1
+
+    result = []
+    base = everyone[level == 0]
+    result.append((0.0, base, by_rank))
+    for lv in np.unique(level[level > 0]):
+        members = np.flatnonzero(level == lv)
+        # ancestors of the members that hold or receive atoms
+        closure = np.zeros(n, dtype=bool)
+        closure[members] = True
+        frontier = closure.copy()
+        while frontier.any():
+            reached = (graph @ frontier.astype(np.float64)) != 0.0
+            frontier = reached & ~closure & active
+            closure |= frontier
+        subset = np.flatnonzero(closure)
+        subset = subset[np.argsort(rank[subset], kind='stable')]
+        result.append((lv * width / dt, members, subset))
+    return result, graph, block_rate[label]
+
+
+def _negligible_sources(graph, node_rate, members, subset, shift, dt,
+                        threshold):
+    """Nuclides of a solve whose atoms can only reach its members through
+    decay faster than ``shift`` by more than ``threshold`` / dt.
+
+    Their true contribution, at most exp(-threshold) of their atoms on the
+    shifted scale, is below CRAM's own noise for them (alpha0 times their
+    atoms, which r(z) leaves behind as z -> -inf and passes on to their
+    descendants), so leaving their atoms out of the solve loses less than
+    keeping them.
+    """
+    in_subset = np.zeros(graph.shape[0], dtype=bool)
+    in_subset[subset] = True
+    is_member = np.zeros(graph.shape[0], dtype=bool)
+    is_member[members] = True
+    # slowest rate on any path from a nuclide to a member, children first
+    slowest = np.full(graph.shape[0], np.inf)
+    indptr, indices = graph.indptr, graph.indices
+    for j in subset[::-1]:
+        best = np.inf
+        for c in indices[indptr[j]:indptr[j + 1]]:
+            if in_subset[c] and slowest[c] < np.inf:
+                best = min(best, slowest[c])
+        if is_member[j] or best < np.inf:
+            slowest[j] = min(node_rate[j], best)
+    return subset[(slowest[subset] - shift) * dt > threshold]
+
+
+def _topological(nblocks, parent_blocks):
+    """Blocks in an order where every parent precedes its children."""
+    children = [[] for _ in range(nblocks)]
+    indegree = np.zeros(nblocks, dtype=int)
+    for b, parents in enumerate(parent_blocks):
+        indegree[b] = len(parents)
+        for p in parents:
+            children[p].append(b)
+    ready = [b for b in range(nblocks) if indegree[b] == 0]
+    order = []
+    while ready:
+        b = ready.pop()
+        order.append(b)
+        for c in children[b]:
+            indegree[c] -= 1
+            if indegree[c] == 0:
+                ready.append(c)
+    return order
+
+
+def _perron_root(block):
+    """Rightmost (real) eigenvalue of a Metzler matrix block.
+
+    Small blocks: bisection with the M-matrix test, which keeps the upper end
+    so that a shift built from it never moves an eigenvalue right of zero.
+    Large blocks: the largest eigenvalue of (-block)^-1 with ARPACK. Any
+    failure gives 0, i.e. no shift.
+    """
+    block = csc_array(block)
+    m = block.shape[0]
+    if m <= 64:
+        a = block.toarray()
+        lo = np.max(np.diag(a))
+        hi = np.max(np.diag(a) + np.abs(a - np.diag(np.diag(a))).sum(axis=0))
+        hi = max(hi, lo)
+
+        def left_of(s):
+            z = s * np.eye(m) - a
+            for k in range(m):
+                pivot = z[k, k]
+                if not pivot > 0.0:
+                    return False
+                z[k + 1:, k:] -= np.outer(z[k + 1:, k] / pivot, z[k, k:])
+            return True
+
+        while not left_of(hi):
+            hi += max(1.0, abs(hi))
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            if mid <= lo or mid >= hi:
+                break
+            if left_of(mid):
+                hi = mid
+            else:
+                lo = mid
+        return hi
+    try:
+        lu = splu(csc_array(-block))
+        op = LinearOperator((m, m), matvec=lu.solve, dtype=np.float64)
+        value = eigs(op, k=1, which='LM', return_eigenvectors=False)[0]
+        root = -1.0 / value.real
+        # A small safety margin towards zero keeps the shift conservative.
+        return min(0.0, root * (1.0 - 1e-10))
+    except Exception:
+        return 0.0
+
+
+ShiftedCram16Solver = ShiftedIPFCramSolver(
+    Cram16Solver.alpha, Cram16Solver.theta, Cram16Solver.alpha0)
+ShiftedCram48Solver = ShiftedIPFCramSolver(
+    Cram48Solver.alpha, Cram48Solver.theta, Cram48Solver.alpha0)

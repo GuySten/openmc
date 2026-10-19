@@ -9,6 +9,7 @@ import math
 import numbers
 
 import numpy as np
+from scipy.sparse import block_diag as _block_diag, diags_array
 from scipy.sparse.csgraph import connected_components
 from scipy.sparse.linalg import LinearOperator, eigs, spsolve, splu
 
@@ -318,45 +319,58 @@ class ShiftedIPFCramSolver(IPFCramSolver):
         """Shifted solve of ``substeps`` intervals of ``step_dt``."""
         levels, graph, node_rate = _shift_levels(A, n0, step_dt, self.level)
         threshold = -math.log(self.alpha0) + 10.0
-        groups = []
+
+        # All levels are solved together: their ancestor-closed subsets
+        # become the diagonal blocks of one block-diagonal system, each
+        # block shifted by its own mu. Subsets come in topological order,
+        # so every block, and the whole system, is lower triangular; it is
+        # factored as it is, with diagonal pivots, which makes each solve a
+        # forward substitution that keeps the round-off of every nuclide
+        # relative to its own value. (Partial pivoting would route a nuclide
+        # through the rows of its descendants and leak their round-off into
+        # it.) One factorization per pole serves every level and substep.
+        blocks, index, shifts = [], [], []
+        dropped, targets, sources, factors = [], [], [], []
+        offset = 0
         position = np.empty(A.shape[0], dtype=int)
         for shift, members, subset in levels:
-            dropped = _negligible_sources(graph, node_rate, members, subset,
-                                          shift, step_dt, threshold)
-            # Subsets come in topological order, so the shifted matrices are
-            # block lower triangular. Factoring them as they are, with
-            # diagonal pivots, makes each solve a forward substitution that
-            # keeps the round-off of every nuclide relative to its own
-            # value; partial pivoting would route a nuclide through the rows
-            # of its descendants and leak their round-off into it.
-            sub = csc_array(step_dt * A[subset][:, subset])
-            ident = eye_array(subset.size, format='csc')
-            thetas = [theta - shift * step_dt for theta in self.theta]
-            solvers = [splu(csc_array(sub - th * ident), permc_spec='NATURAL',
-                            diag_pivot_thresh=0.0).solve for th in thetas]
+            blocks.append(A[subset][:, subset])
+            index.append(subset)
+            shifts.append(np.full(subset.size, shift * step_dt))
+            position[subset] = np.arange(subset.size) + offset
+            dropped.append(position[_negligible_sources(
+                graph, node_rate, members, subset, shift, step_dt, threshold)])
+            targets.append(members)
+            sources.append(position[members])
             # exp(-shift dt), with the rounding error of the product kept
             product = shift * step_dt
             error = float(Fraction(shift) * Fraction(step_dt) - Fraction(product))
-            factor = math.exp(-product) * (1.0 - error)
-            position[subset] = np.arange(subset.size)
-            local = position[members]
-            groups.append((subset, local, members, solvers, factor,
-                           position[dropped]))
+            factors.append(np.full(members.size,
+                                   math.exp(-product) * (1.0 - error)))
+            offset += subset.size
+        index = np.concatenate(index)
+        dropped = np.concatenate(dropped)
+        targets = np.concatenate(targets)
+        sources = np.concatenate(sources)
+        factors = np.concatenate(factors)
+        system = csc_array(step_dt * block_diag_array(blocks, format='csc')
+                           + diags_array(np.concatenate(shifts), format='csc'))
+        ident = eye_array(offset, format='csc')
+        solvers = [splu(csc_array(system - theta * ident), permc_spec='NATURAL',
+                        diag_pivot_thresh=0.0).solve for theta in self.theta]
 
         y = np.asarray(n0, dtype=np.float64).copy()
         for _ in range(substeps):
-            out = np.zeros_like(y)
-            for subset, local, members, solvers, factor, dropped in groups:
-                u = y[subset]
-                u[dropped] = 0.0
-                u_in = u
-                for alpha, solve in zip(self.alpha, solvers):
-                    u = u + 2 * np.real(alpha * solve(u))
-                u *= self.alpha0
-                if self.drop_constant:
-                    u = u - self.alpha0 * u_in
-                out[members] = u[local] * factor
-            y = out
+            u = y[index]
+            u[dropped] = 0.0
+            u_in = u
+            for alpha, solve in zip(self.alpha, solvers):
+                u = u + 2 * np.real(alpha * solve(u))
+            u *= self.alpha0
+            if self.drop_constant:
+                u = u - self.alpha0 * u_in
+            y = np.zeros_like(y)
+            y[targets] = u[sources] * factors
         return y
 
 
@@ -453,6 +467,11 @@ def _shift_levels(A, n0, dt, width):
         subset = subset[np.argsort(rank[subset], kind='stable')]
         result.append((lv * width / dt, members, subset))
     return result, graph, block_rate[label]
+
+
+def block_diag_array(blocks, format='csc'):
+    """Block-diagonal sparse array of the given sparse arrays."""
+    return csc_array(_block_diag(blocks, format=format))
 
 
 def _negligible_sources(graph, node_rate, members, subset, shift, dt,

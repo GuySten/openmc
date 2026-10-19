@@ -5,6 +5,7 @@ import shutil
 import h5py
 import numpy as np
 import openmc
+import openmc.deplete
 import pytest
 
 from tests.regression_tests import config
@@ -220,7 +221,7 @@ def test_photoneutron_targets(be_d2o_model, run_in_tmpdir):
     assert by_target.rebuilt(np.array([2.0e6]))[0] >= 0.0
 
 
-def test_probe_reactions(model, run_in_tmpdir):
+def test_probe_reactions(model, run_in_tmpdir, monkeypatch):
     """Probed reactions emit probes and cast rays from their own sites, in
     probe bins after the fissioning-nuclide bin. The driver, the fission,
     delayed and photoneutron trees and the fission bin's events are those of
@@ -280,7 +281,9 @@ def test_probe_reactions(model, run_in_tmpdir):
     assert imp.name == 'H2(n,gamma)'
     assert imp.mean.max() > 0.0
 
-    pops.export_photon_importance('importance.h5', heavy_water)
+    monkeypatch.delitem(openmc.config, 'chain_file', raising=False)
+    with pytest.warns(UserWarning, match='No depletion chain'):
+        pops.export_photon_importance('importance.h5', heavy_water)
     with h5py.File('importance.h5') as f:
         assert list(f.attrs['version']) == [1, 1]
         assert [n.decode() for n in f.attrs['reactions']] == \
@@ -292,6 +295,31 @@ def test_probe_reactions(model, run_in_tmpdir):
         np.testing.assert_array_equal(g['reaction_weight'][()],
                                       pops.probe_reaction_weight[:, 0])
         assert g['batch_numerator'].shape == (n_b, g['energy'].size)
+        # Without a chain, the products are left to the folding code
+        assert g.attrs['branching_source'] == b'none'
+        assert 'products' not in g
+
+    # A chain gives each reaction's ground and isomeric products
+    chain = openmc.deplete.Chain()
+    for name, reactions in (
+            ('H2', [('(n,gamma)', 'H3', 0.75), ('(n,gamma)', 'H3_m1', 0.25)]),
+            ('O16', [('(n,p)', 'N16', 1.0)])):
+        nuc = openmc.deplete.Nuclide(name)
+        for kind, target, br in reactions:
+            nuc.add_reaction(kind, target, 0.0, br)
+        chain.add_nuclide(nuc)
+    chain.export_to_xml('chain.xml')
+    assert pops.reaction_branching('chain.xml') == {
+        'H2(n,gamma)': {'H3': 0.75, 'H3_m1': 0.25},
+        'O16(n,p)': {'N16': 1.0}}
+    pops.export_photon_importance('importance.h5', heavy_water,
+                                  chain_file='chain.xml')
+    with h5py.File('importance.h5') as f:
+        g = f['reactions/H2(n,gamma)']
+        assert g.attrs['branching_source'] == b'chain'
+        assert list(g['products'][()]) == [b'H3', b'H3_m1']
+        np.testing.assert_array_equal(g['branching_ratio'][()], [0.75, 0.25])
+        assert list(f['reactions/O16(n,p)/products'][()]) == [b'N16']
 
 
 def test_probe_reaction_errors(model, run_in_tmpdir):

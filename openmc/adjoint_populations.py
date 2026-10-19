@@ -53,6 +53,10 @@ exact.
 import numpy as np
 from uncertainties import ufloat
 
+#: MTs of fission, whose products are the fission yields' and are never
+#: taken from a depletion chain
+_FISSION_MT = (18, 19, 20, 21, 38)
+
 CLASS_FISSION = 0
 CLASS_DELAYED = 1
 CLASS_PHOTONEUTRON = 2
@@ -518,6 +522,52 @@ class AdjointPopulations:
         return _ratio(self.probe_fission_weight[:, j],
                       self.probe_fission_weight[:, :n_f].sum(axis=1))
 
+    def reaction_branching(self, chain_file=None):
+        """What each probed reaction makes, with its branching ratios between
+        ground and isomeric states, from a depletion chain.
+
+        The chain's ratios are fixed numbers, not weighted with the spectrum
+        at the reaction's sites. Fission is never looked up: its products
+        are the fission yields'.
+
+        Parameters
+        ----------
+        chain_file : str or os.PathLike, optional
+            Depletion chain; openmc.config['chain_file'] if None
+
+        Returns
+        -------
+        dict of str to dict of str to float
+            {label: {product: branching ratio}} for every probed reaction
+            the chain has; reactions it lacks, and fission, are left out
+
+        """
+        import openmc
+        from openmc.data.reaction import REACTION_NAME
+        from openmc.deplete import Chain
+        if not self.probe_reactions:
+            return {}
+        if chain_file is None:
+            chain_file = openmc.config.get('chain_file')
+        if chain_file is None:
+            raise ValueError('No depletion chain: give chain_file or set '
+                             "openmc.config['chain_file'].")
+        chain = Chain.from_xml(chain_file)
+        out = {}
+        for label in self.probe_reactions:
+            nuclide, mt = self.probe_reaction_mt[label]
+            if mt in _FISSION_MT or nuclide not in chain:
+                continue
+            kind = REACTION_NAME.get(mt)
+            made = {}
+            for rx in chain[nuclide].reactions:
+                if rx.type == kind and rx.target is not None:
+                    made[rx.target] = made.get(rx.target, 0.0) + \
+                        float(rx.branching_ratio)
+            if made:
+                out[label] = made
+        return out
+
     def _probe_bin(self, nuclide):
         names = self._probe_bin_names
         if nuclide is None:
@@ -845,7 +895,7 @@ class AdjointPopulations:
 
     def export_photon_importance(self, path, target, depth=None, rtol=1.0e-3,
                                  floor=1.0e-3, e_max=None,
-                                 cross_sections=None):
+                                 cross_sections=None, chain_file=None):
         """Write the photon importance of every fissioning-nuclide bin and
         probed reaction, the bins' fission fractions and the reactions per
         fission to an HDF5 file, for folding with delayed-photon sources
@@ -881,7 +931,11 @@ class AdjointPopulations:
         ``reactions/<label>``: ``energy``, ``importance``, ``std_dev`` and
         ``batch_numerator`` as above, per reaction at the reaction's sites;
         ``reaction_weight`` [batch], the collision estimate of its reactions;
-        and the attributes ``nuclide``, ``mt`` and ``reactions_per_fission``.
+        the attributes ``nuclide``, ``mt`` and ``reactions_per_fission``; and,
+        where the depletion chain has the reaction (never fission),
+        ``products`` and ``branching_ratio``, what one reaction makes in each
+        ground or isomeric state (:meth:`reaction_branching`), with the
+        attribute ``branching_source`` 'chain' (else 'none').
 
         A delayed-photon source S_j(E) per fission of bin j then gives
         beta_ph = sum_j integral S_j(E) I_j(E) dE; I_j / fission_fraction is
@@ -909,9 +963,16 @@ class AdjointPopulations:
             Top of the tables [eV]; the highest line if None
         cross_sections : str or os.PathLike, optional
             cross_sections.xml for a material target
+        chain_file : str or os.PathLike, optional
+            Depletion chain giving the probed reactions' products and their
+            branching ratios; openmc.config['chain_file'] if None. Without
+            either, the products are left to the folding code, with a
+            warning.
 
         """
+        import warnings
         import h5py
+        import openmc
         from openmc import __version__
         self._check_probes()
         target = self._resolve_targets(target, cross_sections)
@@ -923,6 +984,15 @@ class AdjointPopulations:
         n_f = len(names)
         fw = self.probe_fission_weight
         total = fw[:, :n_f].sum()
+        branching = {}
+        if self.probe_reactions:
+            if chain_file is None and \
+                    openmc.config.get('chain_file') is None:
+                warnings.warn('No depletion chain: the probed reactions\' '
+                              'products and isomeric branching are not '
+                              'written.')
+            else:
+                branching = self.reaction_branching(chain_file)
         with h5py.File(path, 'w') as f:
             f.attrs['filetype'] = np.bytes_('photon_importance')
             f.attrs['version'] = np.array([1, 1])
@@ -966,6 +1036,13 @@ class AdjointPopulations:
                 g['reaction_weight'] = fw[:, j]
                 g.attrs['reactions_per_fission'] = \
                     fw[:, j].sum() / total if total > 0 else 0.0
+                made = branching.get(label)
+                g.attrs['branching_source'] = np.bytes_(
+                    'chain' if made else 'none')
+                if made:
+                    g['products'] = np.array([n.encode() for n in made],
+                                             dtype='S')
+                    g['branching_ratio'] = np.array(list(made.values()))
 
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""

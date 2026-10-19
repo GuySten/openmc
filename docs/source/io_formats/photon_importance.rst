@@ -79,8 +79,16 @@ listed in the root attribute **reactions** (*char[][]*):
              - **reactions_per_fission** (*double*) -- Its reactions per
                fission, from **reaction_weight** over the bins'
                **fission_weight**.
+             - **branching_source** (*char[]*) -- 'chain' if **products**
+               and **branching_ratio** were written from a depletion chain,
+               else 'none' (no chain was given, or it lacks the reaction).
 
 :Datasets: - **energy**, **importance**, **std_dev**, **batch_numerator** --
              As for a nuclide bin, per reaction at the reaction's sites.
            - **reaction_weight** (*double[]*) -- Collision estimate of the
              reaction's reactions in each batch.
+           - **products** (*char[][]*), **branching_ratio** (*double[]*) --
+             What one reaction makes, ground and isomeric states apart
+             (e.g. ``Ag110`` and ``Ag110_m1``), with the chain's fixed
+             branching ratios. Only when **branching_source** is 'chain';
+             never for fission, whose products are the fission yields'.

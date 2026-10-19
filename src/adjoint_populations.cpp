@@ -1291,6 +1291,18 @@ void init()
   if (settings::adjpop_perturbed_importance && !settings::adjpop_photoneutrons)
     fatal_error("<adjoint_populations> perturbed_importance requires "
                 "photoneutrons to be on.");
+  if (settings::adjpop_branchless) {
+    if (!settings::run_CE)
+      fatal_error("<adjoint_populations> branchless collisions need "
+                  "continuous-energy transport.");
+    // A tree line continues as its fission neutron, so a fission neutron the
+    // cutoffs would reject could not be left out of the depth's score
+    const int neutron = ParticleType::neutron().transport_index();
+    if (settings::energy_max[neutron] < INFTY ||
+        settings::time_cutoff[neutron] < INFTY)
+      fatal_error("<adjoint_populations> branchless collisions are not "
+                  "compatible with a neutron <energy_max> or time cutoff.");
+  }
 
   const int n_threads = num_threads();
   thread_roots.assign(n_threads, {});
@@ -1657,11 +1669,60 @@ void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx)
       site.shadow_tag = p.shadow_tag();
       site.shadow_t0 = t0;
       site.wgt_born = p.wgt_born();
+      // A branchless line starts here: it is rouletted and split about the
+      // weight its tree banks sites at
+      if (settings::adjpop_branchless &&
+          depth >= settings::adjpop_branchless_depth)
+        site.wgt_born = w_site;
       site.wgt_ww_born = p.wgt_ww_born();
       site.n_split = p.n_split();
       p.local_secondary_bank().push_back(site);
     }
   }
+}
+
+bool tree_branchless(const Particle& p)
+{
+  return settings::adjpop_branchless &&
+         p.shadow_depth() >= settings::adjpop_branchless_depth &&
+         !in_detector_tree();
+}
+
+void score_branchless_sites(const Particle& p, double w_next)
+{
+  if (!(w_next > 0.0))
+    return;
+  const int cls = tag_class(p.shadow_tag());
+  const int tag = p.shadow_tag() % N_TAG;
+  const int ebin = tag_ebin(p.shadow_tag());
+  // As create_tree_sites() stamps its sites
+  const double t0 = (p.shadow_depth() == 0) ? p.lifetime() : p.shadow_t0();
+  score_tree(cls, tag, ebin, p.shadow_depth() + 1, w_next, t0);
+}
+
+void continue_as_fission_neutron(
+  Particle& p, int i_nuclide, const Reaction& rx, double wgt)
+{
+  SourceSite site;
+  site.r = p.r();
+  site.particle = ParticleType::neutron();
+  site.time = p.time();
+  site.wgt = wgt;
+  sample_fission_neutron(i_nuclide, rx, &site, p);
+
+  // The stamp create_tree_sites() gives the line's sites
+  if (p.shadow_depth() == 0)
+    p.shadow_t0() = p.lifetime();
+  ++p.shadow_depth();
+  p.wgt() = wgt;
+  p.E() = site.E;
+  p.u() = site.u;
+  p.time() = site.time;
+  p.lifetime() = 0.0;
+  p.delayed_group() = site.delayed_group;
+  p.r_born() = p.r();
+  p.E_born() = site.E;
+  p.fission() = true;
 }
 
 bool tree_makes_photons(const Particle& p)
@@ -2355,6 +2416,10 @@ void write_results(hid_t file_id)
     group, "photoneutrons", static_cast<int>(settings::adjpop_photoneutrons));
   write_dataset(group, "perturbed_importance",
     static_cast<int>(settings::adjpop_perturbed_importance));
+  write_dataset(
+    group, "branchless", static_cast<int>(settings::adjpop_branchless));
+  write_dataset(group, "branchless_split", settings::adjpop_branchless_split);
+  write_dataset(group, "branchless_depth", settings::adjpop_branchless_depth);
   if (probes_on())
     write_dataset(group, "probe_kill_energy", probe_kill_energy);
   // [batch][class][tag][depth], flattened

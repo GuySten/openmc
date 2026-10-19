@@ -141,6 +141,15 @@ extern int adjpop_n_generation; //!< Depth of the adjoint side populations
 extern bool
   adjpop_photoneutrons; //!< divert photoneutrons into a side population?
 extern bool adjpop_perturbed_importance; //!< grow photoneutron branches?
+//! Grow the shadow trees with branchless collisions: one neutron per tree
+//! line, its weight scaled at every collision instead of banking sites
+extern bool adjpop_branchless;
+//! Weight, over the root's, above which a branchless line is split into
+//! copies of about the root's weight (0: never)
+extern double adjpop_branchless_split;
+//! First depth whose tree neutrons collide branchlessly; the generations
+//! above it branch
+extern int adjpop_branchless_depth;
 //! Energy-group edges [eV] for the photoneutron-root importance (empty: off)
 extern vector<double> adjpop_energy_bins;
 //! What adjpop_energy_bins bins: 0 = the birth energy of the photon that made

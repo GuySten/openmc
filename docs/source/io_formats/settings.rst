@@ -43,6 +43,42 @@ sub-elements:
 
     *Default*: false
 
+  :branchless:
+    If true, every tree but the detector trees is grown with branchless
+    collisions. A tree is then one neutron line that never branches: at every
+    collision it scores the expected weight of the next generation, :math:`w
+    \nu\Sigma_f / (k \Sigma_t)`, at the next depth, has its weight multiplied
+    by :math:`(\nu\Sigma_f / k + \Sigma_t - \Sigma_a) / \Sigma_t` whatever
+    happens next, and continues as its fission neutron or as the scattered
+    neutron in proportion to the two terms. At the last depth it only scatters,
+    with the factor :math:`(\Sigma_t - \Sigma_a) / \Sigma_t`. The expected
+    scores are those of the branching trees; their variance differs. Lines
+    whose weight falls below the weight cutoff times the root weight are
+    rouletted, and lines above ``branchless_split`` times it are split. Not
+    compatible with a neutron ``<energy_max>`` or time cutoff.
+
+    *Default*: false
+
+  :branchless_split:
+    Weight, over the root weight, above which a branchless line is split into
+    copies of about the root weight (the ceiling of the ratio, at most 64).
+    Without splitting a tree ends at its line's first leak, and the variance
+    of its weight grows exponentially with the depth; splitting heavy lines
+    keeps a leak from ending the whole tree. 0 never splits.
+
+    *Default*: 2.0
+
+  :branchless_depth:
+    First depth whose tree neutrons collide branchlessly. The generations
+    above it branch as without ``branchless``, and every site they bank at
+    this depth starts a branchless line of the sites' weight. Branching the
+    first generations keeps the root's own flight scoring depth 1 at every
+    collision until it is absorbed, and costs little: at depth 1 a
+    branchless root scores fewer collisions and loses to the branching tree.
+    Must be lower than ``n_generation``.
+
+    *Default*: 1 (0 with a single generation)
+
   :photoneutron_energy_bins:
     Energy-group edges [eV], strictly increasing, by which the photoneutron
     roots' summed weight is also recorded at every depth. The ungrouped sums

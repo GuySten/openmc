@@ -117,6 +117,9 @@ int openmc_finalize()
   settings::adjpop_n_generation = 0;
   settings::adjpop_photoneutrons = false;
   settings::adjpop_perturbed_importance = false;
+  settings::adjpop_branchless = false;
+  settings::adjpop_branchless_split = 2.0;
+  settings::adjpop_branchless_depth = 1;
   settings::adjpop_energy_bins.clear();
   settings::adjpop_energy_variable = 0;
   settings::adjpop_fission_nuclides.clear();

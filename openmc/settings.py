@@ -141,6 +141,22 @@ class Settings:
             branches, giving the change of the importance function that the
             change of beta_eff and of the generation time need (bool,
             requires photoneutrons). Default is False.
+        :branchless: Grow every tree but the detector trees with branchless
+            collisions: one neutron line per tree that scores the next
+            generation's expected weight at every collision and continues as
+            either its fission neutron or the scattered neutron, its weight
+            scaled by (nu Sigma_f / k + Sigma_s) / Sigma_t, so that it never
+            branches (bool). Default is False.
+        :branchless_split: Weight, over the root's, above which a branchless
+            line is split into copies of about the root's weight, so that a
+            leak does not end the whole tree (float, 0 to never split).
+            Default is 2.0.
+        :branchless_depth: First depth whose tree neutrons collide
+            branchlessly; the generations above it branch, and every site
+            they bank at this depth starts a branchless line (int, lower
+            than n_generation). Default is 1 (0 with a single generation):
+            the root's own generation branches, so that its depth-1 score is
+            the branching tree's.
         :photoneutron_energy_bins: Energy-group edges [eV] by which the
             photoneutron roots' importance is also tallied (sequence of
             floats, requires photoneutrons). Photoneutrons outside the edges
@@ -1261,7 +1277,8 @@ class Settings:
         for key, value in adjoint_populations.items():
             cv.check_value('adjoint populations key', key,
                            ('n_generation', 'photoneutrons',
-                            'perturbed_importance',
+                            'perturbed_importance', 'branchless',
+                            'branchless_split', 'branchless_depth',
                             'photoneutron_energy_bins',
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
@@ -1338,6 +1355,15 @@ class Settings:
                     f'adjoint populations {key}', value,
                     2 if key == 'photoneutron_ray_comb_points' else 1,
                     equality=True)
+            elif key == 'branchless_depth':
+                cv.check_type(f'adjoint populations {key}', value, Integral)
+                cv.check_greater_than(f'adjoint populations {key}', value, 0,
+                                      equality=True)
+            elif key == 'branchless_split':
+                cv.check_type(f'adjoint populations {key}', value, Real)
+                if not (value == 0.0 or value > 1.0):
+                    raise ValueError('branchless_split must be 0 or greater '
+                                     'than 1.')
             elif key == 'photoneutron_probe_trigger_floor':
                 cv.check_type(f'adjoint populations {key}', value, Real)
                 cv.check_greater_than(f'adjoint populations {key}', value,
@@ -2740,6 +2766,9 @@ class Settings:
             text = get_text(elem, 'perturbed_importance')
             if text is not None:
                 value['perturbed_importance'] = text in ('true', '1')
+            text = get_text(elem, 'branchless')
+            if text is not None:
+                value['branchless'] = text in ('true', '1')
             text = get_text(elem, 'photoneutron_energy_bins')
             if text is not None:
                 value['photoneutron_energy_bins'] = [float(x) for x in text.split()]
@@ -2770,12 +2799,13 @@ class Settings:
             for key in ('root_fraction', 'photoneutron_probe_root_fraction',
                         'photoneutron_ray_root_fraction',
                         'photoneutron_probe_trigger',
-                        'photoneutron_probe_trigger_floor'):
+                        'photoneutron_probe_trigger_floor',
+                        'branchless_split'):
                 text = get_text(elem, key)
                 if text is not None:
                     value[key] = float(text)
             for key in ('photoneutron_ray_comb_points',
-                        'photoneutron_ray_refinement'):
+                        'photoneutron_ray_refinement', 'branchless_depth'):
                 text = get_text(elem, key)
                 if text is not None:
                     value[key] = int(text)

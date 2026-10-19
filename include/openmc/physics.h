@@ -21,6 +21,12 @@ void collision(Particle& p);
 //! Samples an incident neutron reaction
 void sample_neutron_reaction(Particle& p);
 
+//! Collision of a branchless shadow-tree neutron (see adjoint_populations.h):
+//! it scores the next generation's expected weight and continues as one
+//! fission or scattered neutron, with its weight scaled by what the collision
+//! makes
+void sample_branchless_tree_collision(Particle& p);
+
 //! Samples an element based on the macroscopic cross sections for each nuclide
 //! within a material and then samples a reaction for that element and calls the
 //! appropriate routine to process the physics.

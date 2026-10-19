@@ -45,6 +45,17 @@
 //! that sum(w * t0) / (k * sum(w)) over the fission roots is IFP's
 //! generation time.
 //!
+//! With branchless collisions on, a tree is instead one neutron line that
+//! never branches: at every collision it scores the expected weight of the
+//! next generation at the next depth, takes the weight factor
+//! (nu Sigma_f / k + Sigma_s) / Sigma_t whatever happens next, and continues
+//! as its fission neutron (one depth down) or as the scattered neutron, in
+//! proportion to the two terms. At the last depth it only scatters, with the
+//! factor Sigma_s / Sigma_t. A line heavier than branchless_split times its
+//! root's weight is split into copies of about the root's weight. With
+//! branchless_depth d, the generations above depth d branch as usual and
+//! every site they bank at depth d starts a branchless line.
+//!
 //! Per batch, and per population, tag and depth, the module accumulates the
 //! summed weight and the summed weight times lifetime stamp. Ratios --
 //! beta_eff per group, generation time, the photoneutron fraction and its
@@ -203,6 +214,21 @@ int secondary_photon_tag(int shadow_tag);
 //! Shadow-tree hook in create_fission_sites(): bank this tree's fission
 //! sites at its population's target weight and score them by depth
 void create_tree_sites(Particle& p, int i_nuclide, const Reaction& rx);
+
+//! Does this shadow-tree neutron collide branchlessly? With branchless on,
+//! every tree neutron from branchless_depth down does, except in the
+//! detector trees, which do not multiply.
+bool tree_branchless(const Particle& p);
+
+//! Branchless hook at a tree neutron's collision: score w_next, the expected
+//! weight of the next generation (a collision estimate), at the next depth
+void score_branchless_sites(const Particle& p, double w_next);
+
+//! Branchless hook when a tree neutron continues as the fission neutron of
+//! its collision: the particle becomes that neutron, one depth down, with
+//! weight wgt. Never called at the last depth.
+void continue_as_fission_neutron(
+  Particle& p, int i_nuclide, const Reaction& rx, double wgt);
 
 //! Does this shadow-tree neutron emit photons? Only with perturbed importance
 //! on, and only below the root (depth >= 1) of fission- and delayed-root

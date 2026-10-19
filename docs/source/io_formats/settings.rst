@@ -78,24 +78,6 @@ sub-elements:
 
     *Default*: 0
 
-  :expected_scores:
-    If true, the branching tree neutrons (all of them without ``branchless``,
-    those above ``branchless_depth`` with it) score the expected weight of the
-    next generation, :math:`w \nu\Sigma_f / (k \Sigma_t)`, at every
-    collision, instead of the weight of the sites they bank; the banked sites
-    only continue the tree. The last depth's sites are then not sampled. Not
-    compatible with a neutron ``<energy_max>`` or time cutoff.
-
-    *Default*: false
-
-  :implicit_capture:
-    If true, the branching tree neutrons survive capture at weight
-    :math:`w (1 - \sigma_a / \sigma_t)` instead of being absorbed, and are
-    rouletted below the weight cutoff times the weight their tree banks sites
-    at. Not used in the detector trees.
-
-    *Default*: false
-
   :photoneutron_energy_bins:
     Energy-group edges [eV], strictly increasing, by which the photoneutron
     roots' summed weight is also recorded at every depth. The ungrouped sums

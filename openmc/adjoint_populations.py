@@ -89,10 +89,6 @@ class AdjointPopulations:
         Weight, over the root's, above which a branchless line was split
     branchless_depth : int
         First depth whose tree neutrons collided branchlessly
-    expected_scores : bool
-        Whether branching tree neutrons scored expected next-generation weights
-    implicit_capture : bool
-        Whether branching tree neutrons captured implicitly
     keff : float
         k used to form the ratios
     weight : numpy.ndarray
@@ -195,10 +191,6 @@ class AdjointPopulations:
             if 'branchless_split' in group else 0.0
         self.branchless_depth = int(group['branchless_depth'][()]) \
             if 'branchless_depth' in group else 0
-        self.expected_scores = bool(group['expected_scores'][()]) \
-            if 'expected_scores' in group else False
-        self.implicit_capture = bool(group['implicit_capture'][()]) \
-            if 'implicit_capture' in group else False
         n_class = int(group['n_class'][()])
         n_tag = int(group['n_tag'][()])
         shape = (self.n_batches, n_class, n_tag, self.n_generation + 1)

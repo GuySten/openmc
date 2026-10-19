@@ -74,8 +74,7 @@ def agree(a, b, n_sigma=4.0):
 def test_settings_roundtrip(run_in_tmpdir):
     s = openmc.Settings()
     value = {'n_generation': 3, 'branchless': True, 'branchless_split': 3.0,
-             'branchless_depth': 1, 'expected_scores': True,
-             'implicit_capture': True}
+             'branchless_depth': 1}
     s.adjoint_populations = value
     s.export_to_xml()
     assert openmc.Settings.from_xml().adjoint_populations == value
@@ -89,31 +88,20 @@ def test_settings_roundtrip(run_in_tmpdir):
 
 def test_kinetics_match_branching(run_in_tmpdir):
     """beta_eff and the generation time, at every depth, with and without
-    splitting the heavy lines, branching above depth 1, and branching trees
-    with expected scores and implicit capture"""
+    splitting the heavy lines, and branching above depth 1"""
     variants = {'branching': {},
                 'no split': {'branchless_split': 0.0},
                 'split': {'branchless_split': 2.0},
-                'from depth 1': {'branchless_depth': 1},
-                'expected scores': {'expected_scores': True},
-                'implicit capture': {'expected_scores': True,
-                                     'implicit_capture': True},
-                'from depth 1, both': {'branchless_depth': 1,
-                                       'expected_scores': True,
-                                       'implicit_capture': True}}
-    branching = ('branching', 'expected scores', 'implicit capture')
+                'from depth 1': {'branchless_depth': 1}}
     results = {}
     for name, extra in variants.items():
-        model = reflected_sphere(name not in branching)
+        model = reflected_sphere(name != 'branching')
         model.settings.adjoint_populations.update(extra)
         sp_path = model.run(path=f'{name.replace(" ", "_")}.xml',
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
             pops = sp.adjoint_populations
-            assert pops.branchless == (name not in branching)
-            assert pops.expected_scores == extra.get('expected_scores', False)
-            assert pops.implicit_capture == extra.get('implicit_capture',
-                                                      False)
+            assert pops.branchless == (name != 'branching')
             if 'branchless_split' in extra:
                 assert pops.branchless_split == extra['branchless_split']
             assert pops.branchless_depth == extra.get('branchless_depth', 0)
@@ -131,35 +119,27 @@ def test_kinetics_match_branching(run_in_tmpdir):
 
 def test_photoneutrons_match_branching(run_in_tmpdir):
     """The probe lines' reactivity, direct (the rays') and scattered, and the
-    photoneutron branches' changes of beta_eff and the generation time, with
-    branchless trees and with branching trees that score expected weights and
-    capture implicitly"""
-    variants = {'branching': (False, {}),
-                'branchless': (True, {}),
-                'expected, implicit': (False, {'expected_scores': True,
-                                               'implicit_capture': True})}
+    photoneutron branches' changes of beta_eff and the generation time"""
     results = {}
-    for name, (branchless, extra) in variants.items():
+    for branchless in (False, True):
         model = reflected_sphere(branchless, photoneutrons=True)
-        model.settings.adjoint_populations.update(extra)
-        sp_path = model.run(path=f'{name.replace(" ", "_")}.xml',
+        sp_path = model.run(path=f'branchless_{branchless}.xml',
                             **run_kwargs())
         with openmc.StatePoint(sp_path) as sp:
             pops = sp.adjoint_populations
             assert pops.weight[:, CLASS_FISSION_BRANCH].sum() > 0.0
-            results[name] = (pops.probe_reactivity(),
-                             [pops.delta_beta_eff(),
-                              pops.delta_generation_time()])
+            results[branchless] = (pops.probe_reactivity(),
+                                   [pops.delta_beta_eff(),
+                                    pops.delta_generation_time()])
 
-    for name in variants:
-        for part_a, part_b in zip(results['branching'][0], results[name][0]):
-            for a, b in zip(part_a, part_b):
-                assert agree(a, b)
-        # The rays make every line's direct part
-        for a, b in zip(results['branching'][0][0], results[name][0][0]):
-            assert a.n > 0.0 and b.n > 0.0
-        for a, b in zip(results['branching'][1], results[name][1]):
+    for part_a, part_b in zip(results[False][0], results[True][0]):
+        for a, b in zip(part_a, part_b):
             assert agree(a, b)
+    # The rays make every line's direct part
+    for a, b in zip(results[False][0][0], results[True][0][0]):
+        assert a.n > 0.0 and b.n > 0.0
+    for a, b in zip(results[False][1], results[True][1]):
+        assert agree(a, b)
 
 
 def test_probe_photons_killed_below_threshold(run_in_tmpdir):

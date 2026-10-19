@@ -191,10 +191,6 @@ Present only if adjoint side populations were requested.
              which a branchless line was split (0: never).
            - **branchless_depth** (*int*) -- First depth whose tree neutrons
              collided branchlessly.
-           - **expected_scores** (*int*) -- Whether branching tree neutrons
-             scored expected next-generation weights.
-           - **implicit_capture** (*int*) -- Whether branching tree neutrons
-             captured implicitly.
            - **probe_kill_energy** (*double*) -- With probes, the lowest
              photoneutron threshold of the model [eV]; probe photons below it
              were killed.

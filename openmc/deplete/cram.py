@@ -239,14 +239,23 @@ class ShiftedIPFCramSolver(IPFCramSolver):
     level : float, optional
         Width :math:`L` of a shift level: a nuclide drops by at most
         :math:`e^{-L}` relative to its shift.
+    split_sources : bool, optional
+        Solve the atoms of each band of source decay rates (bands of width
+        :math:`L` in :math:`\lambda\Delta t`) as an independent copy of the
+        system, with its own shifts, and add the copies. A nuclide fed both
+        by a slow ancestor and by fast-decaying atoms (its own, or a fast
+        ancestor's) then gets a shift fitting each contribution, instead of
+        one shift for their sum.
 
     """
 
-    def __init__(self, alpha, theta, alpha0, level=50.0):
+    def __init__(self, alpha, theta, alpha0, level=50.0, split_sources=False):
         super().__init__(alpha, theta, alpha0)
         check_type("level", level, numbers.Real)
         check_greater_than("level", level, 0.0)
+        check_type("split_sources", split_sources, bool)
         self.level = float(level)
+        self.split_sources = split_sources
 
     def __call__(self, A, n0, dt, substeps=1):
         """Solve depletion equations using IPF CRAM with spectral shifts
@@ -275,6 +284,27 @@ class ShiftedIPFCramSolver(IPFCramSolver):
 
         A = csc_array(A, dtype=np.float64)
         step_dt = dt / substeps
+        if not self.split_sources:
+            return self._solve(A, n0, step_dt, substeps)
+
+        y = np.asarray(n0, dtype=np.float64).copy()
+        for _ in range(substeps):
+            _, _, node_rate = _shift_levels(A, y, step_dt, self.level)
+            decay = node_rate * step_dt
+            largest = np.abs(y).max()
+            if largest == 0.0:
+                return y
+            top = math.ceil((math.log(largest) + 745.0 + 69.0) / self.level)
+            band = np.minimum(np.floor(decay / self.level), top)
+            out = np.zeros_like(y)
+            for b in np.unique(band[y != 0.0]):
+                part = np.where((band == b) & (y != 0.0), y, 0.0)
+                out += self._solve(A, part, step_dt, 1)
+            y = out
+        return y
+
+    def _solve(self, A, n0, step_dt, substeps):
+        """Shifted solve of ``substeps`` intervals of ``step_dt``."""
         levels, graph, node_rate = _shift_levels(A, n0, step_dt, self.level)
         threshold = -math.log(self.alpha0) + 10.0
         groups = []

@@ -74,9 +74,11 @@ sub-elements:
     above it branch as without ``branchless``, and every site they bank at
     this depth starts a branchless line of the sites' weight. Branching the
     first generations keeps the root's own flight scoring depth 1 at every
-    collision until it is absorbed. Must be lower than ``n_generation``.
+    collision until it is absorbed, and costs little: at depth 1 a
+    branchless root scores fewer collisions and loses to the branching tree.
+    Must be lower than ``n_generation``.
 
-    *Default*: 0
+    *Default*: 1 (0 with a single generation)
 
   :photoneutron_energy_bins:
     Energy-group edges [eV], strictly increasing, by which the photoneutron

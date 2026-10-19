@@ -154,7 +154,9 @@ class Settings:
         :branchless_depth: First depth whose tree neutrons collide
             branchlessly; the generations above it branch, and every site
             they bank at this depth starts a branchless line (int, lower
-            than n_generation). Default is 0.
+            than n_generation). Default is 1 (0 with a single generation):
+            the root's own generation branches, so that its depth-1 score is
+            the branching tree's.
         :photoneutron_energy_bins: Energy-group edges [eV] by which the
             photoneutron roots' importance is also tallied (sequence of
             floats, requires photoneutrons). Photoneutrons outside the edges

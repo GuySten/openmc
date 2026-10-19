@@ -7,6 +7,7 @@ from fractions import Fraction
 from functools import partial
 import math
 import numbers
+import warnings
 
 import numpy as np
 from scipy.sparse import block_diag as _block_diag, diags_array
@@ -293,7 +294,9 @@ class ShiftedIPFCramSolver(IPFCramSolver):
         """
         check_type("substeps", substeps, numbers.Integral)
         check_greater_than("substeps", substeps, 0)
+        return _clip_negative(self._call(A, n0, dt, substeps))
 
+    def _call(self, A, n0, dt, substeps):
         A = csc_array(A, dtype=np.float64)
         step_dt = dt / substeps
         if not self.split_sources:
@@ -467,6 +470,31 @@ def _shift_levels(A, n0, dt, width):
         subset = subset[np.argsort(rank[subset], kind='stable')]
         result.append((lv * width / dt, members, subset))
     return result, graph, block_rate[label]
+
+
+def _clip_negative(y):
+    """Set negative number densities to zero, warning about those that are
+    not subnormal.
+
+    A true value below the smallest normal double (2.2e-308) cannot be held
+    to any relative accuracy, so rounding a negative there up to zero costs
+    less than 2.2e-308: the shifted solver's results are relative to every
+    nuclide's own value down to that limit and absolute below it.  A negative
+    in the normal range means the error of that nuclide exceeded its value,
+    i.e. the solve missed the accuracy its level width and substeps were
+    chosen for; it is clipped too, with a warning.
+    """
+    negative = y < 0.0
+    if negative.any():
+        large = y < -np.finfo(np.float64).tiny
+        if large.any():
+            warnings.warn(
+                f"{int(large.sum())} negative number densities in the normal "
+                f"range (down to {y.min():.3e}) set to zero: the shifted CRAM "
+                "solve was not accurate for them; use more substeps or a "
+                "smaller level width")
+        y[negative] = 0.0
+    return y
 
 
 def block_diag_array(blocks, format='csc'):

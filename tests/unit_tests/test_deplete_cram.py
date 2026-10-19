@@ -4,13 +4,15 @@ Compares a few Mathematica matrix exponentials to CRAM16/CRAM48.
 Tests substep accuracy against self-converged reference solutions.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 import scipy.sparse as sp
 from pytest import approx
 from openmc.deplete.cram import (CRAM16, CRAM48, Cram16Solver, Cram48Solver,
                                   IPFCramSolver, ShiftedCram16Solver,
-                                  ShiftedCram48Solver)
+                                  ShiftedCram48Solver, ShiftedIPFCramSolver)
 
 
 def test_CRAM16():
@@ -166,3 +168,34 @@ def test_shifted_matches_plain_without_deep_decay(substeps):
                           (ShiftedCram48Solver, Cram48Solver)):
         z = solver(mat, x, 0.1, substeps=substeps)
         assert z == approx(plain(mat, x, 0.1, substeps=substeps), rel=1e-14, abs=0)
+
+
+def test_shifted_no_negative_daughter():
+    """Fast parent -> fast daughter -> stable: plain CRAM16 returns a large
+    negative daughter; the shifted solver returns its true, positive value
+    and no warning."""
+    lam = (1e-3, 3e-4)
+    mat = _chain_matrix([lam[0], lam[1], 0.0], [(0, 1, lam[0]), (1, 2, lam[1])])
+    x = np.array([1e20, 0.0, 0.0])
+    dt = 1e6
+    assert Cram16Solver(mat, x, dt)[1] < 0.0
+    exact = x[0] * lam[0] / (lam[1] - lam[0]) * (np.exp(-lam[0] * dt)
+                                                 - np.exp(-lam[1] * dt))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for solver in (ShiftedCram16Solver, ShiftedCram48Solver):
+            z = solver(mat, x, dt)
+            assert np.all(z >= 0.0)
+            assert z[1] == approx(exact, rel=1e-12, abs=0)
+
+
+def test_shifted_negative_warns():
+    """A level wide enough to disable the shift reproduces plain CRAM's
+    negative daughter: it is set to zero, with a warning."""
+    lam = (1e-3, 3e-4)
+    mat = _chain_matrix([lam[0], lam[1], 0.0], [(0, 1, lam[0]), (1, 2, lam[1])])
+    wide = ShiftedIPFCramSolver(Cram16Solver.alpha, Cram16Solver.theta,
+                                Cram16Solver.alpha0, level=1e9)
+    with pytest.warns(UserWarning, match="normal range"):
+        z = wide(mat, np.array([1e20, 0.0, 0.0]), 1e6)
+    assert np.all(z >= 0.0)

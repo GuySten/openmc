@@ -239,6 +239,13 @@ class ShiftedIPFCramSolver(IPFCramSolver):
     level : float, optional
         Width :math:`L` of a shift level: a nuclide drops by at most
         :math:`e^{-L}` relative to its shift.
+    drop_constant : bool, optional
+        Use :math:`r(z) - \alpha_0` instead of :math:`r(z)`, i.e. subtract
+        :math:`\alpha_0` times the input of every solve. The approximation
+        then vanishes at :math:`z\to-\infty`, so atoms that decay
+        completely leave nothing behind instead of :math:`\alpha_0` of
+        themselves, at the price of an error of up to :math:`2\alpha_0`
+        instead of :math:`\alpha_0` elsewhere.
     split_sources : bool, optional
         Solve the atoms of each band of source decay rates (bands of width
         :math:`L` in :math:`\lambda\Delta t`) as an independent copy of the
@@ -249,13 +256,16 @@ class ShiftedIPFCramSolver(IPFCramSolver):
 
     """
 
-    def __init__(self, alpha, theta, alpha0, level=50.0, split_sources=False):
+    def __init__(self, alpha, theta, alpha0, level=50.0, split_sources=False,
+                 drop_constant=False):
         super().__init__(alpha, theta, alpha0)
         check_type("level", level, numbers.Real)
         check_greater_than("level", level, 0.0)
         check_type("split_sources", split_sources, bool)
+        check_type("drop_constant", drop_constant, bool)
         self.level = float(level)
         self.split_sources = split_sources
+        self.drop_constant = drop_constant
 
     def __call__(self, A, n0, dt, substeps=1):
         """Solve depletion equations using IPF CRAM with spectral shifts
@@ -337,9 +347,12 @@ class ShiftedIPFCramSolver(IPFCramSolver):
             for subset, local, members, solvers, factor, dropped in groups:
                 u = y[subset]
                 u[dropped] = 0.0
+                u_in = u
                 for alpha, solve in zip(self.alpha, solvers):
                     u = u + 2 * np.real(alpha * solve(u))
                 u *= self.alpha0
+                if self.drop_constant:
+                    u = u - self.alpha0 * u_in
                 out[members] = u[local] * factor
             y = out
         return y

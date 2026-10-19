@@ -462,3 +462,46 @@ def test_photon_importance_by_target(run_in_tmpdir):
     for e in pops.probe_energies:
         assert by_target.fold([e], [1.0]).n == pytest.approx(
             single.fold([e], [1.0]).n, rel=1e-9)
+
+
+def test_probe_reactions_grow_detector_trees(run_in_tmpdir):
+    """A probed reaction's bin has probe and ray detector categories of its
+    own after the fissioning-nuclide bin's, whose source weight is the
+    reaction's weight, and the detector response to a photon born at its
+    sites is rebuilt from them."""
+    model, det, _ = detector_model(photoneutrons=True)
+    model.settings.adjoint_populations['photoneutron_probe_reactions'] = \
+        ['H2(n,gamma)']
+    sp_path = model.run(**run_kwargs())
+    heavy_water = model.materials[1]
+
+    with openmc.StatePoint(sp_path) as sp:
+        pops = sp.adjoint_populations
+        tally = sp.get_tally(name='detector')
+        response = pops.detector_response(tally)
+        off_pn, off_probe, off_ray, n_cat = pops.detector_categories
+    K, KR = len(pops.probe_energies), len(pops.ray_photon_energies)
+    assert off_ray - off_probe == 2 * K * 3
+    assert n_cat - off_ray == 2 * KR
+
+    # Every line of a bin is emitted with the bin's weight: the fission
+    # bin's with its fission weight, the reaction's with its reaction weight
+    source = pops.detector_source[:, :, 0]
+    fission = source[:, off_probe]
+    reaction = source[:, off_probe + K * 3]
+    assert np.all(reaction > 0.0)
+    np.testing.assert_allclose(
+        reaction / fission,
+        pops.probe_reaction_weight[:, 0] / pops.probe_fission_weight[:, 0],
+        rtol=1e-9)
+    np.testing.assert_allclose(source[:, off_ray + KR], reaction, rtol=1e-12)
+
+    importance = response.photon_importance(heavy_water,
+                                            nuclide='H2(n,gamma)')
+    assert importance.name == 'H2(n,gamma)'
+    for k, e in enumerate(pops.probe_energies):
+        expected = (response.values[:, off_ray + KR + k, 0] +
+                    response.values[:, off_probe + 3 * (K + k) + 1, 0] +
+                    response.values[:, off_probe + 3 * (K + k) + 2, 0]).mean()
+        assert importance.fold([e], [1.0]).n == pytest.approx(expected,
+                                                               rel=1e-9)

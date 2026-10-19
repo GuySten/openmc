@@ -85,6 +85,63 @@ def photoneutron_threshold(nuclide, cross_sections=None):
     return float(threshold)
 
 
+def probe_reaction(spec):
+    """The nuclide and MT of a probed reaction.
+
+    Parameters
+    ----------
+    spec : str or tuple
+        'Al27(n,gamma)', 'Al27 (n,gamma)' or 'Al27:102', or a tuple of the
+        nuclide and the reaction, its name ('(n,gamma)') or MT (102)
+
+    Returns
+    -------
+    tuple of str and int
+        The nuclide and the MT
+
+    """
+    from openmc.data.reaction import REACTION_MT
+    if isinstance(spec, str):
+        text = spec.replace(' ', '')
+        if ':' in text:
+            nuclide, _, reaction = text.rpartition(':')
+        elif '(' in text:
+            i = text.index('(')
+            nuclide, reaction = text[:i], text[i:]
+        else:
+            raise ValueError(f'Probed reaction {spec!r} is not '
+                             "'NUCLIDE(reaction)' or 'NUCLIDE:MT'.")
+    elif isinstance(spec, Iterable) and len(spec := tuple(spec)) == 2:
+        nuclide, reaction = spec
+    else:
+        raise TypeError(f'Probed reaction {spec!r} is not a string or a '
+                        '(nuclide, reaction) pair.')
+    cv.check_type('probed reaction nuclide', nuclide, str)
+    if isinstance(reaction, str) and reaction.strip().isdigit():
+        reaction = int(reaction)
+    if isinstance(reaction, str):
+        name = reaction.replace(' ', '')
+        if name not in REACTION_MT:
+            raise ValueError(f'Unknown reaction {reaction!r} of probed '
+                             f'reaction {spec!r}.')
+        mt = REACTION_MT[name]
+    else:
+        cv.check_type('probed reaction MT', reaction, int)
+        cv.check_greater_than('probed reaction MT', reaction, 0)
+        mt = int(reaction)
+    if not nuclide:
+        raise ValueError(f'Probed reaction {spec!r} names no nuclide.')
+    return nuclide, mt
+
+
+def probe_reaction_label(nuclide, mt):
+    """The label of a probed reaction's bin: 'Al27(n,gamma)', or
+    'Al27(MT=5)' for an MT without a reaction name."""
+    from openmc.data.reaction import REACTION_NAME
+    name = REACTION_NAME.get(int(mt))
+    return f'{nuclide}{name}' if name else f'{nuclide}(MT={int(mt)})'
+
+
 def probe_line_energies(threshold, e_max, n, first=1.0e3, cross_sections=None):
     """Probe line energies spaced evenly in photoneutron lethargy.
 

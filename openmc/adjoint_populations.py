@@ -53,6 +53,10 @@ exact.
 import numpy as np
 from uncertainties import ufloat
 
+#: MTs of fission, whose products are the fission yields' and are never
+#: taken from a depletion chain
+_FISSION_MT = (18, 19, 20, 21, 38)
+
 CLASS_FISSION = 0
 CLASS_DELAYED = 1
 CLASS_PHOTONEUTRON = 2
@@ -118,6 +122,12 @@ class AdjointPopulations:
     probe_fission_nuclides : list of str or None
         Names of the probes' fissioning-nuclide bins ('other' last, or a
         single 'all')
+    probe_reactions : list of str or None
+        Labels of the probed reactions' bins (e.g. 'Al27(n,gamma)'), which
+        follow the fissioning-nuclide bins in every probe and ray array; an
+        empty list if none was probed
+    probe_reaction_mt : dict of str to tuple or None
+        The nuclide and MT of each probed reaction, by label
     probe_targets : list of str or None
         Names of the photoneutron-target bins: the nuclides of the setting
         ``photoneutron_targets`` and 'other', or a single 'all'
@@ -156,8 +166,10 @@ class AdjointPopulations:
         nuclide bin]
     probe_fission_weight : numpy.ndarray or None
         Probed fission weight (sum of w/k sigma_f/sigma_t over the recorded
-        fission events), indexed [batch, nuclide bin]: the weight of probe
-        photons emitted per line
+        fission events), indexed [batch, probe bin]: the weight of probe
+        photons emitted per line. For a probed reaction's bin it is the
+        reaction's weight, w/k sigma_x/sigma_t over its sites
+        (:attr:`probe_reaction_weight`)
     detector_source : numpy.ndarray or None
         Source weight of the detector trees' categories, indexed [batch,
         category, origin bin], if detector tallies were on: the fission-bank
@@ -232,6 +244,8 @@ class AdjointPopulations:
         self.probe_energies = None
         self.probe_n_labels = None
         self.probe_fission_nuclides = None
+        self.probe_reactions = None
+        self.probe_reaction_mt = None
         self.probe_targets = None
         self.probe_weight = None
         self.probe_weight_by_target = None
@@ -241,7 +255,19 @@ class AdjointPopulations:
             names = group['probe_fission_nuclides'][()]
             names = names.decode() if isinstance(names, bytes) else str(names)
             self.probe_fission_nuclides = names.split()
-            nn = len(self.probe_fission_nuclides)
+            self.probe_reactions = []
+            self.probe_reaction_mt = {}
+            if 'probe_reactions' in group:
+                from openmc.photoneutron_probes import (
+                    probe_reaction, probe_reaction_label)
+                text = group['probe_reactions'][()]
+                text = text.decode() if isinstance(text, bytes) else str(text)
+                for spec in text.split():
+                    pair = probe_reaction(spec)
+                    label = probe_reaction_label(*pair)
+                    self.probe_reactions.append(label)
+                    self.probe_reaction_mt[label] = pair
+            nn = len(self._probe_bin_names)
             self.probe_n_labels = int(group['probe_n_labels'][()]) \
                 if 'probe_n_labels' in group else 2
             if 'probe_targets' in group:
@@ -267,7 +293,7 @@ class AdjointPopulations:
         self.ray_photon_energies = None
         self.ray_refinement = 1
         if 'ray_weight' in group:
-            nn = len(self.probe_fission_nuclides)
+            nn = len(self._probe_bin_names)
             nd = self.n_generation + 1
             self.ray_neutron_energies = group['ray_neutron_energies'][()]
             self.ray_photon_energies = group['ray_photon_energies'][()] \
@@ -506,14 +532,95 @@ class AdjointPopulations:
                              "set adjoint_populations"
                              "['photoneutron_probe_energies'].")
 
+    @property
+    def _probe_bin_names(self):
+        """Every probe bin: the fissioning-nuclide bins, then the probed
+        reactions'."""
+        return self.probe_fission_nuclides + (self.probe_reactions or [])
+
+    @property
+    def probe_reaction_weight(self):
+        """Weight of each probed reaction's sites, w/k sigma_x/sigma_t,
+        indexed [batch, probed reaction]; None without probes."""
+        if self.probe_fission_weight is None:
+            return None
+        return self.probe_fission_weight[:, len(self.probe_fission_nuclides):]
+
+    def reactions_per_fission(self, reaction):
+        """Reactions of a probed reaction per fission (its weight over the
+        probed fission weight of every fissioning-nuclide bin), with the
+        delta-method standard deviation over the batches."""
+        self._check_probes()
+        j = self._probe_bin(reaction)
+        n_f = len(self.probe_fission_nuclides)
+        if j < n_f:
+            raise ValueError(f'{reaction!r} is a fissioning-nuclide bin, not '
+                             'a probed reaction.')
+        return _ratio(self.probe_fission_weight[:, j],
+                      self.probe_fission_weight[:, :n_f].sum(axis=1))
+
+    def reaction_branching(self, chain_file=None):
+        """What each probed reaction makes, with its branching ratios between
+        ground and isomeric states, from a depletion chain.
+
+        The chain's ratios are fixed numbers, not weighted with the spectrum
+        at the reaction's sites. Fission is never looked up: its products
+        are the fission yields'.
+
+        Parameters
+        ----------
+        chain_file : str or os.PathLike, optional
+            Depletion chain; openmc.config['chain_file'] if None
+
+        Returns
+        -------
+        dict of str to dict of str to float
+            {label: {product: branching ratio}} for every probed reaction
+            the chain has; reactions it lacks, and fission, are left out
+
+        """
+        import openmc
+        from openmc.data.reaction import REACTION_NAME
+        from openmc.deplete import Chain
+        if not self.probe_reactions:
+            return {}
+        if chain_file is None:
+            chain_file = openmc.config.get('chain_file')
+        if chain_file is None:
+            raise ValueError('No depletion chain: give chain_file or set '
+                             "openmc.config['chain_file'].")
+        chain = Chain.from_xml(chain_file)
+        out = {}
+        for label in self.probe_reactions:
+            nuclide, mt = self.probe_reaction_mt[label]
+            if mt in _FISSION_MT or nuclide not in chain:
+                continue
+            kind = REACTION_NAME.get(mt)
+            made = {}
+            for rx in chain[nuclide].reactions:
+                if rx.type == kind and rx.target is not None:
+                    made[rx.target] = made.get(rx.target, 0.0) + \
+                        float(rx.branching_ratio)
+            if made:
+                out[label] = made
+        return out
+
     def _probe_bin(self, nuclide):
-        names = self.probe_fission_nuclides
+        names = self._probe_bin_names
         if nuclide is None:
             if len(names) != 1:
-                raise ValueError(f'Name a probe nuclide bin: {names}.')
+                raise ValueError(f'Name a probe bin: {names}.')
             return 0
+        if nuclide not in names and self.probe_reactions:
+            # A probed reaction may also be named as NUCLIDE:MT or a pair
+            from openmc.photoneutron_probes import (
+                probe_reaction, probe_reaction_label)
+            try:
+                nuclide = probe_reaction_label(*probe_reaction(nuclide))
+            except (TypeError, ValueError):
+                pass
         if nuclide not in names:
-            raise ValueError(f'No probe nuclide bin {nuclide!r}: {names}.')
+            raise ValueError(f'No probe bin {nuclide!r}: {names}.')
         return names.index(nuclide)
 
     def _probe_parts(self, j, d):
@@ -683,7 +790,11 @@ class AdjointPopulations:
             warning and dropped. A single target with the photoneutrons
             tallied by target takes their sum.
         nuclide : str, optional
-            Fissioning-nuclide bin; may be omitted if there is only one
+            Fissioning-nuclide bin, or a probed reaction's (its label, e.g.
+            'Al27(n,gamma)'); may be omitted if there is only one bin. A
+            probed reaction's importance is per reaction at its sites and
+            carries the reactions per fission, as a fissioning-nuclide bin's
+            carries its share of the fissions
         depth : int, optional
             Depth at which the importance is read; n_generation if None
         rtol : float
@@ -710,7 +821,7 @@ class AdjointPopulations:
         j = self._probe_bin(nuclide)
         d = self._depth(depth)
         i_f = self.weight[:, CLASS_FISSION, :, d].sum(axis=1)
-        name = self.probe_fission_nuclides[j]
+        name = self._probe_bin_names[j]
         rays = self.ray_weight is not None and self.probe_n_labels == 3
         if isinstance(target, dict):
             direct, scattered, ray_direct = {}, {}, {}
@@ -744,8 +855,9 @@ class AdjointPopulations:
                                e_max=e_max, name=name)
 
     def probe_importances(self, target, depth=None, rtol=0.01, floor=1.0e-3,
-                          e_max=None, cross_sections=None):
-        """:meth:`probe_importance` for every fissioning-nuclide bin.
+                          e_max=None, cross_sections=None, reactions=False):
+        """:meth:`probe_importance` for every fissioning-nuclide bin, and with
+        ``reactions`` for every probed reaction too.
 
         Returns
         -------
@@ -755,9 +867,11 @@ class AdjointPopulations:
         """
         self._check_probes()
         target = self._resolve_targets(target, cross_sections)
+        names = self._probe_bin_names if reactions else \
+            self.probe_fission_nuclides
         return {n: self.probe_importance(target, nuclide=n, depth=depth,
                                          rtol=rtol, floor=floor, e_max=e_max)
-                for n in self.probe_fission_nuclides}
+                for n in names}
 
     def _resolve_targets(self, target, cross_sections=None):
         """The photoneutron target(s) of probe_importance: one
@@ -818,13 +932,14 @@ class AdjointPopulations:
 
     def export_photon_importance(self, path, target, depth=None, rtol=1.0e-3,
                                  floor=1.0e-3, e_max=None,
-                                 cross_sections=None):
+                                 cross_sections=None, chain_file=None):
         """Write the photon importance of every fissioning-nuclide bin and
-        the bins' fission fractions to an HDF5 file, for folding with
-        delayed-photon sources outside OpenMC (e.g. glowup).
+        probed reaction, the bins' fission fractions and the reactions per
+        fission to an HDF5 file, for folding with delayed-photon sources
+        outside OpenMC (e.g. glowup).
 
         The file holds, at the root, the attributes ``filetype``
-        ('photon_importance'), ``version`` (1, 0), ``nuclides`` (the bin
+        ('photon_importance'), ``version`` (1, 1), ``nuclides`` (the bin
         names, 'other' for every fissioning nuclide not named), ``depth``,
         ``n_batches``, ``keff`` and ``threshold`` (of the photoneutron target,
         the lowest of the targets' [eV]); the datasets ``fission_importance`` [batch], the fission-root
@@ -848,9 +963,24 @@ class AdjointPopulations:
           fissions per batch, with the attribute ``fission_fraction``, the
           bin's share of all fissions.
 
+        and the attribute ``reactions`` (the probed reactions' labels, e.g.
+        'Al27(n,gamma)'), with one group per probed reaction,
+        ``reactions/<label>``: ``energy``, ``importance``, ``std_dev`` and
+        ``batch_numerator`` as above, per reaction at the reaction's sites;
+        ``reaction_weight`` [batch], the collision estimate of its reactions;
+        the attributes ``nuclide``, ``mt`` and ``reactions_per_fission``; and,
+        where the depletion chain has the reaction (never fission),
+        ``products`` and ``branching_ratio``, what one reaction makes in each
+        ground or isomeric state (:meth:`reaction_branching`), with the
+        attribute ``branching_source`` 'chain' (else 'none').
+
         A delayed-photon source S_j(E) per fission of bin j then gives
         beta_ph = sum_j integral S_j(E) I_j(E) dE; I_j / fission_fraction is
         the importance of one photon born at an average fission of the bin.
+        Likewise S_r(E) per reaction r (the photons of what it makes, per
+        atom made) adds integral S_r(E) I_r(E) dE, and I_r /
+        reactions_per_fission is the importance of one photon born at an
+        average site of the reaction.
 
         Parameters
         ----------
@@ -870,21 +1000,39 @@ class AdjointPopulations:
             Top of the tables [eV]; the highest line if None
         cross_sections : str or os.PathLike, optional
             cross_sections.xml for a material target
+        chain_file : str or os.PathLike, optional
+            Depletion chain giving the probed reactions' products and their
+            branching ratios; openmc.config['chain_file'] if None. Without
+            either, the products are left to the folding code, with a
+            warning.
 
         """
+        import warnings
         import h5py
+        import openmc
         from openmc import __version__
         self._check_probes()
         target = self._resolve_targets(target, cross_sections)
         d = self._depth(depth)
         tables = self.probe_importances(target, depth=d, rtol=rtol,
-                                        floor=floor, e_max=e_max)
+                                        floor=floor, e_max=e_max,
+                                        reactions=True)
         names = self.probe_fission_nuclides
+        n_f = len(names)
         fw = self.probe_fission_weight
-        total = fw.sum()
+        total = fw[:, :n_f].sum()
+        branching = {}
+        if self.probe_reactions:
+            if chain_file is None and \
+                    openmc.config.get('chain_file') is None:
+                warnings.warn('No depletion chain: the probed reactions\' '
+                              'products and isomeric branching are not '
+                              'written.')
+            else:
+                branching = self.reaction_branching(chain_file)
         with h5py.File(path, 'w') as f:
             f.attrs['filetype'] = np.bytes_('photon_importance')
-            f.attrs['version'] = np.array([1, 0])
+            f.attrs['version'] = np.array([1, 1])
             f.attrs['openmc_version'] = np.bytes_(__version__)
             f.attrs['nuclides'] = np.array([n.encode() for n in names])
             f.attrs['depth'] = d
@@ -907,6 +1055,31 @@ class AdjointPopulations:
                 g['fission_weight'] = fw[:, j]
                 g.attrs['fission_fraction'] = \
                     fw[:, j].sum() / total if total > 0 else 0.0
+            # The probed reactions: importance per reaction at their sites,
+            # carrying the reactions per fission
+            f.attrs['reactions'] = np.array(
+                [r.encode() for r in self.probe_reactions], dtype='S')
+            for k, label in enumerate(self.probe_reactions):
+                j = n_f + k
+                imp = tables[label]
+                nuclide, mt = self.probe_reaction_mt[label]
+                g = f.create_group(f'reactions/{label}')
+                g.attrs['nuclide'] = np.bytes_(nuclide)
+                g.attrs['mt'] = mt
+                g['energy'] = imp.energy
+                g['importance'] = imp.mean
+                g['std_dev'] = imp.std_dev
+                g['batch_numerator'] = imp._batch_numerators(imp.energy)
+                g['reaction_weight'] = fw[:, j]
+                g.attrs['reactions_per_fission'] = \
+                    fw[:, j].sum() / total if total > 0 else 0.0
+                made = branching.get(label)
+                g.attrs['branching_source'] = np.bytes_(
+                    'chain' if made else 'none')
+                if made:
+                    g['products'] = np.array([n.encode() for n in made],
+                                             dtype='S')
+                    g['branching_ratio'] = np.array(list(made.values()))
 
     def photoneutron_reactivity(self, depth=None):
         """Reactivity added by the photoneutrons, 1/k - 1/k'."""
@@ -1205,7 +1378,9 @@ class DetectorResponse:
         Its :meth:`openmc.ProbeImportance.fold` of a gamma source per fission
         is the detector response per unit fission weight (w/k
         sigma_f/sigma_t) of the nuclide bin at the origin, with batch
-        statistics that keep the correlation of the lines.
+        statistics that keep the correlation of the lines. For a probed
+        reaction's bin, the photon is born at the reaction's sites and the
+        response is per unit reaction weight (w/k sigma_x/sigma_t).
 
         Parameters
         ----------
@@ -1214,7 +1389,8 @@ class DetectorResponse:
             with the photoneutrons tallied by target, a dict of media as for
             :meth:`AdjointPopulations.probe_importance`
         nuclide : str, optional
-            Fissioning-nuclide bin; may be omitted if there is only one
+            Fissioning-nuclide bin or probed reaction (e.g.
+            'Al27(n,gamma)'); may be omitted if there is only one bin
         origin : int
             Origin mesh element
         rtol, floor, e_max, cross_sections
@@ -1242,7 +1418,7 @@ class DetectorResponse:
             ray = v[:, self._off_ray:].reshape(
                 self.n_batches, -1, KR, T)[:, j]
         ones = np.ones(self.n_batches)
-        name = pops.probe_fission_nuclides[j]
+        name = pops._probe_bin_names[j]
 
         def parts(sel):
             p = probe[:, :, sel].sum(axis=2) if isinstance(sel, slice) \

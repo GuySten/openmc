@@ -226,6 +226,8 @@ Post-processing
    :template: myfunction.rst
 
    openmc.probe_line_energies
+   openmc.probe_reaction
+   openmc.probe_reaction_label
    openmc.read_collision_track_file
    openmc.read_collision_track_hdf5
    openmc.read_collision_track_mcpl

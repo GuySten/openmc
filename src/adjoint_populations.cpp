@@ -66,6 +66,17 @@ int n_nbins()
            ? 1
            : static_cast<int>(settings::adjpop_fission_nuclides.size()) + 1;
 }
+//! Probed-reaction bins: one per listed reaction
+int n_rbins()
+{
+  return static_cast<int>(settings::adjpop_probe_reactions.size());
+}
+//! Probe bins of the probes and rays: the fissioning-nuclide bins, then one
+//! per probed reaction
+int n_pbins()
+{
+  return n_nbins() + n_rbins();
+}
 //! Photoneutron-target bins of the probes and rays: one per listed target
 //! nuclide and one for the rest; 1 (no split) if none are listed
 int n_targets()
@@ -103,10 +114,10 @@ bool probes_on()
 //! Probe labels: 0 uncollided, 1 after coherent scattering only, 2 after an
 //! energy-changing collision (or a secondary photon)
 constexpr int N_PROBE_LABEL = 3;
-//! Probe bins: nuclide bin x line x photoneutron target x label
+//! Probe bins: probe bin x line x photoneutron target x label
 int n_probe_bins()
 {
-  return n_nbins() * n_lines() * n_targets() * N_PROBE_LABEL;
+  return n_pbins() * n_lines() * n_targets() * N_PROBE_LABEL;
 }
 int n_probe_depth_bins()
 {
@@ -133,15 +144,15 @@ bool rays_requested()
   return !settings::adjpop_ray_neutron_energies.empty() ||
          settings::adjpop_ray_comb_points > 0;
 }
-//! Ray scores: per line (nuclide bin x line x photoneutron target) and per
-//! comb energy (nuclide bin x comb energy), each by depth
+//! Ray scores: per line (probe bin x line x photoneutron target) and per
+//! comb energy (probe bin x comb energy), each by depth
 int n_ray_line_bins()
 {
-  return rays_on() ? n_nbins() * n_ray_lines() * n_targets() * n_depth() : 0;
+  return rays_on() ? n_pbins() * n_ray_lines() * n_targets() * n_depth() : 0;
 }
 int n_ray_comb_bins()
 {
-  return rays_on() ? n_nbins() * n_comb() * n_depth() : 0;
+  return rays_on() ? n_pbins() * n_comb() * n_depth() : 0;
 }
 
 // Bin of each nuclide in data::nuclides (the "rest" bin if not listed)
@@ -151,9 +162,15 @@ vector<int> nuclide_bin;
 // bin if not listed)
 vector<int> target_bin;
 
-// Roots and fission events recorded by the driver this generation
+// Roots, fission events and probed-reaction sites recorded by the driver
+// this generation
 vector<vector<Root>> thread_roots;
 vector<vector<FissionRecord>> thread_fissions;
+vector<vector<FissionRecord>> thread_reactions;
+
+// The probed reactions of each nuclide in data::nuclides: (probe-reaction
+// index, index in the nuclide's reactions_)
+vector<vector<std::pair<int, int>>> probed_reactions;
 
 // Target (site) weight of each population and branch class for the current
 // shadow pass. A branch target of 0 means not yet set.
@@ -564,7 +581,7 @@ void emit_probe(const FissionRecord& f, vector<Probe>& out)
 {
   const double w_raw = f.wgt * f.sigma_f_to_t * n_lines();
   const int64_t sid = combine_ids({f.seed_id, 404});
-  const int nbin = nuclide_bin_of(f.i_nuclide);
+  const int nbin = f.pbin;
   double w;
   const int n = split_to(w_raw, probe_photon_target[nbin], sid, w);
   if (n == 0)
@@ -1131,7 +1148,7 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
     return false;
   for (auto& a : out.factor)
     a /= R;
-  out.nbin = nuclide_bin_of(f.i_nuclide);
+  out.nbin = f.pbin;
   Root& r = out.root;
   r.r = rb;
   r.origin = f.r;
@@ -1147,6 +1164,15 @@ bool cast_ray(const FissionRecord& f, double w_ray, int64_t sid, RayRoot& out,
 }
 
 //! A population's root fraction: its own if set (positive), else the common
+//! The probed reactions as NUCLIDE:MT, space separated
+std::string probe_reaction_names()
+{
+  std::string out;
+  for (const auto& [name, mt] : settings::adjpop_probe_reactions)
+    out += (out.empty() ? "" : " ") + fmt::format("{}:{}", name, mt);
+  return out;
+}
+
 double root_fraction_or_default(double f)
 {
   return (f > 0.0) ? f : settings::adjpop_root_fraction;
@@ -1307,6 +1333,7 @@ void init()
   const int n_threads = num_threads();
   thread_roots.assign(n_threads, {});
   thread_fissions.assign(n_threads, {});
+  thread_reactions.assign(n_threads, {});
   thread_w.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   thread_wt.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   if (tagging_on() && !settings::adjpop_photoneutrons)
@@ -1385,11 +1412,41 @@ void init()
         e_max));
     }
   }
+  // The probed reactions: their sites emit probes and cast rays of their
+  // own, in probe bins after the fissioning-nuclide bins
+  probed_reactions.assign(data::nuclides.size(), {});
+  if (n_rbins() > 0 && !probes_on())
+    fatal_error("<adjoint_populations> photoneutron_probe_reactions require "
+                "photoneutron_probe_energies.");
+  for (int k = 0; k < n_rbins(); ++k) {
+    const auto& name = settings::adjpop_probe_reactions[k].first;
+    const int mt = settings::adjpop_probe_reactions[k].second;
+    auto it = data::nuclide_map.find(name);
+    if (it == data::nuclide_map.end())
+      fatal_error(fmt::format("<adjoint_populations> the nuclide {} of probed "
+                              "reaction MT={} is not in the model.",
+        name, mt));
+    const auto& nuc = *data::nuclides[it->second];
+    const int i_rx = (mt < static_cast<int>(nuc.reaction_index_.size()))
+                       ? static_cast<int>(nuc.reaction_index_[mt])
+                       : C_NONE;
+    if (i_rx == C_NONE)
+      fatal_error(fmt::format("<adjoint_populations> {} has no reaction "
+                              "MT={} to probe.",
+        name, mt));
+    // Within the multipole range only capture is known
+    if (settings::temperature_multipole && nuc.multipole_ && mt != N_GAMMA)
+      fatal_error(fmt::format("<adjoint_populations> probed reaction MT={} of "
+                              "{} needs pointwise data: {} has multipole data, "
+                              "which gives capture alone.",
+        mt, name, name));
+    probed_reactions[it->second].emplace_back(k, i_rx);
+  }
   thread_pw.assign(
     static_cast<size_t>(n_threads) * n_probe_depth_bins(), 0.0);
   batch_pw.assign(n_probe_depth_bins(), 0.0);
   batches_pw.clear();
-  batch_pf.assign(probes_on() ? n_nbins() : 0, 0.0);
+  batch_pf.assign(probes_on() ? n_pbins() : 0, 0.0);
   batches_pf.clear();
   thread_probe_roots.assign(n_threads, {});
   if (rays_requested() && !probes_on())
@@ -1414,19 +1471,19 @@ void init()
     if (settings::adjpop_ray_neutron_energies.empty())
       build_ray_comb(settings::adjpop_ray_comb_points);
   }
-  ray_cast_target.assign(n_nbins(), 0.0);
-  ray_root_target.assign(n_nbins(), 0.0);
-  ray_site_w.assign(n_nbins(), 1.0);
-  probe_photon_target.assign(n_nbins(), 0.0);
-  probe_root_target.assign(static_cast<size_t>(n_nbins()) * n_lines(), 0.0);
-  probe_site_w.assign(static_cast<size_t>(n_nbins()) * n_lines(), 1.0);
+  ray_cast_target.assign(n_pbins(), 0.0);
+  ray_root_target.assign(n_pbins(), 0.0);
+  ray_site_w.assign(n_pbins(), 1.0);
+  probe_photon_target.assign(n_pbins(), 0.0);
+  probe_root_target.assign(static_cast<size_t>(n_pbins()) * n_lines(), 0.0);
+  probe_site_w.assign(static_cast<size_t>(n_pbins()) * n_lines(), 1.0);
   thread_rw.assign(static_cast<size_t>(n_threads) * n_ray_line_bins(), 0.0);
   thread_rj.assign(static_cast<size_t>(n_threads) * n_ray_comb_bins(), 0.0);
   batch_rw.assign(n_ray_line_bins(), 0.0);
   batch_rj.assign(n_ray_comb_bins(), 0.0);
   batches_rw.clear();
   batches_rj.clear();
-  batch_rf.assign(rays_on() ? n_nbins() : 0, 0.0);
+  batch_rf.assign(rays_on() ? n_pbins() : 0, 0.0);
   batches_rf.clear();
   thread_tree_buf.assign(n_threads, vector<double>(n_depth(), 0.0));
   thread_branch_raw.assign(static_cast<size_t>(n_threads) * 2, 0.0);
@@ -1470,7 +1527,7 @@ void init()
   det_off_probe = det_off_pn + det_n_pn;
   det_off_ray = det_off_probe + n_probe_bins();
   n_det_cat =
-    det_off_ray + (rays_on() ? n_nbins() * n_ray_lines() * n_targets() : 0);
+    det_off_ray + (rays_on() ? n_pbins() * n_ray_lines() * n_targets() : 0);
   for (auto& f : model::tally_filters)
     if (auto* g = dynamic_cast<AdjointRootFilter*>(f.get()))
       g->set_n_bins(n_det_cat * n_det_mesh);
@@ -1495,6 +1552,8 @@ void reset_generation()
   for (auto& v : thread_roots)
     v.clear();
   for (auto& v : thread_fissions)
+    v.clear();
+  for (auto& v : thread_reactions)
     v.clear();
   std::fill(thread_w.begin(), thread_w.end(), 0.0);
   std::fill(thread_wt.begin(), thread_wt.end(), 0.0);
@@ -1523,9 +1582,46 @@ void record_fission(Particle& p, int i_nuclide, const Reaction& rx)
   f.sigma_f_to_t = micro.fission / micro.total;
   f.rx = &rx;
   f.i_nuclide = i_nuclide;
+  f.pbin = nuclide_bin_of(i_nuclide);
   f.seed_id = combine_ids(
     {generation_key(), p.id(), p.n_tracks(), p.n_event(), i_nuclide, 101});
   thread_fissions[thread_num()].push_back(f);
+}
+
+void record_reactions(Particle& p, int i_nuclide)
+{
+  if (!simulation::adjpop_on || p.shadow_depth() >= 0 ||
+      probed_reactions.empty() || probed_reactions[i_nuclide].empty())
+    return;
+  const auto& micro = p.neutron_xs(i_nuclide);
+  if (!(micro.total > 0.0))
+    return;
+  const auto& nuc = *data::nuclides[i_nuclide];
+  for (const auto& [k, i_rx] : probed_reactions[i_nuclide]) {
+    const int mt = settings::adjpop_probe_reactions[k].second;
+    // As tallies take it: in the unresolved range, and within the multipole
+    // range, capture is the sampled absorption less fission
+    double sigma;
+    if (mt == N_GAMMA && (micro.use_ptable || micro.index_temp < 0)) {
+      sigma = micro.absorption - micro.fission;
+    } else {
+      sigma = nuc.reactions_[i_rx]->xs(micro);
+    }
+    if (!(sigma > 0.0))
+      continue;
+    FissionRecord f;
+    f.r = p.r();
+    f.E = p.E();
+    f.time = p.time();
+    f.wgt = p.wgt() / simulation::keff;
+    f.sigma_f_to_t = sigma / micro.total;
+    f.rx = nullptr;
+    f.i_nuclide = i_nuclide;
+    f.pbin = n_nbins() + k;
+    f.seed_id = combine_ids({generation_key(), p.id(), p.n_tracks(),
+      p.n_event(), i_nuclide, mt, 111});
+    thread_reactions[thread_num()].push_back(f);
+  }
 }
 
 bool record_photoneutron(
@@ -1767,6 +1863,18 @@ void run_shadow_pass()
     [](const FissionRecord& a, const FissionRecord& b) {
       return a.seed_id < b.seed_id;
     });
+  // The sites of the probes and rays: the fission events, then the probed
+  // reactions' (which grow no other population)
+  vector<FissionRecord> events(fissions);
+  {
+    const auto n_fission = static_cast<std::ptrdiff_t>(events.size());
+    for (const auto& v : thread_reactions)
+      events.insert(events.end(), v.begin(), v.end());
+    std::sort(events.begin() + n_fission, events.end(),
+      [](const FissionRecord& a, const FissionRecord& b) {
+        return a.seed_id < b.seed_id;
+      });
+  }
   vector<Root> photo;
   for (const auto& v : thread_roots)
     photo.insert(photo.end(), v.begin(), v.end());
@@ -1841,11 +1949,15 @@ void run_shadow_pass()
       for (int g = 1; g <= n_group; ++g)
         add(std::min(g, N_TAG - 1), b,
           f.wgt * f.sigma_f_to_t * (*rx.products_[g].yield_)(f.E));
-      // Per probe or ray line, the fission weight that emits it: each line
-      // gets w/k sigma_f/sigma_t per event
+    }
+    // Per probe or ray line, the weight that emits it: each line gets w/k
+    // sigma_f/sigma_t per fission event, w/k sigma_x/sigma_t per probed
+    // reaction's site, in the event's probe bin (and every photoneutron
+    // target of the line)
+    for (const auto& f : events) {
+      const int b = origin_bin(f.r);
       const double wf = f.wgt * f.sigma_f_to_t;
-      const int nb = nuclide_bin_of(f.i_nuclide);
-      // (and every photoneutron target of the line)
+      const int nb = f.pbin;
       const int T = n_targets();
       if (probes_on())
         for (int k = 0; k < K; ++k)
@@ -1947,12 +2059,12 @@ void run_shadow_pass()
   // other populations are grown and summed exactly as without them
   if (probes_on()) {
     simulation::time_adjpop_probes.start();
-    const int nb = n_nbins();
+    const int nb = n_pbins();
     vector<double> raw_photon(nb, 0.0);
     vector<int64_t> n_event(nb, 0);
-    for (const auto& f : fissions) {
+    for (const auto& f : events) {
       const double wf = f.wgt * f.sigma_f_to_t;
-      const int b = nuclide_bin_of(f.i_nuclide);
+      const int b = f.pbin;
       raw_photon[b] += wf * n_lines();
       ++n_event[b];
       batch_pf[b] += wf;
@@ -1963,7 +2075,7 @@ void run_shadow_pass()
     const double m_photon = std::max(1.0, settings::adjpop_probe_fraction * n_work);
     probe_photon_target = split_targets(raw_photon, n_event, m_photon);
     vector<Probe> probes;
-    for (const auto& f : fissions)
+    for (const auto& f : events)
       emit_probe(f, probes);
     last_probe_photons = static_cast<int64_t>(probes.size());
 
@@ -2040,12 +2152,12 @@ void run_shadow_pass()
   // Ray probes, after everything else
   if (rays_on()) {
     simulation::time_adjpop_rays.start();
-    const int nb = n_nbins();
+    const int nb = n_pbins();
     vector<double> raw_cast(nb, 0.0);
     vector<int64_t> n_cast(nb, 0);
-    for (const auto& f : fissions) {
+    for (const auto& f : events) {
       const double wf = f.wgt * f.sigma_f_to_t;
-      const int b = nuclide_bin_of(f.i_nuclide);
+      const int b = f.pbin;
       raw_cast[b] += wf;
       ++n_cast[b];
       batch_rf[b] += wf;
@@ -2061,12 +2173,12 @@ void run_shadow_pass()
       double w;
     };
     vector<Cast> casts;
-    for (int64_t i = 0; i < static_cast<int64_t>(fissions.size()); ++i) {
-      const auto& f = fissions[i];
+    for (int64_t i = 0; i < static_cast<int64_t>(events.size()); ++i) {
+      const auto& f = events[i];
       const int64_t sid = combine_ids({f.seed_id, 707});
       double w;
-      const int n = split_to(f.wgt * f.sigma_f_to_t,
-        ray_cast_target[nuclide_bin_of(f.i_nuclide)], sid, w);
+      const int n =
+        split_to(f.wgt * f.sigma_f_to_t, ray_cast_target[f.pbin], sid, w);
       for (int c = 0; c < n; ++c)
         casts.push_back({i, copy_id(sid, c), w});
     }
@@ -2077,7 +2189,7 @@ void run_shadow_pass()
     int64_t n_seg = 0;
 #pragma omp parallel for schedule(static) reduction(+ : n_seg)
     for (int64_t i = 0; i < n_casts; ++i) {
-      const auto& f = fissions[casts[i].i];
+      const auto& f = events[casts[i].i];
       made[i] = cast_ray(f, casts[i].w, casts[i].sid, rroots[i], n_seg);
     }
     n_ray_segments += n_seg;
@@ -2317,7 +2429,7 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
   if (nb < 2)
     return INFTY;
   const int L = settings::adjpop_n_generation;
-  const size_t nd = n_depth(), K = n_lines(), nn = n_nbins();
+  const size_t nd = n_depth(), K = n_lines(), nn = n_pbins();
   // The trigger is checked at every ray line (the probe lines if no rays),
   // the probes' collided part interpolated per batch from the probe lines
   const int r = rays_on() ? settings::adjpop_ray_refinement : 1;
@@ -2336,11 +2448,16 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
   if (!(my > 0.0))
     return INFTY;
 
-  // The listed nuclides, or the single bin if none is listed
-  const int n_check =
-    settings::adjpop_fission_nuclides.empty()
-      ? 1
-      : static_cast<int>(settings::adjpop_fission_nuclides.size());
+  // The listed nuclides, or the single bin if none is listed; and every
+  // probed reaction
+  vector<int> check;
+  if (settings::adjpop_fission_nuclides.empty())
+    check.push_back(0);
+  for (int j = 0;
+       j < static_cast<int>(settings::adjpop_fission_nuclides.size()); ++j)
+    check.push_back(j);
+  for (int k = 0; k < n_rbins(); ++k)
+    check.push_back(n_nbins() + k);
   double worst = 0.0;
   vector<double> x(nb);
   vector<double> rr(KR), s(KR);
@@ -2353,7 +2470,7 @@ double probe_trigger_ratio(int& worst_bin, double& worst_energy)
         v += batches_pw[(((jb * K + k) * T + g) * N_PROBE_LABEL + l) * nd + L];
     return v;
   };
-  for (int j = 0; j < n_check; ++j) {
+  for (int j : check) {
     double peak = 0.0;
     for (size_t i = 0; i < KR; ++i) {
       // Direct + scattered: the rays (if on) and every probe label
@@ -2469,6 +2586,9 @@ void write_results(hid_t file_id)
       names += n + " ";
     names += settings::adjpop_fission_nuclides.empty() ? "all" : "other";
     write_dataset(group, "probe_fission_nuclides", names);
+    // The probed reactions, NUCLIDE:MT, whose bins follow the nuclide bins
+    if (n_rbins() > 0)
+      write_dataset(group, "probe_reactions", probe_reaction_names());
     write_dataset(group, "probe_energies", settings::adjpop_probe_energies);
     // Photoneutron-target bins: the listed targets and "other", or "all"
     std::string targets;
@@ -2476,16 +2596,18 @@ void write_results(hid_t file_id)
       targets += n + " ";
     targets += settings::adjpop_photoneutron_targets.empty() ? "all" : "other";
     write_dataset(group, "probe_targets", targets);
-    // [batch][nuclide bin][line][target][label][depth], flattened; label 0
+    // [batch][probe bin][line][target][label][depth], flattened, the probe
+    // bins being the nuclide bins and then the probed reactions; label 0
     // uncollided (empty with rays on: see ray_weight), 1 after coherent
     // scattering only, 2 after an energy-changing collision
     write_dataset(group, "probe_n_labels", N_PROBE_LABEL);
     write_dataset(group, "probe_weight", batches_pw);
-    // [batch][nuclide bin]: the probed fission weight, sum of w/k
-    // sigma_f/sigma_t over the recorded fission events
+    // [batch][probe bin]: the probed fission weight, sum of w/k
+    // sigma_f/sigma_t over the recorded fission events (for a probed
+    // reaction, w/k sigma_x/sigma_t over its sites)
     write_dataset(group, "probe_fission_weight", batches_pf);
-    // The probe photons' targets [nuclide bin], then the probe roots'
-    // [nuclide bin][line]
+    // The probe photons' targets [probe bin], then the probe roots'
+    // [probe bin][line]
     vector<double> pt(probe_photon_target);
     pt.insert(pt.end(), probe_root_target.begin(), probe_root_target.end());
     write_dataset(group, "probe_site_weight", pt);
@@ -2503,14 +2625,15 @@ void write_results(hid_t file_id)
     write_dataset(group, "ray_neutron_energies", ray_comb);
     write_dataset(group, "ray_photon_energies", ray_lines);
     write_dataset(group, "ray_refinement", settings::adjpop_ray_refinement);
-    // [batch][nuclide bin][line][target][depth]: uncollided photoneutron
+    // [batch][probe bin][line][target][depth]: uncollided photoneutron
     // importance
     write_dataset(group, "ray_weight", batches_rw);
-    // [batch][nuclide bin][comb energy][depth]: the trees by comb energy
+    // [batch][probe bin][comb energy][depth]: the trees by comb energy
     write_dataset(group, "ray_comb_weight", batches_rj);
-    // [batch][nuclide bin]: sum of w/k sigma_f/sigma_t over the events
+    // [batch][probe bin]: sum of w/k sigma_f/sigma_t (sigma_x/sigma_t) over
+    // the events
     write_dataset(group, "ray_fission_weight", batches_rf);
-    // [2][nuclide bin]: the rays' and the ray roots' roulette targets
+    // [2][probe bin]: the rays' and the ray roots' roulette targets
     vector<double> tw(ray_cast_target);
     tw.insert(tw.end(), ray_root_target.begin(), ray_root_target.end());
     write_dataset(group, "ray_site_weight", tw);
@@ -2637,6 +2760,9 @@ void read_results(hid_t file_id)
     check(read_vector("probe_energies") == settings::adjpop_probe_energies &&
           read_string("probe_fission_nuclides") ==
             names + (by_nuclide ? "other" : "all") &&
+          (object_exists(group, "probe_reactions")
+              ? read_string("probe_reactions") == probe_reaction_names()
+              : n_rbins() == 0) &&
           (object_exists(group, "probe_targets")
               ? read_string("probe_targets") == targets
               : targets == "all"));
@@ -2759,12 +2885,12 @@ std::string detector_bin_label(int bin)
     const int T = n_targets();
     const int kt = i / N_PROBE_LABEL;
     const int line = (kt / T) % std::max(n_lines(), 1);
-    label = fmt::format("probe nuclide bin {} line {} target {} label {}",
+    label = fmt::format("probe bin {} line {} target {} label {}",
       (kt / T) / std::max(n_lines(), 1), line, kt % T, i % N_PROBE_LABEL);
   } else {
     const int i = cat - det_off_ray;
     const int T = n_targets();
-    label = fmt::format("ray nuclide bin {} line {} target {}",
+    label = fmt::format("ray bin {} line {} target {}",
       (i / T) / std::max(n_ray_lines(), 1),
       (i / T) % std::max(n_ray_lines(), 1), i % T);
   }
@@ -2777,6 +2903,8 @@ void clear()
 {
   thread_roots.clear();
   thread_fissions.clear();
+  thread_reactions.clear();
+  probed_reactions.clear();
   thread_w.clear();
   thread_wt.clear();
   thread_branch_raw.clear();

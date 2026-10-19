@@ -29,7 +29,7 @@ from openmc.executor import *
 from openmc.adjoint_populations import AdjointPopulations, DetectorResponse
 from openmc.photoneutron_probes import (
     PhotoneutronTarget, ProbeImportance, photoneutron_threshold,
-    probe_line_energies)
+    probe_line_energies, probe_reaction, probe_reaction_label)
 from openmc.statepoint import *
 from openmc.summary import *
 from openmc.particle_restart import *

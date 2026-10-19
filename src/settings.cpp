@@ -132,6 +132,7 @@ vector<double> adjpop_energy_bins;
 int adjpop_energy_variable {0};
 vector<std::string> adjpop_fission_nuclides;
 vector<std::string> adjpop_photoneutron_targets;
+vector<std::pair<std::string, int>> adjpop_probe_reactions;
 vector<double> adjpop_probe_energies;
 double adjpop_root_fraction {0.1};
 double adjpop_probe_fraction {1.0};
@@ -695,6 +696,38 @@ void read_settings_xml(pugi::xml_node root)
         if (adjpop_photoneutron_targets.empty()) {
           fatal_error("<adjoint_populations> 'photoneutron_targets' must name "
                       "at least one nuclide.");
+        }
+      }
+      if (check_for_node(node, "photoneutron_probe_reactions")) {
+        // Each entry is NUCLIDE:MT
+        adjpop_probe_reactions.clear();
+        for (const auto& entry :
+          get_node_array<std::string>(node, "photoneutron_probe_reactions")) {
+          const auto colon = entry.rfind(':');
+          int mt = 0;
+          if (colon != std::string::npos && colon > 0) {
+            try {
+              mt = std::stoi(entry.substr(colon + 1));
+            } catch (const std::exception&) {
+              mt = 0;
+            }
+          }
+          if (!(mt > 0))
+            fatal_error(fmt::format("<adjoint_populations> photoneutron probe "
+                                    "reaction '{}' is not NUCLIDE:MT.",
+              entry));
+          std::pair<std::string, int> rx {entry.substr(0, colon), mt};
+          if (std::find(adjpop_probe_reactions.begin(),
+                adjpop_probe_reactions.end(),
+                rx) != adjpop_probe_reactions.end())
+            fatal_error(fmt::format("<adjoint_populations> photoneutron probe "
+                                    "reaction '{}' is listed twice.",
+              entry));
+          adjpop_probe_reactions.push_back(rx);
+        }
+        if (adjpop_probe_reactions.empty()) {
+          fatal_error("<adjoint_populations> 'photoneutron_probe_reactions' "
+                      "must name at least one reaction.");
         }
       }
       if (check_for_node(node, "photoneutron_probe_energies")) {

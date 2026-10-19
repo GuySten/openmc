@@ -560,7 +560,7 @@ def test_export_photon_importance(run_in_tmpdir):
     tables = ap.probe_importances(t, depth=L, rtol=0.01)
     with h5py.File('imp.h5', 'r') as f:
         assert f.attrs['filetype'] == b'photon_importance'
-        assert list(f.attrs['version']) == [1, 0]
+        assert list(f.attrs['version']) == [1, 1]
         assert [n.decode() for n in f.attrs['nuclides']] == ['U235', 'other']
         assert f.attrs['depth'] == L
         assert f.attrs['keff'] == pytest.approx(1.02)
@@ -774,6 +774,33 @@ def test_photoneutron_target_settings(run_in_tmpdir):
         with pytest.raises((TypeError, ValueError)):
             s.adjoint_populations = {'n_generation': 3,
                                      'photoneutron_targets': bad}
+
+
+def test_probe_reaction_settings(run_in_tmpdir):
+    """Probed reactions are stored as labels, written as NUCLIDE:MT and read
+    back as labels."""
+    s = openmc.Settings()
+    s.adjoint_populations = {
+        'n_generation': 5, 'photoneutrons': True,
+        'photoneutron_probe_energies': [2.3e6, 3e6, 5e6],
+        'photoneutron_probe_reactions': ['Al27(n,gamma)', ('O16', 103),
+                                         'Al27 (n,a)', 'Cd116:102']}
+    labels = ['Al27(n,gamma)', 'O16(n,p)', 'Al27(n,a)', 'Cd116(n,gamma)']
+    assert s.adjoint_populations['photoneutron_probe_reactions'] == labels
+    s.export_to_xml()
+    text = open('settings.xml').read()
+    assert ('<photoneutron_probe_reactions>Al27:102 O16:103 Al27:107 '
+            'Cd116:102</photoneutron_probe_reactions>') in text
+    assert openmc.Settings.from_xml().adjoint_populations[
+        'photoneutron_probe_reactions'] == labels
+    assert openmc.probe_reaction('Al27(n,gamma)') == ('Al27', 102)
+    assert openmc.probe_reaction(('Be9', '(n,2n)')) == ('Be9', 16)
+    assert openmc.probe_reaction_label('Al27', 98) == 'Al27(MT=98)'
+    for bad in ([], 'Al27(n,gamma)', ['Al27(n,gamma)', 'Al27:102'],
+                ['Al27(n,foo)'], [('Al27',)], ['Al27']):
+        with pytest.raises((TypeError, ValueError)):
+            s.adjoint_populations = {'n_generation': 3,
+                                     'photoneutron_probe_reactions': bad}
 
 
 def test_probe_line_energies_several_thresholds():

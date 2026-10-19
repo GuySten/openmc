@@ -229,6 +229,10 @@ Present only if adjoint side populations were requested.
            - **probe_fission_nuclides** (*char[]*) -- Space-separated names
              of the probes' fissioning-nuclide bins: the listed nuclides and
              ``other``, or ``all``.
+           - **probe_reactions** (*char[]*) -- Space-separated probed
+             reactions, ``NUCLIDE:MT``, whose probe bins follow the
+             fissioning-nuclide bins in every probe and ray dataset below.
+             Present only if reactions were probed.
            - **probe_n_labels** (*int*) -- Number of probe labels: 0
              uncollided (empty with rays on), 1 after coherent scattering
              only, 2 after an energy-changing collision.
@@ -236,15 +240,16 @@ Present only if adjoint side populations were requested.
              photoneutron-target bins: the listed targets and ``other``, or
              ``all``.
            - **probe_weight** (*double[]*) -- Summed probe-root weight per
-             batch, fissioning-nuclide bin, line, photoneutron target, label
-             and depth, in that order.
+             batch, probe bin (the fissioning-nuclide bins, then the probed
+             reactions), line, photoneutron target, label and depth, in that
+             order.
            - **probe_fission_weight** (*double[]*) -- Probed fission weight,
              the sum of w/k sigma_f/sigma_t over the recorded fission events,
-             per batch and fissioning-nuclide bin: the probe photon weight
-             emitted per line.
+             per batch and probe bin: the probe photon weight emitted per
+             line. A probed reaction's is w/k sigma_x/sigma_t over its sites.
            - **probe_site_weight** (*double[]*) -- Target weights of the
-             probe photons per fissioning-nuclide bin, then of the probe
-             roots per bin and line, in the last generation.
+             probe photons per probe bin, then of the probe roots per bin
+             and line, in the last generation.
            - **n_probe_photons_last_generation**,
              **n_probe_roots_last_generation** (*int8_t*) -- Probe photons
              and probe roots in the last generation, after roulette.
@@ -261,12 +266,12 @@ Present only if adjoint side populations were requested.
              energies [eV]: the probe lines, each interval subdivided
              **ray_refinement** (*int*) times.
            - **ray_weight** (*double[]*) -- Summed uncollided photoneutron
-             importance per batch, fissioning-nuclide bin, ray line,
-             photoneutron target and depth.
+             importance per batch, probe bin, ray line, photoneutron target
+             and depth.
            - **ray_comb_weight** (*double[]*) -- The ray trees' summed
-             weight per batch, fissioning-nuclide bin, comb energy and depth.
+             weight per batch, probe bin, comb energy and depth.
            - **ray_fission_weight** (*double[]*) -- Fission weight of the
-             events the rays were cast from, per batch and nuclide bin.
+             events the rays were cast from, per batch and probe bin.
            - **ray_site_weight** (*double[2]*),
              **n_rays_last_generation**, **n_ray_roots_last_generation**,
              **n_ray_segments** -- Target weights, counts and the number of

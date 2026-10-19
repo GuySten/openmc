@@ -123,6 +123,8 @@ int openmc_finalize()
   settings::adjpop_energy_bins.clear();
   settings::adjpop_energy_variable = 0;
   settings::adjpop_fission_nuclides.clear();
+  settings::adjpop_photoneutron_targets.clear();
+  settings::adjpop_probe_reactions.clear();
   settings::adjpop_probe_energies.clear();
   settings::adjpop_probe_fraction = 1.0;
   settings::adjpop_ray_neutron_energies.clear();

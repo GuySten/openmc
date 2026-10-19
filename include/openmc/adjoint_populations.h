@@ -132,7 +132,9 @@ inline int pack_tag(int cls, int tag, int ebin)
 }
 
 //! A driver fission-site creation, from which delayed roots are emitted in
-//! the shadow pass (so that the driver draws no extra random numbers)
+//! the shadow pass (so that the driver draws no extra random numbers). A
+//! probed reaction's site is recorded the same way, for its probes and rays
+//! only: its ratio is that reaction's, rx is null, and pbin its probe bin.
 struct FissionRecord {
   Position r;
   double E;
@@ -141,6 +143,7 @@ struct FissionRecord {
   double sigma_f_to_t; //!< microscopic sigma_f / sigma_t of the nuclide
   const Reaction* rx;
   int i_nuclide;
+  int pbin; //!< probe bin: the nuclide bin, or a probed reaction's
   int64_t seed_id;
 };
 
@@ -158,6 +161,12 @@ void reset_generation();
 //! Driver hook in create_fission_sites(): record a fission event for the
 //! delayed roots. Draws no random numbers.
 void record_fission(Particle& p, int i_nuclide, const Reaction& rx);
+
+//! Driver hook at every neutron collision, once its nuclide is sampled:
+//! record the probed reactions of that nuclide (collision estimates,
+//! w/k sigma_x/sigma_t) as sites for their probes and rays. Draws no random
+//! numbers.
+void record_reactions(Particle& p, int i_nuclide);
 
 //! Driver hook for a photoneutron leaving a photon: record it as a root.
 //! \return true if the photoneutron was taken as a root and must not be

@@ -218,3 +218,112 @@ def test_photoneutron_targets(be_d2o_model, run_in_tmpdir):
     assert by_target.targets['H2'].threshold == pytest.approx(2.2246e6,
                                                               rel=1e-3)
     assert by_target.rebuilt(np.array([2.0e6]))[0] >= 0.0
+
+
+def test_probe_reactions(model, run_in_tmpdir):
+    """Probed reactions emit probes and cast rays from their own sites, in
+    probe bins after the fissioning-nuclide bin. The driver, the fission,
+    delayed and photoneutron trees and the fission bin's events are those of
+    the run without them, and a reaction's weight is a collision estimate of
+    its rate, per fission as a tally gives it."""
+    model.run(threads=1, **run_kwargs())
+    _, plain = read_results('statepoint.5.h5')
+    with openmc.StatePoint('statepoint.5.h5') as sp:
+        k_plain = sp.keff
+
+    model.settings.adjoint_populations['photoneutron_probe_reactions'] = \
+        ['H2(n,gamma)', ('O16', 103)]
+    rates = openmc.Tally(name='rates')
+    rates.nuclides = ['H2']
+    rates.scores = ['(n,gamma)']
+    fission = openmc.Tally(name='fission')
+    fission.scores = ['fission']
+    model.tallies = openmc.Tallies([rates, fission])
+    sp_path = model.run(threads=1, **run_kwargs())
+    _, results = read_results(sp_path)
+    with openmc.StatePoint(sp_path) as sp:
+        assert sp.keff.n == k_plain.n and sp.keff.s == k_plain.s
+        pops = sp.adjoint_populations
+        capture = sp.get_tally(name='rates')
+        fissions = sp.get_tally(name='fission')
+        tally_ratio = capture.mean.sum() / fissions.mean.sum()
+        tally_sd = tally_ratio * np.hypot(
+            capture.std_dev.sum() / capture.mean.sum(),
+            fissions.std_dev.sum() / fissions.mean.sum())
+    # (n_histories also counts the probe roots' trees, whose budget the
+    # reaction bins share)
+    for name in ('weight', 'weight_t0', 'site_weight'):
+        np.testing.assert_array_equal(results[name], plain[name],
+                                      err_msg=name)
+
+    assert pops.probe_fission_nuclides == ['all']
+    assert pops.probe_reactions == ['H2(n,gamma)', 'O16(n,p)']
+    assert pops.probe_reaction_mt == {'H2(n,gamma)': ('H2', 102),
+                                      'O16(n,p)': ('O16', 103)}
+    n_b = pops.n_batches
+    assert pops.probe_weight.shape[:2] == (n_b, 3)
+    assert pops.ray_weight.shape[:2] == (n_b, 3)
+    np.testing.assert_allclose(pops.probe_fission_weight[:, 0],
+                               plain['probe_fission_weight'], rtol=1e-12)
+    np.testing.assert_allclose(pops.ray_fission_weight,
+                               pops.probe_fission_weight, rtol=1e-12)
+    assert pops.probe_reaction_weight.shape == (n_b, 2)
+    assert np.all(pops.probe_reaction_weight[:, 0] > 0.0)
+    r = pops.reactions_per_fission('H2(n,gamma)')
+    assert abs(r.n - tally_ratio) < 5.0 * np.hypot(r.s, tally_sd)
+    with pytest.raises(ValueError, match='fissioning-nuclide bin'):
+        pops.reactions_per_fission('all')
+    # The reaction sites' probes made photoneutrons, and the table rebuilds
+    assert pops.probe_weight[:, 1].sum() > 0.0
+    heavy_water = model.materials[1]
+    imp = pops.probe_importance(heavy_water, nuclide='H2:102')
+    assert imp.name == 'H2(n,gamma)'
+    assert imp.mean.max() > 0.0
+
+    pops.export_photon_importance('importance.h5', heavy_water)
+    with h5py.File('importance.h5') as f:
+        assert list(f.attrs['version']) == [1, 1]
+        assert [n.decode() for n in f.attrs['reactions']] == \
+            ['H2(n,gamma)', 'O16(n,p)']
+        assert f['nuclides/all'].attrs['fission_fraction'] == 1.0
+        g = f['reactions/H2(n,gamma)']
+        assert g.attrs['nuclide'] == b'H2' and g.attrs['mt'] == 102
+        assert g.attrs['reactions_per_fission'] == pytest.approx(r.n)
+        np.testing.assert_array_equal(g['reaction_weight'][()],
+                                      pops.probe_reaction_weight[:, 0])
+        assert g['batch_numerator'].shape == (n_b, g['energy'].size)
+
+
+def test_probe_reaction_errors(model, run_in_tmpdir):
+    pops = model.settings.adjoint_populations
+    for reactions, message in ((['Al27(n,gamma)'], 'not in the model'),
+                               (['H2(n,a)'], 'has no reaction')):
+        pops['photoneutron_probe_reactions'] = reactions
+        with pytest.raises(RuntimeError, match=message):
+            model.run(**run_kwargs())
+    del pops['photoneutron_probe_energies']
+    del pops['photoneutron_ray_comb_points']
+    pops['photoneutron_probe_reactions'] = ['H2(n,gamma)']
+    with pytest.raises(RuntimeError, match='require photoneutron_probe'):
+        model.run(**run_kwargs())
+
+
+def test_restart_with_probe_reactions(model, run_in_tmpdir):
+    """A restart continues the probed reactions' sums, and refuses a
+    statepoint made with other probed reactions."""
+    pops = model.settings.adjoint_populations
+    pops['photoneutron_probe_reactions'] = ['H2(n,gamma)']
+    model.settings.batches = 6
+    model.settings.statepoint = {'batches': [4, 6]}
+    model.run(threads=1, **run_kwargs())
+    _, expected = read_results('statepoint.6.h5')
+    shutil.move('statepoint.6.h5', 'uninterrupted.h5')
+    model.run(restart_file='statepoint.4.h5', threads=1, **run_kwargs())
+    _, results = read_results('statepoint.6.h5')
+    for name in RESULTS:
+        np.testing.assert_array_equal(results[name], expected[name],
+                                      err_msg=name)
+
+    pops['photoneutron_probe_reactions'] = ['O16(n,p)']
+    with pytest.raises(RuntimeError, match='settings differ'):
+        model.run(restart_file='statepoint.4.h5', **run_kwargs())

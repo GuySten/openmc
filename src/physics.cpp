@@ -219,6 +219,9 @@ void sample_neutron_reaction(Particle& p)
   // Save which nuclide particle had collision with
   p.event_nuclide() = i_nuclide;
 
+  // The driver records the probed reactions' sites, drawing no random number
+  adjpop::record_reactions(p, i_nuclide);
+
   // Create fission bank sites. Note that while a fission reaction is sampled,
   // it never actually "happens", i.e. the weight of the particle does not
   // change when sampling fission sites. The following block handles all

@@ -115,6 +115,20 @@ sub-elements:
 
     *Default*: none (one bin for every target)
 
+  :photoneutron_probe_reactions:
+    Space-separated reactions written ``NUCLIDE:MT`` (e.g. ``Al27:102
+    O16:103`` for the Al-28 and N-16 of aluminium capture and O16(n,p))
+    whose sites also emit probe photons and cast rays, each in a probe bin of
+    its own after the fissioning-nuclide bins. At every driver neutron
+    collision with the nuclide, a site of weight w/k sigma_x/sigma_t is
+    recorded, the same collision estimate as a fission event's, so that the
+    bin's importance is per reaction at its sites and carries the reactions
+    per fission. The sites grow no fission, delayed or photoneutron roots.
+    Every nuclide must be in the model with the reaction in its data.
+    Requires ``photoneutron_probe_energies``.
+
+    *Default*: none
+
   :photoneutron_probe_energies:
     Space-separated energies [eV], strictly increasing, of a comb of probe
     photon lines. At every recorded fission event the shadow pass emits one
@@ -213,7 +227,8 @@ sub-elements:
     Relative standard deviation the probe importance must reach before the
     run's triggers are met (``<trigger>`` must be active). At depth
     ``n_generation``, per listed fissioning nuclide (or the single bin) and
-    per ray line (per probe line without rays), the importance is the
+    probed reaction, and per ray line (per probe line without rays), the
+    importance is the
     rays' and every probe label's photoneutron weight over the fission
     roots' (a ratio of batch means with a delta-method standard deviation;
     the probes' part interpolated per batch between the probe lines), and its standard deviation must be

@@ -28,7 +28,8 @@ from openmc.mgxs_library import *
 from openmc.executor import *
 from openmc.adjoint_populations import AdjointPopulations
 from openmc.photoneutron_probes import (
-    PhotoneutronTarget, ProbeImportance, probe_line_energies)
+    PhotoneutronTarget, ProbeImportance, probe_line_energies, probe_reaction,
+    probe_reaction_label)
 from openmc.statepoint import *
 from openmc.summary import *
 from openmc.particle_restart import *

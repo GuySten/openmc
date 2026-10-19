@@ -190,6 +190,18 @@ class Settings:
             and threshold; photoneutrons of every other nuclide share one more
             bin, 'other' (sequence of str, requires
             ``photoneutron_probe_energies``).
+        :photoneutron_probe_reactions: Reactions whose sites also emit probe
+            photons and cast rays, each tallied in a probe bin of its own
+            after the fissioning-nuclide bins, so that the photons of what
+            the reaction makes (an activation product) get the importance of
+            where it is made (sequence of 'Al27(n,gamma)', 'Al27:102' or
+            (nuclide, reaction) pairs, the reaction a name or an MT; stored
+            as labels such as 'Al27(n,gamma)'; requires
+            ``photoneutron_probe_energies``). At every driver collision with
+            the nuclide, a site of weight w/k sigma_x/sigma_t is recorded,
+            the same collision estimate as a fission event's, so that the
+            bin's importance is per reaction and carries the reactions per
+            fission (:meth:`openmc.AdjointPopulations.probe_importance`).
         :photoneutron_ray_neutron_energies: Photoneutron birth energies
             [eV] of the ray probes' comb (sequence of floats, strictly
             increasing, requires photoneutron_probe_energies). Turns on ray
@@ -234,7 +246,8 @@ class Settings:
             fraction of the particles (float, default root_fraction).
         :photoneutron_probe_trigger: Relative standard deviation the probe
             importance must reach, at every line and for every listed
-            fissioning nuclide, before the run's triggers are met (float;
+            fissioning nuclide and probed reaction, before the run's
+            triggers are met (float;
             needs ``trigger_active``). Checked on the importance at depth
             n_generation, with the rays' and every probe label's
             photoneutrons, per unit fission-neutron importance
@@ -1266,6 +1279,8 @@ class Settings:
     @adjoint_populations.setter
     def adjoint_populations(self, adjoint_populations: dict):
         cv.check_type('adjoint populations', adjoint_populations, Mapping)
+        adjoint_populations = dict(adjoint_populations)
+        labels = None
         for key, value in adjoint_populations.items():
             cv.check_value('adjoint populations key', key,
                            ('n_generation', 'photoneutrons',
@@ -1275,6 +1290,7 @@ class Settings:
                             'photoneutron_energy_variable',
                             'photoneutron_fission_nuclides',
                             'photoneutron_targets',
+                            'photoneutron_probe_reactions',
                             'photoneutron_probe_energies',
                             'photoneutron_probe_fraction',
                             'photoneutron_ray_neutron_energies',
@@ -1376,11 +1392,24 @@ class Settings:
                 if not names or len(set(names)) != len(names):
                     raise ValueError(f'{key} must name at least one nuclide, '
                                      'each once.')
+            elif key == 'photoneutron_probe_reactions':
+                from openmc.photoneutron_probes import (
+                    probe_reaction, probe_reaction_label)
+                if isinstance(value, str) or not isinstance(value, Iterable):
+                    raise TypeError('photoneutron_probe_reactions must be a '
+                                    'sequence of reactions.')
+                pairs = [probe_reaction(v) for v in value]
+                if not pairs or len(set(pairs)) != len(pairs):
+                    raise ValueError('photoneutron_probe_reactions must name '
+                                     'at least one reaction, each once.')
+                labels = [probe_reaction_label(*p) for p in pairs]
             else:
                 cv.check_type(f'adjoint populations {key}', value, bool)
         if adjoint_populations and 'n_generation' not in adjoint_populations:
             raise ValueError("adjoint_populations requires 'n_generation'.")
-        self._adjoint_populations = dict(adjoint_populations)
+        if labels is not None:
+            adjoint_populations['photoneutron_probe_reactions'] = labels
+        self._adjoint_populations = adjoint_populations
 
     @property
     def tabular_legendre(self) -> dict:
@@ -2180,6 +2209,10 @@ class Settings:
                 elif key in ('photoneutron_fission_nuclides',
                              'photoneutron_targets'):
                     subelement.text = ' '.join(value)
+                elif key == 'photoneutron_probe_reactions':
+                    from openmc.photoneutron_probes import probe_reaction
+                    subelement.text = ' '.join(
+                        '{}:{}'.format(*probe_reaction(v)) for v in value)
                 else:
                     subelement.text = str(value)
 
@@ -2761,6 +2794,13 @@ class Settings:
                 text = get_text(elem, key)
                 if text is not None:
                     value[key] = text.split()
+            text = get_text(elem, 'photoneutron_probe_reactions')
+            if text is not None:
+                from openmc.photoneutron_probes import (
+                    probe_reaction, probe_reaction_label)
+                value['photoneutron_probe_reactions'] = [
+                    probe_reaction_label(*probe_reaction(v))
+                    for v in text.split()]
             text = get_text(elem, 'photoneutron_ray_neutron_energies')
             if text is not None:
                 value['photoneutron_ray_neutron_energies'] = [

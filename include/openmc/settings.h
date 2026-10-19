@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_set>
+#include <utility>
 
 #include "pugixml.hpp"
 
@@ -162,6 +163,10 @@ extern vector<std::string> adjpop_fission_nuclides;
 //! Be9, H2) whose photoneutrons are scored apart; the rest share one more bin.
 //! Empty: one bin for every target.
 extern vector<std::string> adjpop_photoneutron_targets;
+//! Reactions whose sites also emit probe photons and cast rays, each with a
+//! probe bin of its own after the fissioning-nuclide bins: the nuclide and
+//! the MT of the reaction (e.g. Al27 and 102 for the Al-28 it makes)
+extern vector<std::pair<std::string, int>> adjpop_probe_reactions;
 //! Energies [eV] of the probe photon lines emitted at every driver fission
 //! event in the shadow pass (empty: no probes)
 extern vector<double> adjpop_probe_energies;

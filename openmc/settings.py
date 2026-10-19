@@ -141,12 +141,11 @@ class Settings:
             branches, giving the change of the importance function that the
             change of beta_eff and of the generation time need (bool,
             requires photoneutrons). Default is False.
-        :branchless: Grow every tree but the detector trees with branchless
-            collisions: one neutron line per tree that scores the next
-            generation's expected weight at every collision and continues as
-            either its fission neutron or the scattered neutron, its weight
-            scaled by (nu Sigma_f / k + Sigma_s) / Sigma_t, so that it never
-            branches (bool). Default is False.
+        :branchless: Grow every tree with branchless collisions: one neutron
+            line per tree that scores the next generation's expected weight at
+            every collision and continues as either its fission neutron or the
+            scattered neutron, its weight scaled by (nu Sigma_f / k + Sigma_s)
+            / Sigma_t, so that it never branches (bool). Default is False.
         :branchless_split: Weight, over the root's, above which a branchless
             line is split into copies of about the root's weight, so that a
             leak does not end the whole tree (float, 0 to never split).

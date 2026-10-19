@@ -44,19 +44,18 @@ sub-elements:
     *Default*: false
 
   :branchless:
-    If true, every tree but the detector trees is grown with branchless
-    collisions. A tree is then one neutron line that never branches: at every
-    collision it scores the expected weight of the next generation,
-    :math:`w \nu\Sigma_f / (k \Sigma_t)`, at the next depth, has its weight
-    multiplied by :math:`(\nu\Sigma_f / k + \Sigma_t - \Sigma_a) /
-    \Sigma_t` whatever happens next, and continues as its fission neutron or
-    as the scattered neutron in proportion to the two terms. At the last depth
-    it only scatters, with the factor :math:`(\Sigma_t - \Sigma_a) /
-    \Sigma_t`. The expected scores are those of the branching trees; their
-    variance differs. Lines whose weight falls below the weight cutoff times
-    the root weight are rouletted, and lines above ``branchless_split`` times
-    it are split. Not compatible with a neutron
-    ``<energy_max>`` or time cutoff.
+    If true, every tree is grown with branchless collisions. A tree is then
+    one neutron line that never branches: at every collision it scores the
+    expected weight of the next generation, :math:`w \nu\Sigma_f / (k
+    \Sigma_t)`, at the next depth, has its weight multiplied by
+    :math:`(\nu\Sigma_f / k + \Sigma_t - \Sigma_a) / \Sigma_t` whatever
+    happens next, and continues as its fission neutron or as the scattered
+    neutron in proportion to the two terms. At the last depth it only
+    scatters, with the factor :math:`(\Sigma_t - \Sigma_a) / \Sigma_t`. The
+    expected scores are those of the branching trees; their variance differs.
+    Lines whose weight falls below the weight cutoff times the root weight are
+    rouletted, and lines above ``branchless_split`` times it are split. Not
+    compatible with a neutron ``<energy_max>`` or time cutoff.
 
     *Default*: false
 

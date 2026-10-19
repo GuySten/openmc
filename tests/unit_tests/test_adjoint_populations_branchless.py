@@ -88,11 +88,12 @@ def test_settings_roundtrip(run_in_tmpdir):
 
 def test_kinetics_match_branching(run_in_tmpdir):
     """beta_eff and the generation time, at every depth, with and without
-    splitting the heavy lines, and branching above depth 1"""
+    splitting the heavy lines, branchless from the root, and by default
+    branching above depth 1"""
     variants = {'branching': {},
-                'no split': {'branchless_split': 0.0},
-                'split': {'branchless_split': 2.0},
-                'from depth 1': {'branchless_depth': 1}}
+                'no split': {'branchless_split': 0.0, 'branchless_depth': 0},
+                'split': {'branchless_split': 2.0, 'branchless_depth': 0},
+                'from depth 1': {}}
     results = {}
     for name, extra in variants.items():
         model = reflected_sphere(name != 'branching')
@@ -104,7 +105,7 @@ def test_kinetics_match_branching(run_in_tmpdir):
             assert pops.branchless == (name != 'branching')
             if 'branchless_split' in extra:
                 assert pops.branchless_split == extra['branchless_split']
-            assert pops.branchless_depth == extra.get('branchless_depth', 0)
+            assert pops.branchless_depth == extra.get('branchless_depth', 1)
             results[name] = (
                 [pops.beta_eff(depth=d) for d in range(1, 5)],
                 [pops.generation_time(depth=d) for d in range(1, 5)])
@@ -153,6 +154,17 @@ def test_probe_photons_killed_below_threshold(run_in_tmpdir):
         e_kill = f['adjoint_populations/probe_kill_energy'][()]
     # H2(gamma,n) opens at its Q value; U235 and O16 open far higher
     assert e_kill == pytest.approx(2.2246e6, rel=1e-3)
+
+
+def test_default_depth_with_one_generation(run_in_tmpdir):
+    """With a single generation the default branchless depth is the root's"""
+    model = reflected_sphere(True)
+    model.settings.batches = 3
+    model.settings.inactive = 1
+    model.settings.adjoint_populations['n_generation'] = 1
+    sp_path = model.run(**run_kwargs())
+    with openmc.StatePoint(sp_path) as sp:
+        assert sp.adjoint_populations.branchless_depth == 0
 
 
 def test_refuses_branchless_depth_beyond_trees(run_in_tmpdir):

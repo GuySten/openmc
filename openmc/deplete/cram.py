@@ -3,11 +3,10 @@
 Implements two different forms of CRAM for use in openmc.deplete.
 """
 
-from functools import partial
 import numbers
 
 import numpy as np
-from scipy.sparse.linalg import spsolve, splu
+from scipy.sparse.linalg import splu
 
 from openmc.checkvalue import check_type, check_length, check_greater_than
 from .abc import DepSystemSolver
@@ -30,6 +29,18 @@ class IPFCramSolver(DepSystemSolver):
     in: A. Isotalo and M. Pusa, "`Improving the Accuracy of the Chebyshev
     Rational Approximation Method Using Substeps
     <https://doi.org/10.13182/NSE15-67>`_," Nucl. Sci. Eng., 183:1, 65-77.
+
+    The linear systems are solved by sparse LU factorization in the natural
+    order of the nuclides and without pivoting, as proposed in: M. Pusa and
+    J. Leppänen, "`Solving Linear Systems with Sparse Gaussian Elimination
+    in the Chebyshev Rational Approximation Method
+    <https://doi.org/10.13182/NSE12-52>`_," Nucl. Sci. Eng., 175:3, 250-258.
+    Each nuclide then keeps its own equation as pivot, so a nuclide that no
+    transmutation or decay path reaches from the initial composition stays
+    exactly zero. Partial pivoting (the default of
+    :func:`scipy.sparse.linalg.spsolve`) instead picks the row of a daughter
+    as pivot for short-lived nuclides, which mixes equations that no path
+    connects and leaves round-off atoms in nuclides that cannot be produced.
 
     Parameters
     ----------
@@ -91,11 +102,17 @@ class IPFCramSolver(DepSystemSolver):
         A = step_dt * csc_array(A, dtype=np.float64)
         ident = eye_array(A.shape[0], format='csc')
 
-        if substeps == 1:
-            solvers = [partial(spsolve, A - theta * ident) for theta in self.theta]
-        else:
-            # Pre-compute LU factorizations and reuse them across substeps.
-            solvers = [splu(A - theta * ident).solve for theta in self.theta]
+        # LU factorization without pivoting in the natural order, computed once
+        # per pole and reused across substeps.
+        solvers = [
+            splu(
+                csc_array(A - theta * ident),
+                permc_spec="NATURAL",
+                diag_pivot_thresh=0.0,
+                options={"SymmetricMode": True},
+            ).solve
+            for theta in self.theta
+        ]
 
         y = n0.copy()
         for _ in range(substeps):

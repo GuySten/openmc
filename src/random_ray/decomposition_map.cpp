@@ -11,6 +11,7 @@
 #include "openmc/simulation.h"
 #include "openmc/timer.h"
 #include "openmc/vector.h"
+#include <algorithm>
 #include <numeric>
 
 #ifdef OPENMC_MPI
@@ -27,7 +28,6 @@ DecompositionMap::DecompositionMap() {}
 void DecompositionMap::initialize()
 {
   negroups_ = data::mg.num_energy_groups_;
-  estimated_rank_load_fractions_.resize(mpi::n_procs, 0.0);
   measured_rank_load_fractions_.resize(mpi::n_procs, 0.0);
   estimated_rank_load_totals_.resize(mpi::n_procs, 0.0);
   target_load_ = 1.0 / mpi::n_procs;
@@ -435,15 +435,24 @@ void DecompositionMap::exchange_sr_info(
       vector<int64_t> local_mesh_bins(bcast_size);
 
       if (rank == mpi::rank) {
-        // fill in vectors to be sent
-        int i = 0;
+        // Fill in vectors to be sent. The contested-region loop below
+        // updates the running load totals as it goes, so the order these
+        // keys arrive in decides which rank ends up owning a region. Sort
+        // them: discovered_source_regions is a hash map filled by whichever
+        // thread traced the region first, so its iteration order is not
+        // reproducible between runs when OpenMP is enabled.
+        vector<std::pair<int64_t, int64_t>> keys;
+        keys.reserve(bcast_size);
         for (const auto& pair : discovered_source_regions) {
           if (pair.second.scalars_.volume_ > 0.0) {
-            SourceRegionKey sr_key = pair.first;
-            local_base_ids[i] = sr_key.base_source_region_id;
-            local_mesh_bins[i] = sr_key.mesh_bin;
-            i++;
+            keys.emplace_back(
+              pair.first.base_source_region_id, pair.first.mesh_bin);
           }
+        }
+        std::sort(keys.begin(), keys.end());
+        for (uint64_t i = 0; i < bcast_size; i++) {
+          local_base_ids[i] = keys[i].first;
+          local_mesh_bins[i] = keys[i].second;
         }
       }
 
@@ -466,12 +475,17 @@ void DecompositionMap::exchange_sr_info(
           int resident_rank = subdomain_map_[sr_key]; // current owner
           int challenger_rank = rank; // current broadcasting rank
 
-          double ratio_resident = calculate_load_ratio(resident_rank);
-          double ratio_challenger = calculate_load_ratio(challenger_rank);
+          // Compare modelled loads only. These are built from hit counts,
+          // volumes and ray tracing counters, so the resulting ownership is
+          // reproducible between runs. Do not reintroduce a wall-clock term
+          // here: it was previously scaled in as a measured/estimated ratio,
+          // which made ownership depend on how fast each rank happened to run
+          // a batch, and with it the centroids and sampled extents that are
+          // accumulated per owner.
           double resident_rank_load =
-            ratio_resident * estimated_rank_load_totals_[resident_rank];
+            estimated_rank_load_totals_[resident_rank];
           double challenger_rank_load =
-            ratio_challenger * estimated_rank_load_totals_[challenger_rank];
+            estimated_rank_load_totals_[challenger_rank];
 
           // If load of challenger rank is lower, assign source region to that
           // rank, otherwise resident keeps it
@@ -502,10 +516,6 @@ void DecompositionMap::exchange_sr_info(
           }
           MPI_Bcast(&bcast_load, 1, MPI_DOUBLE, sender, mpi::intracomm);
 
-          double load_change_fraction =
-            bcast_load / estimated_load_sum_; // load fraction update
-          estimated_rank_load_fractions_[sender] -= load_change_fraction;
-          estimated_rank_load_fractions_[receiver] += load_change_fraction;
           double load_change_total = bcast_load; // load total update
           estimated_rank_load_totals_[sender] -= load_change_total;
           estimated_rank_load_totals_[receiver] += load_change_total;
@@ -747,8 +757,7 @@ int DecompositionMap::find_closest_rank(Position r, bool test_all_ranks)
   return closest_rank;
 }
 
-void DecompositionMap::calculate_rank_load(
-  FlatSourceDomain* domain, double batch_transport_time)
+void DecompositionMap::calculate_rank_load(FlatSourceDomain* domain)
 {
 
   // Reset local volumes of base source regions, which might change when source
@@ -820,23 +829,6 @@ void DecompositionMap::calculate_rank_load(
   // Communicate estimated load across ranks
   MPI_Allgather(&local_estimated_load, 1, MPI_DOUBLE,
     estimated_rank_load_totals_.data(), 1, MPI_DOUBLE, mpi::intracomm);
-  estimated_load_sum_ = std::accumulate(estimated_rank_load_totals_.begin(),
-    estimated_rank_load_totals_.end(), 0.0);
-
-  // Communicate measured load across ranks
-  MPI_Allgather(&batch_transport_time, 1, MPI_DOUBLE,
-    measured_rank_load_fractions_.data(), 1, MPI_DOUBLE, mpi::intracomm);
-  double measured_load_sum =
-    std::accumulate(measured_rank_load_fractions_.begin(),
-      measured_rank_load_fractions_.end(), 0.0);
-
-  // Calculate fractions
-  for (int rank = 0; rank < mpi::n_procs; rank++) {
-    estimated_rank_load_fractions_[rank] =
-      estimated_rank_load_totals_[rank] / estimated_load_sum_;
-    measured_rank_load_fractions_[rank] =
-      measured_rank_load_fractions_[rank] / measured_load_sum;
-  }
 
   // Reset ray trace counters
   fill(num_base_source_region_RT_.begin(), num_base_source_region_RT_.end(), 0);
@@ -862,13 +854,9 @@ void DecompositionMap::balance_load(FlatSourceDomain* domain)
 
   vector<double> weight_change(mpi::n_procs, 0.0);
   vector<double> combined_rank_load(mpi::n_procs, 0.0);
-  vector<double> load_ratio(mpi::n_procs, 0.0);
 
-  // Combine estimated load with measured load ratios
   for (int rank = 0; rank < mpi::n_procs; rank++) {
-    load_ratio[rank] = calculate_load_ratio(rank);
-    combined_rank_load[rank] =
-      load_ratio[rank] * estimated_rank_load_totals_[rank];
+    combined_rank_load[rank] = estimated_rank_load_totals_[rank];
   }
 
   double combined_load_sum =
@@ -914,7 +902,7 @@ void DecompositionMap::balance_load(FlatSourceDomain* domain)
     }
 
     // Calculate new load after weight update
-    update_load(domain, check_all_ranks, combined_rank_load, load_ratio);
+    update_load(domain, check_all_ranks, combined_rank_load);
     max_load =
       *std::max_element(combined_rank_load.begin(), combined_rank_load.end());
     max_imbalance = (max_load - target_load_) / target_load_;
@@ -1003,8 +991,7 @@ void DecompositionMap::balance_load(FlatSourceDomain* domain)
 }
 
 void DecompositionMap::update_load(FlatSourceDomain* domain,
-  bool check_all_ranks, vector<double>& combined_rank_load,
-  vector<double>& load_ratio)
+  bool check_all_ranks, vector<double>& combined_rank_load)
 {
 
   vector<double> load(mpi::n_procs, 0);
@@ -1022,7 +1009,6 @@ void DecompositionMap::update_load(FlatSourceDomain* domain,
       int owner = find_closest_rank(centroid, check_all_ranks);
       double volume_sr = domain->source_regions_.volume_t(sr);
       thread_load[owner] +=
-        load_ratio[owner] *
         (C1_ *
             (static_cast<double>(domain->source_regions_.n_hits(sr)) /
               simulation::current_batch) *
@@ -1214,16 +1200,6 @@ void DecompositionMap::redistribute_source_regions(FlatSourceDomain* domain)
 
   // Reinitialise tallies
   domain->convert_source_regions_to_tallies(start_sr_id);
-}
-
-double DecompositionMap::calculate_load_ratio(int rank)
-{
-  if (estimated_rank_load_fractions_[rank] > 0.0) {
-    return measured_rank_load_fractions_[rank] /
-           estimated_rank_load_fractions_[rank];
-  } else {
-    return 1.0;
-  }
 }
 
 } // namespace openmc

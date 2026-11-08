@@ -351,9 +351,7 @@ def fake_mixed_elastic():
     ]
     for eout in energy_out:
         eout.normalize()
-        eout.c = eout.cdf()
     discrete = openmc.stats.Discrete([-0.9, -0.6, -0.3, -0.1, 0.1, 0.3, 0.6, 0.9], [1/8]*8)
-    discrete.c = discrete.cdf()[1:]
     mu = [[discrete]*4]*3
     inelastic_dist = {'294K': openmc.data.IncoherentInelasticAE(
         breakpoints, interpolation, energy, energy_out, mu)}

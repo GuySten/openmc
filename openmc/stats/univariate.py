@@ -640,9 +640,7 @@ class Uniform(Univariate):
         if self.bias is not None:
             raise RuntimeError("to_tabular() is not permitted for biased distributions.")
         prob = 1./(self.b - self.a)
-        t = Tabular([self.a, self.b], [prob, prob], 'histogram')
-        t.c = [0., 1.]
-        return t
+        return Tabular([self.a, self.b], [prob, prob], 'histogram')
 
     def _sample_unbiased(self, n_samples=1, seed=None):
         rng = np.random.RandomState(seed)

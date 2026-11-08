@@ -4,6 +4,31 @@
 Nuclear Data File Formats
 =========================
 
+.. _io_nuclear_data_cdf:
+
+----------------------------------
+Tabulated Cumulative Distributions
+----------------------------------
+
+Several of the datasets described below store a cumulative distribution in
+addition to a probability density, both tabulated at the same values of the
+random variable. These cumulative values are carried over from the ACE tables
+the data was generated from rather than being recomputed from the probability
+density, so that sampling reproduces ACE results; see the disabled
+reconstruction in :file:`src/secondary_correlated.cpp`. They are not
+necessarily normalized, as some evaluations (NJOY thermal scattering data in
+particular) are not.
+
+For discrete distributions, the convention is one cumulative value per point,
+with no leading zero. Where a distribution is a mixture of discrete lines and a
+continuous part, the cumulative values of the two parts are consecutive pieces
+of a single cumulative distribution, and the last cumulative value of the
+discrete part is the probability of the discrete component.
+
+In the Python API these values are held by :class:`openmc.data.TabularCDF` and
+:class:`openmc.data.DiscreteCDF`, and :func:`openmc.data.cdf_values` returns
+them in this convention for any distribution.
+
 ---------------------
 Incident Neutron Data
 ---------------------

@@ -8,6 +8,7 @@ import numpy as np
 import openmc.checkvalue as cv
 from openmc.mixin import EqualityMixin
 from openmc.stats import Univariate, Tabular, Uniform, Legendre
+from .cdf import TabularCDF, cdf_values
 from .function import INTERPOLATION_SCHEME
 from .data import EV_PER_MEV
 from .endf import as_evaluation, get_head_record, get_cont_record, \
@@ -90,7 +91,7 @@ class AngleDistribution(EqualityMixin):
             interpolation[i] = 1 if mu_i.interpolation == 'histogram' else 2
             pairs[0, j:j+n] = mu_i.x
             pairs[1, j:j+n] = mu_i.p
-            pairs[2, j:j+n] = mu_i.c
+            pairs[2, j:j+n] = cdf_values(mu_i)
             j += n
 
         # Create dataset for distributions
@@ -132,8 +133,8 @@ class AngleDistribution(EqualityMixin):
                 n = data.shape[1] - j
 
             interp = INTERPOLATION_SCHEME[interpolation[i]]
-            mu_i = Tabular(data[0, j:j+n], data[1, j:j+n], interp)
-            mu_i.c = data[2, j:j+n]
+            mu_i = TabularCDF(data[0, j:j+n], data[1, j:j+n], interp,
+                              tabulated_cdf=data[2, j:j+n])
 
             mu.append(mu_i)
 
@@ -186,8 +187,8 @@ class AngleDistribution(EqualityMixin):
                 pdf[:n_bins] = 1.0/(n_bins*np.diff(cos))
                 cdf = np.linspace(0.0, 1.0, n_bins + 1)
 
-                mu_i = Tabular(cos, pdf, 'histogram', ignore_negative=True)
-                mu_i.c = cdf
+                mu_i = TabularCDF(cos, pdf, 'histogram', ignore_negative=True,
+                                  tabulated_cdf=cdf)
             elif lc[i] < 0:
                 # Tabular angular distribution
                 idx = location_dist + abs(lc[i]) - 1
@@ -197,8 +198,9 @@ class AngleDistribution(EqualityMixin):
                 data = ace.xss[idx + 2:idx + 2 + 3*n_points]
                 data = data.reshape(3, n_points)
 
-                mu_i = Tabular(data[0], data[1], INTERPOLATION_SCHEME[intt])
-                mu_i.c = data[2]
+                mu_i = TabularCDF(data[0], data[1],
+                                  INTERPOLATION_SCHEME[intt],
+                                  tabulated_cdf=data[2])
             else:
                 # Isotropic angular distribution
                 mu_i = Uniform(-1., 1.)

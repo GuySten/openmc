@@ -39,6 +39,19 @@ double atomic_mass_from_pdg(int32_t pdg);
 //! Returns zero if the nuclide is invalid or its mass is not tabulated.
 double atomic_mass(int Z, int A);
 
+//! Natural-abundance-weighted atomic masses in [u], indexed by atomic number
+extern const std::unordered_map<int, double> ATOMIC_WEIGHT;
+
+//! Return the natural-abundance-weighted atomic mass of an element in [u]
+//!
+//! Elemental evaluations, such as the C0 that some data libraries provide in
+//! place of C12 and C13, stand in for all the naturally occurring isotopes of
+//! an element, so this is the mass of the material they describe. Individual
+//! evaluations may carry an atomic weight ratio that differs from it by as
+//! much as a part in a thousand. Returns zero for an element with no naturally
+//! occurring isotopes.
+double atomic_weight(int Z);
+
 //! Return the bare-particle rest mass for a PDG code in [u]
 //!
 //! Elementary particles and light nuclei use their CODATA masses. Other

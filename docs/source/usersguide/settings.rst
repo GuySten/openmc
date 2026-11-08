@@ -683,6 +683,75 @@ can be selected::
        for a later fixed source photon calculation.
      * Photoneutron reactions.
 
+.. _usersguide_no_neutron_data:
+
+Running Without Neutron Data
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Photon and electron transport are driven entirely by per-element data, so a
+calculation in which no neutrons appear does not need neutron cross sections.
+By default OpenMC still reads a neutron data file for every nuclide in every
+material, which means that such a calculation requires a data library it never
+uses. Setting :attr:`Settings.neutron_transport` to ``False`` turns that off::
+
+  settings = openmc.Settings()
+  settings.run_mode = 'fixed source'
+  settings.photon_transport = True
+  settings.neutron_transport = False
+  settings.source = openmc.IndependentSource(particle='photon')
+
+With this setting, no neutron data is read and the ``cross_sections.xml`` file
+only has to list the photon data for the elements present in the model. The
+atomic masses used to convert between mass and atom densities are then taken
+from AME2020 rather than from the atomic weight ratios in the data library, so
+densities may differ in the last few digits from an otherwise identical run
+that does read neutron data.
+
+Materials are still defined in terms of nuclides, and
+:meth:`openmc.Material.add_element` works against a photon-only library: since
+photon data does not distinguish isotopes, elements are expanded using natural
+abundances.
+
+Elemental evaluations such as ``C0``, which some libraries provide in place of
+the individual isotopes of an element, are supported. Their mass is the
+natural-abundance-weighted atomic weight of the element, which is the mass of
+the material such an evaluation describes; individual evaluations may carry an
+atomic weight ratio differing from it by as much as a part in a thousand, so
+densities for these can shift by more than the last few digits.
+
+A photon source turns photon transport on, since that setting is off by default
+and a source saying it emits photons settles what was never specified. Neutron
+transport has no counterpart, because it is only ever off because it was asked
+for: a source that emits neutrons is reported as an error instead of quietly
+turning it back on, which would change which particles the calculation
+transports and would surface later as missing data rather than as the source
+that caused it. A model specifying no source at all falls back to OpenMC's
+default source, which emits neutrons, and is reported the same way.
+
+Only eigenvalue and fixed source calculations sample the external source, so
+sources are not checked for the other run modes. A stochastic volume calculation
+samples no source and transports nothing, so it reports its nuclide inventories
+without reading any neutron data, and without reading any data at all unless the
+model also carries a photon source; plotting reads none either. A particle
+restart
+transports whatever the restart file holds, and a source written in a plugin can
+emit anything at all; neither type is known ahead of time, so both are checked
+when the particle appears.
+
+The photon transport step of an :ref:`R2S calculation <usersguide_decay_sources>`
+is a natural fit for this setting: its source comes from the decay of activated
+materials, so it transports no neutrons of its own. The D1S method is not, since
+it is a single coupled neutron--photon calculation in which the photons are
+produced by neutron reactions; :attr:`Settings.use_decay_photons` is therefore
+rejected here rather than silently producing no photons at all.
+
+Turning neutron transport off is likewise not compatible with eigenvalue
+calculations, multi-group mode, thermal scattering data, NCrystal
+configurations, resonance scattering, or multipole data, each of which is
+rejected with an error rather than silently
+ignored. The random ray solver requires multi-group mode, so it is covered by
+that restriction.
+
 --------------------------
 Generation of Output Files
 --------------------------

@@ -40,6 +40,18 @@ public:
   //============================================================================
   // Constructors/destructors
   Nuclide(hid_t group, const vector<double>& temperature);
+
+  //! Construct a nuclide with no cross section data
+  //
+  //! Only the identity of the nuclide (name, Z, A, metastable state) and its
+  //! atomic weight ratio are determined, the latter from the tabulated atomic
+  //! masses rather than from a data library. This is used when neutron
+  //! transport is turned off, in which case the neutron data library is not
+  //! needed but materials still have to be normalized and reported.
+  //!
+  //! \param[in] name Name of the nuclide, e.g. "U235"
+  explicit Nuclide(const std::string& name);
+
   ~Nuclide();
 
   //============================================================================

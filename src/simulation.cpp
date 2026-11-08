@@ -839,6 +839,8 @@ void initialize_data()
   data::energy_max = {INFTY, INFTY, INFTY, INFTY};
   data::energy_min = {0.0, 0.0, 0.0, 0.0};
 
+  // When neutrons are not transported no nuclide has an energy grid, so the
+  // neutron bounds are left at their unbounded defaults
   for (const auto& nuc : data::nuclides) {
     if (nuc->grid_.size() >= 1) {
       int neutron = ParticleType::neutron().transport_index();
@@ -884,6 +886,12 @@ void initialize_data()
       }
     }
   }
+
+  // The remaining setup builds the logarithmic neutron energy grid, which has
+  // no meaning when neutrons are not transported (and whose spacing would be
+  // computed from the unbounded defaults above)
+  if (!settings::neutron_transport)
+    return;
 
   // Show which nuclide results in lowest energy for neutron transport
   for (const auto& nuc : data::nuclides) {

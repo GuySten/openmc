@@ -122,7 +122,10 @@ double Cell::density(int32_t instance) const
 
 void Cell::set_temperature(double T, int32_t instance, bool set_contained)
 {
-  if (settings::temperature_method == TemperatureMethod::INTERPOLATION) {
+  // Without neutron data there is no temperature-dependent data to bound the
+  // requested temperature against
+  if (settings::temperature_method == TemperatureMethod::INTERPOLATION &&
+      settings::neutron_transport) {
     if (T < (data::temperature_min - settings::temperature_tolerance)) {
       throw std::runtime_error {
         fmt::format("Temperature of {} K is below minimum temperature at "

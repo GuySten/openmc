@@ -95,6 +95,10 @@ class StatePoint:
         Number of tally realizations
     path : str
         Working directory for simulation
+    neutron_transport : bool
+        Indicate whether neutron transport is active
+
+        .. versionadded:: 0.16.0
     photon_transport : bool
         Indicate whether photon transport is active
     run_mode : str
@@ -345,6 +349,12 @@ class StatePoint:
     @property
     def path(self):
         return self._f.attrs.get('path', b'').decode()
+
+    @property
+    def neutron_transport(self):
+        # Statepoints written before this attribute existed were all neutron
+        # transport runs
+        return self._f.attrs.get('neutron_transport', 1) > 0
 
     @property
     def photon_transport(self):

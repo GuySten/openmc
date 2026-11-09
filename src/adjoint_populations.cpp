@@ -1499,8 +1499,11 @@ bool record_probe_photoneutron(
   r.cls = CLASS_PROBE;
   r.tag = p.shadow_tag() % N_TAG;
   r.ebin = tag_ebin(p.shadow_tag()) * n_targets() + target_of(i_pn);
+  // The seed must not hash the weight: it carries 1/k, whose last bits
+  // depend on the order the threads summed k in, and a different seed
+  // would give the root a different history in an identical run
   r.seed_id =
-    combine_ids({p.id(), p.n_tracks(), p.n_event(), bits(E), bits(wgt), 505});
+    combine_ids({p.id(), p.n_tracks(), p.n_event(), bits(E), i_pn, 505});
   thread_probe_roots[thread_num()].push_back(r);
   return true;
 }

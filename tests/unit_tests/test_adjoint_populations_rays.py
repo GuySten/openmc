@@ -360,3 +360,18 @@ def test_restart_with_probe_reactions(model, run_in_tmpdir):
     pops['photoneutron_probe_reactions'] = ['O16(n,p)']
     with pytest.raises(RuntimeError, match='settings differ'):
         model.run(restart_file='statepoint.4.h5', **run_kwargs())
+
+
+def test_probes_independent_of_threads(model, run_in_tmpdir):
+    """The probes give the same results on 1 and 2 threads, to rounding: a
+    probe root's seed hashes no weight, whose 1/k varies in its last bits
+    with the order the threads summed k in."""
+    results = []
+    for threads in (1, 2):
+        sp_path = model.run(threads=threads, **run_kwargs())
+        _, results_t = read_results(sp_path)
+        results.append(results_t)
+        shutil.move(sp_path, f'threads{threads}.h5')
+    for name in ('probe_weight', 'ray_weight', 'probe_fission_weight'):
+        np.testing.assert_allclose(results[1][name], results[0][name],
+                                   rtol=1e-12, atol=1e-300, err_msg=name)

@@ -21,7 +21,8 @@
 
 #include "pugixml.hpp"
 
-#include <cstdlib> // for getenv
+#include <algorithm> // for min
+#include <cstdlib>   // for getenv
 #include <filesystem>
 #include <unordered_set>
 
@@ -40,6 +41,12 @@ vector<Library> libraries;
 //==============================================================================
 // Library methods
 //==============================================================================
+
+bool is_known_library_type(const std::string& type)
+{
+  return type == "neutron" || type == "thermal" || type == "photon" ||
+         type == "wmp";
+}
 
 Library::Library(pugi::xml_node node, const std::string& directory)
 {
@@ -159,14 +166,32 @@ void read_cross_sections_xml(pugi::xml_node root)
     put_mgxs_header_data_to_globals();
   }
 
-  // Establish mapping between (type, material) and index in libraries
+  // Establish mapping between (type, material) and index in libraries. When a
+  // material is listed more than once for the same type, the first entry wins.
   int i = 0;
+  vector<std::string> duplicates;
   for (const auto& lib : data::libraries) {
     for (const auto& name : lib.materials_) {
       LibraryKey key {lib.type_, name};
-      data::library_map.insert({key, i});
+      if (!data::library_map.insert({key, i}).second &&
+          !contains(duplicates, name)) {
+        duplicates.push_back(name);
+      }
     }
     ++i;
+  }
+  if (!duplicates.empty()) {
+    std::string listed;
+    for (std::size_t j = 0; j < std::min<std::size_t>(duplicates.size(), 5);
+         ++j) {
+      listed += (j > 0 ? ", " : "") + duplicates[j];
+    }
+    if (duplicates.size() > 5) {
+      listed += fmt::format(" and {} more", duplicates.size() - 5);
+    }
+    warning(fmt::format("{} lists {} material(s) more than once for the same "
+                        "data type: {}. The first entry of each is used.",
+      settings::path_cross_sections, duplicates.size(), listed));
   }
 
   // Check that 0K nuclides are listed in the cross_sections.xml file
@@ -318,6 +343,17 @@ void read_ce_cross_sections_xml()
   }
 
   for (const auto& node_library : root.children("library")) {
+    // Skip data types that this version of OpenMC does not know, e.g. ones
+    // added by newer versions, so that the same file can be shared
+    if (check_for_node(node_library, "type")) {
+      auto type = get_node_value(node_library, "type");
+      if (!is_known_library_type(type)) {
+        warning(fmt::format("Skipping library {} of unrecognized type '{}' "
+                            "in {}.",
+          get_node_value(node_library, "path"), type, filename.string()));
+        continue;
+      }
+    }
     data::libraries.emplace_back(node_library, directory);
   }
 

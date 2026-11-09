@@ -3,7 +3,10 @@
 from math import log
 import os
 from pathlib import Path
+import shutil
+import warnings
 
+import h5py
 import numpy as np
 import pytest
 import openmc.data
@@ -60,6 +63,174 @@ def test_depletion_chain_data_library(run_in_tmpdir):
     else:
         raise IndexError("depletion_chain not found in exported DataLibrary")
     assert os.path.exists(lib['path'])
+
+
+def _fake_data_file(path, materials, data_type='neutron'):
+    """Write an HDF5 file that register_file reads like a data file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, 'w') as f:
+        f.attrs['filetype'] = np.bytes_(f'data_{data_type}')
+        for name in materials:
+            f.create_group(name)
+    return path
+
+
+def _paths(lib):
+    return [(Path(e['path']).name, e['materials']) for e in lib]
+
+
+def test_register_file_duplicate_warns(tmp_path):
+    a = _fake_data_file(tmp_path / 'a' / 'U235.h5', ['U235'])
+    b = _fake_data_file(tmp_path / 'b' / 'U235.h5', ['U235'])
+    lib = openmc.data.DataLibrary()
+    lib.register_file(a)
+    with pytest.warns(UserWarning, match='takes precedence'):
+        lib.register_file(b)
+    # The first entry is the one used
+    assert lib.get_by_material('U235')['path'] == str(a)
+    assert list(lib.duplicates()) == [('neutron', 'U235')]
+
+
+def test_register_file_replace(tmp_path):
+    u = _fake_data_file(tmp_path / 'U.h5', ['U235', 'U238'])
+    h = _fake_data_file(tmp_path / 'H1.h5', ['H1'])
+    new = _fake_data_file(tmp_path / 'new' / 'U235.h5', ['U235'])
+    lib = openmc.data.DataLibrary()
+    lib.register_file(u)
+    lib.register_file(h)
+    lib.register_file(new, replace=True)
+    # The new file takes the place of the old entry, which keeps U238 only
+    assert _paths(lib) == [('U235.h5', ['U235']), ('U.h5', ['U238']),
+                           ('H1.h5', ['H1'])]
+    assert lib.get_by_material('U235')['path'] == str(new)
+    assert not lib.duplicates()
+
+
+def test_update(tmp_path):
+    base = openmc.data.DataLibrary()
+    base.register_file(_fake_data_file(tmp_path / 'base' / 'H1.h5', ['H1']))
+    base.register_file(_fake_data_file(tmp_path / 'base' / 'U235.h5', ['U235']))
+    other = openmc.data.DataLibrary()
+    other.register_file(_fake_data_file(tmp_path / 'other' / 'U235.h5', ['U235']))
+    other.register_file(_fake_data_file(tmp_path / 'other' / 'O16.h5', ['O16']))
+    other.export_to_xml(tmp_path / 'other' / 'cross_sections.xml')
+
+    # Default: other takes precedence
+    lib = openmc.data.DataLibrary(base)
+    lib.update(tmp_path / 'other' / 'cross_sections.xml')
+    assert [Path(e['path']).parent.name for e in lib] == ['base', 'other', 'other']
+    assert 'other' in lib.get_by_material('U235')['path']
+    assert not lib.duplicates()
+
+    # replace=False only fills in what is missing, without warnings
+    lib = openmc.data.DataLibrary(base)
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        lib.update(other, replace=False)
+    assert [Path(e['path']).parent.name for e in lib] == ['base', 'base', 'other']
+    assert 'base' in lib.get_by_material('U235')['path']
+    assert lib.get_by_material('O16') is not None
+
+
+def test_remove_by_material(tmp_path):
+    lib = openmc.data.DataLibrary()
+    lib.register_file(_fake_data_file(tmp_path / 'U.h5', ['U235', 'U238']))
+    lib.register_file(_fake_data_file(tmp_path / 'Pu.h5', ['Pu239']))
+    lib.register_file(_fake_data_file(tmp_path / 'U_photon.h5', ['U'], 'photon'))
+    with pytest.warns(UserWarning):
+        lib.register_file(_fake_data_file(tmp_path / 'U235.h5', ['U235']))
+
+    # Several names, every matching entry, only the given materials
+    lib.remove_by_material(['U235', 'Pu239'])
+    assert _paths(lib) == [('U.h5', ['U238']), ('U_photon.h5', ['U'])]
+
+    # Other data types are kept unless data_type=None
+    lib.remove_by_material('U', data_type='neutron')
+    assert lib.get_by_material('U', data_type='photon') is not None
+    lib.remove_by_material('U', data_type=None)
+    assert _paths(lib) == [('U.h5', ['U238'])]
+
+
+def test_get_by_material_exact_type(tmp_path):
+    lib = openmc.data.DataLibrary()
+    lib.register_file(_fake_data_file(tmp_path / 'U.h5', ['U'], 'photonuclear'))
+    assert lib.get_by_material('U', data_type='photon') is None
+    assert lib.get_by_material('U', data_type='photonuclear') is not None
+
+
+def test_export_relocatable(tmp_path):
+    data = tmp_path / 'lib' / 'data'
+    lib = openmc.data.DataLibrary()
+    lib.register_file(_fake_data_file(data / 'neutron' / 'U235.h5', ['U235']))
+    lib.register_file(_fake_data_file(data / 'thermal' / 'c_H.h5', ['c_H'],
+                                      'thermal'))
+    chain = Path(__file__).parents[1] / 'chain_simple.xml'
+    lib.register_file(chain)
+    lib.export_to_xml(tmp_path / 'lib' / 'cross_sections.xml')
+
+    # Files under the XML's directory get relative paths, others absolute
+    # ones, and there is no <directory> element
+    text = (tmp_path / 'lib' / 'cross_sections.xml').read_text()
+    assert '<directory>' not in text
+    assert 'path="data/neutron/U235.h5"' in text
+    assert f'path="{os.path.abspath(chain)}"' in text
+
+    # The directory can be moved as a whole
+    shutil.move(tmp_path / 'lib', tmp_path / 'moved')
+    moved = openmc.data.DataLibrary.from_xml(tmp_path / 'moved' / 'cross_sections.xml')
+    assert len(moved) == 3
+    for entry in moved:
+        assert Path(entry['path']).exists()
+
+    # absolute=True writes absolute paths
+    moved.export_to_xml(tmp_path / 'abs.xml', absolute=True)
+    for entry in openmc.data.DataLibrary.from_xml(tmp_path / 'abs.xml'):
+        assert Path(entry['path']).is_absolute()
+
+
+def test_from_xml_duplicate_warns(tmp_path):
+    xml = tmp_path / 'cross_sections.xml'
+    xml.write_text(
+        '<?xml version="1.0"?>\n<cross_sections>\n'
+        '  <library materials="U235" path="a.h5" type="neutron"/>\n'
+        '  <library materials="U235 U238" path="b.h5" type="neutron"/>\n'
+        '  <library materials="U235" path="c.h5" type="photon"/>\n'
+        '</cross_sections>\n')
+    with pytest.warns(UserWarning, match=r'U235 \(neutron\)'):
+        lib = openmc.data.DataLibrary.from_xml(xml)
+    assert lib.get_by_material('U235')['path'].endswith('a.h5')
+    assert lib.duplicates() == {
+        ('neutron', 'U235'): [str(tmp_path / 'a.h5'), str(tmp_path / 'b.h5')]}
+
+
+def test_run_with_duplicate_and_unknown_type(run_in_tmpdir, capsys):
+    # OpenMC uses the first entry of a duplicated material, warns about it,
+    # and skips library types it does not know instead of aborting
+    u235 = openmc.data.DataLibrary.from_xml().get_by_material('U235')
+    lib = openmc.data.DataLibrary([
+        {'path': u235['path'], 'type': 'neutron', 'materials': ['U235']},
+        {'path': 'missing.h5', 'type': 'neutron', 'materials': ['U235']},
+        {'path': 'future.h5', 'type': 'future_type', 'materials': ['U235']},
+    ])
+    lib.export_to_xml('custom_cross_sections.xml')
+
+    fuel = openmc.Material()
+    fuel.add_nuclide('U235', 1.0)
+    fuel.set_density('g/cm3', 1.0)
+    sphere = openmc.Sphere(r=1.0, boundary_type='vacuum')
+    model = openmc.Model()
+    model.geometry = openmc.Geometry([openmc.Cell(region=-sphere, fill=fuel)])
+    model.materials = openmc.Materials([fuel])
+    model.materials.cross_sections = Path('custom_cross_sections.xml').resolve()
+    model.settings.run_mode = 'fixed source'
+    model.settings.particles = 100
+    model.settings.batches = 1
+    model.settings.source = openmc.IndependentSource()
+    model.run()
+
+    output = capsys.readouterr().out
+    assert "unrecognized type 'future_type'" in output
+    assert 'more than once' in output
 
 
 def test_linearize():

@@ -41,16 +41,23 @@ attributes:
        <library materials="c_H_in_H2O c_D_in_G2O" />
 
     Often, just a single nuclide or thermal scattering table is contained in a
-    given file.
+    given file. If a material is listed in more than one ``<library>`` element
+    of the same type, the first one is used and a warning is issued.
 
   :path:
-    Path to the HDF5 file. If the :ref:`directory_element` is specified, the
-    path is relative to the directory given. Otherwise, it is relative to the
-    directory containing the ``cross_sections.xml`` file.
+    Path to the HDF5 file. An absolute path is used as is. A relative path is
+    relative to the directory given by the :ref:`directory_element` if it is
+    specified, and otherwise to the directory containing the
+    ``cross_sections.xml`` file. Files written by
+    :meth:`openmc.data.DataLibrary.export_to_xml` use paths relative to the
+    ``cross_sections.xml`` file, so the file and the data can be moved
+    together.
 
   :type:
     The type of data contained in the file. Accepted values are 'neutron',
-    'thermal', 'photon', and 'wmp'.
+    'thermal', 'photon', and 'wmp'. A library of any other type is skipped
+    with a warning, so that a file listing data types added in a newer version
+    of OpenMC can still be used.
 
 .. _depletion_element:
 

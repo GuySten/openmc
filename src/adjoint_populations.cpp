@@ -595,8 +595,7 @@ void emit_probe(const FissionRecord& f, vector<Probe>& out)
     q.r = f.r;
     q.time = f.time;
     q.wgt = w;
-    q.line = std::min(
-      static_cast<int>((u + c) / n * n_lines()), n_lines() - 1);
+    q.line = std::min(static_cast<int>((u + c) / n * n_lines()), n_lines() - 1);
     q.nbin = nbin;
     q.seed_id = copy_id(sid, c);
     out.push_back(q);
@@ -856,8 +855,7 @@ void build_ray_comb(int n)
           const double b = Ek / (nuc.awr_ * std::sqrt(2.0 * MASS_NEUTRON_EV));
           E_lab = a * a + b * b + 2.0 * a * b * (2.0 * prn(&s) - 1.0);
         }
-        sample.emplace_back(
-          std::log(std::max(E_lab, 1.0)), w_line / N_SAMPLE);
+        sample.emplace_back(std::log(std::max(E_lab, 1.0)), w_line / N_SAMPLE);
       }
     }
   }
@@ -900,7 +898,8 @@ void comb_weights(double E, int& j0, double& w0)
     w0 = 0.0;
     return;
   }
-  j0 = static_cast<int>(std::upper_bound(c.begin(), c.end(), E) - c.begin()) - 1;
+  j0 =
+    static_cast<int>(std::upper_bound(c.begin(), c.end(), E) - c.begin()) - 1;
   w0 = std::log(c[j0 + 1] / E) / std::log(c[j0 + 1] / c[j0]);
 }
 
@@ -1337,11 +1336,12 @@ void init()
   thread_w.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   thread_wt.assign(static_cast<size_t>(n_threads) * n_bins(), 0.0);
   if (tagging_on() && !settings::adjpop_photoneutrons)
-    fatal_error("<adjoint_populations> photoneutron_energy_bins and "
-                "photoneutron_fission_nuclides require photoneutrons to be on.");
+    fatal_error(
+      "<adjoint_populations> photoneutron_energy_bins and "
+      "photoneutron_fission_nuclides require photoneutrons to be on.");
   nuclide_bin.assign(data::nuclides.size(), n_nbins() - 1);
-  for (int k = 0; k < static_cast<int>(settings::adjpop_fission_nuclides.size());
-       ++k) {
+  for (int k = 0;
+       k < static_cast<int>(settings::adjpop_fission_nuclides.size()); ++k) {
     const auto& name = settings::adjpop_fission_nuclides[k];
     auto it = data::nuclide_map.find(name);
     if (it == data::nuclide_map.end())
@@ -1442,8 +1442,7 @@ void init()
         mt, name, name));
     probed_reactions[it->second].emplace_back(k, i_rx);
   }
-  thread_pw.assign(
-    static_cast<size_t>(n_threads) * n_probe_depth_bins(), 0.0);
+  thread_pw.assign(static_cast<size_t>(n_threads) * n_probe_depth_bins(), 0.0);
   batch_pw.assign(n_probe_depth_bins(), 0.0);
   batches_pw.clear();
   batch_pf.assign(probes_on() ? n_pbins() : 0, 0.0);
@@ -1897,11 +1896,12 @@ void run_shadow_pass()
   for (const auto& r : photo)
     raw[CLASS_PHOTONEUTRON] += r.wgt;
   const double n_work = static_cast<double>(simulation::work_per_rank);
-  const double m_target = std::max(1.0, settings::adjpop_root_fraction * n_work);
-  const double m_probe_root =
-    std::max(1.0, root_fraction_or_default(settings::adjpop_probe_root_fraction) * n_work);
-  const double m_ray_root =
-    std::max(1.0, root_fraction_or_default(settings::adjpop_ray_root_fraction) * n_work);
+  const double m_target =
+    std::max(1.0, settings::adjpop_root_fraction * n_work);
+  const double m_probe_root = std::max(1.0,
+    root_fraction_or_default(settings::adjpop_probe_root_fraction) * n_work);
+  const double m_ray_root = std::max(
+    1.0, root_fraction_or_default(settings::adjpop_ray_root_fraction) * n_work);
   for (int c = 0; c < N_CLASS; ++c) {
     last_raw_weight[c] = raw[c];
     if (raw[c] > 0.0)
@@ -2075,7 +2075,8 @@ void run_shadow_pass()
     // Probe photons are cheap next to the trees their photoneutrons grow,
     // which are rouletted to their own budget. Both are shared among the
     // nuclide bins; an event may be split into several photons.
-    const double m_photon = std::max(1.0, settings::adjpop_probe_fraction * n_work);
+    const double m_photon =
+      std::max(1.0, settings::adjpop_probe_fraction * n_work);
     probe_photon_target = split_targets(raw_photon, n_event, m_photon);
     vector<Probe> probes;
     for (const auto& f : events)
@@ -2165,8 +2166,9 @@ void run_shadow_pass()
       ++n_cast[b];
       batch_rf[b] += wf;
     }
-    const double m_ray = std::max(1.0,
-      settings::adjpop_ray_fraction * static_cast<double>(simulation::work_per_rank));
+    const double m_ray =
+      std::max(1.0, settings::adjpop_ray_fraction *
+                      static_cast<double>(simulation::work_per_rank));
     ray_cast_target = split_targets(raw_cast, n_cast, m_ray);
     // Which events cast rays, how many and with what weight (decided in
     // order)
@@ -2208,8 +2210,8 @@ void run_shadow_pass()
     // keeps all its roots
     for (int b = 0; b < nb; ++b)
       ray_site_w[b] = (ray_root_target[b] > 0.0) ? ray_root_target[b]
-                      : (n_r[b] > 0)            ? raw_r[b] / n_r[b]
-                                                : 1.0;
+                      : (n_r[b] > 0)             ? raw_r[b] / n_r[b]
+                                                 : 1.0;
     vector<std::pair<int64_t, double>> grow;
     for (int64_t i = 0; i < n_casts; ++i) {
       if (!made[i])

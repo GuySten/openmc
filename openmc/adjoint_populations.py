@@ -608,7 +608,8 @@ class AdjointPopulations:
     def _probe_bin(self, nuclide):
         names = self._probe_bin_names
         if nuclide is None:
-            if len(names) != 1:
+            # the one fissioning-nuclide bin, whatever reactions are probed
+            if len(self.probe_fission_nuclides) != 1:
                 raise ValueError(f'Name a probe bin: {names}.')
             return 0
         if nuclide not in names and self.probe_reactions:
@@ -705,8 +706,9 @@ class AdjointPopulations:
     def ray_comb_importance(self, nuclide=None, depth=None):
         """Importance per unit weight of a photoneutron started at each
         energy of the rays' neutron comb, relative to a fission neutron's:
-        (I_c(d)/I_c(0)) / (I_F(d)/I_F(0)), pooled over the nuclide bins if
-        none is named. The comb's linear interpolation is checked against it.
+        (I_c(d)/I_c(0)) / (I_F(d)/I_F(0)), pooled over the fissioning-nuclide
+        bins if none is named (a probed reaction's bin is used only when
+        named). The comb's linear interpolation is checked against it.
 
         Returns
         -------
@@ -718,7 +720,8 @@ class AdjointPopulations:
         d = self._depth(depth)
         w = self.weight[:, CLASS_FISSION].sum(axis=1)
         if nuclide is None:
-            c = self.ray_comb_weight.sum(axis=1)
+            n_f = len(self.probe_fission_nuclides)
+            c = self.ray_comb_weight[:, :n_f].sum(axis=1)
         else:
             c = self.ray_comb_weight[:, self._probe_bin(nuclide)]
         out = []

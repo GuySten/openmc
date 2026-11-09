@@ -280,6 +280,11 @@ def test_probe_reactions(model, run_in_tmpdir, monkeypatch):
     imp = pops.probe_importance(heavy_water, nuclide='H2:102')
     assert imp.name == 'H2(n,gamma)'
     assert imp.mean.max() > 0.0
+    # with one fissioning-nuclide bin, no name still means that bin
+    assert pops.probe_importance(heavy_water).name == 'all'
+    np.testing.assert_allclose(
+        [x.n for x in pops.ray_comb_importance()],
+        [x.n for x in pops.ray_comb_importance(nuclide='all')], equal_nan=True)
 
     monkeypatch.delitem(openmc.config, 'chain_file', raising=False)
     with pytest.warns(UserWarning, match='No depletion chain'):

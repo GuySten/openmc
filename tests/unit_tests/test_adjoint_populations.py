@@ -808,6 +808,20 @@ def test_probe_reaction_settings(run_in_tmpdir):
     assert openmc.probe_reaction('Al27(n,gamma)') == ('Al27', 102)
     assert openmc.probe_reaction(('Be9', '(n,2n)')) == ('Be9', 16)
     assert openmc.probe_reaction_label('Al27', 98) == 'Al27(MT=98)'
+    # every label reads back, MTs without a '(n,x)' name included
+    # ('heating' is MT 301), and so it reaches the XML
+    import numpy as np
+    for mt in (5, 98, 102, 301):
+        label = openmc.probe_reaction_label('Al27', mt)
+        assert openmc.probe_reaction(label) == ('Al27', mt)
+    assert openmc.probe_reaction_label('Al27', 301) == 'Al27(MT=301)'
+    assert openmc.probe_reaction(('Al27', np.int64(102))) == ('Al27', 102)
+    s.adjoint_populations = {
+        'n_generation': 3, 'photoneutron_probe_energies': [2.3e6, 3e6],
+        'photoneutron_probe_reactions': [('Al27', 301), 'Al27:5']}
+    s.export_to_xml()
+    assert ('<photoneutron_probe_reactions>Al27:301 Al27:5'
+            '</photoneutron_probe_reactions>') in open('settings.xml').read()
     for bad in ([], 'Al27(n,gamma)', ['Al27(n,gamma)', 'Al27:102'],
                 ['Al27(n,foo)'], [('Al27',)], ['Al27']):
         with pytest.raises((TypeError, ValueError)):

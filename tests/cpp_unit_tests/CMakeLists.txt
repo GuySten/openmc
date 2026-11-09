@@ -38,3 +38,7 @@ if(OPENMC_USE_MPI)
       $<TARGET_FILE:test_secondary_bank> ${MPIEXEC_POSTFLAGS} --order decl
     WORKING_DIRECTORY ${UNIT_TEST_BIN_OUTPUT_DIR})
 endif()
+
+if(OPENMC_USE_XDG)
+  target_compile_definitions(test_mesh PRIVATE OPENMC_XDG_ENABLED)
+endif()

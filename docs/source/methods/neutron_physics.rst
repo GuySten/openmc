@@ -331,7 +331,15 @@ where :math:`w` is the statistical weight and :math:`k_{eff}` is the effective
 multiplication factor from the previous generation. The number of neutrons
 produced is biased in this manner so that the expected number of fission
 neutrons produced is the number of source particles that we started with in the
-generation. Since :math:`\nu` is not an integer, we use the following procedure
+generation; each fission site then carries unit weight. In a fixed-source
+calculation, the fission neutrons are instead secondary particles of the same
+history, and there is no next generation to normalize. The number of neutrons
+emitted is then :math:`\nu = \nu_t` and each carries the weight :math:`w` of
+the neutron that caused the fission, so that a low-weight neutron (for example
+after splitting by weight windows or from biased production) still continues
+its fission chain rather than starting one with probability :math:`w`. Control
+of low weights is left to survival biasing (Russian roulette below the weight
+cutoff) or weight windows. Since :math:`\nu` is not an integer, we use the following procedure
 to obtain an integral number of fission neutrons to produce. If :math:`\xi >
 \nu - \lfloor \nu \rfloor`, then we produce :math:`\lfloor \nu \rfloor`
 neutrons. Otherwise, we produce :math:`\lfloor \nu \rfloor + 1` neutrons. Then,
@@ -1670,7 +1678,8 @@ that described in :ref:`fission`. The only difference is in equation
     \nu = \frac{w}{k} \frac{\nu_t \sigma_f(E)}{\sigma_t (E)}
 
 fission sites, where :math:`w` is the weight of the neutron before being
-adjusted. One should note this is just the expected number of neutrons produced
+adjusted (in a fixed-source calculation, :math:`\nu = \nu_t \sigma_f(E) /
+\sigma_t(E)` sites of weight :math:`w`). One should note this is just the expected number of neutrons produced
 *per collision* rather than the expected number of neutrons produced given that
 fission has already occurred.
 

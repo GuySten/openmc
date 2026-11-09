@@ -554,6 +554,68 @@ def test_mix_materials():
     assert m5.name == 'm5'
 
 
+
+def _water(sab=True):
+    water = openmc.Material()
+    water.add_element('H', 2.0)
+    water.add_element('O', 1.0)
+    water.set_density('g/cm3', 1.0)
+    if sab:
+        water.add_s_alpha_beta('c_H_in_H2O')
+    return water
+
+
+def test_mix_materials_sab_carried_over():
+    # Fuel and water: all the hydrogen comes from the water, so its table
+    # carries over whole although both materials contain oxygen
+    uo2 = openmc.Material()
+    uo2.add_element('U', 1.0, enrichment=3.0)
+    uo2.add_element('O', 2.0)
+    uo2.set_density('g/cm3', 10.4)
+    mix = openmc.Material.mix_materials([uo2, _water()], [0.3, 0.7], 'vo')
+    assert mix._sab == [('c_H_in_H2O', 1.0)]
+
+    # The same table in two materials is carried over once
+    mix = openmc.Material.mix_materials([_water(), _water()], [0.5, 0.5], 'vo')
+    assert mix._sab == [('c_H_in_H2O', 1.0)]
+
+
+def test_mix_materials_sab_fraction():
+    # Half of the hydrogen is bound in water, half is free
+    mix = openmc.Material.mix_materials([_water(), _water(sab=False)],
+                                        [0.5, 0.5], 'ao')
+    (name, fraction), = mix._sab
+    assert name == 'c_H_in_H2O'
+    assert fraction == pytest.approx(0.5)
+
+
+def test_mix_materials_sab_conflict():
+    # Hydrogen bound in water and in polyethylene cannot share a material
+    poly = openmc.Material()
+    poly.add_element('C', 1.0)
+    poly.add_element('H', 2.0)
+    poly.set_density('g/cm3', 0.95)
+    poly.add_s_alpha_beta('c_H_in_CH2')
+    with pytest.raises(ValueError, match='bound by both'):
+        openmc.Material.mix_materials([_water(), poly], [0.5, 0.5], 'vo')
+
+
+def test_mix_materials_sab_without_library(monkeypatch):
+    monkeypatch.delitem(openmc.config, 'cross_sections', raising=False)
+    iron = openmc.Material()
+    iron.add_element('Fe', 1.0)
+    iron.set_density('g/cm3', 7.87)
+    # No nuclide of the water elsewhere: the table carries over
+    mix = openmc.Material.mix_materials([_water(), iron], [0.5, 0.5], 'vo')
+    assert mix._sab == [('c_H_in_H2O', 1.0)]
+    # Oxygen in both: the bound nuclides are needed
+    uo2 = openmc.Material()
+    uo2.add_element('U', 1.0, enrichment=3.0)
+    uo2.add_element('O', 2.0)
+    uo2.set_density('g/cm3', 10.4)
+    with pytest.raises(NotImplementedError, match='cross section library'):
+        openmc.Material.mix_materials([_water(), uo2], [0.5, 0.5], 'vo')
+
 def test_get_activity():
     """Tests the activity of stable, metastable and active materials"""
 

@@ -752,12 +752,13 @@ void read_settings_xml(pugi::xml_node root)
         if (check_for_node(node, name)) {
           v = std::stod(get_node_value(node, name));
           if (!(v > 0.0))
-            fatal_error(
-              fmt::format("<adjoint_populations> '{}' must be positive.", name));
+            fatal_error(fmt::format(
+              "<adjoint_populations> '{}' must be positive.", name));
         }
       };
       read_fraction("root_fraction", adjpop_root_fraction);
-      read_fraction("photoneutron_probe_root_fraction", adjpop_probe_root_fraction);
+      read_fraction(
+        "photoneutron_probe_root_fraction", adjpop_probe_root_fraction);
       read_fraction("photoneutron_ray_root_fraction", adjpop_ray_root_fraction);
       read_fraction("photoneutron_probe_trigger", adjpop_probe_trigger);
       if (check_for_node(node, "photoneutron_probe_trigger_floor")) {
@@ -765,8 +766,9 @@ void read_settings_xml(pugi::xml_node root)
           std::stod(get_node_value(node, "photoneutron_probe_trigger_floor"));
         if (!(adjpop_probe_trigger_floor >= 0.0 &&
               adjpop_probe_trigger_floor <= 1.0))
-          fatal_error("<adjoint_populations> 'photoneutron_probe_trigger_floor' "
-                      "must be in [0, 1].");
+          fatal_error(
+            "<adjoint_populations> 'photoneutron_probe_trigger_floor' "
+            "must be in [0, 1].");
       }
       if (adjpop_probe_trigger > 0.0 && adjpop_probe_energies.empty())
         fatal_error("<adjoint_populations> 'photoneutron_probe_trigger' needs "
@@ -778,9 +780,10 @@ void read_settings_xml(pugi::xml_node root)
             !(adjpop_ray_neutron_energies.front() > 0.0) ||
             !std::is_sorted(adjpop_ray_neutron_energies.begin(),
               adjpop_ray_neutron_energies.end(), std::less_equal<double>())) {
-          fatal_error("<adjoint_populations> 'photoneutron_ray_neutron_energies'"
-                      " must be at least two positive, strictly increasing "
-                      "energies.");
+          fatal_error(
+            "<adjoint_populations> 'photoneutron_ray_neutron_energies'"
+            " must be at least two positive, strictly increasing "
+            "energies.");
         }
       }
       if (check_for_node(node, "photoneutron_ray_comb_points")) {

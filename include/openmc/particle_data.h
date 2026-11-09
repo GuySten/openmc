@@ -536,7 +536,7 @@ private:
 
   double wgt_ {1.0};
   double wgt_born_ {1.0};
-  double E_born_ {0.0}; //!< energy at which this particle was started
+  double E_born_ {0.0};      //!< energy at which this particle was started
   int fission_nuclide_ {-1}; //!< nuclide whose fission made this photon
   double wgt_ww_born_ {-1.0};
   double mu_;

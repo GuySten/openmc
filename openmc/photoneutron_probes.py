@@ -76,10 +76,19 @@ def probe_reaction(spec):
         raise TypeError(f'Probed reaction {spec!r} is not a string or a '
                         '(nuclide, reaction) pair.')
     cv.check_type('probed reaction nuclide', nuclide, str)
+    if isinstance(reaction, np.integer):
+        reaction = int(reaction)
     if isinstance(reaction, str) and reaction.strip().isdigit():
         reaction = int(reaction)
     if isinstance(reaction, str):
         name = reaction.replace(' ', '')
+        # the label of an MT without a reaction name: '(MT=5)'
+        if name.startswith('(MT=') and name.endswith(')') and \
+                name[4:-1].isdigit():
+            name = name[4:-1]
+    if isinstance(reaction, str) and name.isdigit():
+        reaction = int(name)
+    if isinstance(reaction, str):
         if name not in REACTION_MT:
             raise ValueError(f'Unknown reaction {reaction!r} of probed '
                              f'reaction {spec!r}.')
@@ -95,10 +104,13 @@ def probe_reaction(spec):
 
 def probe_reaction_label(nuclide, mt):
     """The label of a probed reaction's bin: 'Al27(n,gamma)', or
-    'Al27(MT=5)' for an MT without a reaction name."""
+    'Al27(MT=5)' for an MT without a reaction name of that form (such as
+    'heating'). probe_reaction reads every label back."""
     from openmc.data.reaction import REACTION_NAME
     name = REACTION_NAME.get(int(mt))
-    return f'{nuclide}{name}' if name else f'{nuclide}(MT={int(mt)})'
+    if name and name.startswith('('):
+        return f'{nuclide}{name}'
+    return f'{nuclide}(MT={int(mt)})'
 
 
 def probe_line_energies(threshold, e_max, n, first=1.0e3):

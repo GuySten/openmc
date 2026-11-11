@@ -124,3 +124,28 @@ def test_lib_filter_type(run_in_tmpdir):
         assert 'FissionGenerationFilter' in types
     finally:
         openmc.lib.finalize()
+
+
+def test_generation_zero_is_the_reading_without_fission(run_in_tmpdir):
+    """Generation 0 is what the source particles give before any fission,
+    so with fission on it estimates the whole flux of the same problem
+    with fission off (fission as absorption): the direct part of a
+    reading in a multiplying medium."""
+    def run(create, seed):
+        model, _ = _model()
+        model.settings.particles = 4000
+        model.settings.batches = 20
+        model.settings.seed = seed
+        model.settings.create_fission_neutrons = create
+        _flux_tallies(model, 'neutron', [0])
+        with openmc.StatePoint(model.run()) as sp:
+            t = sp.get_tally(name='by generation')
+            total = sp.get_tally(name='total')
+            return (t.mean.ravel()[0], t.std_dev.ravel()[0],
+                    total.mean.ravel()[0])
+
+    gen0, sd0, total_on = run(True, 1)
+    off, sd_off, _ = run(False, 2)
+    # the fission neutrons add to the total but not to generation 0
+    assert total_on > 1.2 * gen0
+    assert abs(gen0 - off) < 4.0 * np.hypot(sd0, sd_off)

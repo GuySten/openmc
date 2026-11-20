@@ -270,6 +270,112 @@ temperature-dependent data set.  For example, the data set corresponding to
 
 .. _product:
 
+-------------------------
+Radioactive Decay Data
+-------------------------
+
+One file per nuclide, as in the ENDF decay sublibrary (MF=8, MT=457), listed in
+``cross_sections.xml`` as a ``<decay>`` element. Every quantity the evaluation
+gives with an uncertainty is stored as a pair *(value, standard deviation)*;
+values not given are NaN.
+
+.. versionadded:: 0.16.1
+
+**/**
+
+:Attributes: - **filetype** (*char[]*) -- 'data_decay'
+             - **version** (*int[2]*) -- Major and minor version of the data
+
+**/<nuclide name>/**
+
+:Attributes: - **atomic_number** (*int*) -- Atomic number
+             - **mass_number** (*int*) -- Mass number
+             - **isomeric_state** (*int*) -- Isomeric state number (LISO)
+             - **excited_state** (*int*) -- Level number of the state (LIS)
+             - **excitation_energy** (*double*) -- Excitation energy in [eV]
+               (MF=1/MT=451 ELIS)
+             - **mass** (*double*) -- Mass in units of neutron masses (AWR)
+             - **stable** (*int*) -- 1 for a stable nuclide
+             - **spin** (*double*) -- Spin (NaN if unknown)
+             - **parity** (*double*) -- Parity
+             - **half_life** (*double[2]*) -- Half-life in [s] (infinite for a
+               stable nuclide)
+
+**/<nuclide name>/average_energies/**
+
+:Datasets: - **names** (*char[][]*) -- Radiation types ('light',
+             'electromagnetic', 'heavy', and the 14 further components when given)
+           - **values** (*double[][2]*) -- Average decay energies in [eV]
+
+**/<nuclide name>/modes/**
+
+:Datasets: - **modes** (*char[][]*) -- Successive decay modes of each mode,
+             comma-separated (e.g. 'beta-,n')
+           - **daughter_state** (*int[]*) -- Isomeric state of the daughter
+           - **energy** (*double[][2]*) -- Q value in [eV]
+           - **branching_ratio** (*double[][2]*) -- Branching ratio
+
+**/<nuclide name>/spectrum_<i>/**
+
+:Attributes: - **type** (*char[]*) -- Radiation type (e.g. 'gamma', 'ec/beta+')
+             - **continuous_flag** (*char[]*) -- 'discrete', 'continuous' or 'both'
+             - **discrete_normalization** (*double[2]*) -- FD
+             - **energy_average** (*double[2]*) -- ERAV in [eV]
+             - **continuous_normalization** (*double[2]*) -- FC
+
+**/<nuclide name>/spectrum_<i>/discrete/**
+
+:Datasets: - **energy** (*double[][2]*) -- Line energies in [eV]
+           - **intensity** (*double[][2]*) -- Relative intensities
+           - **from_mode** (*char[][]*) -- Decay modes producing each line
+           - **transition** (*char[][]*) -- Transition type ('' if not given)
+           - **positron_intensity**, **internal_pair**,
+             **total_internal_conversion**, **k_shell_conversion**,
+             **l_shell_conversion** (*double[][2]*) -- Optional per-line values,
+             present when any line gives them
+
+**/<nuclide name>/spectrum_<i>/continuous/**
+
+:Attributes: - **from_mode** (*char[]*) -- Decay modes producing the spectrum
+             - **covariance_lb** (*int*) -- Optional LB flag of the covariance table
+:Datasets: - **probability** (:ref:`function <1d_functions>`) -- Spectrum
+           - **covariance** (*double[][2]*) -- Optional (E_k, F_k) covariance table
+
+-------------------------
+Fission Product Yields
+-------------------------
+
+One file per fissioning nuclide, as in the ENDF neutron-induced (NFY) and
+spontaneous (SFY) fission yield sublibraries (MF=8, MT=454/459), listed in
+``cross_sections.xml`` as ``<nfy>`` or ``<sfy>`` elements. Each tabulated
+energy keeps its own list of products, as in ENDF.
+
+.. versionadded:: 0.16.1
+
+**/**
+
+:Attributes: - **filetype** (*char[]*) -- 'data_nfy' or 'data_sfy'
+             - **version** (*int[2]*) -- Major and minor version of the data
+
+**/<nuclide name>/**
+
+:Attributes: - **atomic_number** (*int*) -- Atomic number
+             - **mass_number** (*int*) -- Mass number
+             - **isomeric_state** (*int*) -- Isomeric state of the fissioning nuclide
+:Datasets: - **energies** (*double[]*) -- Incident energies in [eV]
+
+**/<nuclide name>/<kind>/**
+
+*kind* is ``independent`` (MT=454) or ``cumulative`` (MT=459).
+
+:Datasets: - **interpolation** (*int[]*) -- ENDF interpolation flag between each
+             energy and the preceding one
+
+**/<nuclide name>/<kind>/energy_<i>/**
+
+:Datasets: - **products** (*char[][]*) -- Product names (GNDS)
+           - **yields** (*double[][2]*) -- Yields at the i-th energy
+
 -----------------
 Reaction Products
 -----------------

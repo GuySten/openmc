@@ -8,6 +8,11 @@ import openmc
 from openmc._xml import get_elem_list, get_text, clean_indentation
 
 
+# ENDF sublibraries stored one HDF5 file per nuclide (filetype 'data_<type>'),
+# listed in cross_sections.xml as elements of their own
+_SUBLIBRARY_ELEMENTS = ('decay', 'nfy', 'sfy')
+
+
 class DataLibrary(list):
     """Collection of cross section data libraries.
 
@@ -37,7 +42,8 @@ class DataLibrary(list):
         name : str
             Name of material, e.g. 'Am241'
         data_type : str
-            Name of data type, e.g. 'neutron', 'photon', 'wmp', or 'thermal'
+            Name of data type, e.g. 'neutron', 'photon', 'wmp', 'thermal',
+            'decay', 'nfy', or 'sfy'
 
             .. versionadded:: 0.12
 
@@ -61,7 +67,8 @@ class DataLibrary(list):
         name : str
             Name of material, e.g. 'Am241'
         data_type : str
-            Name of data type, e.g. 'neutron', 'photon', 'wmp', or 'thermal'
+            Name of data type, e.g. 'neutron', 'photon', 'wmp', 'thermal',
+            'decay', 'nfy', or 'sfy'
 
         """
         library = self.get_by_material(name, data_type)
@@ -122,6 +129,11 @@ class DataLibrary(list):
         for library in self:
             if library['type'] == "depletion_chain":
                 lib_element = ET.SubElement(root, "depletion_chain")
+            elif library['type'] in _SUBLIBRARY_ELEMENTS:
+                # decay and fission yield files: their own elements, which the
+                # transport solver does not read
+                lib_element = ET.SubElement(root, library['type'])
+                lib_element.set('materials', ' '.join(library['materials']))
             else:
                 lib_element = ET.SubElement(root, "library")
                 lib_element.set('materials', ' '.join(library['materials']))
@@ -178,6 +190,13 @@ class DataLibrary(list):
             library = {'path': filename, 'type': filetype,
                        'materials': materials}
             data.libraries.append(library)
+
+        for sublibrary in _SUBLIBRARY_ELEMENTS:
+            for lib_element in root.findall(sublibrary):
+                filename = os.path.join(directory, get_text(lib_element, "path"))
+                materials = get_elem_list(lib_element, "materials", str) or []
+                data.libraries.append({'path': filename, 'type': sublibrary,
+                                       'materials': materials})
 
         # get depletion chain data
         dep_node = root.find("depletion_chain")

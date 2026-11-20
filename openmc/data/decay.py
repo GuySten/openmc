@@ -4,6 +4,7 @@ from io import StringIO
 from math import log
 from warnings import warn
 
+import h5py
 import numpy as np
 from uncertainties import ufloat, UFloat
 
@@ -12,7 +13,9 @@ import openmc.checkvalue as cv
 from openmc.exceptions import DataError
 from openmc.mixin import EqualityMixin
 from openmc.stats import Discrete, Tabular, Univariate, combine_distributions
+from . import HDF5_VERSION
 from .data import gnds_name, zam
+from .function import Tabulated1D
 from .function import INTERPOLATION_SCHEME
 from .endf import (
     as_evaluation, get_head_record, get_list_record, get_tab1_record)
@@ -71,6 +74,38 @@ def get_decay_modes(value):
                 str(value).strip('0').replace('.', '')]
 
 
+def _uncertain_array(values):
+    """Values with uncertainties as an (n, 2) array of (value, standard
+    deviation); None (not given) becomes NaN"""
+    return np.array([(v.nominal_value, v.std_dev) if v is not None else
+                     (np.nan, np.nan) for v in values], dtype=float).reshape(-1, 2)
+
+
+def _uncertain_values(array):
+    """Inverse of :func:`_uncertain_array`"""
+    return [None if np.isnan(v) else ufloat(v, dv) for v, dv in array]
+
+
+def _hdf5_group(group_or_filename, filetypes):
+    """Open an HDF5 data file of one of the given filetypes
+
+    Returns the group (the given one, or the first group of the file), the
+    open file to close (None for a given group) and the filetype.
+
+    """
+    if isinstance(group_or_filename, h5py.Group):
+        group, h5file = group_or_filename, None
+    else:
+        h5file = h5py.File(str(group_or_filename), 'r')
+        group = h5file[next(iter(h5file))]
+    filetype = group.file.attrs['filetype'].decode()
+    if filetype not in filetypes:
+        if h5file is not None:
+            h5file.close()
+        raise DataError(f"'{filetype}' file is not one of {filetypes}.")
+    return group, h5file, filetype
+
+
 class FissionProductYields(EqualityMixin):
     """Independent and cumulative fission product yields.
 
@@ -89,6 +124,11 @@ class FissionProductYields(EqualityMixin):
         energy.
     energies : Iterable of float or None
         Energies at which fission product yields are tabulated.
+    interpolation : dict
+        ENDF interpolation flag between the i-th and the preceding energy, for
+        'independent' and 'cumulative' yields.
+
+        .. versionadded:: 0.16.1
     independent : list of dict
         Independent yields for each tabulated energy. Each item in the list is a
         dictionary whose keys are nuclide names and values are independent
@@ -96,6 +136,10 @@ class FissionProductYields(EqualityMixin):
         energy.
     nuclide : dict
         Properties of the fissioning nuclide.
+    sublibrary : {'nfy', 'sfy'}
+        Neutron-induced or spontaneous fission yields.
+
+        .. versionadded:: 0.16.1
 
     Notes
     -----
@@ -115,10 +159,12 @@ class FissionProductYields(EqualityMixin):
             energies = np.zeros(n_energy)
 
             data = []
+            interpolation = []
             for i in range(n_energy):
-                # Determine i-th energy and number of products
+                # Determine i-th energy, interpolation flag and number of products
                 items, values = get_list_record(file_obj)
                 energies[i] = items[0]
+                interpolation.append(items[2])
                 n_products = items[5]
 
                 # Get yields for i-th energy
@@ -132,9 +178,13 @@ class FissionProductYields(EqualityMixin):
 
                 data.append(yields)
 
-            return energies, data
+            return energies, data, interpolation
 
         ev = as_evaluation(ev_or_filename)
+        sublibraries = {'Neutron-induced fission product yields': 'nfy',
+                        'Spontaneous fission product yields': 'sfy'}
+        self.sublibrary = sublibraries.get(ev.info['sublibrary'], 'nfy')
+        self.interpolation = {}
 
         # Assign basic nuclide properties
         self.nuclide = {
@@ -147,12 +197,14 @@ class FissionProductYields(EqualityMixin):
         # Read independent yields (MF=8, MT=454)
         if (8, 454) in ev.section:
             file_obj = StringIO(ev.section[8, 454])
-            self.energies, self.independent = get_yields(file_obj)
+            self.energies, self.independent, self.interpolation['independent'] = \
+                get_yields(file_obj)
 
         # Read cumulative yields (MF=8, MT=459)
         if (8, 459) in ev.section:
             file_obj = StringIO(ev.section[8, 459])
-            energies, self.cumulative = get_yields(file_obj)
+            energies, self.cumulative, self.interpolation['cumulative'] = \
+                get_yields(file_obj)
             assert np.all(energies == self.energies)
 
     @classmethod
@@ -172,6 +224,89 @@ class FissionProductYields(EqualityMixin):
 
         """
         return cls(ev_or_filename)
+
+    def export_to_hdf5(self, path, mode='a', libver='earliest'):
+        """Export fission product yields to an HDF5 file
+
+        One file per fissioning nuclide, as in the ENDF sublibrary; every
+        yield keeps its standard deviation.
+
+        .. versionadded:: 0.16.1
+
+        Parameters
+        ----------
+        path : str
+            Path to write HDF5 file to
+        mode : {'r+', 'w', 'x', 'a'}
+            Mode that is used to open the HDF5 file. This is the second argument
+            to the :class:`h5py.File` constructor.
+        libver : {'earliest', 'latest'}
+            Compatibility mode for the HDF5 file. 'latest' will produce files
+            that are less backwards compatible but have performance benefits.
+
+        """
+        with h5py.File(str(path), mode, libver=libver) as f:
+            f.attrs['filetype'] = np.bytes_('data_' + self.sublibrary)
+            f.attrs['version'] = np.array(HDF5_VERSION)
+            g = f.create_group(self.nuclide['name'])
+            for key in ('atomic_number', 'mass_number', 'isomeric_state'):
+                g.attrs[key] = self.nuclide[key]
+            g.create_dataset('energies', data=np.asarray(self.energies, dtype=float))
+            for kind in ('independent', 'cumulative'):
+                if not hasattr(self, kind):
+                    continue
+                k = g.create_group(kind)
+                k.create_dataset('interpolation', data=self.interpolation[kind])
+                for i, yields in enumerate(getattr(self, kind)):
+                    e = k.create_group(f'energy_{i}')
+                    e.create_dataset('products', data=np.array(
+                        list(yields), dtype=h5py.string_dtype()))
+                    e.create_dataset('yields', data=_uncertain_array(yields.values()))
+
+    @classmethod
+    def from_hdf5(cls, group_or_filename):
+        """Read fission product yields from an HDF5 file
+
+        .. versionadded:: 0.16.1
+
+        Parameters
+        ----------
+        group_or_filename : h5py.Group or str
+            HDF5 group containing the yields. If given as a string, it is
+            assumed to be the filename of the HDF5 file, and its first group
+            is read.
+
+        Returns
+        -------
+        openmc.data.FissionProductYields
+            Fission product yield data
+
+        """
+        group, h5file, filetype = _hdf5_group(group_or_filename,
+                                              ('data_nfy', 'data_sfy'))
+        try:
+            obj = cls.__new__(cls)
+            obj.sublibrary = filetype[5:]
+            obj.nuclide = {key: int(group.attrs[key]) for key in
+                           ('atomic_number', 'mass_number', 'isomeric_state')}
+            obj.nuclide['name'] = group.name.lstrip('/')
+            obj.energies = group['energies'][()]
+            obj.interpolation = {}
+            for kind in ('independent', 'cumulative'):
+                if kind not in group:
+                    continue
+                k = group[kind]
+                obj.interpolation[kind] = [int(i) for i in k['interpolation'][()]]
+                data = []
+                for i in range(len(obj.energies)):
+                    e = k[f'energy_{i}']
+                    names = [p.decode() for p in e['products'][()]]
+                    data.append(dict(zip(names, _uncertain_values(e['yields'][()]))))
+                setattr(obj, kind, data)
+        finally:
+            if h5file is not None:
+                h5file.close()
+        return obj
 
 
 class DecayMode(EqualityMixin):
@@ -308,7 +443,8 @@ class Decay(EqualityMixin):
         Decay mode information for each mode of decay.
     nuclide : dict
         Dictionary describing decaying nuclide with keys 'name',
-        'excited_state', 'mass', 'stable', 'spin', and 'parity'.
+        'atomic_number', 'mass_number', 'isomeric_state', 'excited_state',
+        'excitation_energy' (in [eV]), 'mass', 'stable', 'spin', and 'parity'.
     spectra : dict
         Resulting radiation spectra for each radiation type.
     sources : dict
@@ -339,6 +475,7 @@ class Decay(EqualityMixin):
         self.nuclide['name'] = gnds_name(Z, A, metastable)
         self.nuclide['mass'] = items[1]  # AWR
         self.nuclide['excited_state'] = items[2]  # State of the original nuclide
+        self.nuclide['excitation_energy'] = ev.target['excitation_energy']  # ELIS
         self.nuclide['stable'] = (items[4] == 1)  # Nucleus stability flag
 
         # Determine if radioactive/stable
@@ -444,7 +581,7 @@ class Decay(EqualityMixin):
                     if LCOV != 0:
                         items, values = get_list_record(file_obj)
                         ci['covariance_lb'] = items[3]
-                        ci['covariance'] = zip(values[0::2], values[1::2])
+                        ci['covariance'] = list(zip(values[0::2], values[1::2]))
 
                     spectrum['continuous'] = ci
 
@@ -490,6 +627,184 @@ class Decay(EqualityMixin):
 
         """
         return cls(ev_or_filename)
+
+    # optional (value, uncertainty) columns of discrete lines
+    _LINE_COLUMNS = ('positron_intensity', 'internal_pair',
+                     'total_internal_conversion', 'k_shell_conversion',
+                     'l_shell_conversion')
+
+    def export_to_hdf5(self, path, mode='a', libver='earliest'):
+        """Export radioactive decay data to an HDF5 file
+
+        One file per nuclide, as in the ENDF decay sublibrary; every value
+        keeps its standard deviation.
+
+        .. versionadded:: 0.16.1
+
+        Parameters
+        ----------
+        path : str
+            Path to write HDF5 file to
+        mode : {'r+', 'w', 'x', 'a'}
+            Mode that is used to open the HDF5 file. This is the second argument
+            to the :class:`h5py.File` constructor.
+        libver : {'earliest', 'latest'}
+            Compatibility mode for the HDF5 file. 'latest' will produce files
+            that are less backwards compatible but have performance benefits.
+
+        """
+        with h5py.File(str(path), mode, libver=libver) as f:
+            f.attrs['filetype'] = np.bytes_('data_decay')
+            f.attrs['version'] = np.array(HDF5_VERSION)
+            g = f.create_group(self.nuclide['name'])
+            nuc = self.nuclide
+            for key in ('atomic_number', 'mass_number', 'isomeric_state',
+                        'excited_state', 'excitation_energy', 'mass', 'parity'):
+                g.attrs[key] = nuc[key]
+            g.attrs['stable'] = int(nuc['stable'])
+            g.attrs['spin'] = np.nan if nuc['spin'] is None else nuc['spin']
+            g.attrs['half_life'] = _uncertain_array([self.half_life])[0]
+
+            if self.average_energies:
+                e = g.create_group('average_energies')
+                e.create_dataset('names', data=np.array(
+                    list(self.average_energies), dtype=h5py.string_dtype()))
+                e.create_dataset('values', data=_uncertain_array(
+                    self.average_energies.values()))
+
+            if self.modes:
+                m = g.create_group('modes')
+                m.create_dataset('modes', data=np.array(
+                    [','.join(x.modes) for x in self.modes], dtype=h5py.string_dtype()))
+                m.create_dataset('daughter_state',
+                                 data=[x._daughter_state for x in self.modes])
+                m.create_dataset('energy', data=_uncertain_array(
+                    [x.energy for x in self.modes]))
+                m.create_dataset('branching_ratio', data=_uncertain_array(
+                    [x.branching_ratio for x in self.modes]))
+
+            for i, spectrum in enumerate(self.spectra.values()):
+                sg = g.create_group(f'spectrum_{i}')
+                sg.attrs['type'] = spectrum['type']
+                sg.attrs['continuous_flag'] = spectrum['continuous_flag']
+                for key in ('discrete_normalization', 'energy_average',
+                            'continuous_normalization'):
+                    sg.attrs[key] = _uncertain_array([spectrum[key]])[0]
+                if 'discrete' in spectrum:
+                    lines = spectrum['discrete']
+                    d = sg.create_group('discrete')
+                    d.create_dataset('energy', data=_uncertain_array(
+                        [x['energy'] for x in lines]))
+                    d.create_dataset('intensity', data=_uncertain_array(
+                        [x['intensity'] for x in lines]))
+                    d.create_dataset('from_mode', data=np.array(
+                        [','.join(x['from_mode']) for x in lines],
+                        dtype=h5py.string_dtype()))
+                    d.create_dataset('transition', data=np.array(
+                        [x['type'] or '' for x in lines], dtype=h5py.string_dtype()))
+                    for key in self._LINE_COLUMNS:
+                        if any(key in x for x in lines):
+                            d.create_dataset(key, data=_uncertain_array(
+                                [x.get(key) for x in lines]))
+                if 'continuous' in spectrum:
+                    ci = spectrum['continuous']
+                    c = sg.create_group('continuous')
+                    c.attrs['from_mode'] = ','.join(ci['from_mode'])
+                    ci['probability'].to_hdf5(c, 'probability')
+                    if 'covariance' in ci:
+                        c.attrs['covariance_lb'] = ci['covariance_lb']
+                        c.create_dataset('covariance', data=np.array(
+                            ci['covariance'], dtype=float).reshape(-1, 2))
+
+    @classmethod
+    def from_hdf5(cls, group_or_filename):
+        """Read radioactive decay data from an HDF5 file
+
+        .. versionadded:: 0.16.1
+
+        Parameters
+        ----------
+        group_or_filename : h5py.Group or str
+            HDF5 group containing the decay data. If given as a string, it is
+            assumed to be the filename of the HDF5 file, and its first group
+            is read.
+
+        Returns
+        -------
+        openmc.data.Decay
+            Radioactive decay data
+
+        """
+        group, h5file, _ = _hdf5_group(group_or_filename, ('data_decay',))
+        try:
+            obj = cls.__new__(cls)
+            a = group.attrs
+            nuc = obj.nuclide = {'name': group.name.lstrip('/')}
+            for key in ('atomic_number', 'mass_number', 'isomeric_state',
+                        'excited_state'):
+                nuc[key] = int(a[key])
+            for key in ('excitation_energy', 'mass', 'parity'):
+                nuc[key] = float(a[key])
+            nuc['stable'] = bool(a['stable'])
+            nuc['spin'] = None if np.isnan(a['spin']) else float(a['spin'])
+            obj.half_life = _uncertain_values([a['half_life']])[0]
+
+            obj.average_energies = {}
+            if 'average_energies' in group:
+                e = group['average_energies']
+                names = [n.decode() for n in e['names'][()]]
+                obj.average_energies = dict(zip(names, _uncertain_values(e['values'][()])))
+
+            obj.modes = []
+            if 'modes' in group:
+                m = group['modes']
+                energies = _uncertain_values(m['energy'][()])
+                ratios = _uncertain_values(m['branching_ratio'][()])
+                for modes, state, energy, br in zip(
+                        m['modes'][()], m['daughter_state'][()], energies, ratios):
+                    obj.modes.append(DecayMode(nuc['name'], modes.decode().split(','),
+                                               int(state), energy, br))
+
+            obj.spectra = {}
+            i = 0
+            while f'spectrum_{i}' in group:
+                sg = group[f'spectrum_{i}']
+                spectrum = {'type': sg.attrs['type'],
+                            'continuous_flag': sg.attrs['continuous_flag']}
+                for key in ('discrete_normalization', 'energy_average',
+                            'continuous_normalization'):
+                    spectrum[key] = _uncertain_values([sg.attrs[key]])[0]
+                if 'discrete' in sg:
+                    d = sg['discrete']
+                    columns = {key: _uncertain_values(d[key][()])
+                               for key in ('energy', 'intensity') + cls._LINE_COLUMNS
+                               if key in d}
+                    lines = []
+                    for j, (mode, transition) in enumerate(
+                            zip(d['from_mode'][()], d['transition'][()])):
+                        line = {'energy': columns['energy'][j],
+                                'from_mode': mode.decode().split(','),
+                                'type': transition.decode() or None,
+                                'intensity': columns['intensity'][j]}
+                        for key in cls._LINE_COLUMNS:
+                            if key in columns and columns[key][j] is not None:
+                                line[key] = columns[key][j]
+                        lines.append(line)
+                    spectrum['discrete'] = lines
+                if 'continuous' in sg:
+                    c = sg['continuous']
+                    ci = {'probability': Tabulated1D.from_hdf5(c['probability']),
+                          'from_mode': c.attrs['from_mode'].split(',')}
+                    if 'covariance' in c:
+                        ci['covariance_lb'] = int(c.attrs['covariance_lb'])
+                        ci['covariance'] = [tuple(x) for x in c['covariance'][()]]
+                    spectrum['continuous'] = ci
+                obj.spectra[spectrum['type']] = spectrum
+                i += 1
+        finally:
+            if h5file is not None:
+                h5file.close()
+        return obj
 
     @cached_property
     def sources(self):

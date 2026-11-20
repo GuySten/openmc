@@ -68,3 +68,23 @@ pointing to the location of the chain file.
     <depletion_chain path="/opt/data/chain_endfb7.xml"/>
 
 The structure of the depletion chain file is explained in :ref:`io_depletion_chain`.
+
+--------------------------------------------------
+``<decay>``, ``<nfy>`` and ``<sfy>`` Elements
+--------------------------------------------------
+
+These elements give the location of radioactive decay data (``<decay>``) and of
+neutron-induced (``<nfy>``) and spontaneous (``<sfy>``) fission product yields,
+one HDF5 file per nuclide as in the corresponding ENDF sublibraries. They have
+the same ``materials``, ``path`` and ``type`` attributes as ``<library>``. The
+transport solver does not read them; they are read by
+:class:`openmc.data.DataLibrary`.
+
+.. code-block:: xml
+
+    <decay materials="Am242_m1" path="decay/Am242_m1.h5" type="decay"/>
+    <nfy materials="U235" path="nfy/U235.h5" type="nfy"/>
+
+The structure of these files is explained in :ref:`io_nuclear_data`.
+
+.. versionadded:: 0.16.1

@@ -4,6 +4,7 @@ import os
 from math import log
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 from uncertainties import ufloat
@@ -168,3 +169,84 @@ def test_decay_photon_energy():
         src = openmc.data.decay_photon_energy('Xe135')
         assert isinstance(src, openmc.stats.Tabular)
         assert src.integral() == pytest.approx(2.076506258964966e-05)
+
+
+def _same_values(a, b):
+    """Equal nested data: values with uncertainties compared by value and
+    standard deviation"""
+    if hasattr(a, 'nominal_value'):
+        assert (a.nominal_value, a.std_dev) == (b.nominal_value, b.std_dev) \
+            or (np.isinf(a.nominal_value) and np.isinf(b.nominal_value))
+    elif isinstance(a, dict):
+        assert set(a) == set(b)
+        for key in a:
+            _same_values(a[key], b[key])
+    elif isinstance(a, (list, tuple)):
+        assert len(a) == len(b)
+        for x, y in zip(a, b):
+            _same_values(x, y)
+    elif isinstance(a, openmc.data.Tabulated1D):
+        assert np.array_equal(a.x, b.x) and np.array_equal(a.y, b.y)
+        assert list(a.interpolation) == list(b.interpolation)
+    else:
+        assert a == b
+
+
+@pytest.mark.parametrize('name', ['dec-041_Nb_090.endf', 'dec-056_Ba_137m1.endf',
+                                  'dec-095_Am_242m1.endf', 'dec-026_Fe_056.endf'])
+def test_decay_hdf5_round_trip(endf_data, tmp_path, name):
+    d = openmc.data.Decay.from_endf(os.path.join(endf_data, 'decay', name))
+    d.export_to_hdf5(tmp_path / 'decay.h5', 'w')
+    r = openmc.data.Decay.from_hdf5(tmp_path / 'decay.h5')
+    _same_values(d.nuclide, r.nuclide)
+    _same_values(d.half_life, r.half_life)
+    _same_values(d.average_energies, r.average_energies)
+    assert [(m.modes, m.daughter) for m in d.modes] == \
+        [(m.modes, m.daughter) for m in r.modes]
+    _same_values([(m.energy, m.branching_ratio) for m in d.modes],
+                 [(m.energy, m.branching_ratio) for m in r.modes])
+    _same_values(d.spectra, r.spectra)
+    with h5py.File(tmp_path / 'decay.h5') as f:
+        assert f.attrs['filetype'].decode() == 'data_decay'
+
+
+def test_decay_excitation_energy(endf_data):
+    am242m = openmc.data.Decay.from_endf(
+        os.path.join(endf_data, 'decay', 'dec-095_Am_242m1.endf'))
+    assert am242m.nuclide['excitation_energy'] == pytest.approx(48.6e3, rel=1e-2)
+
+
+@pytest.mark.parametrize('sub, name', [('nfy', 'nfy-092_U_235.endf'),
+                                       ('sfy', 'sfy-098_Cf_252.endf')])
+def test_fpy_hdf5_round_trip(endf_data, tmp_path, sub, name):
+    y = openmc.data.FissionProductYields.from_endf(os.path.join(endf_data, sub, name))
+    assert y.sublibrary == sub
+    y.export_to_hdf5(tmp_path / 'fpy.h5', 'w')
+    r = openmc.data.FissionProductYields.from_hdf5(tmp_path / 'fpy.h5')
+    assert r.sublibrary == sub
+    assert r.nuclide == y.nuclide
+    assert np.array_equal(r.energies, y.energies)
+    assert r.interpolation == y.interpolation
+    _same_values(y.independent, r.independent)
+    _same_values(y.cumulative, r.cumulative)
+    with pytest.raises(DataError):
+        openmc.data.Decay.from_hdf5(tmp_path / 'fpy.h5')
+
+
+def test_sublibraries_in_cross_sections_xml(endf_data, tmp_path):
+    d = openmc.data.Decay.from_endf(os.path.join(endf_data, 'decay', 'dec-041_Nb_090.endf'))
+    y = openmc.data.FissionProductYields.from_endf(
+        os.path.join(endf_data, 'nfy', 'nfy-092_U_235.endf'))
+    d.export_to_hdf5(tmp_path / 'Nb90.h5', 'w')
+    y.export_to_hdf5(tmp_path / 'U235.h5', 'w')
+    lib = openmc.data.DataLibrary()
+    lib.register_file(tmp_path / 'Nb90.h5')
+    lib.register_file(tmp_path / 'U235.h5')
+    assert [(x['type'], x['materials']) for x in lib] == [('decay', ['Nb90']), ('nfy', ['U235'])]
+    lib.export_to_xml(tmp_path / 'cross_sections.xml')
+    # not <library> elements: the transport solver does not read them
+    text = (tmp_path / 'cross_sections.xml').read_text()
+    assert '<library' not in text and '<decay' in text and '<nfy' in text
+    lib2 = openmc.data.DataLibrary.from_xml(tmp_path / 'cross_sections.xml')
+    assert lib2.get_by_material('Nb90', 'decay')['path'] == str(tmp_path / 'Nb90.h5')
+    assert lib2.get_by_material('U235', 'nfy')['path'] == str(tmp_path / 'U235.h5')

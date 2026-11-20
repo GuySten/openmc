@@ -640,3 +640,36 @@ def decay_energy(nuclide: str):
             warn(f"Chain file '{chain_file}' does not have any decay energy.")
 
     return _DECAY_ENERGY.get(nuclide, 0.0)
+
+
+def isomeric_levels(decay_files):
+    """Excitation energies of the ground and isomeric states of a decay sublibrary
+
+    ENDF File 9/10 reaction products identify their final state by a level
+    number that need not agree with the level numbering of the decay
+    sublibrary. These excitation energies identify the isomeric state of each
+    final state instead (see :meth:`openmc.data.IncidentNeutron.from_njoy`).
+
+    .. versionadded:: 0.16.1
+
+    Parameters
+    ----------
+    decay_files : iterable of str or openmc.data.endf.Evaluation
+        ENDF decay sublibrary evaluations
+
+    Returns
+    -------
+    dict
+        Mapping of (Z, A) to a list of (excitation energy in [eV], isomeric
+        state number), sorted by energy; the ground state has number 0
+
+    """
+    levels = {}
+    for f in decay_files:
+        target = as_evaluation(f).target
+        key = (target['atomic_number'], target['mass_number'])
+        levels.setdefault(key, []).append(
+            (target['excitation_energy'], target['isomeric_state']))
+    for states in levels.values():
+        states.sort()
+    return levels

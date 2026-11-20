@@ -12,7 +12,7 @@ from openmc.stats import Uniform, Tabular, Legendre
 from .angle_distribution import AngleDistribution
 from .angle_energy import AngleEnergy
 from .correlated import CorrelatedAngleEnergy
-from .data import ATOMIC_SYMBOL, K_BOLTZMANN, EV_PER_MEV
+from .data import ATOMIC_SYMBOL, K_BOLTZMANN, EV_PER_MEV, gnds_name
 from .endf import as_evaluation, get_head_record, get_tab1_record, \
     get_list_record, get_tab2_record, get_cont_record
 from .energy_distribution import EnergyDistribution, LevelInelastic, \
@@ -517,7 +517,92 @@ def _get_fission_products_endf(ev):
     return products, derived_products
 
 
-def _get_activation_products(ev, rx):
+def _isomeric_state(isomeric_levels, Z, A, excitation_energy, rel_tol=0.01):
+    """Determine the isomeric state of a reaction residual from its level energy
+
+    The level numbers of File 9/10 final states and of the decay sublibrary
+    need not agree, so the state is identified by its excitation energy: the
+    decay-data state of the same nuclide nearest in energy. A final state
+    whose energy differs from that state by more than ``rel_tol`` (relative),
+    or whose nuclide has no decay data, is reported with a warning.
+
+    Parameters
+    ----------
+    isomeric_levels : dict
+        Mapping of (Z, A) to a list of (excitation energy in [eV], isomeric
+        state), as returned by :func:`openmc.data.isomeric_levels`
+    Z, A : int
+        Atomic and mass number of the residual nucleus
+    excitation_energy : float
+        Excitation energy of the final state in [eV] (QM - QI of File 9/10)
+    rel_tol : float
+        Relative tolerance on the excitation energy
+
+    Returns
+    -------
+    int
+        Isomeric state number (0 for the ground state)
+
+    """
+    if excitation_energy == 0.0:
+        return 0
+    name = f'{ATOMIC_SYMBOL[Z]}{A}'
+    states = isomeric_levels.get((Z, A))
+    if not states:
+        warn(f'No decay data for {name}: final state at {excitation_energy} eV '
+             'assigned to the ground state.')
+        return 0
+    energy, state = min(states, key=lambda s: abs(s[0] - excitation_energy))
+    if abs(energy - excitation_energy) > rel_tol*excitation_energy:
+        warn(f'Final state of {name} at {excitation_energy} eV has no decay-data '
+             f'level within {rel_tol:.0%}; assigned to isomeric state {state} '
+             f'at {energy} eV.')
+    return state
+
+
+def _sum_yields(a, b):
+    """Sum two linear-linear tabulated yields exactly
+
+    Both tables are piecewise linear (with jumps where an energy is repeated,
+    and zero outside their range), so their sum is piecewise linear on the
+    union of their energies, with a jump wherever either of them jumps.
+
+    """
+    for f in (a, b):
+        if not (isinstance(f, Tabulated1D) and all(i == 2 for i in f.interpolation)):
+            raise ValueError('Yields of final states mapped to the same isomeric '
+                             'state can only be summed when they are linear-linear '
+                             'tables.')
+
+    def limits(f, x):
+        # values of f just below and just above x
+        lo = np.searchsorted(f.x, x, side='left')
+        hi = np.searchsorted(f.x, x, side='right')
+        if hi - lo >= 2:
+            return f.y[lo], f.y[hi - 1]
+        if x == f.x[0]:
+            return 0.0, f.y[0]
+        if x == f.x[-1]:
+            return f.y[-1], 0.0
+        value = f(x)
+        return value, value
+
+    energy, values = [], []
+    union = np.union1d(a.x, b.x)
+    for i, x in enumerate(union):
+        la, ra = limits(a, x)
+        lb, rb = limits(b, x)
+        left, right = la + lb, ra + rb
+        if i > 0:
+            energy.append(x)
+            values.append(left)
+        if i < len(union) - 1 and (i == 0 or right != left):
+            energy.append(x)
+            values.append(right)
+    return Tabulated1D(energy, values)
+
+
+def _get_activation_products(ev, rx, isomeric_levels=None, files=(9, 10)):
     """Generate activation products from an ENDF evaluation
 
     Parameters
@@ -526,6 +611,17 @@ def _get_activation_products(ev, rx):
         The ENDF evaluation
     rx : openmc.data.Reaction
         Reaction which generates activation products
+    isomeric_levels : dict, optional
+        Mapping of (Z, A) to a list of (excitation energy in [eV], isomeric
+        state) from a decay sublibrary, as returned by
+        :func:`openmc.data.isomeric_levels`. When given, products are named by
+        their isomeric state (e.g., 'Am242_m1') and final states mapped to the
+        same isomeric state are combined; otherwise they are named by their
+        ENDF level number (e.g., 'Am242_e2').
+    files : tuple of int
+        ENDF files to read the products from: 9 (multiplicities) and/or 10
+        (production cross sections, which require the 0 K cross section of
+        the reaction)
 
     Returns
     -------
@@ -556,7 +652,7 @@ def _get_activation_products(ev, rx):
 
     products = []
 
-    for mf in (9, 10):
+    for mf in files:
         if not present[mf]:
             continue
 
@@ -570,11 +666,13 @@ def _get_activation_products(ev, rx):
             excited_state = items[3]
 
             # Get GNDS name for product
-            symbol = ATOMIC_SYMBOL[Z]
-            if excited_state > 0:
-                name = f'{symbol}{A}_e{excited_state}'
+            if isomeric_levels is not None:
+                state = _isomeric_state(isomeric_levels, Z, A, items[0] - items[1])
+                name = gnds_name(Z, A, state)
+            elif excited_state > 0:
+                name = f'{ATOMIC_SYMBOL[Z]}{A}_e{excited_state}'
             else:
-                name = f'{symbol}{A}'
+                name = f'{ATOMIC_SYMBOL[Z]}{A}'
 
             p = Product(name)
             if mf == 9:
@@ -592,14 +690,21 @@ def _get_activation_products(ev, rx):
                 yield_[idx] = prod_xs[idx] / neutron_xs[idx]
                 p.yield_ = Tabulated1D(energy, yield_)
 
-            # Check if product already exists from MF=6 and if it does, just
-            # overwrite the existing yield.
-            for product in rx.products:
+            # Final states of this file mapped to the same isomeric state
+            # are combined
+            for product in products:
                 if name == product.particle:
-                    product.yield_ = p.yield_
+                    product.yield_ = _sum_yields(product.yield_, p.yield_)
                     break
             else:
-                products.append(p)
+                # Check if product already exists from MF=6 and if it does,
+                # just overwrite the existing yield.
+                for product in rx.products:
+                    if name == product.particle:
+                        product.yield_ = p.yield_
+                        break
+                else:
+                    products.append(p)
 
     return products
 
@@ -1200,7 +1305,7 @@ class Reaction(EqualityMixin):
         return rx
 
     @classmethod
-    def from_endf(cls, ev, mt):
+    def from_endf(cls, ev, mt, isomeric_levels=None):
         """Generate a reaction from an ENDF evaluation
 
         Parameters
@@ -1209,6 +1314,12 @@ class Reaction(EqualityMixin):
             ENDF evaluation
         mt : int
             The MT value of the reaction to get data for
+        isomeric_levels : dict, optional
+            Mapping of (Z, A) to a list of (excitation energy in [eV],
+            isomeric state) from a decay sublibrary, as returned by
+            :func:`openmc.data.isomeric_levels`. When given, activation
+            products are named by their isomeric state (e.g., 'Am242_m1')
+            rather than by their ENDF level number (e.g., 'Am242_e2').
 
         Returns
         -------
@@ -1289,7 +1400,7 @@ class Reaction(EqualityMixin):
                 rx.products.append(neutron)
 
         if (8, mt) in ev.section:
-            rx.products += _get_activation_products(ev, rx)
+            rx.products += _get_activation_products(ev, rx, isomeric_levels)
 
         if (12, mt) in ev.section or (13, mt) in ev.section:
             rx.products += _get_photon_products_endf(ev, rx)

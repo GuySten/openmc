@@ -19,7 +19,8 @@ from .fission_energy import FissionEnergyRelease
 from .function import Tabulated1D, Sum, ResonancesWithBackground
 from .njoy import make_ace, make_pendf
 from .product import Product
-from .reaction import Reaction, _get_photon_products_ace, FISSION_MTS
+from .reaction import (Reaction, _get_activation_products,
+                       _get_photon_products_ace, FISSION_MTS)
 from . import resonance as res
 from . import resonance_covariance as res_cov
 from .urr import ProbabilityTables
@@ -666,7 +667,7 @@ class IncidentNeutron(EqualityMixin):
         return data
 
     @classmethod
-    def from_endf(cls, ev_or_filename, covariance=False):
+    def from_endf(cls, ev_or_filename, covariance=False, isomeric_levels=None):
         """Generate incident neutron continuous-energy data from an ENDF evaluation
 
         Parameters
@@ -678,6 +679,16 @@ class IncidentNeutron(EqualityMixin):
         covariance : bool
             Flag to indicate whether or not covariance data from File 32 should be
             retrieved
+
+        isomeric_levels : dict, optional
+            Mapping of (Z, A) to a list of (excitation energy in [eV], isomeric
+            state) from a decay sublibrary, as returned by
+            :func:`openmc.data.isomeric_levels`. When given, the activation
+            products of File 9/10 are named by their isomeric state (e.g.,
+            'Am242_m1') rather than by their ENDF level number (e.g.,
+            'Am242_e2').
+
+            .. versionadded:: 0.16.1
 
         Returns
         -------
@@ -712,7 +723,7 @@ class IncidentNeutron(EqualityMixin):
         # Read each reaction
         for mf, mt, nc, mod in ev.reaction_list:
             if mf == 3:
-                data.reactions[mt] = Reaction.from_endf(ev, mt)
+                data.reactions[mt] = Reaction.from_endf(ev, mt, isomeric_levels)
 
         # Replace cross sections for elastic, capture, fission
         try:
@@ -746,7 +757,8 @@ class IncidentNeutron(EqualityMixin):
         return data
 
     @classmethod
-    def from_njoy(cls, filename, temperatures=None, evaluation=None, **kwargs):
+    def from_njoy(cls, filename, temperatures=None, evaluation=None,
+                  isomeric_levels=None, **kwargs):
         """Generate incident neutron data by running NJOY.
 
         Parameters
@@ -759,6 +771,17 @@ class IncidentNeutron(EqualityMixin):
         evaluation : openmc.data.endf.Evaluation, optional
             If the ENDF file contains multiple material evaluations, this
             argument indicates which evaluation to use.
+        isomeric_levels : dict, optional
+            Mapping of (Z, A) to a list of (excitation energy in [eV], isomeric
+            state) from a decay sublibrary, as returned by
+            :func:`openmc.data.isomeric_levels`. When given, the residual
+            nuclei of reactions with File 9 multiplicities are added as
+            products whose yield is the energy-dependent multiplicity, named
+            by their isomeric state (e.g., 'Am242_m1'). Each final state is
+            identified by its excitation energy; final states mapped to the
+            same isomeric state are combined.
+
+            .. versionadded:: 0.16.1
         **kwargs
             Keyword arguments passed to :func:`openmc.data.njoy.make_ace`
 
@@ -798,6 +821,16 @@ class IncidentNeutron(EqualityMixin):
                     params = get_cont_record(file_obj)
                     reaction.q_mass_difference = params[0]
                     reaction.breakup_flag = params[3]
+
+            # Residual nuclei with energy-dependent multiplicities (File 9),
+            # after the products from ACE. File 10 production cross sections
+            # are not converted here: their yields need the 0 K cross section
+            # of the reaction.
+            if isomeric_levels is not None:
+                for mt, reaction in data.reactions.items():
+                    if (8, mt) in ev.section and (9, mt) in ev.section:
+                        reaction.products += _get_activation_products(
+                            ev, reaction, isomeric_levels, files=(9,))
 
             # Add 0K elastic scattering cross section
             if '0K' not in data.energy:

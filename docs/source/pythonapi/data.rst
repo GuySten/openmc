@@ -68,6 +68,7 @@ Core Functions
     dose_coefficients
     gnds_name
     half_life
+    isomeric_levels
     isotopes
     kalbach_slope
     linearize

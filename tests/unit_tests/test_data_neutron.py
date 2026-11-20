@@ -543,3 +543,96 @@ def test_high_temperature(endf_data):
     assert data.excitation_energy == 0.0
     assert data[102].q_mass_difference == pytest.approx(data[102].q_reaction)
     assert data[102].breakup_flag == 0
+
+
+def test_isomeric_levels(endf_data):
+    decay_files = [os.path.join(endf_data, 'decay', f'dec-095_Am_242{s}.endf')
+                   for s in ('', 'm1')]
+    levels = openmc.data.isomeric_levels(decay_files)
+    (E0, m0), (E1, m1) = levels[95, 242]
+    assert (E0, m0) == (0.0, 0)
+    assert m1 == 1
+    assert E1 == pytest.approx(48.6e3, rel=1e-2)
+
+
+def test_isomeric_state_by_energy():
+    from openmc.data.reaction import _isomeric_state
+    levels = {(95, 242): [(0.0, 0), (48630.0, 1), (2.2e6, 2)]}
+    assert _isomeric_state(levels, 95, 242, 0.0) == 0
+    assert _isomeric_state(levels, 95, 242, 48630.0) == 1
+    # level numbers may disagree between sublibraries: nearest level, warned
+    # when the energies differ by more than 1%
+    with pytest.warns(UserWarning, match='Am242'):
+        assert _isomeric_state(levels, 95, 242, 2.0e6) == 2
+    # an excited level of a nuclide without decay data de-excites to the
+    # ground state
+    with pytest.warns(UserWarning, match='Ti48'):
+        assert _isomeric_state(levels, 22, 48, 3.633e6) == 0
+
+
+def test_sum_yields_exact_at_jumps():
+    from openmc.data.reaction import _sum_yields
+    a = openmc.data.Tabulated1D([1., 2., 2., 3.], [0., 1., 5., 6.])
+    b = openmc.data.Tabulated1D([1.5, 2.5, 4.], [2., 2., 4.])
+    s = _sum_yields(a, b)
+    # everywhere but at the end points of the tables (measure zero)
+    x = np.linspace(0.5, 4.5, 4001)
+    x = x[~np.isin(x, [1.5, 3.0, 4.0])]
+    assert s(x) == pytest.approx(a(x) + b(x))
+    # just below the jumps and table ends
+    xl = np.array([1.5, 2.0, 3.0, 4.0]) - 1e-9
+    assert s(xl) == pytest.approx(a(xl) + b(xl))
+    with pytest.raises(ValueError):
+        _sum_yields(a, openmc.data.Tabulated1D([1., 2.], [1., 1.], [2], [1]))
+
+
+def test_activation_products_isomeric_names(am241, endf_data, tmp_path):
+    decay_files = [os.path.join(endf_data, 'decay', f'dec-095_Am_242{s}.endf')
+                   for s in ('', 'm1')]
+    levels = openmc.data.isomeric_levels(decay_files)
+    ev = am241._evaluation
+
+    # default: products named by their ENDF level number
+    by_level = {p.particle: p for p in am241[102].products
+                if p.particle.startswith('Am242')}
+    rx = openmc.data.Reaction.from_endf(ev, 102, levels)
+    by_state = {p.particle: p for p in rx.products if p.particle.startswith('Am242')}
+    assert set(by_state) == {'Am242', 'Am242_m1'}
+    excited = [n for n in by_level if n != 'Am242']
+    assert len(excited) == 1
+
+    # the yields are File 9's multiplicities, energy dependent, summing to one
+    E = np.logspace(-5, 7, 200)
+    assert by_state['Am242'].yield_(E) == pytest.approx(by_level['Am242'].yield_(E))
+    assert by_state['Am242_m1'].yield_(E) == pytest.approx(by_level[excited[0]].yield_(E))
+    assert by_state['Am242'].yield_(E) + by_state['Am242_m1'].yield_(E) == pytest.approx(1.0)
+    m1 = by_state['Am242_m1'].yield_
+    assert m1(1e6) > m1(0.0253)
+
+    # round trip through HDF5
+    import h5py
+    with h5py.File(tmp_path / 'products.h5', 'w') as f:
+        by_state['Am242_m1'].to_hdf5(f.create_group('product'))
+    with h5py.File(tmp_path / 'products.h5', 'r') as f:
+        p = openmc.data.Product.from_hdf5(f['product'])
+    assert p.particle == 'Am242_m1'
+    assert p.yield_(E) == pytest.approx(m1(E))
+
+
+@needs_njoy
+def test_from_njoy_isomeric_products(endf_data):
+    endf_file = os.path.join(endf_data, 'neutrons', 'n-095_Am_241.endf')
+    decay_files = [os.path.join(endf_data, 'decay', f'dec-095_Am_242{s}.endf')
+                   for s in ('', 'm1')]
+    levels = openmc.data.isomeric_levels(decay_files)
+    data = openmc.data.IncidentNeutron.from_njoy(endf_file, isomeric_levels=levels)
+    products = data[102].products
+    names = [p.particle for p in products]
+    # appended after the products from ACE, named by isomeric state
+    assert names[-2:] == ['Am242', 'Am242_m1']
+    E = np.logspace(-5, 7, 50)
+    assert products[-2].yield_(E) + products[-1].yield_(E) == pytest.approx(1.0)
+
+    # without decay data, no residual products are added
+    data = openmc.data.IncidentNeutron.from_njoy(endf_file)
+    assert not any(p.particle.startswith('Am242') for p in data[102].products)

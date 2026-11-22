@@ -1709,25 +1709,27 @@ class Tabular(Univariate):
             return biased_sample, wgt
 
     def evaluate(self, x):
-        if self.interpolation == 'linear-linear':
-            i = np.searchsorted(self.x, x, side='left') - 1
-            if i < 0 or i >= len(self.p) - 1:
-                return 0.0
-            x0, x1 = self.x[i], self.x[i + 1]
-            p0, p1 = self.p[i], self.p[i + 1]
-            t = (x - x0) / (x1 - x0)
-            return (1 - t) * p0 + t * p1
-
-        elif self.interpolation == 'histogram':
-            i = np.searchsorted(self.x, x, side='right') - 1
-            if i < 0 or i >= len(self.p):
-                return 0.0
-            return self.p[i]
-
-        else:
+        if self.interpolation not in ('linear-linear', 'histogram'):
             raise NotImplementedError('Can only evaluate tabular '
                                       'distributions using histogram '
                                       'or linear-linear interpolation.')
+
+        # Find the interval with x[i] <= x < x[i + 1], as sampled. The support
+        # is closed, so a value at the upper end of the grid belongs to the
+        # last interval of nonzero width.
+        n = len(self.x)
+        side = 'left' if n > 0 and x == self.x[-1] else 'right'
+        i = np.searchsorted(self.x, x, side=side) - 1
+        if i < 0 or i >= n - 1:
+            return 0.0
+
+        if self.interpolation == 'histogram':
+            return self.p[i]
+
+        x0, x1 = self.x[i], self.x[i + 1]
+        p0, p1 = self.p[i], self.p[i + 1]
+        t = (x - x0) / (x1 - x0)
+        return (1 - t) * p0 + t * p1
 
     def to_xml_element(self, element_name: str):
         """Return XML representation of the tabular distribution

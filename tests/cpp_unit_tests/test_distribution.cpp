@@ -217,3 +217,45 @@ TEST_CASE("Test Normal XML constructor with truncation")
   REQUIRE(dist.upper() == 1.2e6);
   REQUIRE(dist.is_truncated());
 }
+
+TEST_CASE("Test evaluating a tabular distribution at the ends of its grid")
+{
+  // Every point of the closed support [x_0, x_{n-1}] has a nonzero density,
+  // the endpoints included: a biased source divides by the bias density at the
+  // sampled value, which can be exactly x_0.
+  openmc::vector<double> x {-1.0, 0.0, 1.0};
+  openmc::vector<double> p {1.0, 2.0, 3.0};
+
+  openmc::Tabular lin(
+    x.data(), p.data(), x.size(), openmc::Interpolation::lin_lin);
+  // integral = 0.5 * (1 + 2) + 0.5 * (2 + 3) = 4
+  REQUIRE_THAT(lin.evaluate(-1.0), Catch::Matchers::WithinRel(0.25, 1e-12));
+  REQUIRE_THAT(lin.evaluate(-0.5), Catch::Matchers::WithinRel(0.375, 1e-12));
+  REQUIRE_THAT(lin.evaluate(0.0), Catch::Matchers::WithinRel(0.5, 1e-12));
+  REQUIRE_THAT(lin.evaluate(1.0), Catch::Matchers::WithinRel(0.75, 1e-12));
+  REQUIRE(lin.evaluate(-1.0 - 1e-12) == 0.0);
+  REQUIRE(lin.evaluate(1.0 + 1e-12) == 0.0);
+
+  // Histogram: the last density value is not used, so the density at the upper
+  // end is that of the last bin
+  openmc::Tabular hist(
+    x.data(), p.data(), x.size(), openmc::Interpolation::histogram);
+  // integral = 1 * 1 + 2 * 1 = 3
+  REQUIRE_THAT(
+    hist.evaluate(-1.0), Catch::Matchers::WithinRel(1.0 / 3.0, 1e-12));
+  REQUIRE_THAT(
+    hist.evaluate(0.0), Catch::Matchers::WithinRel(2.0 / 3.0, 1e-12));
+  REQUIRE_THAT(
+    hist.evaluate(1.0), Catch::Matchers::WithinRel(2.0 / 3.0, 1e-12));
+  REQUIRE(hist.evaluate(-1.0 - 1e-12) == 0.0);
+  REQUIRE(hist.evaluate(1.0 + 1e-12) == 0.0);
+
+  // A repeated last grid point (step at the upper end) must not select a
+  // zero-width interval
+  openmc::vector<double> xs {0.0, 1.0, 1.0};
+  openmc::vector<double> ps {1.0, 1.0, 0.0};
+  openmc::Tabular step(
+    xs.data(), ps.data(), xs.size(), openmc::Interpolation::lin_lin);
+  REQUIRE_THAT(step.evaluate(0.0), Catch::Matchers::WithinRel(1.0, 1e-12));
+  REQUIRE_THAT(step.evaluate(1.0), Catch::Matchers::WithinRel(1.0, 1e-12));
+}

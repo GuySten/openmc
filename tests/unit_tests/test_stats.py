@@ -334,6 +334,35 @@ def test_tabular():
     assert np.all(weights != 1.0)
 
 
+def test_tabular_evaluate_endpoints():
+    # Both ends of the closed support have a nonzero density: a biased
+    # distribution divides by the bias density at the sampled value, which can
+    # be exactly x[0]
+    x = np.array([-1.0, 0.0, 1.0])
+    p = np.array([1.0, 2.0, 3.0])
+
+    d = openmc.stats.Tabular(x, p, 'linear-linear')
+    assert d.evaluate(-1.0) == pytest.approx(1.0)
+    assert d.evaluate(-0.5) == pytest.approx(1.5)
+    assert d.evaluate(0.0) == pytest.approx(2.0)
+    assert d.evaluate(1.0) == pytest.approx(3.0)
+    assert d.evaluate(-1.0 - 1e-12) == 0.0
+    assert d.evaluate(1.0 + 1e-12) == 0.0
+
+    # Histogram: the density at the upper end is that of the last bin, whether
+    # or not the unused last probability is given
+    for probs in (p, p[:-1]):
+        d = openmc.stats.Tabular(x, probs, 'histogram')
+        assert d.evaluate(-1.0) == pytest.approx(1.0)
+        assert d.evaluate(0.0) == pytest.approx(2.0)
+        assert d.evaluate(1.0) == pytest.approx(2.0)
+        assert d.evaluate(1.0 + 1e-12) == 0.0
+
+    # A repeated last grid point must not select a zero-width interval
+    d = openmc.stats.Tabular([0.0, 1.0, 1.0], [1.0, 1.0, 0.0], 'linear-linear')
+    assert d.evaluate(1.0) == pytest.approx(1.0)
+
+
 def test_tabular_from_xml():
     x = np.array([0.0, 5.0, 7.0, 10.0])
     p = np.array([10.0, 20.0, 5.0, 6.0])

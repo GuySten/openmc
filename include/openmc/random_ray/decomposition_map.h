@@ -55,7 +55,7 @@ public:
   // Methods for balancing the load between ranks
   void balance_load(FlatSourceDomain* domain);
   void update_load(FlatSourceDomain* domain, bool check_all_ranks,
-    vector<double>& rank_load_combined, vector<double>& load_ratio);
+    vector<double>& rank_load_combined);
   void redistribute_source_regions(FlatSourceDomain* domain);
 
   // Methods to find owner of source region
@@ -66,9 +66,7 @@ public:
 
   // Method to calculate the load per rank based on the total number of hits in
   // all source regions of a rank
-  void calculate_rank_load(
-    FlatSourceDomain* domain, double batch_transport_time);
-  double calculate_load_ratio(int rank);
+  void calculate_rank_load(FlatSourceDomain* domain);
 
   //----------------------------------------------------------------------------
   // Public data members
@@ -106,9 +104,7 @@ private:
   vector<Position> rank_centers_;  // centers of each rank's Voronoi cell
 
   // Load calculation
-  vector<double> estimated_rank_load_fractions_;
   vector<double> estimated_rank_load_totals_;
-  double estimated_load_sum_;
 
   // Coefficients for load calculation
   double C1_ = 1.0;

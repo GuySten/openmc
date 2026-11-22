@@ -1332,20 +1332,24 @@ in a source region :math:`i`, and 2) the number of surface ray trace operations
 region:
 
 .. math::
-    \mathrm{load}_{\mathrm{estimate}, i} = F_{r} \cdot \left(C_1 \cdot 
-    n_{\mathrm{hits}, i} \cdot N_{G} + C_2 \cdot n_{\mathrm{RT}, i} \right)\;
+    \mathrm{load}_{\mathrm{estimate}, i} = C_1 \cdot
+    n_{\mathrm{hits}, i} \cdot N_{G} + C_2 \cdot n_{\mathrm{RT}, i}\;
     \mathrm{.}
 
 The quantities :math:`n_{\mathrm{hits}, i}` and  :math:`n_{\mathrm{RT}, i}` are
 recorded throughout the simulation. Both contributions are weighted with factors
 :math:`C_1` and  :math:`C_2`, which represent the relative computational cost
 of these operations. The values of these factors are set to :math:`C_1=1.0` and
-:math:`C_2=0.1`, according to empirical tests. These estimates per source
-region are then scaled by the additional prefactor :math:`F_{\mathrm{rank}}`
-for the respective MPI rank, which is calculated from the ratio between measured
-and estimated MPI rank load in the current batch. The measured load is
-determined based on the transport sweep times, which are recorded by default for
-diagnostics.
+:math:`C_2=0.1`, according to empirical tests.
+
+Only this modelled estimate takes part in load balancing. An earlier version
+additionally scaled it by the ratio between the measured and estimated load of
+each rank, with the measured load taken from the transport sweep times. That
+made the resulting decomposition depend on how quickly each rank happened to
+run a batch, so two runs of the same input were not guaranteed to produce the
+same answer. Transport sweep times are still recorded, but they are used only
+for diagnostics and for the load imbalance reported at the end of a
+simulation.
 
 Based on these load estimates, a load balancing routine tries to equalize the
 work per MPI rank. To do so, the weights

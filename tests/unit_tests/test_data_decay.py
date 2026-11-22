@@ -148,6 +148,39 @@ def test_sources(ba137m, nb90):
     assert len(set(sources.keys()) ^ {'positron', 'electron', 'photon'}) == 0
 
 
+def test_beta_sources(endf_data):
+    # Na22 decays by beta+ (90%) and electron capture. Positrons are emitted
+    # with the positron intensity at the evaluated average energy, which is
+    # below the endpoint energy of 546 keV.
+    na22 = openmc.data.Decay.from_endf(
+        os.path.join(endf_data, 'decay', 'dec-011_Na_022.endf'))
+    lam = na22.decay_constant.n
+    spectrum = na22.spectra['ec/beta+']
+    n_positron = sum(d['positron_intensity'].n for d in spectrum['discrete'])
+    positron = na22.sources['positron']
+    assert isinstance(positron, openmc.stats.Discrete)
+    assert positron.integral() == pytest.approx(lam * n_positron)
+    mean = np.sum(positron.x * positron.p) / positron.integral()
+    assert mean == pytest.approx(spectrum['energy_average'].n / n_positron)
+    assert mean < 546e3
+
+    # Fe55 decays only by electron capture and emits no positrons
+    fe55 = openmc.data.Decay.from_endf(
+        os.path.join(endf_data, 'decay', 'dec-026_Fe_055.endf'))
+    assert 'positron' not in fe55.sources
+
+    # The energy of Y90 electrons is the evaluated average energy of beta
+    # particles and conversion electrons
+    y90 = openmc.data.Decay.from_endf(
+        os.path.join(endf_data, 'decay', 'dec-039_Y_090.endf'))
+    lam = y90.decay_constant.n
+    electron = y90.sources['electron']
+    expected = sum(y90.spectra[t]['energy_average'].n for t in ('beta-', 'e-'))
+    assert np.sum(electron.x * electron.p) / lam == pytest.approx(
+        expected, rel=1e-3)
+    assert np.all(electron.x < 2279800.0)
+
+
 def test_decay_photon_energy():
     # If chain file is not set, we should get a data error
     if 'chain_file' in openmc.config:

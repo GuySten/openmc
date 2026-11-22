@@ -7,6 +7,7 @@ import numpy as np
 import openmc.checkvalue as cv
 from openmc.mixin import EqualityMixin
 from openmc.stats import Tabular, Univariate, Discrete, Mixture
+from .cdf import DiscreteCDF, TabularCDF, cdf_values
 from .function import Tabulated1D, INTERPOLATION_SCHEME
 from .angle_energy import AngleEnergy
 from .data import EV_PER_MEV
@@ -394,10 +395,10 @@ class KalbachMann(AngleEnergy):
                 interpolation[i] = 1 if continuous.interpolation == 'histogram' else 2
                 distribution[0, j:j+m] = discrete.x
                 distribution[1, j:j+m] = discrete.p
-                distribution[2, j:j+m] = discrete.c
+                distribution[2, j:j+m] = cdf_values(discrete)
                 distribution[0, j+m:j+n] = continuous.x
                 distribution[1, j+m:j+n] = continuous.p
-                distribution[2, j+m:j+n] = continuous.c
+                distribution[2, j+m:j+n] = cdf_values(continuous)
             else:
                 if isinstance(eout, Tabular):
                     n_discrete_lines[i] = 0
@@ -407,7 +408,7 @@ class KalbachMann(AngleEnergy):
                     interpolation[i] = 1
                 distribution[0, j:j+n] = eout.x
                 distribution[1, j:j+n] = eout.p
-                distribution[2, j:j+n] = eout.c
+                distribution[2, j:j+n] = cdf_values(eout)
 
             distribution[3, j:j+n] = km_r.y
             distribution[4, j:j+n] = km_a.y
@@ -462,15 +463,17 @@ class KalbachMann(AngleEnergy):
 
             # Create discrete distribution if lines are present
             if m > 0:
-                eout_discrete = Discrete(data[0, j:j+m], data[1, j:j+m])
-                eout_discrete.c = data[2, j:j+m]
-                p_discrete = eout_discrete.c[-1]
+                eout_discrete = DiscreteCDF(
+                    data[0, j:j+m], data[1, j:j+m],
+                    tabulated_cdf=data[2, j:j+m])
+                p_discrete = eout_discrete.tabulated_cdf[-1]
 
             # Create continuous distribution
             if m < n:
                 interp = INTERPOLATION_SCHEME[interpolation[i]]
-                eout_continuous = Tabular(data[0, j+m:j+n], data[1, j+m:j+n], interp)
-                eout_continuous.c = data[2, j+m:j+n]
+                eout_continuous = TabularCDF(
+                    data[0, j+m:j+n], data[1, j+m:j+n], interp,
+                    tabulated_cdf=data[2, j+m:j+n])
 
             # If both continuous and discrete are present, create a mixture
             # distribution
@@ -559,20 +562,22 @@ class KalbachMann(AngleEnergy):
             data[0, :] *= EV_PER_MEV
 
             # Create continuous distribution
-            eout_continuous = Tabular(data[0][n_discrete_lines:],
-                                      data[1][n_discrete_lines:]/EV_PER_MEV,
-                                      INTERPOLATION_SCHEME[intt],
-                                      ignore_negative=True)
-            eout_continuous.c = data[2][n_discrete_lines:]
+            eout_continuous = TabularCDF(
+                data[0][n_discrete_lines:],
+                data[1][n_discrete_lines:]/EV_PER_MEV,
+                INTERPOLATION_SCHEME[intt],
+                ignore_negative=True,
+                tabulated_cdf=data[2][n_discrete_lines:])
             if np.any(data[1][n_discrete_lines:] < 0.0):
                 warn("Kalbach-Mann energy distribution has negative "
                      "probabilities.")
 
             # If discrete lines are present, create a mixture distribution
             if n_discrete_lines > 0:
-                eout_discrete = Discrete(data[0][:n_discrete_lines],
-                                         data[1][:n_discrete_lines])
-                eout_discrete.c = data[2][:n_discrete_lines]
+                eout_discrete = DiscreteCDF(
+                    data[0][:n_discrete_lines],
+                    data[1][:n_discrete_lines],
+                    tabulated_cdf=data[2][:n_discrete_lines])
                 if n_discrete_lines == n_energy_out:
                     eout_i = eout_discrete
                 else:

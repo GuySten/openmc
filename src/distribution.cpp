@@ -603,30 +603,21 @@ double Tabular::sample_unbiased(uint64_t* seed) const
 
 double Tabular::evaluate(double x) const
 {
-  int i;
+  // Find the interval with x_[i] <= x < x_[i + 1], as sampled. The support is
+  // closed, so a value at the upper end of the grid belongs to the last
+  // interval of nonzero width.
+  int n = x_.size();
+  int i = (n > 0 && x == x_.back())
+            ? std::lower_bound(x_.begin(), x_.end(), x) - x_.begin() - 1
+            : std::upper_bound(x_.begin(), x_.end(), x) - x_.begin() - 1;
+  if (i < 0 || i >= n - 1)
+    return 0.0;
 
-  if (interp_ == Interpolation::histogram) {
-    i = std::upper_bound(x_.begin(), x_.end(), x) - x_.begin() - 1;
-    if (i < 0 || i >= static_cast<int>(p_.size())) {
-      return 0.0;
-    } else {
-      return p_[i];
-    }
-  } else {
-    i = std::lower_bound(x_.begin(), x_.end(), x) - x_.begin() - 1;
+  if (interp_ == Interpolation::histogram)
+    return p_[i];
 
-    if (i < 0 || i >= static_cast<int>(p_.size()) - 1) {
-      return 0.0;
-    } else {
-      double x0 = x_[i];
-      double x1 = x_[i + 1];
-      double p0 = p_[i];
-      double p1 = p_[i + 1];
-
-      double t = (x - x0) / (x1 - x0);
-      return (1 - t) * p0 + t * p1;
-    }
-  }
+  double t = (x - x_[i]) / (x_[i + 1] - x_[i]);
+  return (1 - t) * p_[i] + t * p_[i + 1];
 }
 
 //==============================================================================

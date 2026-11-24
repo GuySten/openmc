@@ -145,7 +145,8 @@ can create a library and export it to XML using the
   library.export_to_xml()
 
 At this point, you will have a ``cross_sections.xml`` file that you can use in
-OpenMC.
+OpenMC. To add your files to an existing library instead, see
+:ref:`customize_xs_library`.
 
 .. hint:: The :class:`IncidentNeutron` class allows you to view/modify cross
           sections, secondary angle/energy distributions, probability tables,
@@ -187,6 +188,78 @@ Once you have instances of :class:`IncidentNeutron` and
 ``export_to_hdf5()`` methods and the :class:`DataLibrary` class as described in
 :ref:`create_xs_library`.
 
+.. _customize_xs_library:
+
+Customizing a Library
+---------------------
+
+Often a pregenerated library is almost what you need: you want one nuclide from
+another evaluation, a file you generated yourself, or two libraries combined.
+Rather than editing ``cross_sections.xml`` by hand, load it as a
+:class:`DataLibrary`, change it, and export a new file. The original library is
+left untouched.
+
+**Which entry is used.** Each material is taken, for each data type, from the
+first ``<library>`` element that lists it. OpenMC and
+:meth:`DataLibrary.get_by_material` follow the same rule, and both warn when a
+material is listed more than once, so a file you meant to use can no longer be
+shadowed silently. :meth:`DataLibrary.duplicates` lists every such material and
+the files that provide it.
+
+**Replacing a file.** Pass ``replace=True`` to :meth:`DataLibrary.register_file`
+to have a file take the place of the data the library already holds for the
+same materials, for example the U-238 file with 0 K elastic scattering data from
+:ref:`the next section <resonance_scattering_data>`::
+
+  library = openmc.data.DataLibrary.from_xml('/opt/data/endfb-viii.0-hdf5/cross_sections.xml')
+  library.register_file('U238_with_0K.h5', replace=True)
+  library.export_to_xml('my_data/cross_sections.xml')
+
+  openmc.config['cross_sections'] = 'my_data/cross_sections.xml'
+
+Without ``replace=True`` the file is appended and, because the existing entry
+comes first, it would not be used; a warning says so. The same holds for a
+depletion chain::
+
+  library.register_file('chain_casl_pwr.xml', replace=True)
+
+**Combining libraries.** :meth:`DataLibrary.update` adds the entries of another
+library, given as a :class:`DataLibrary` or as the path to its XML file. By
+default the other library takes precedence wherever both provide a material;
+with ``replace=False`` it only fills in what is missing::
+
+  library = openmc.data.DataLibrary.from_xml('/opt/data/endfb-viii.0-hdf5/cross_sections.xml')
+
+  # Use JEFF-3.3 wherever it has data, ENDF/B-VIII.0 elsewhere
+  library.update('/opt/data/jeff-3.3-hdf5/cross_sections.xml')
+
+  # Or: keep ENDF/B-VIII.0 and take from TENDL only the nuclides it lacks
+  library.update('/opt/data/tendl-2019-hdf5/cross_sections.xml', replace=False)
+
+  library.export_to_xml('my_data/cross_sections.xml')
+
+**Removing data.** :meth:`DataLibrary.remove_by_material` takes one name or
+several, and ``data_type=None`` removes them from every data type::
+
+  # Use pointwise data rather than windowed multipole data for uranium
+  library.remove_by_material(['U234', 'U235', 'U238'], data_type='wmp')
+
+  # Remove every kind of data for Pu-239
+  library.remove_by_material('Pu239', data_type=None)
+
+**Moving and sharing a library.** :meth:`DataLibrary.export_to_xml` writes the
+paths of files inside the directory of the XML file relative to it, so that the
+directory can be copied, moved, or shared as a whole, and the paths of other
+files as absolute paths, so that the XML file alone can be moved. Pass
+``absolute=True`` to write only absolute paths.
+
+.. note:: OpenMC skips a ``<library>`` element of a data type it does not know,
+          with a warning, rather than stopping. A ``cross_sections.xml`` file
+          that lists data types added in a newer version of OpenMC can
+          therefore be used with an older one.
+
+.. _resonance_scattering_data:
+
 Enabling Resonance Scattering Treatments
 ----------------------------------------
 
@@ -204,8 +277,10 @@ file for the nuclide you are modifying::
   u238.add_elastic_0K_from_endf('n-092_U_238.endf')
   u238.export_to_hdf5('U238_with_0K.h5')
 
-With 0 K elastic scattering data present, you can turn on a resonance scattering
-method using :attr:`Settings.resonance_scattering`.
+To use the new file in place of the U-238 file of an existing library, see
+:ref:`customize_xs_library`. With 0 K elastic scattering data present, you can
+turn on a resonance scattering method using
+:attr:`Settings.resonance_scattering`.
 
 .. note:: The process of reconstructing resonances and generating tabulated 0 K
           cross sections can be computationally expensive, especially for

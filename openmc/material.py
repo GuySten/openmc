@@ -106,6 +106,76 @@ def _read_material_library(library, path):
     return data
 
 
+def _s_alpha_beta_nuclides(name: str) -> set[str] | None:
+    """Nuclides an S(a,b) table applies to, read from the thermal scattering
+    data of the configured cross section library; None if unavailable."""
+    path = openmc.config.get('cross_sections')
+    if path is None:
+        return None
+    try:
+        library = openmc.data.DataLibrary.from_xml(path)
+    except (OSError, ValueError):
+        return None
+    entry = library.get_by_material(name, data_type='thermal')
+    if entry is None:
+        return None
+    with h5py.File(entry['path'], 'r') as f:
+        return {n.decode() for n in f[name].attrs['nuclides']}
+
+
+def _mixed_s_alpha_beta(materials, contributions, nuclides_per_cc):
+    """S(a,b) tables of a mixture of materials and their fractions.
+
+    contributions[i][nuc] is the density of nuclide nuc that material i adds
+    to the mixture, nuclides_per_cc[nuc] the total.
+    """
+    tables = {}
+    for i, mat in enumerate(materials):
+        for name, fraction in mat._sab:
+            tables.setdefault(name, []).append((i, fraction))
+
+    result = []
+    bound_by = {}
+    for name, users in tables.items():
+        bound = _s_alpha_beta_nuclides(name)
+        if bound is None:
+            # Without the data, the table is carried over only if the
+            # nuclides of the materials using it come from them alone, with
+            # one fraction
+            fractions = {f for _, f in users}
+            used = {i for i, _ in users}
+            nuclides = set().union(*(contributions[i] for i in used))
+            shared = any(nuc in contributions[j] for nuc in nuclides
+                         for j in range(len(materials)) if j not in used)
+            if shared or len(fractions) > 1:
+                raise NotImplementedError(
+                    f'Cannot determine the fraction of S(a,b) table {name} in '
+                    'the mixture: configure a cross section library '
+                    '(openmc.config["cross_sections"]) that contains it.')
+            result.append((name, fractions.pop()))
+            continue
+
+        present = sorted(nuc for nuc in bound if nuc in nuclides_per_cc)
+        if not present:
+            continue
+        for nuc in present:
+            if nuc in bound_by and bound_by[nuc] != name:
+                raise ValueError(
+                    f'{nuc} would be bound by both S(a,b) tables '
+                    f'{bound_by[nuc]} and {name} in the mixture; a nuclide can '
+                    'appear in only one table per material.')
+            bound_by[nuc] = name
+        shares = [sum(f*contributions[i].get(nuc, 0.) for i, f in users) /
+                  nuclides_per_cc[nuc] for nuc in present]
+        if not np.allclose(shares, shares[0], rtol=1e-10, atol=0.):
+            raise NotImplementedError(
+                f'The nuclides of S(a,b) table {name} are bound in different '
+                'proportions in the mixture, which one fraction cannot '
+                'represent.')
+        result.append((name, min(1.0, float(shares[0]))))
+    return result
+
+
 class Material(IDManagerMixin):
     """A material composed of a collection of nuclides/elements.
 
@@ -2094,6 +2164,20 @@ class Material(IDManagerMixin):
         openmc.Material
             Mixture of the materials
 
+        Notes
+        -----
+        :math:`S(\alpha,\beta)` tables of the materials are carried over to the
+        mixture. The fraction of a table in the mixture is the fraction of the
+        atoms of its nuclides that are bound by it: for example, mixing water
+        that has ``c_H_in_H2O`` with a material containing free hydrogen gives
+        a fraction equal to the share of hydrogen that comes from the water.
+        The nuclides a table applies to are read from the thermal scattering
+        data of the cross section library (``openmc.config['cross_sections']``).
+        Without a library, a table is carried over only if none of the
+        nuclides of the materials containing it appears in another material.
+        A nuclide bound by two different tables cannot be represented in one
+        material and raises an error.
+
         """
 
         cv.check_type('materials', materials, Iterable, Material)
@@ -2128,22 +2212,21 @@ class Material(IDManagerMixin):
         elif percent_type == 'vo':
             wgts = fracs
 
-        # If any of the involved materials contain S(a,b) tables raise an error
-        sab_names = set(sab[0] for mat in materials for sab in mat._sab)
-        if sab_names:
-            msg = ('Currently we do not support mixing materials containing '
-                   'S(a,b) tables')
-            raise NotImplementedError(msg)
-
-        # Add nuclide densities weighted by appropriate fractions
+        # Add nuclide densities weighted by appropriate fractions, keeping the
+        # contribution of each material for the S(a,b) fractions
         nuclides_per_cc = defaultdict(float)
         mass_per_cc = defaultdict(float)
+        contributions = []
         for mat, wgt in zip(materials, wgts):
+            contribution = {}
             for nuc, atoms_per_bcm in mat.get_nuclide_atom_densities().items():
                 nuc_per_cc = wgt*1.e24*atoms_per_bcm
+                contribution[nuc] = contribution.get(nuc, 0.) + nuc_per_cc
                 nuclides_per_cc[nuc] += nuc_per_cc
                 mass_per_cc[nuc] += nuc_per_cc*openmc.data.atomic_mass(nuc) / \
                                     openmc.data.AVOGADRO
+            contributions.append(contribution)
+        sab = _mixed_s_alpha_beta(materials, contributions, nuclides_per_cc)
 
         # Create the new material with the desired name
         if "name" not in kwargs:
@@ -2160,6 +2243,9 @@ class Material(IDManagerMixin):
         # Compute mass density for the new material and set it
         new_density = np.sum([dens for dens in mass_per_cc.values()])
         new_mat.set_density('g/cm3', new_density)
+
+        for name, fraction in sab:
+            new_mat.add_s_alpha_beta(name, fraction)
 
         # If any of the involved materials is depletable, the new material is
         # depletable
